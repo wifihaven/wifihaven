@@ -1925,6 +1925,14 @@ case class RouterSummary(
     name: String,
     enrolled: Boolean,
     lastSeenAt: Option[String],
+    // What this promises (#2619): the newest policy version the server has SENT
+    // to this router, on whichever transport sent it — the REST poll stamps it
+    // when it SERVES the snapshot, the websocket push stamps it when the frame
+    // has been handed to the channel. It does NOT mean the router has applied
+    // that policy, and never did on either transport. The applied etag is the
+    // one in the router's own on-disk snapshot (what `scripts/e2e/lib/wait.py`
+    // reads for the stronger barrier). NULL until the router first receives
+    // policy.
     lastEtag: Option[ETag],
     createdAt: String,
     // #771: agent package version reported on the most recent policy fetch

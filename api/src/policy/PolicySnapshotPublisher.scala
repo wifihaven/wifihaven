@@ -1,6 +1,7 @@
 package wifihaven.api.policy
 
 import wifihaven.shared.PolicySnapshot
+import wifihaven.shared.types.HouseholdId
 import zio.*
 
 /**
@@ -17,14 +18,20 @@ import zio.*
  * after the policy layer), defaulting to [[PolicySnapshotPublisher.noop]] until then — so a
  * snapshot rebuilt before the registry exists, or in a test that never sets a publisher, simply
  * isn't pushed.
+ *
+ * #2619: `publish` carries the [[HouseholdId]] the snapshot was BUILT for, alongside the snapshot
+ * itself. A `PolicySnapshot` has no household on it (the wire is deliberately tenant-blind — the
+ * router is a dumb applier and never learns which household it belongs to), so without this
+ * parameter a sink cannot tell whose policy it is holding. The router registry needs exactly that
+ * to decide whether stamping `routers.last_etag` from a delivery is truthful.
  */
 trait PolicySnapshotPublisher {
-  def publish(snap: PolicySnapshot): UIO[Unit]
+  def publish(household: HouseholdId, snap: PolicySnapshot): UIO[Unit]
 }
 
 object PolicySnapshotPublisher {
   val noop: PolicySnapshotPublisher = new PolicySnapshotPublisher {
-    def publish(snap: PolicySnapshot): UIO[Unit] = ZIO.unit
+    def publish(household: HouseholdId, snap: PolicySnapshot): UIO[Unit] = ZIO.unit
   }
 
   /**
@@ -46,7 +53,7 @@ object PolicySnapshotPublisher {
    */
   def broadcast(sinks: List[PolicySnapshotPublisher]): PolicySnapshotPublisher =
     new PolicySnapshotPublisher {
-      def publish(snap: PolicySnapshot): UIO[Unit] =
-        ZIO.foreachDiscard(sinks)(_.publish(snap))
+      def publish(household: HouseholdId, snap: PolicySnapshot): UIO[Unit] =
+        ZIO.foreachDiscard(sinks)(_.publish(household, snap))
     }
 }

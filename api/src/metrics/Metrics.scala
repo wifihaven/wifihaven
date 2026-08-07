@@ -354,6 +354,15 @@ object MetricGuard {
     // that a household is running with all blocking OFF via the #2382 escape hatch.
     "policy_permissive_snapshot_total"          -> Set("reason"),
     "router_ws_policy_push_total"               -> Set("result"),
+    // #2619 — the delivery-time `routers.last_etag` stamp, one sample per DELIVERED policy frame.
+    // `outcome` ∈ {ok, error, household_mismatch} — a fixed 3-value enum, bounded, no per-router /
+    // per-household dimension (a household id would be a tenant-sized label). It exists because the
+    // stamp is a best-effort side-write off the push path, and `docs/process/no-dark-by-default.md`
+    // forbids a sink that can fail invisibly: `error` is a DB write that failed (the push itself
+    // survived, so nothing else would show it), and `household_mismatch` is a push whose snapshot
+    // was built for a different household than the receiving router — expected to be flat zero, and
+    // a non-zero rate is a live cross-tenant push from the unscoped `reevaluate` fan-out.
+    "router_ws_etag_stamp_total"                -> Set("outcome"),
     // #1968 — SPA-websocket transport (server side, design `docs/design/spa-websocket.md` §7).
     // `spa_ws_connections_active` is the live count of open /api/ws channels per `role`
     // (admin|adult|child), refreshed on every register/deregister so a role's series ages out to 0
@@ -1479,6 +1488,21 @@ object AppMetrics {
   // = the send failed (a racing disconnect) and the channel is dropped. Bounded enum.
   def recordWsPolicyPush(result: String): UIO[Unit] =
     MetricGuard.counter("router_ws_policy_push_total", Map("result" -> result))
+
+  // #2619: emitted by RouterWsRegistry once per DELIVERED policy frame, for the `routers.last_etag`
+  // stamp that rides that delivery. `outcome` ∈ {ok, error, household_mismatch}:
+  //   ok                 — the etag was written to the router's row.
+  //   error              — the write failed. The push is not torn down (a DB hiccup must never kill
+  //                        a policy delivery), so this counter is the ONLY signal that the column is
+  //                        going stale; a sustained rate means the operator's "who is on current
+  //                        policy?" view is quietly lying.
+  //   household_mismatch — the snapshot was built for a different household than the router it was
+  //                        delivered to, so nothing is written. Expected to be FLAT ZERO. A non-zero
+  //                        rate means `PolicyService.reevaluate`'s still-unscoped fan-out is pushing
+  //                        one household's policy to another's router — this counter is the first
+  //                        observable signal that gap has ever had.
+  def recordWsEtagStamp(outcome: String): UIO[Unit] =
+    MetricGuard.counter("router_ws_etag_stamp_total", Map("outcome" -> outcome))
 
   // ── SPA websocket transport (#1968) ──────────────────────────────────────────
   // The browser-facing /api/ws endpoint (design `docs/design/spa-websocket.md` §7).

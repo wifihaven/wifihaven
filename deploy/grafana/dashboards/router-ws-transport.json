@@ -1003,6 +1003,63 @@
           "refId": "A"
         }
       ]
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "title": "routers.last_etag stamp outcomes (#2619)",
+      "description": "rate of router_ws_etag_stamp_total by outcome — the delivery-time write of routers.last_etag that rides every websocket policy push. That column is what the operator's \"who is on current policy?\" view reads, and until #2619 only the REST poll wrote it; since #2608 made ws the router default the poll goes dormant on a healthy link (#2037), so this push is the only writer for most of the fleet. The stamp is best-effort — a DB failure must not tear down a policy delivery — so nothing else on the push path moves when it breaks, and this series is the only signal. `ok` should track the policy-push rate. `error` means the write is failing and the column is silently going stale: any sustained rate is actionable. `household_mismatch` means a pushed snapshot was built for a different household than the router receiving it, so the stamp was refused — it should be FLAT ZERO, and a non-zero rate is a live cross-tenant policy push from the still-unscoped PolicyService.reevaluate fan-out. Bounded 3-value enum; no per-router or per-household label rides it.",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 72
+      },
+      "id": 17,
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "cps",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "lineWidth": 1
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (outcome) (rate(router_ws_etag_stamp_total{env=\"$env\"}[5m]))",
+          "legendFormat": "{{outcome}}",
+          "refId": "A"
+        }
+      ]
     }
   ],
   "refresh": "30s",

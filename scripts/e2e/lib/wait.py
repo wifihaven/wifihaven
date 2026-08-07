@@ -302,26 +302,24 @@ def wait_for_etag_change(
 
     #2608 made the websocket the shipped router default, and on a healthy link
     the agent's HTTP poll goes dormant (#2037) — skipped entirely, not merely
-    slowed. `routers.last_etag` is written only by the poll route (`RouterRoutes`
-    passes `Some(snap.etag)` to `routerRepo.touch`; `RouterWsRoutes` touches
-    `last_seen_at` alone), so for as long as the ws link stays healthy that
-    column does not move and an admin-API-only wait would time out. (It resumes
-    if the link drops past `ws_fallback_after` and the poll wakes up —
-    `wifihaven-agent:1334` — but a healthy router is the normal case.)
+    slowed. `routers.last_etag` used to be written only by the poll route, so for
+    as long as the ws link stayed healthy that column did not move and an
+    admin-API-only wait would time out. #2619 fixed that: the ws push now stamps
+    the etag it delivered, so `lastEtag` advances on both transports again.
 
-    So this checks BOTH: the server-side `lastEtag`, and the etag in the router's
-    own on-disk snapshot — which both transports write, and which is the stronger
-    signal anyway (it says the ROUTER has the policy, not merely that the server
-    served it).
+    This still checks BOTH, and deliberately so. `lastEtag` is a SEND-time fact
+    on either transport — the poll stamps when it serves the snapshot, the ws
+    push when the frame is handed to the channel; neither means the router has
+    applied it. The etag in the router's own on-disk snapshot does, so it is the
+    stronger of the two signals and worth keeping as the primary. `lastEtag`
+    remains as the faster-and-cheaper one, and as the path that still works if
+    the on-disk read is unavailable.
 
-    That `last_etag` freezes for a ws router is a real product gap, not just a
-    test problem — it is what the operator's "who is on current policy?" view
-    reads. It predates #2608 (prod's hand-enabled ws router already had it) but
-    the default flip makes it fleet-wide, so it is tracked in #2619 rather than
-    papered over here. Fixing it is blocked on per-household push fan-out
-    (#2120): today `PolicyService.reevaluate` broadcasts the default household's
-    snapshot to every router, so stamping from the fan-out would persist the
-    wrong household's etag.
+    One case where `lastEtag` legitimately will NOT move: #2619 refuses to stamp
+    when the pushed snapshot's household differs from the router's, because
+    `PolicyService.reevaluate` still fans the default household's snapshot out to
+    every connected router. A non-default-household router therefore relies on
+    the on-disk half of this check.
     """
     baseline_etag = baseline.get("lastEtag")
     baseline_disk = baseline.get("diskEtag")

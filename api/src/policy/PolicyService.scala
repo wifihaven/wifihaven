@@ -333,13 +333,20 @@ class PolicyServiceLive(
     if (!cacheEnabled) ZIO.unit
     else
       ZIO.succeed(mutationVersion.get).flatMap { gen =>
-        // #2107: single-household today — `reevaluate` rebuilds the `HouseholdId.Default` snapshot
-        // and pushes it to every connected router (all routers belong to household 1). Per-household
-        // push fan-out (rebuild + push each household's snapshot to only its own routers) is tracked
-        // in #2120 — deliberately out of this read-scoping change (the REST poll and the ws
-        // first-policy push are already household-scoped; only this broadcast is not). `invalidate`
+        // `reevaluate` rebuilds the `HouseholdId.Default` snapshot and pushes it to every connected
+        // router, whatever household that router belongs to. Per-household push fan-out (rebuild +
+        // push each household's snapshot to only its own routers) is STILL OPEN — the REST poll and
+        // the ws first-policy push are household-scoped; only this broadcast is not. `invalidate`
         // bumps the global `mutationVersion`, which stale-stamps EVERY household's cache entry, so a
         // non-default household's next REST poll rebuilds fresh.
+        //
+        // The household is passed explicitly to `publish` (#2619) rather than left implicit in this
+        // comment: the router registry stamps `routers.last_etag` from a delivery, and it may only
+        // do so when the snapshot's household matches the receiving router's. That guard is what
+        // keeps this known-unscoped fan-out from writing a durably wrong value; a mismatch is
+        // metered `router_ws_etag_stamp_total{outcome="household_mismatch"}`, which is also the
+        // first observable signal that this broadcast is crossing a tenant boundary at all.
+        // (#2120 was closed by PRs that scoped a different read path; refiled as #2626.)
         buildSnapshot(HouseholdId.Default).foldZIO(
           err =>
             // Keep the last good cache on a transient build failure (e.g. a DB blip) so the REST poll
@@ -353,7 +360,11 @@ class PolicyServiceLive(
             // a frame the routers would treat as unchanged. Keyed off `lastPublishedEtag` (not the
             // cache slot) so a racing REST poll repopulating the cache can't suppress the push.
             val prevPublished = lastPublishedEtag.getAndSet(Some(snap.etag))
-            ZIO.when(!prevPublished.contains(snap.etag))(publisher.get.publish(snap)).unit
+            ZIO
+              .when(!prevPublished.contains(snap.etag))(
+                publisher.get.publish(HouseholdId.Default, snap),
+              )
+              .unit
           },
         )
       }

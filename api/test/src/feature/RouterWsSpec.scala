@@ -15,9 +15,11 @@ import zio.{Clock as _, *}
 import zio.http.*
 import zio.http.ChannelEvent.UserEvent
 import zio.json.*
+import zio.metrics.Metric
 import zio.test.*
 
 import java.time.{Instant, LocalDateTime}
+import java.util.UUID
 
 /**
  * #1846: server-side websocket transport. Exercises the real `/api/router/ws` endpoint end to end —
@@ -74,6 +76,26 @@ object RouterWsSpec
 
   private def sendOnlyChannel: UIO[WebSocketChannel] = ZIO.succeed(new SendOnlyChannel)
 
+  /**
+   * The cumulative `router_ws_etag_stamp_total{outcome=...}` count (#2619), read straight off the
+   * ZIO metric registry with the same key `MetricGuard.counter` writes. Asserted as a DELTA around
+   * the action, not absolutely: the registry is JVM-global and this counter is additive, so an
+   * absolute assertion would couple this spec to whatever else in the suite pushed a policy frame.
+   * The read is synchronous — there is no Prometheus publisher or snapshot listener to wait on, so
+   * no wall-clock polling is involved (`docs/process/testing.md`, #2042).
+   */
+  private def etagStampTotal(outcome: String): UIO[Double] =
+    Metric.counter("router_ws_etag_stamp_total").tagged("outcome", outcome).value.map(_.count)
+
+  /** A minimal snapshot for tests that only need SOMETHING with an etag to push. */
+  private val emptySnapshot = PolicySnapshot(
+    etag = ETag.unsafe("sha256:2619-stamp-failure-probe"),
+    generatedAt = "2026-05-07T14:00:00Z",
+    devices = Map.empty,
+    profiles = Map.empty,
+    blocklists = Map.empty,
+  )
+
   /** The same PolicyServiceLive wiring [[buildWsRoutes]] uses, for a test that needs a snapshot. */
   private def buildPolicyService =
     for {
@@ -106,7 +128,7 @@ object RouterWsSpec
       clk     <- ZIO.service[Clock]
       blr     <- ZIO.service[BlocklistRepo]
       metrics <- RouterMetricsService.make
-      reg     <- RouterWsRegistry.make
+      reg     <- RouterWsRegistry.make((id, etag) => rRepo.touch(id, Some(etag), None))
       auth   = new RouterAuthLive(rRepo)
       ingest = new RouterIngestService(rRepo, tRepo, tu, dRepo, cRepo, aRepo, hsr)
       // #1849: a PolicyService so the ws endpoint can push the current snapshot on connect. Cache
@@ -363,15 +385,18 @@ object RouterWsSpec
         snap      <- policySvc.snapshot(HouseholdId.Default)
         (_, reg)  <- buildWsRoutes
         ch        <- sendOnlyChannel
-        _         <- reg.register(rid, ch)
-        _         <- reg.pushPolicyTo(ch, snap)
+        okPre     <- etagStampTotal("ok")
+        _         <- reg.register(rid, HouseholdId.Default, ch)
+        _         <- reg.pushPolicyTo(rid, HouseholdId.Default, ch, snap)
         afterPush <- rRepo.findById(rid)
         // The push-on-change fan-out (publishPolicy) must stamp too — it is the path that carries
         // the fleet once the poll is dormant, and it is a DIFFERENT call into sendPolicyFrame.
         _         <- rRepo.touch(rid, None, None)
-        _         <- reg.publishPolicy(snap)
+        _         <- reg.publishPolicy(HouseholdId.Default, snap)
         afterFan  <- rRepo.findById(rid)
+        okPost    <- etagStampTotal("ok")
       } yield assertTrue(beforeRow.exists(_.lastEtag.isEmpty)) &&
+        assertTrue(okPost - okPre == 2.0) &&
         assertTrue(afterPush.flatMap(_.lastEtag).contains(snap.etag)) &&
         assertTrue(afterFan.flatMap(_.lastEtag).contains(snap.etag))
       // No Server/Client layers here, unlike the socket-driving tests around it: this exercises the
@@ -380,7 +405,7 @@ object RouterWsSpec
     test("#2619: a push carrying another household's snapshot does not stamp that router") {
       // The reason the same stamp was reverted from #2608's PR. `PolicyService.reevaluate` still
       // rebuilds the `HouseholdId.Default` snapshot and fans it out to EVERY connected router
-      // (`api/src/policy/PolicyService.scala:332-345`) — the #2120 gap. Delivery is out of scope
+      // (`api/src/policy/PolicyService.scala`) — the still-open fan-out gap, #2626. Delivery is out of scope
       // here, but the DURABLE write is not: persisting household 1's etag onto household 2's router
       // would turn a transient wrong-content push into a permanently wrong value in the very column
       // this change is making authoritative. A stale etag is recoverable; a confidently wrong one
@@ -395,14 +420,48 @@ object RouterWsSpec
         other <- hRepo.create("Other household", "other-household")
         ridB  <- rRepo.create("other-router", Sha256Hex.unsafe("n" * 64), other)
         _     <- rRepo.completeEnrollment(ridB, Sha256Hex.unsafe(RouterAuth.sha256Hex("TOKEN_B")))
-        policySvc <- buildPolicyService
-        snap      <- policySvc.snapshot(HouseholdId.Default)
-        (_, reg)  <- buildWsRoutes
-        ch        <- sendOnlyChannel
-        _         <- reg.register(ridB, ch)
-        _         <- reg.publishPolicy(snap)
-        after     <- rRepo.findById(ridB)
-      } yield assertTrue(after.exists(_.lastEtag.isEmpty))
+        policySvc    <- buildPolicyService
+        snap         <- policySvc.snapshot(HouseholdId.Default)
+        (_, reg)     <- buildWsRoutes
+        ch           <- sendOnlyChannel
+        mismatchPre  <- etagStampTotal("household_mismatch")
+        _            <- reg.register(ridB, other, ch)
+        _            <- reg.publishPolicy(HouseholdId.Default, snap)
+        after        <- rRepo.findById(ridB)
+        mismatchPost <- etagStampTotal("household_mismatch")
+        // Nothing written, AND the refusal is visible: `household_mismatch` should be flat zero in
+        // normal operation, so a non-zero rate on it is the operator's signal that the fan-out is
+        // pushing across a tenant boundary. A silent skip would just look like a healthy system.
+      } yield assertTrue(after.exists(_.lastEtag.isEmpty)) &&
+        assertTrue(mismatchPost - mismatchPre == 1.0)
+    },
+    test("#2619: a failed stamp is metered and does not tear down the push") {
+      // The stamp is a best-effort side-write hanging off the push path. A DB hiccup must never
+      // kill a policy delivery — but per `docs/process/no-dark-by-default.md` it must not fail
+      // INVISIBLY either: nothing else on the push path would move if the write silently stopped
+      // working, so `router_ws_etag_stamp_total{outcome="error"}` is the only signal that the
+      // operator's "who is on current policy?" view has started going stale.
+      //
+      // The sink here is the injected failure; the registry, the channel accounting and the metric
+      // registry are real. The push effect is awaited, so the counter read is ordered after the
+      // stamp attempt rather than racing it.
+      for {
+        rid     <- ZIO.succeed(RouterId(UUID.fromString("6b1f0f2c-6b3e-4a1a-9a8f-2f1c0b4d9e77")))
+        okPre   <- etagStampTotal("ok")
+        errPre  <- etagStampTotal("error")
+        reg     <- RouterWsRegistry.make((_, _) => ZIO.fail(new RuntimeException("db down")))
+        ch      <- sendOnlyChannel
+        _       <- reg.register(rid, HouseholdId.Default, ch)
+        // Completes normally: the failure is caught inside the registry, not propagated.
+        _       <- reg.publishPolicy(HouseholdId.Default, emptySnapshot)
+        okPost  <- etagStampTotal("ok")
+        errPost <- etagStampTotal("error")
+        // The channel is still registered — a stamp failure is not a delivery failure, so it must
+        // not deregister the router the way a `channel_closed` send failure does.
+        still   <- reg.isConnected(rid)
+      } yield assertTrue(errPost - errPre == 1.0) &&
+        assertTrue(okPost - okPre == 0.0) &&
+        assertTrue(still)
     },
     test("#2561: a second connection for the same router supersedes the first (registry holds 1)") {
       // The prod leak: a router whose socket went half-open reconnects, the server still holds the
