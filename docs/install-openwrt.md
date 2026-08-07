@@ -285,6 +285,17 @@ In the dashboard, open **Devices**. Anything without a profile is collected in
 an **Unmanaged Devices** section at the bottom of the page, each row carrying an
 **Enroll** button ([`DevicesPage.tsx`](../web/src/pages/DevicesPage.tsx)).
 
+> **That section does not render yet: work from the main list instead.** The
+> page's unmanaged check compares `profileId` against `null`, but the API omits
+> the field entirely for a device with no profile rather than sending an explicit
+> null, so the comparison is never true. The section stays empty, and unassigned
+> devices fall into the **main device list** instead, where they show a
+> **No profile** pill. Until
+> [#2622](https://github.com/wifihaven/wifihaven/pull/2622) lands, that pill is
+> how you spot them. Root cause and the wider class:
+> [#2623](https://github.com/wifihaven/wifihaven/issues/2623); this note comes
+> out again in [#2631](https://github.com/wifihaven/wifihaven/issues/2631).
+
 Work the list down to empty. Every device you care about should end up assigned
 to a profile, including the ones that will never have a time limit. A printer
 or a thermostat still wants a profile (give it an unrestricted one); the point
@@ -295,11 +306,17 @@ Devices that legitimately come and go — a guest's phone, a friend's laptop —
 are the reason to think about this before flipping the switch. Decide now
 whether guests get a permissive profile or get blocked until you enroll them.
 
-### 4.3 Confirm the list is empty
+### 4.3 Confirm nothing is left unassigned
 
-The Unmanaged Devices section disappears once nothing is left in it. If it is
-still populated, you are not done with 4.2: switching to `block` now would cut
-off whatever is still listed there.
+Every device on the **Devices** page should show a profile name. A row showing
+**No profile** is not yet enrolled, and switching to `block` now would cut it
+off. Scan the whole list before moving on.
+
+Once [#2622](https://github.com/wifihaven/wifihaven/pull/2622) lands this gets
+easier: unassigned devices collect in the Unmanaged Devices section, and that
+section disappears when nothing is left in it. Until then the **No profile**
+pill in the main list is the signal, and there is no count to check — read the
+list.
 
 ### 4.4 Switch the policy to `block`
 
@@ -329,13 +346,15 @@ enforcement path a paused profile uses. Nothing new runs on the router.
 
 **What you will see when a new device is blocked this way:**
 
-- On **Devices**, the device turns up in the **Unmanaged Devices** section, whose
-  header says whether the household is allowing or blocking these. On a wide
-  enough screen the row also carries an **Unmanaged** badge (under `allow` the
-  same row reads **No profile**). This is the answer to "why is this thing
-  offline?" Check here first.
-- Anyone with edit rights gets an **Enroll** button on the row; a read-only
-  member sees the list without it.
+- On **Devices**, the device shows up without a profile. Today that means a row
+  in the main list carrying a **No profile** pill. Once
+  [#2622](https://github.com/wifihaven/wifihaven/pull/2622) lands, it moves
+  instead to the **Unmanaged Devices** section, whose header says whether the
+  household is allowing or blocking these, with an **Unmanaged** badge on wide
+  screens. Either way this is the answer to "why is this thing offline?" Check
+  here first.
+- Anyone with edit rights can assign it a profile from that row; a read-only
+  member sees the list without the control.
 - An **alert** is raised for the new device, same as under `allow`.
 - On the **device itself**, the symptom is generic: connections fail. Web
   traffic on ports 80/443 is redirected to the local block page if you set that
@@ -343,17 +362,22 @@ enforcement path a paused profile uses. Nothing new runs on the router.
   a closed port and the device just sees a refused connection. Even with it, the
   page does not currently name this case: see the caveat below.
 
-> **Caveat — read before you flip this on.** Three rough edges here are known
-> and tracked in
-> [#2610](https://github.com/wifihaven/wifihaven/issues/2610):
-> the block page an unmanaged-blocked device lands on currently reports the
-> device as *not* blocked, rather than explaining that it isn't enrolled; the
-> **Show block page** checkbox next to the policy is not yet wired to anything,
-> so toggling it changes nothing; and the card's help text calls the result a
-> "manual block" when the reason is actually `Unmanaged`. None of it affects
-> enforcement — a blocked unmanaged device is genuinely blocked either way — but
-> the device's own answer is unhelpful and the card's is mislabeled, so diagnose
-> from the Devices page rather than from either.
+> **Caveat — read before you flip this on.** Four rough edges are known here.
+> Three are tracked in
+> [#2610](https://github.com/wifihaven/wifihaven/issues/2610): the block page an
+> unmanaged-blocked device lands on currently reports the device as *not*
+> blocked, rather than explaining that it isn't enrolled; the **Show block page**
+> checkbox next to the policy is not yet wired to anything, so toggling it
+> changes nothing; and the card's help text calls the result a "manual block"
+> when the reason is actually `Unmanaged`. The fourth is the missing Unmanaged
+> Devices section described in [§4.2](#42-assign-each-device-to-a-profile),
+> fixed by [#2622](https://github.com/wifihaven/wifihaven/pull/2622).
+>
+> None of it affects enforcement — a blocked unmanaged device is genuinely
+> blocked either way. But it does mean every surface that should explain the
+> block currently misreports it, so until these land, go by which devices lack a
+> profile on the Devices page rather than by what the block page, the Admin card,
+> or the Unmanaged section tell you.
 
 To undo, set the policy back to `allow` on the same card. It takes effect on
 the next snapshot, in seconds.
