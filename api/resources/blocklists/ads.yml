@@ -8,10 +8,12 @@ name: Ads & Trackers
 description: Common ad networks and tracking infrastructure. Blocks the host at the apex; subdomains match automatically at the router.
 source: curated (subset of StevenBlack/hosts + EasyList apex domains)
 #
-# Google shared-GFE apexes REMOVED (#2601, 2026-08-06) — do not re-add:
-#   doubleclick.net, googleadservices.com, googlesyndication.com,
-#   googletagmanager.com, googletagservices.com, google-analytics.com,
-#   adservice.google.com, 2mdn.net
+# Google shared-GFE apexes REMOVED here on 2026-08-06 (#2601) — do not re-add.
+# Historical record of what this list used to carry: doubleclick.net,
+# googleadservices.com, googlesyndication.com, googletagmanager.com,
+# googletagservices.com, google-analytics.com, adservice.google.com, 2mdn.net.
+# The CURRENT banned set is owned by test-infra `SharedGfeHosts` and is wider
+# than these eight — read it there, not here.
 # These are textbook ad-tech and were curated here from the start, but Google
 # serves them from the same shared GFE anycast frontends as its ordinary
 # properties. Enforcement matches on DESTINATION IP (dnsmasq's nftset callback
