@@ -63,7 +63,7 @@ object RouterWsSpec
    * collaborator in those tests (registry, delivery sink, repo, Postgres) is real, and the
    * end-to-end path over a REAL client and server is pinned by the socket-driving tests below.
    */
-  private final class SendOnlyChannel extends WebSocketChannel {
+  private class SendOnlyChannel extends WebSocketChannel {
     def awaitShutdown(implicit trace: Trace): UIO[Unit]                                 = ZIO.unit
     def receive(implicit trace: Trace): Task[WebSocketChannelEvent]                     = ZIO.never
     def receiveAll[Env, Err](f: WebSocketChannelEvent => ZIO[Env, Err, Any])(
@@ -75,6 +75,24 @@ object RouterWsSpec
   }
 
   private def sendOnlyChannel: UIO[WebSocketChannel] = ZIO.succeed(new SendOnlyChannel)
+
+  /**
+   * A [[SendOnlyChannel]] that also RECORDS the text of every frame handed to it. `SendOnlyChannel`
+   * proves a push resolved OK; this proves WHO it reached, which is what #2630 turns on — a leak is
+   * a frame arriving at a channel that should never have been a recipient, and a channel that only
+   * swallows sends cannot tell that apart from no frame at all.
+   */
+  private final class RecordingChannel(sent: Ref[Chunk[String]]) extends SendOnlyChannel {
+    override def send(in: WebSocketChannelEvent)(implicit trace: Trace): Task[Unit] =
+      in match {
+        case ChannelEvent.Read(WebSocketFrame.Text(t)) => sent.update(_ :+ t)
+        case _                                         => ZIO.unit
+      }
+  }
+
+  /** A recording channel plus the handle to read back what it was sent. */
+  private def recordingChannel: UIO[(WebSocketChannel, Ref[Chunk[String]])] =
+    Ref.make(Chunk.empty[String]).map(r => (new RecordingChannel(r), r))
 
   /**
    * The cumulative `router_ws_etag_stamp_total{outcome=...}` count (#2619), read straight off the
@@ -416,6 +434,48 @@ object RouterWsSpec
         assertTrue(afterFan.flatMap(_.lastEtag).contains(fanSnap.etag))
       // No Server/Client layers here, unlike the socket-driving tests around it: this exercises the
       // registry's push entrypoints directly, so it needs neither.
+    },
+    test("#2630: a policy push reaches only the publishing household's routers") {
+      // The beta-launch blocker. `publishPolicy` iterated the WHOLE registry and sent the same
+      // frame to every connected channel, so a router in household B was handed household A's
+      // snapshot — device names, MAC addresses, profile names, blocked hosts — and, being a dumb
+      // applier, wrote it to /etc/wifihaven/policy.json and into its nft ruleset. Observed on live
+      // hardware (#2630): a test-household router carried the operator's family household's 33
+      // device names and real MACs for ~8 minutes.
+      //
+      // What makes this test the one that would have caught it: it asserts on DELIVERY, per
+      // channel. The #2619 test below asserts only that the DURABLE `last_etag` write is refused,
+      // which was true throughout the leak — the frame still went out.
+      for {
+        _         <- cleanDb
+        rRepo     <- ZIO.service[RouterRepo]
+        pRepo     <- ZIO.service[ProfileRepo]
+        dRepo     <- ZIO.service[DeviceRepo]
+        hRepo     <- ZIO.service[HouseholdRepo]
+        _         <- seedKnownDevice(dRepo, pRepo)
+        // Household A = the default household, with the seeded device/profile; household B = a
+        // second tenant whose router is connected at the same time. Both routers are real rows.
+        (ridA, _) <- seedRouter(rRepo)
+        hhB       <- hRepo.create("Other household", "other-household")
+        ridB      <- rRepo.create("other-router", Sha256Hex.unsafe("n" * 64), hhB)
+        _ <- rRepo.completeEnrollment(ridB, Sha256Hex.unsafe(RouterAuth.sha256Hex("TOKEN_B")))
+        policySvc    <- buildPolicyService
+        snapA        <- policySvc.snapshot(HouseholdId.Default)
+        (_, reg)     <- buildWsRoutes
+        (chA, sentA) <- recordingChannel
+        (chB, sentB) <- recordingChannel
+        _            <- reg.register(ridA, HouseholdId.Default, chA)
+        _            <- reg.register(ridB, hhB, chB)
+        _            <- reg.publishPolicy(HouseholdId.Default, snapA)
+        framesA      <- sentA.get
+        framesB      <- sentB.get
+        // A's router got the policy frame, and it is the real snapshot (the seeded MAC rides it) —
+        // so a "fix" that simply stopped pushing would not pass.
+      } yield assertTrue(framesA.size == 1) &&
+        assertTrue(framesA.head.contains("\"op\":\"policy\"")) &&
+        assertTrue(framesA.head.contains(knownMac)) &&
+        // ...and B's router got NOTHING. Not a redacted frame, not an empty one: no frame.
+        assertTrue(framesB.isEmpty)
     },
     test("#2619: a push carrying another household's snapshot does not stamp that router") {
       // The reason the same stamp was reverted from #2608's PR. `PolicyService.reevaluate` still
