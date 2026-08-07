@@ -561,8 +561,9 @@ describe('RecentlyBlockedSection (#1338 / #2073 / #2062)', () => {
   // not blocked". Three things let that happen, each pinned below: the panel
   // never said its view was only 15 minutes wide; an empty view rendered the
   // same whether the household had older blocks or none at all; and it asserted
-  // a clean negative during the ~26s the router's transport takes to deliver the
-  // drop, so "nothing blocked" was a claim about data it could not yet have.
+  // a clean negative during the ~26s the router's spool/flush/ws hops take to
+  // deliver the drop, so "nothing blocked" was a claim about data it could not
+  // yet have.
   // That 26s is a transport defect and is fixed separately in #2620; this file
   // only covers what the panel discloses.
 
@@ -633,8 +634,8 @@ describe('RecentlyBlockedSection (#1338 / #2073 / #2062)', () => {
   it('#2601 — a genuinely empty 1h fetch keeps the plain empty state, with no stale hint', async () => {
     // The two empty-reasons stay distinct: nothing at all in the fetched hour is not the
     // same as "there were blocks, just older than the window". No ingest-lag caveat here:
-    // the ~26s delay that made a just-now block invisible belongs in the agent's transport
-    // (#2620), not explained away in the copy.
+    // the ~26s delay that made a just-now block invisible belongs in the agent's spool and
+    // ws-drain path (#2620), not explained away in the copy.
     mockQuery().mockResolvedValue({ rows: [], nextCursor: null })
     render(withQuery(<MemoryRouter><RecentlyBlockedSection /></MemoryRouter>))
     expect(await screen.findByText(/Nothing blocked recently/)).toBeInTheDocument()

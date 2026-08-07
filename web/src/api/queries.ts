@@ -37,6 +37,8 @@ export const RECENT_BLOCKED_FETCH_HOURS = 1
 // asserting a span the fetch no longer uses (#2601). `recentBlockedFetchLabel` is a pure
 // function rather than an inline ternary so BOTH arms are reachable and unit-testable —
 // against the constant the plural arm would otherwise be dead code by construction.
+// Both arms are covered in DashboardPage.test.tsx ("recentBlockedFetchLabel covers both
+// arms"); if that test goes, this claim stops being falsifiable.
 export const RECENT_BLOCKED_WINDOW_LABEL = `last ${RECENT_BLOCKED_WINDOW_MS / 60_000} min`
 export function recentBlockedFetchLabel(hours: number): string {
   return hours === 1 ? 'the past hour' : `the past ${hours} hours`

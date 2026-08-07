@@ -342,9 +342,10 @@ export function RecentlyBlockedSection() {
                       // purpose: the ~26s a just-now block took to arrive is a pipeline
                       // defect, not a fact to apologise for in the UI. Telling the operator
                       // to wait would dress up the latency instead of removing it. The
-                      // latency itself is NOT fixed yet — it is the ws sidecar draining its
-                      // outbound spool only after the inbound read times out — and is
-                      // tracked separately in #2620.
+                      // latency itself is NOT fixed yet — it is dominated by the ws sidecar
+                      // draining its outbound spool only after the inbound read times out,
+                      // on top of two agent-side spool/flush hops — and is tracked
+                      // separately in #2620, which carries the full hop breakdown.
                       : undefined
                   }
                 />
