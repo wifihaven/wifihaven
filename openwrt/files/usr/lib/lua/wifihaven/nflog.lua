@@ -220,12 +220,13 @@ function M.drain_file(path, state, open_fn)
 end
 
 -- ---------------------------------------------------------------------------
--- drain_due(mono, last_run, interval, ws_healthy) -> bool   (#2620)
+-- pipeline_interval(http_interval, ws_interval, ws_healthy) -> seconds  (#2620)
 --
--- Whether the agent's per-tick nflog drop-spool drain should run now.
+-- The cadence of the agent's drop-event pipeline step (drain the nflog spool,
+-- then flush the shared events batcher) on each transport.
 --
--- `nflog_poll_interval` (and the event batcher's `event_flush_interval` behind
--- it) exist to bound HTTP REQUEST volume: each flush is one
+-- `nflog_poll_interval` (and the batcher's `event_flush_interval` behind it)
+-- exist to bound HTTP REQUEST volume: each flush is one
 -- POST /api/router/events. When the ws link is healthy the outbound tee
 -- (ws_outbound.make) hands the same bodies to the sidecar's spool instead, and
 -- they ride an already-open persistent socket — so the request-volume argument
@@ -234,15 +235,29 @@ end
 -- measured on prod 2026-08-06). On the HTTP fallback path the interval still
 -- holds, unchanged.
 --
--- `ws_healthy` MUST come from ws_outbound.is_healthy — the same predicate the
--- outbound tee and the policy-poll dormancy gate use — so the drain cadence
--- cannot disagree with which transport the events actually take.
+-- Returning an INTERVAL rather than a bare "run now" is the point. The caller
+-- lives in on_tick, which fires once per conntrack line (conntrack.lua's read
+-- loop) — `conntrack_tick_interval` is a FLOOR from the TICK_SENTINEL, not a
+-- ceiling — so an unconditional true would run the whole step once per outbound
+-- flow. That matters because the flush ends in ws_spool.append_bounded, which
+-- re-reads and (at the 1 MiB cap, the steady state) rewrites the entire spool
+-- per call: per-flow would be tens of MB/s of tmpfs churn on a router CPU,
+-- the #1864 dnsmasq-starvation class. Sub-second is all #2620 needs, so the ws
+-- path gets the agent's own tick interval, not "always".
 --
--- Note this only decides the DRAIN cadence; the caller flushes the batcher
--- itself when it is on the ws path. Pure.
+-- `ws_healthy` MUST come from ws_outbound.is_healthy — the same predicate the
+-- outbound tee and the policy-poll dormancy gate use — so this cadence cannot
+-- disagree with which transport the events actually take. Pure.
 -- ---------------------------------------------------------------------------
-function M.drain_due(mono, last_run, interval, ws_healthy)
-  if ws_healthy then return true end
+function M.pipeline_interval(http_interval, ws_interval, ws_healthy)
+  if ws_healthy then return ws_interval end
+  return http_interval
+end
+
+-- due(mono, last_run, interval) -> bool. Plain elapsed-cadence check, the same
+-- `(now - anchor) >= interval` shape every other on_tick block uses. Pure.
+-- ---------------------------------------------------------------------------
+function M.due(mono, last_run, interval)
   return (mono - last_run) >= interval
 end
 

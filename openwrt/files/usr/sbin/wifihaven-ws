@@ -91,7 +91,13 @@ local function ws_url_of(base)
 end
 local ws_url = ws_url_of(api_url)
 
-if tostring(poll_int) ~= tostring(tonumber(poll_raw)) then
+-- Report the two ways the configured value can fail to be the effective one.
+-- `uci` returns "" for `option poll_interval ''`, which is truthy, so the
+-- `or default` above does not catch it — hence the explicit nil-number test.
+if tonumber(poll_raw) == nil then
+  log.warn("wifihaven-ws: ws.poll_interval=%q is not a number — using the default %ss",
+           tostring(poll_raw), tostring(poll_int))
+elseif tostring(poll_int) ~= tostring(tonumber(poll_raw)) then
   log.warn("wifihaven-ws: ws.poll_interval=%s clamped to %ss (valid range [%s, heartbeat=%d])",
            tostring(poll_raw), tostring(poll_int),
            tostring(ws_loop.MIN_POLL_INTERVAL), heartbeat)

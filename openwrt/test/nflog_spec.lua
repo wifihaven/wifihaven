@@ -360,23 +360,64 @@ describe("nflog.drain_file (#1126 production reader — file-offset tail)", func
   end)
 end)
 
--- #2620: the nflog drop-spool drain cadence.
+-- #2620: the drop-event pipeline cadence (drain the nflog spool, then flush the
+-- shared events batcher).
 --
 -- nflog_poll_interval (5s) + event_flush_interval (10s) exist to bound HTTP
 -- REQUEST volume: each flush is one POST /api/router/events. When the ws link
 -- is healthy the events instead ride an already-open persistent socket via the
 -- outbound tee, so the request-volume argument buys nothing and the batching is
--- pure added latency (up to 15s of the measured 26s drop→SPA delay). On the
+-- pure added latency (up to 15s of the measured 26s drop-to-SPA delay). On the
 -- HTTP fallback path the interval still holds, unchanged.
-describe("nflog.drain_due (#2620)", function()
-  it("honours the poll interval on the HTTP fallback path", function()
-    assert.is_false(nflog.drain_due(103, 100, 5, false))
-    assert.is_true(nflog.drain_due(105, 100, 5, false))
-    assert.is_true(nflog.drain_due(140, 100, 5, false))
+describe("nflog.pipeline_interval (#2620)", function()
+  it("keeps the HTTP-path interval when the ws link is not healthy", function()
+    assert.are.equal(5, nflog.pipeline_interval(5, 1, false))
   end)
 
-  it("drains every tick while the ws link is healthy", function()
-    assert.is_true(nflog.drain_due(100.5, 100, 5, true))
-    assert.is_true(nflog.drain_due(100, 100, 5, true))
+  it("drops to the agent tick interval on the ws path", function()
+    assert.are.equal(1, nflog.pipeline_interval(5, 1, true))
+  end)
+
+  -- The regression this exists to prevent: the ws path must be an INTERVAL, not
+  -- an unconditional "run now". The caller is on_tick, which fires once per
+  -- conntrack line (conntrack_tick_interval is a TICK_SENTINEL floor, not a
+  -- ceiling), and the flush it gates ends in ws_spool.append_bounded — a whole-
+  -- spool read + rewrite at the 1 MiB cap. Per-flow that is the #1864
+  -- dnsmasq-starvation class.
+  it("never returns a cadence that would run the step per conntrack line", function()
+    assert.is_true(nflog.pipeline_interval(5, 1, true) > 0)
+    assert.is_true(nflog.pipeline_interval(5, 1, false) > 0)
+  end)
+end)
+
+describe("nflog.due (#2620)", function()
+  it("is false before the interval has elapsed and true at/after it", function()
+    assert.is_false(nflog.due(103, 100, 5))
+    assert.is_true(nflog.due(105, 100, 5))
+    assert.is_true(nflog.due(140, 100, 5))
+  end)
+
+  it("fires on the first tick against the zero anchor the agent boots with", function()
+    -- ts.last_nflog_run / ts.last_nflog_gc start at 0 and `mono` is
+    -- clock.monotonic_seconds() (uptime), so the very first on_tick is already
+    -- far past any interval — no cold-start stall.
+    assert.is_true(nflog.due(3600, 0, 5))
+    -- Degenerate: an anchor equal to now is genuinely not due yet.
+    assert.is_false(nflog.due(0, 0, 5))
+  end)
+
+  -- Pinned together: on the ws path the step runs about once a second, NOT on
+  -- every call. Ten on_tick calls inside one second must yield one run.
+  it("runs once per ws interval across a burst of on_tick calls", function()
+    local anchor, runs = 0, 0
+    local interval = nflog.pipeline_interval(5, 1, true)
+    for i = 1, 10 do
+      local mono = i * 0.1          -- ten calls spread over one second
+      if nflog.due(mono, anchor, interval) then
+        anchor = mono
+        runs = runs + 1
+      end
+    end
+    assert.are.equal(1, runs)
   end)
 end)

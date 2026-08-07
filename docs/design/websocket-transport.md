@@ -547,7 +547,9 @@ This is the payoff for #1023's #866/#913 motivation.
   `2 × interval` → server closes the channel and deregisters it.
 - **Loop tick ≠ heartbeat (#2620):** the sidecar's connected loop drains the
   outbound spool once per iteration and then blocks in the inbound `recv`. That
-  `recv` timeout is `ws_poll_interval` (default **1 s**), NOT the heartbeat —
+  `recv` timeout is `ws_poll_interval` (UCI key `wifihaven.ws.poll_interval`;
+  default **1 s**, and the shipped config deliberately omits the key so
+  `ws_loop.DEFAULT_POLL_INTERVAL` stays the one definition), NOT the heartbeat —
   originally they were the same value, so an event spooled just after a drain
   waited out the full 30 s heartbeat before leaving the router (the dominant hop
   in a measured ~26 s drop→SPA latency). The heartbeat keeps its own `last_ping`

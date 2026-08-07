@@ -46,7 +46,8 @@ local M = {}
 -- (files/etc/config/wifihaven, `option conntrack_tick_interval '1'`) — the
 -- sidecar ticks with the agent rather than at some independently-chosen rate,
 -- and neither side is then the straggler. Measured against the pre-#2620 shape
--- on a real Lua 5.1 + cqueues target: mean spool→wire 14.50s → 0.66s.
+-- on a real Lua 5.1 + cqueues target: mean spool→wire 14.50s → 0.66s (the
+-- paired A/B is in #2620 / PR #2628).
 M.DEFAULT_POLL_INTERVAL = 1
 -- Floor. A zero/negative recv timeout returns immediately, which would spin the
 -- cqueues fiber at 100% CPU on an idle socket; 0.1s bounds that at ≤10

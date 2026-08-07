@@ -970,7 +970,7 @@ local ts = {
   last_activity_sample = 0,
   last_nflog_run      = 0,  -- #1126: nflog drop-spool drain cadence
   -- #2620: the dedup sweep keeps the ORIGINAL nflog_int cadence even when the
-  -- drain itself runs every tick on the ws path. gc() walks every live (mac,
+  -- drain itself drops to tick_int on the ws path. gc() walks every live (mac,
   -- dst, host) entry, so it is the one part of this block whose cost scales
   -- with traffic — no reason to pay it 5x more often (#1864: agent CPU must
   -- stay out of dnsmasq's way).
@@ -1302,10 +1302,13 @@ conntrack.watch({
     --
     -- This IS more sentinel reads than before, not fewer: the single prior call
     -- site sat inside the `>= policy_int` branch, so it ran once per
-    -- policy_poll_interval (5 s); hoisted here it runs once per
-    -- conntrack_tick_interval (1 s). That is deliberate — the flush decision
-    -- needs a per-tick answer — and the cost is one io.open + short read of a
-    -- tmpfs file, the same thing ws_pending_read already does on EVERY tick.
+    -- policy_poll_interval (5 s); hoisted here it runs once per on_tick — which
+    -- is once per conntrack line, with a 1 s floor from the TICK_SENTINEL, NOT
+    -- a 1 s rate. That is deliberate (the cadence gates below need a current
+    -- answer) and the cost is one io.open + short read of a tmpfs file, the
+    -- same thing ws_pending_read already does unguarded on every on_tick.
+    -- Anything EXPENSIVE keyed off ws_live must still sit behind its own
+    -- interval anchor — see drop_int below.
     local ws_live = ws_link_healthy()
 
     -- #2381 escape-hatch reconciler. Runs every tick (a cheap local UCI read via
@@ -1629,12 +1632,22 @@ conntrack.watch({
     -- volume (one POST /api/router/events per flush). While the ws link is
     -- healthy the outbound tee spools those same bodies onto an already-open
     -- persistent socket instead, so the batching buys nothing there and costs
-    -- up to nflog_int + flush_int (15s) of drop→SPA latency. On the ws path
-    -- drain every tick and flush immediately; on the HTTP fallback path keep
-    -- today's cadence exactly. The gate is the SHARED ws_outbound.is_healthy
-    -- predicate (via ws_link_healthy), so the drain cadence cannot disagree
-    -- with which transport the events actually take.
-    if ts.events_batcher and nflog.drain_due(mono, ts.last_nflog_run, nflog_int, ws_live) then
+    -- up to nflog_int + flush_int (15s) of drop→SPA latency. So on the ws path
+    -- this whole step runs on the agent's own tick_int (conntrack_tick_interval,
+    -- 1s) instead of nflog_int; on the HTTP fallback path the cadence is
+    -- today's, unchanged. The gate is the SHARED ws_outbound.is_healthy
+    -- predicate (via ws_link_healthy), so it cannot disagree with which
+    -- transport the events actually take.
+    --
+    -- The interval is NOT optional on the ws path. on_tick runs once per
+    -- conntrack line — TICK_SENTINEL makes tick_int a FLOOR, not a ceiling — so
+    -- an ungated step would run per outbound flow, and the flush below ends in
+    -- ws_spool.append_bounded, which re-reads and (at the 1 MiB cap, the steady
+    -- state) rewrites the whole spool each call. Per-flow that is the #1864
+    -- dnsmasq-starvation class; per-second it is nothing, and #2620 only asks
+    -- for sub-second.
+    local drop_int = nflog.pipeline_interval(nflog_int, tick_int, ws_live)
+    if ts.events_batcher and nflog.due(mono, ts.last_nflog_run, drop_int) then
       ts.last_nflog_run = mono
       local lines = nflog.drain_file(paths.nflog_drops, nflog_state)
       if #lines > 0 then
@@ -1649,23 +1662,24 @@ conntrack.watch({
       end
       -- Sweep dedup entries older than the window so `seen` can't grow
       -- unbounded over a long-lived agent (one entry per (mac, dst, host)).
-      -- Deliberately still on the nflog_int cadence, not the (now per-tick) ws
-      -- drain cadence — see ts.last_nflog_gc.
-      if (mono - ts.last_nflog_gc) >= nflog_int then
+      -- Deliberately still on nflog_int even when the step above runs at
+      -- tick_int — gc() walks every live entry, so it is the one part of this
+      -- block whose cost scales with traffic (#1864). See ts.last_nflog_gc.
+      if nflog.due(mono, ts.last_nflog_gc, nflog_int) then
         ts.last_nflog_gc = mono
         nflog_dedup.gc()
       end
+      -- ws path: the batch is a spool append, not a request — flush it now
+      -- rather than waiting out flush_int. Sits here, NOT under `#lines > 0`:
+      -- the conntrack watcher feeds the SAME batcher (conntrack.lua
+      -- handle_flow → batcher.add), so a whole-MAC block (paused profile,
+      -- schedule, time limit) produces a blocked event with no nflog spool line
+      -- at all, and flushing only when there were lines would leave that whole
+      -- class waiting out flush_int. flush() is a no-op on an empty buffer and
+      -- does not touch the batcher's last_flush anchor, so the HTTP-path
+      -- cadence (batcher.tick at flush_int) is byte-for-byte unchanged.
+      if ws_live then ts.events_batcher.flush() end
     end
-
-    -- #2620: on the ws path, flush the shared events batcher every tick. It has
-    -- to sit OUTSIDE the nflog block: the conntrack watcher feeds the SAME
-    -- batcher (conntrack.lua handle_flow → batcher.add), so a whole-MAC block —
-    -- paused profile, schedule, time limit — produces a blocked event with no
-    -- nflog spool line at all, and flushing only when #lines > 0 would leave
-    -- that entire class waiting out flush_int. flush() is a no-op on an empty
-    -- buffer and does not touch the batcher's last_flush anchor, so the
-    -- HTTP-path cadence (batcher.tick at flush_int) is byte-for-byte unchanged.
-    if ts.events_batcher and ws_live then ts.events_batcher.flush() end
 
     -- Activity sampler (#295, #516): every 10 s, snapshot counters and feed
     -- them to the tracker so end-of-bucket activeSeconds reflects real
