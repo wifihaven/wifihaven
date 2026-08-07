@@ -139,7 +139,13 @@ object BundledBlocklistsSpec
         ads     <- blRepo.loadCategory(BlocklistId.unsafe("ads"))
         meta    <- blRepo.findMeta(BlocklistId.unsafe("ads"))
       } yield assertTrue(ads.nonEmpty) &&
-        assertTrue(ads.contains(Hostname.unsafe("doubleclick.net"))) &&
+        // Was `doubleclick.net` until #2601 removed it from ads.yml — it fronts on
+        // Google's shared GFE pool, so blocking it dropped Drive traffic too. This
+        // assertion only ever existed to prove the seeder writes curated hosts, so it
+        // moves to another baseline entry rather than being dropped. The removal
+        // itself is pinned by the "#2601 — no curated list carries a host that fronts
+        // on Google's shared GFE pool" test below.
+        assertTrue(ads.contains(Hostname.unsafe("adnxs.com"))) &&
         // traffic-driven addition pinned for presence (#1923)
         assertTrue(ads.contains(Hostname.unsafe("bidmachine.io"))) &&
         // traffic-driven addition pinned for presence (#2064)
@@ -434,6 +440,46 @@ object BundledBlocklistsSpec
         // Never list the bare shared vendor apex (#1890 host-scoping note).
         assertTrue(!hosts.contains(Hostname.unsafe("google.com"))) &&
         assertTrue(!hosts.contains(Hostname.unsafe("microsoft.com")))
+    },
+    test("#2601 — no curated list carries a host that fronts on Google's shared GFE pool") {
+      // Enforcement matches on DESTINATION IP. These apexes are served from the same
+      // Google GFE anycast frontends as ordinary Google properties, so putting any of
+      // them in a curated list drops whatever else GFE happens to hand that address to.
+      //
+      // Observed on prod 2026-08-06 (#2601): five hostnames dropped for one MAC at one
+      // timestamp, meaning one address served all five — `static.doubleclick.net`,
+      // `pagead2.googlesyndication.com`, `www.googletagmanager.com`,
+      // `www.googleadservices.com` and `drive.google.com`. `bl6_ads` held exactly four
+      // GFE addresses at the time: 2607:f8b0:400f:{800::2008, 805::200e, 806::2002,
+      // 806::2004}, one /64 away from the 2607:f8b0:400f:800::2001 that
+      // `drive.usercontent.google.com` resolves to.
+      //
+      // This guard is what keeps a later traffic-driven pass from re-adding them: the
+      // hosts look like textbook ad-tech, and the collateral is invisible from the
+      // hostname alone. #2377 (SNI-level disambiguation) is what would make them
+      // blockable again; until then they stay out of every curated list.
+      // Same reasoning as #2369, which demoted the mirror-image hosts off the
+      // infra allow-carve.
+      val googleGfeShared = List(
+        "doubleclick.net",
+        "googleadservices.com",
+        "googlesyndication.com",
+        "googletagmanager.com",
+        "googletagservices.com",
+        "google-analytics.com",
+        "adservice.google.com",
+        "2mdn.net",
+      ).map(Hostname.unsafe)
+      for {
+        inline <- loadInlineOnly
+        offenders = inline.flatMap { bl =>
+          val hosts = bl.content match {
+            case BundledBlocklistContent.Inline(hs) => hs
+            case _                                  => Nil
+          }
+          googleGfeShared.filter(hosts.contains).map(h => s"${bl.id.value}:${h.value}")
+        }
+      } yield assertTrue(offenders.isEmpty)
     },
     test("refresh(): re-fetches a single bundled list and returns new host count") {
       for {

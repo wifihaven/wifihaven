@@ -7,14 +7,29 @@ id: ads
 name: Ads & Trackers
 description: Common ad networks and tracking infrastructure. Blocks the host at the apex; subdomains match automatically at the router.
 source: curated (subset of StevenBlack/hosts + EasyList apex domains)
+#
+# Google shared-GFE apexes REMOVED (#2601, 2026-08-06) — do not re-add:
+#   doubleclick.net, googleadservices.com, googlesyndication.com,
+#   googletagmanager.com, googletagservices.com, google-analytics.com,
+#   adservice.google.com, 2mdn.net
+# These are textbook ad-tech and were curated here from the start, but Google
+# serves them from the same shared GFE anycast frontends as its ordinary
+# properties. Enforcement matches on DESTINATION IP (dnsmasq's nftset callback
+# puts each resolved address into bl_ads/bl6_ads), so blocking them drops
+# whatever else GFE hands one of those addresses to.
+# Prod evidence: on 2026-08-06 one MAC had five hostnames dropped at a single
+# timestamp — meaning one address served all five — `static.doubleclick.net`,
+# `pagead2.googlesyndication.com`, `www.googletagmanager.com`,
+# `www.googleadservices.com` and `drive.google.com`. `bl6_ads` held exactly four
+# GFE addresses (2607:f8b0:400f:{800::2008, 805::200e, 806::2002, 806::2004}),
+# one /64 from the 2607:f8b0:400f:800::2001 that drive.usercontent.google.com
+# resolves to. Google Drive downloads broke intermittently for an adult profile.
+# Same reasoning as #2369, which demoted the mirror-image hosts off the infra
+# allow-carve. #2377 (SNI-level disambiguation) is what would let us block these
+# again; until it lands they stay out of every curated list.
+# Enforced by BundledBlocklistsSpec "#2601 — no curated list carries a host that
+# fronts on Google's shared GFE pool", and see evidence/google-gfe-collateral-2601.md.
 hosts:
-  - doubleclick.net
-  - googleadservices.com
-  - googlesyndication.com
-  - googletagmanager.com
-  - googletagservices.com
-  - google-analytics.com
-  - adservice.google.com
   - adnxs.com
   - adsrvr.org
   - criteo.com
@@ -27,7 +42,6 @@ hosts:
   - rubiconproject.com
   - pubmatic.com
   - openx.net
-  - 2mdn.net
   - serving-sys.com
   - adroll.com
   - bidswitch.net
