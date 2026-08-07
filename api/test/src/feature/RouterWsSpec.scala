@@ -54,6 +54,41 @@ object RouterWsSpec
       _   <- dRepo.upsert(MacAddress.unsafe(knownMac), "kid-ipad", Some(pid), "192.168.1.10")
     } yield ()
 
+  /**
+   * A [[WebSocketChannel]] stand-in whose `send` simply succeeds — enough for the registry's push
+   * path, which only needs the send to resolve OK before it stamps the delivered etag (#2619). A
+   * socket is external I/O, the one stand-in `docs/process/testing.md` allows; every other
+   * collaborator in those tests (registry, delivery sink, repo, Postgres) is real, and the
+   * end-to-end path over a REAL client and server is pinned by the socket-driving tests below.
+   */
+  private final class SendOnlyChannel extends WebSocketChannel {
+    def awaitShutdown(implicit trace: Trace): UIO[Unit]                                 = ZIO.unit
+    def receive(implicit trace: Trace): Task[WebSocketChannelEvent]                     = ZIO.never
+    def receiveAll[Env, Err](f: WebSocketChannelEvent => ZIO[Env, Err, Any])(
+        implicit trace: Trace,
+    ): ZIO[Env, Err, Unit] = ZIO.never
+    def send(in: WebSocketChannelEvent)(implicit trace: Trace): Task[Unit]              = ZIO.unit
+    def sendAll(in: Iterable[WebSocketChannelEvent])(implicit trace: Trace): Task[Unit] = ZIO.unit
+    def shutdown(implicit trace: Trace): UIO[Unit]                                      = ZIO.unit
+  }
+
+  private def sendOnlyChannel: UIO[WebSocketChannel] = ZIO.succeed(new SendOnlyChannel)
+
+  /** The same PolicyServiceLive wiring [[buildWsRoutes]] uses, for a test that needs a snapshot. */
+  private def buildPolicyService =
+    for {
+      dRepo <- ZIO.service[DeviceRepo]
+      hsr   <- ZIO.service[HouseholdSettingsRepo]
+      pRepo <- ZIO.service[ProfileRepo]
+      tlr   <- ZIO.service[TimeLimitRepo]
+      atlr  <- ZIO.service[AppTimeLimitRepo]
+      er    <- ZIO.service[TimeExtensionRepo]
+      ar    <- ZIO.service[AppRepo]
+      clk   <- ZIO.service[Clock]
+      blr   <- ZIO.service[BlocklistRepo]
+      tRepo <- ZIO.service[TrafficReportRepo]
+    } yield PolicyServiceLive(pRepo, hsr, tlr, atlr, dRepo, blr, tRepo, er, ar, clk)
+
   private def buildWsRoutes =
     for {
       rRepo   <- ZIO.service[RouterRepo]
@@ -298,6 +333,76 @@ object RouterWsSpec
         assertTrue(policyFrame.contains(knownMac))).provideSome[
         TestDatabase.AllRepos & EmbeddedPostgres & Clock & Transactor[Task],
       ](Server.defaultWithPort(0), Client.default)
+    },
+    test("#2619: a ws policy push stamps routers.last_etag with the etag it delivered") {
+      // `last_etag` is "which policy version does this router have" — it backs the operator's
+      // "who is on current policy?" view. Only the REST poll ever wrote it (RouterRoutes passes
+      // Some(snap.etag) to `touch`); the ws path called `touch(id, None, None)` and the repo's
+      // `last_etag = COALESCE($etag, last_etag)` left the column alone. Survivable while ws was
+      // opt-in; #2608 made ws the shipped default and the poll goes DORMANT on a healthy link
+      // (#2037), so the column freezes for the whole fleet.
+      //
+      // Driven through the registry's push entrypoints directly rather than over a live socket.
+      // The stamp runs inside the push effect, so awaiting THAT effect is what makes the assertion
+      // deterministic — reading the row after a frame arrives at a client instead would race, since
+      // the server's HandshakeComplete handler and its first Read are not serialised against each
+      // other (no wall-clock waiting either way: docs/process/testing.md, #2042). The registry, the
+      // delivery sink and the repo are all real, against embedded Postgres; only the socket is
+      // stubbed, which is the external-I/O carve-out the testing doc allows.
+      for {
+        _         <- cleanDb
+        rRepo     <- ZIO.service[RouterRepo]
+        pRepo     <- ZIO.service[ProfileRepo]
+        dRepo     <- ZIO.service[DeviceRepo]
+        _         <- seedKnownDevice(dRepo, pRepo)
+        (rid, _)  <- seedRouter(rRepo)
+        // A freshly-enrolled router has never fetched policy, so the column starts NULL — that is
+        // what makes the post-push value attributable to the push and nothing else.
+        beforeRow <- rRepo.findById(rid)
+        policySvc <- buildPolicyService
+        snap      <- policySvc.snapshot(HouseholdId.Default)
+        (_, reg)  <- buildWsRoutes
+        ch        <- sendOnlyChannel
+        _         <- reg.register(rid, ch)
+        _         <- reg.pushPolicyTo(ch, snap)
+        afterPush <- rRepo.findById(rid)
+        // The push-on-change fan-out (publishPolicy) must stamp too — it is the path that carries
+        // the fleet once the poll is dormant, and it is a DIFFERENT call into sendPolicyFrame.
+        _         <- rRepo.touch(rid, None, None)
+        _         <- reg.publishPolicy(snap)
+        afterFan  <- rRepo.findById(rid)
+      } yield assertTrue(beforeRow.exists(_.lastEtag.isEmpty)) &&
+        assertTrue(afterPush.flatMap(_.lastEtag).contains(snap.etag)) &&
+        assertTrue(afterFan.flatMap(_.lastEtag).contains(snap.etag))
+      // No Server/Client layers here, unlike the socket-driving tests around it: this exercises the
+      // registry's push entrypoints directly, so it needs neither.
+    },
+    test("#2619: a push carrying another household's snapshot does not stamp that router") {
+      // The reason the same stamp was reverted from #2608's PR. `PolicyService.reevaluate` still
+      // rebuilds the `HouseholdId.Default` snapshot and fans it out to EVERY connected router
+      // (`api/src/policy/PolicyService.scala:332-345`) — the #2120 gap. Delivery is out of scope
+      // here, but the DURABLE write is not: persisting household 1's etag onto household 2's router
+      // would turn a transient wrong-content push into a permanently wrong value in the very column
+      // this change is making authoritative. A stale etag is recoverable; a confidently wrong one
+      // is not.
+      for {
+        _     <- cleanDb
+        rRepo <- ZIO.service[RouterRepo]
+        pRepo <- ZIO.service[ProfileRepo]
+        dRepo <- ZIO.service[DeviceRepo]
+        hRepo <- ZIO.service[HouseholdRepo]
+        _     <- seedKnownDevice(dRepo, pRepo)
+        other <- hRepo.create("Other household", "other-household")
+        ridB  <- rRepo.create("other-router", Sha256Hex.unsafe("n" * 64), other)
+        _     <- rRepo.completeEnrollment(ridB, Sha256Hex.unsafe(RouterAuth.sha256Hex("TOKEN_B")))
+        policySvc <- buildPolicyService
+        snap      <- policySvc.snapshot(HouseholdId.Default)
+        (_, reg)  <- buildWsRoutes
+        ch        <- sendOnlyChannel
+        _         <- reg.register(ridB, ch)
+        _         <- reg.publishPolicy(snap)
+        after     <- rRepo.findById(ridB)
+      } yield assertTrue(after.exists(_.lastEtag.isEmpty))
     },
     test("#2561: a second connection for the same router supersedes the first (registry holds 1)") {
       // The prod leak: a router whose socket went half-open reconnects, the server still holds the
