@@ -347,8 +347,8 @@ object MetricGuard {
     // `router_ws_policy_push_total` is the push fan-out, `result` ∈ {ok, channel_closed,
     // unregistered, household_mismatch} — the last two are #2630's REFUSED deliveries, see the
     // counter's own comment below. Both names are bounded, no per-mac / per-host / per-household
-    // dimension. (Without these entries the
-    // firewall would reject both names as unknown_name and the series would never emit.)
+    // dimension. (Without these entries the firewall would reject both names as unknown_name and
+    // the series would never emit.)
     "policy_snapshot_build_total"               -> Set("result"),
     // #2382 — how often PolicyService serves a fully permissive (allow-all) snapshot instead of the
     // household's real policy, by `reason` ∈ {lapsed, enforcement_disabled} — a fixed 2-value enum,
