@@ -327,12 +327,14 @@ export function useRecentBlocked(mac: string | null = null, opts?: RecentBlocked
         olderCount: rows.length - recent.length,
         // Reads the CACHE, which useWsRecentBlocked also caps at RECENT_BLOCKED_LIMIT
         // (useWs.tsx -> wsCache.prependHead's slice). So the cache can saturate at the cap
-        // from pushed rows even when the original fetch returned fewer, and report "20+"
-        // where a fresh fetch would say "3". That is why the field is a FLOOR by contract,
-        // never a total — no caller may present it as an exact count. Deliberately no claim
-        // here about when a refetch heals the divergence: whether one runs at all is the
-        // CALLER's choice (DashboardPage disables polling while the push is streaming), so
-        // any bound stated here would be describing someone else's config.
+        // from pushed rows even when the original fetch returned fewer, and this flag goes
+        // true where a fresh fetch would have left it false. That is WHY the flag exists;
+        // what callers owe it is stated once, on its own declaration above — not restated
+        // here, where a second copy would drift from the first.
+        //
+        // Deliberately no claim about when a refetch heals the divergence: whether one runs
+        // at all is the caller's choice, so any bound stated here would describe config this
+        // hook does not own.
         olderCountTruncated: rows.length >= RECENT_BLOCKED_LIMIT,
       }
     },
