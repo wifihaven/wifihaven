@@ -249,8 +249,12 @@ end
 -- outbound tee and the policy-poll dormancy gate use — so this cadence cannot
 -- disagree with which transport the events actually take. Pure.
 -- ---------------------------------------------------------------------------
+-- `math.min` on the ws branch: the whole point of the ws path is to be FASTER,
+-- so it must never come out slower than the HTTP cadence it replaces, whatever
+-- the operator has done to conntrack_tick_interval (which the shipped config
+-- invites tuning).
 function M.pipeline_interval(http_interval, ws_interval, ws_healthy)
-  if ws_healthy then return ws_interval end
+  if ws_healthy then return math.min(http_interval, ws_interval) end
   return http_interval
 end
 

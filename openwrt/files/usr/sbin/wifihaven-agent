@@ -130,7 +130,13 @@ local activity_sample_int = tonumber(uci_get("activity_sample_int", "10"))
 -- cadence regardless of traffic. Default 1 s: at most one wake/sec on an idle
 -- agent (microseconds of mono-diff early-returns, niced below dnsmasq), which
 -- keeps the activity sampler within ~1 s of its 10 s cadence.
-local tick_int      = tonumber(uci_get("conntrack_tick_interval", "1"))
+-- Sanitized AT THE SOURCE (#2620): conntrack.watch() has always re-sanitized its
+-- own copy, but tick_int now also feeds nflog.pipeline_interval → nflog.due's
+-- `>=` arithmetic, where a non-numeric UCI value would be a nil compare (a hard
+-- error inside an un-pcall'd on_tick) and a '0' would collapse the ws-path
+-- cadence gate to "always". One sanitize here covers every consumer.
+local tick_int      = conntrack.sanitize_tick_interval(
+                        uci_get("conntrack_tick_interval", "1"))
 local debug_opt     = uci_get("debug",                            "0")
 -- #1848: ws transport config (named `config ws 'ws'` section). DEFAULT ON as of
 -- #2608 — an UNSET flag means ws, so a fresh install needs no UCI step; an
@@ -1645,7 +1651,10 @@ conntrack.watch({
     -- ws_spool.append_bounded, which re-reads and (at the 1 MiB cap, the steady
     -- state) rewrites the whole spool each call. Per-flow that is the #1864
     -- dnsmasq-starvation class; per-second it is nothing, and #2620 only asks
-    -- for sub-second.
+    -- for sub-second. (On a silent LAN on_tick itself arrives on the ~1s
+    -- TICK_SENTINEL, so this gate beats against it and the effective cadence is
+    -- occasionally ~2s. Well inside the "couple of seconds" bar, and it self-
+    -- corrects the moment there is real traffic.)
     local drop_int = nflog.pipeline_interval(nflog_int, tick_int, ws_live)
     if ts.events_batcher and nflog.due(mono, ts.last_nflog_run, drop_int) then
       ts.last_nflog_run = mono

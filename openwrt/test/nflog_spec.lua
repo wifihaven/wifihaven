@@ -378,15 +378,12 @@ describe("nflog.pipeline_interval (#2620)", function()
     assert.are.equal(1, nflog.pipeline_interval(5, 1, true))
   end)
 
-  -- The regression this exists to prevent: the ws path must be an INTERVAL, not
-  -- an unconditional "run now". The caller is on_tick, which fires once per
-  -- conntrack line (conntrack_tick_interval is a TICK_SENTINEL floor, not a
-  -- ceiling), and the flush it gates ends in ws_spool.append_bounded — a whole-
-  -- spool read + rewrite at the 1 MiB cap. Per-flow that is the #1864
-  -- dnsmasq-starvation class.
-  it("never returns a cadence that would run the step per conntrack line", function()
-    assert.is_true(nflog.pipeline_interval(5, 1, true) > 0)
-    assert.is_true(nflog.pipeline_interval(5, 1, false) > 0)
+  -- The ws path must never be SLOWER than the HTTP path it exists to beat, no
+  -- matter what conntrack_tick_interval has been tuned to (the shipped config
+  -- invites tuning it, bounded only by the activity sampler).
+  it("never lets the ws path come out slower than the HTTP cadence", function()
+    assert.are.equal(5, nflog.pipeline_interval(5, 30, true))
+    assert.are.equal(5, nflog.pipeline_interval(5, 5, true))
   end)
 end)
 

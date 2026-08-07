@@ -49,10 +49,16 @@ M.TICK_SENTINEL = "\001wh_tick"
 -- Lua 5.1 target string.format("%d", 2.5) is a HARD ERROR
 -- (`integer expected, got number`) — which, raised inside watch()'s foreground
 -- loop, would crash the agent into a procd respawn storm — and `sleep 0`
--- busy-loops. Every other cadence knob is only ever used in float-safe `>=`
--- arithmetic, so this is the one value that must be floored + clamped. A
--- fractional / zero / negative / non-numeric UCI value collapses to the 1 s
--- default rather than bricking or spinning the watcher.
+-- busy-loops. A fractional / zero / negative / non-numeric UCI value collapses
+-- to the 1 s default rather than bricking or spinning the watcher.
+--
+-- #2620: this is no longer only about `%d`/`sleep`. conntrack_tick_interval is
+-- now ALSO the ws-path cadence for the drop-event pipeline
+-- (nflog.pipeline_interval → nflog.due), so a nil would be a nil compare inside
+-- an un-pcall'd on_tick and a 0 would collapse that gate to "always" — the
+-- per-conntrack-line flush this sanitizer's callers exist to avoid. The agent
+-- therefore sanitizes at the READ (wifihaven-agent's `tick_int`), and watch()
+-- re-sanitizes its own argument; the function is idempotent, so both is fine.
 function M.sanitize_tick_interval(v)
   local n = tonumber(v)
   if not n then return 1 end
