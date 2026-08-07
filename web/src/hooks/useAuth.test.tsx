@@ -11,10 +11,13 @@ vi.mock('@/api/client', () => ({
 
 import { api } from '@/api/client'
 import { readMustChangePassword, setMustChangePassword } from '@/api/mustChangePassword'
+import { withQuery } from '@/test/queryWrapper'
 import { AuthProvider, useAuth } from './useAuth'
 
+// #2603: AuthProvider clears the query cache on every identity change, so it now requires
+// a QueryClientProvider above it — as it has in the real app since main.tsx was written.
 function wrapper({ children }: { children: React.ReactNode }) {
-  return <AuthProvider>{children}</AuthProvider>
+  return withQuery(<AuthProvider>{children}</AuthProvider>)
 }
 
 beforeEach(() => {
@@ -180,7 +183,11 @@ describe('useAuth — outside provider', () => {
   it('throws when used outside AuthProvider', () => {
     const orig = console.error
     console.error = () => {}
-    expect(() => renderHook(() => useAuth())).toThrow(/AuthProvider/)
+    expect(() =>
+      renderHook(() => useAuth(), {
+        wrapper: ({ children }: { children: React.ReactNode }) => withQuery(children),
+      }),
+    ).toThrow(/AuthProvider/)
     console.error = orig
   })
 })

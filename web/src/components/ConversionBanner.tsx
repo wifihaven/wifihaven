@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { api } from '@/api/client'
+import { qk } from '@/api/queryKeys'
 import { useAuth } from '@/hooks/useAuth'
 
 /**
@@ -21,7 +22,7 @@ export function ConversionBanner() {
   const [redirecting, setRedirecting] = useState(false)
 
   const { data } = useQuery({
-    queryKey: ['billing', 'status'],
+    queryKey: qk.billingStatus(),
     queryFn: () => api.billing.status(),
     enabled: isAdmin,
     // Billing state changes slowly; one fetch per session is plenty and shared with the billing page.

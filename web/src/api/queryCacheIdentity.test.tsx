@@ -35,7 +35,7 @@ vi.mock('@/api/client', () => ({
 
 import { api } from '@/api/client'
 import { createQueryClient } from '@/api/queryClient'
-import { useDevices, useProfiles, useRecentBlocked } from '@/api/queries'
+import { qk, useDevices, useProfiles, useRecentBlocked } from '@/api/queries'
 import { AuthProvider, useAuth } from '@/hooks/useAuth'
 
 type Mock = ReturnType<typeof vi.fn>
@@ -57,7 +57,7 @@ const TOKEN_A = tokenFor(1, 'alice')
 const TOKEN_B = tokenFor(2, 'bob')
 
 const DEVICE_A = { id: 1, mac: 'aa:aa:aa:aa:aa:aa', name: 'household-A-ipad' }
-const PROFILE_A = { id: 1, name: 'household-A-kid' }
+const PROFILE_A = { profile: { id: 1, name: 'household-A-kid' }, timeLimit: null }
 const BLOCKED_A = {
   id: 1,
   mac: 'aa:aa:aa:aa:aa:aa',
@@ -67,7 +67,7 @@ const BLOCKED_A = {
   blocked: true,
 }
 
-const A_STRINGS = [DEVICE_A.name, PROFILE_A.name, BLOCKED_A.host]
+const A_STRINGS = [DEVICE_A.name, PROFILE_A.profile.name, BLOCKED_A.host]
 
 // Every render's visible text, so the assertions can rule out a TRANSIENT wrong-tenant
 // paint. A test that only inspects the settled DOM passes while the bug is fully present
@@ -87,33 +87,44 @@ function Panels() {
   const blocked = useRecentBlocked(null)
   const text = [
     devices.isPending ? 'devices:loading' : (devices.data ?? []).map(d => d.name).join(','),
-    profiles.isPending ? 'profiles:loading' : (profiles.data ?? []).map(p => p.name).join(','),
+    profiles.isPending ? 'profiles:loading' : (profiles.data ?? []).map(p => p.profile.name).join(','),
     blocked.isPending ? 'blocked:loading' : (blocked.data ?? []).map(r => r.host).join(','),
   ].join(' | ')
   renderLog.push(text)
   return <div data-testid="panels">{text}</div>
 }
 
-let switchTo: (identifier: string) => Promise<void>
+let doLogin: (identifier: string) => Promise<void>
+let doLogout: () => void
 
-function Controls() {
-  const { login, logout } = useAuth()
-  switchTo = async (identifier: string) => {
-    logout()
-    await login(identifier, 'pw')
-  }
-  return null
+// Mirrors App.tsx: the data surfaces live behind the authenticated route tree, so a logout
+// unmounts them and the next login mounts them FRESH. That remount is where the bug bites
+// — a newly mounted `useQuery` reads whatever sits under its key, which is the previous
+// tenant's response. Gating on `isAuthenticated` keeps this harness faithful to that.
+function Session() {
+  const { login, logout, isAuthenticated } = useAuth()
+  doLogin = async (identifier: string) => { await login(identifier, 'pw') }
+  doLogout = logout
+  return isAuthenticated ? <Panels /> : <div data-testid="panels">logged out</div>
 }
 
+let queryClient: ReturnType<typeof createQueryClient>
+
 function renderHarness() {
+  queryClient = createQueryClient()
   return render(
-    <QueryClientProvider client={createQueryClient()}>
+    <QueryClientProvider client={queryClient}>
       <AuthProvider>
-        <Controls />
-        <Panels />
+        <Session />
       </AuthProvider>
     </QueryClientProvider>,
   )
+}
+
+/** Log out and back in as `identifier`, as two separate commits — as the real app does. */
+async function switchTo(identifier: string) {
+  await act(async () => { doLogout() })
+  await act(async () => { await doLogin(identifier) })
 }
 
 /** Arm household B's reads to hang forever, so nothing new can resolve into the DOM. */
@@ -137,6 +148,12 @@ function expectNoHouseholdALeak(switchAt: number) {
     expect(leaked, `household A's "${s}" rendered in ${leaked.length} frame(s) after the switch`)
       .toEqual([])
   }
+  // Render-independent: whatever the components happened to paint, household A's responses
+  // must not still be sitting in the cache for a later mount to pick up.
+  const cached = JSON.stringify(queryClient.getQueryCache().getAll().map(q => q.state.data))
+  for (const s of A_STRINGS) {
+    expect(cached, `household A's "${s}" is still in the query cache`).not.toContain(s)
+  }
 }
 
 beforeEach(() => {
@@ -152,6 +169,40 @@ beforeEach(() => {
   })
 })
 
+// The two fixes are independent, and each on its own satisfies the leak assertions above —
+// so those alone would let either regress silently. These pin them separately.
+describe('#2603 — the two fixes, pinned independently', () => {
+  it('logout empties the cache outright', async () => {
+    localStorage.setItem('token', TOKEN_A)
+    localStorage.setItem('username', 'alice')
+    localStorage.setItem('role', 'admin')
+    renderHarness()
+    await waitFor(() => expect(screen.getByTestId('panels')).toHaveTextContent(DEVICE_A.name))
+    expect(queryClient.getQueryCache().getAll().length).toBeGreaterThan(0)
+
+    await act(async () => { doLogout() })
+
+    // Not "stale", not "scoped away" — gone. `logout` must not leave a session's responses
+    // behind for anything to read, whatever the keys look like.
+    expect(queryClient.getQueryCache().getAll()).toEqual([])
+  })
+
+  it('query keys carry the household, so two households cannot collide on one key', () => {
+    localStorage.setItem('token', TOKEN_A)
+    const asA = [qk.devices(), qk.profiles(), qk.recentBlocked(null), qk.householdSettings()]
+    localStorage.setItem('token', TOKEN_B)
+    const asB = [qk.devices(), qk.profiles(), qk.recentBlocked(null), qk.householdSettings()]
+
+    for (let i = 0; i < asA.length; i++) {
+      expect(JSON.stringify(asA[i])).not.toEqual(JSON.stringify(asB[i]))
+    }
+    // Prefix-match invalidation still has to work: `qk.profiles()` must remain a prefix of
+    // the sentinel key it is relied on to bust (#1773).
+    localStorage.setItem('token', TOKEN_A)
+    expect(qk.profilesGlobal().slice(0, qk.profiles().length)).toEqual([...qk.profiles()])
+  })
+})
+
 describe('#2603 — the query cache does not survive a household switch', () => {
   it('household A rows are never rendered after logging in as household B', async () => {
     localStorage.setItem('token', TOKEN_A)
@@ -162,13 +213,13 @@ describe('#2603 — the query cache does not survive a household switch', () => 
     // Household A's session paints its own rows.
     await waitFor(() => {
       expect(screen.getByTestId('panels')).toHaveTextContent(DEVICE_A.name)
-      expect(screen.getByTestId('panels')).toHaveTextContent(PROFILE_A.name)
+      expect(screen.getByTestId('panels')).toHaveTextContent(PROFILE_A.profile.name)
       expect(screen.getByTestId('panels')).toHaveTextContent(BLOCKED_A.host)
     })
 
     armPendingFetches()
     const switchAt = renderLog.length
-    await act(async () => { await switchTo('household-b/bob') })
+    await switchTo('household-b/bob')
 
     // Nothing household A owned may appear after the switch — not on the 5-minute
     // devices/profiles surfaces, not for a single frame on the 5-second blocked feed.
@@ -183,7 +234,7 @@ describe('#2603 — the query cache does not survive a household switch', () => 
     await waitFor(() => expect(screen.getByTestId('panels')).toHaveTextContent(DEVICE_A.name))
 
     armPendingFetches()
-    await act(async () => { await switchTo('household-b/bob') })
+    await switchTo('household-b/bob')
 
     // docs/process/loading-states.md: an un-resolved query must read as LOADING. An empty
     // device list here would be a real-looking "this household has no devices".
@@ -207,7 +258,7 @@ describe('#2603 — the query cache does not survive a household switch', () => 
       token: TOKEN_A, username: 'alice', role: 'admin', householdSlug: 'household-a',
     })
     const switchAt = renderLog.length
-    await act(async () => { await switchTo('household-a/alice') })
+    await switchTo('household-a/alice')
 
     expectNoHouseholdALeak(switchAt)
   })

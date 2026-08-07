@@ -1,4 +1,5 @@
 import React, { createContext, useContext, useState, useCallback } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import { api } from '@/api/client'
 import { setHouseholdCookie } from '@/api/householdCookie'
 import { readMustChangePassword, setMustChangePassword } from '@/api/mustChangePassword'
@@ -52,6 +53,9 @@ function readRole(): UserRole | null {
 }
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
+  // #2603 (SECURITY): the QueryClient is a process-wide singleton (main.tsx) that outlives
+  // any one session, so it MUST be emptied whenever the identity behind it changes.
+  const queryClient = useQueryClient()
   const [state, setState] = useState<AuthState>(() => ({
     token:               localStorage.getItem('token'),
     username:            localStorage.getItem('username'),
@@ -69,6 +73,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // server never reads this cookie. `default`/self-hosted resolves to slug "default"; a household
     // with no slug yet returns undefined, which clears the cookie.
     setHouseholdCookie(resp.householdSlug)
+    // #2603 (SECURITY): drop every cached response BEFORE the new token lands, so nothing
+    // the previous session fetched can be served to this one. Clearing here as well as in
+    // `logout` closes the paths that reach a login without passing through logout — a
+    // second login in the same page load, or a session restored from localStorage.
+    queryClient.clear()
     localStorage.setItem('token', resp.token)
     localStorage.setItem('username', resp.username)
     localStorage.setItem('role', resp.role)
@@ -85,15 +94,22 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // Return the flag so the caller (LoginPage) can redirect synchronously
     // before the React state update propagates (#586).
     return { mustChangePassword: mcp }
-  }, [])
+  }, [queryClient])
 
   const logout = useCallback(() => {
     localStorage.removeItem('token')
     localStorage.removeItem('username')
     localStorage.removeItem('role')
     setMustChangePassword(false)
+    // #2603 (SECURITY): the singleton QueryClient survives logout, so without this every
+    // response household A fetched stays cached under keys household B's session would
+    // read. `clear()` rather than `invalidateQueries()`: invalidation marks entries stale
+    // but KEEPS the data, and react-query serves stale data while it revalidates — which
+    // is precisely the wrong-tenant paint. Ordered after the token removal so a mounted
+    // observer that refetches on removal cannot do so with the outgoing credential.
+    queryClient.clear()
     setState({ token: null, username: null, role: null, mustChangePassword: false })
-  }, [])
+  }, [queryClient])
 
   const isAdmin = state.role === 'admin'
   const isWriter = state.role === 'admin' || state.role === 'adult'

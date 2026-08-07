@@ -16,6 +16,7 @@ vi.mock('@/api/client', () => ({
 import { api } from '@/api/client'
 import { readMustChangePassword, setMustChangePassword } from '@/api/mustChangePassword'
 import { AuthProvider } from '@/hooks/useAuth'
+import { withQuery } from '@/test/queryWrapper'
 import { AccountPage } from './AccountPage'
 
 beforeEach(() => {
@@ -30,15 +31,19 @@ function LoginProbe() {
 }
 
 function renderAccount() {
+  // #2603: AuthProvider clears the query cache on identity change, so it needs a
+  // QueryClientProvider above it — as main.tsx already gives it in the real app.
   return render(
-    <AuthProvider>
-      <MemoryRouter initialEntries={['/account']}>
-        <Routes>
-          <Route path="/account" element={<AccountPage />} />
-          <Route path="/login" element={<LoginProbe />} />
-        </Routes>
-      </MemoryRouter>
-    </AuthProvider>,
+    withQuery(
+      <AuthProvider>
+        <MemoryRouter initialEntries={['/account']}>
+          <Routes>
+            <Route path="/account" element={<AccountPage />} />
+            <Route path="/login" element={<LoginProbe />} />
+          </Routes>
+        </MemoryRouter>
+      </AuthProvider>,
+    ),
   )
 }
 
