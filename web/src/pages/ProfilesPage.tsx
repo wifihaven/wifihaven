@@ -4,7 +4,7 @@ import { Link, useSearchParams } from 'react-router-dom'
 import { api } from '@/api/client'
 import { newProfileDefaults } from '@/api/profileDefaults'
 import { useBlocklists, useGlobalProfile, useProfiles, useDevices, useInvalidators, useNamedSchedules, useProfileUsageByApp, useTimeStatusSummary } from '@/api/queries'
-import { isUnmanaged } from '@/lib/devices'
+import { isManaged, isUnmanaged } from '@/lib/devices'
 import { useAuth } from '@/hooks/useAuth'
 import { useWsTimeStatus, useWsTopicLive } from '@/hooks/useWs'
 import { useDebouncedSave, type SaveStatus } from '@/hooks/useDebouncedSave'
@@ -216,11 +216,10 @@ export function ProfilesPage() {
   const devicesByProfile = useMemo(() => {
     const m = new Map<number, Device[]>()
     for (const d of devices) {
-      if (isUnmanaged(d)) continue
-      const pid = d.profileId as number
-      const arr = m.get(pid) ?? []
+      if (!isManaged(d)) continue
+      const arr = m.get(d.profileId) ?? []
       arr.push(d)
-      m.set(pid, arr)
+      m.set(d.profileId, arr)
     }
     return m
   }, [devices])

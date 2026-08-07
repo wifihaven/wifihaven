@@ -16,10 +16,12 @@ import type { Device } from '@/types/api'
 // So an unassigned device reaches the SPA as `{id, mac, name}` and `profileId`
 // reads back `undefined`, NOT `null`, and a strict `=== null` never fires.
 //
-// That is not hypothetical: the Devices page's Unmanaged Devices section and the
-// Profiles page's add-device picker each hand-wrote this check, one strict and
-// one loose, and only the loose one worked. Collapsing them here fixes the strict
-// site. The `web/src/types/api.ts` declaration still says `number | null`, which
+// That is not hypothetical. On main the check was hand-written as four expressions
+// across three sites: the Devices page's managed/unmanaged split (strict, both
+// halves), the Profiles page's per-profile grouping (loose), and its add-device
+// picker (loose). Only the loose ones worked — the strict split left the Unmanaged
+// Devices section permanently empty AND listed unassigned devices as managed, since
+// `undefined !== null` is true. Collapsing them here fixes the strict site. The `web/src/types/api.ts` declaration still says `number | null`, which
 // is what let the strict version look correct. Tracked as #2623; until the type
 // admits `undefined`, this function is the only thing standing between us and a
 // silently empty unmanaged list.
@@ -27,6 +29,10 @@ export function isUnmanaged(d: Device): boolean {
   return d.profileId == null
 }
 
-export function isManaged(d: Device): boolean {
+// A type predicate, not just a boolean: narrowing to `profileId: number` lets call
+// sites index the field without an `as number` assertion. That matters for #2623 —
+// when `types/api.ts` widens `profileId` to admit `undefined`, a cast would keep
+// compiling and keep lying, where this narrowing is re-checked by the compiler.
+export function isManaged(d: Device): d is Device & { profileId: number } {
   return !isUnmanaged(d)
 }

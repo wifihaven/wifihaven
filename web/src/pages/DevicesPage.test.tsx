@@ -96,6 +96,30 @@ describe('DevicesPage — list', () => {
   })
 })
 
+// #2621 — the page-level pin for the unmanaged split, using the shape the API
+// ACTUALLY sends. `Device.profileId` is `Option[ProfileId]` server-side and the
+// route encodes with a derived zio-json codec, which omits a `None` field rather
+// than emitting an explicit null (see contract/api-to-router/policy_snapshot.json,
+// whose profileless device has no `profileId` key). Every other fixture in this
+// file writes `profileId: null`, a shape the API never produces — which is exactly
+// why the strict `=== null` split shipped broken and no page test caught it. This
+// one omits the key, so it fails if the predicate goes strict again.
+describe('DevicesPage — unmanaged split against the real wire shape (#2621)', () => {
+  const wireUnassigned = { id: 9, mac: 'aa:bb:cc:dd:ee:09', name: 'guest-phone' } as unknown as Device
+
+  it('puts a device whose profileId key is ABSENT in the Unmanaged section, not the managed list', async () => {
+    (api.devices.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([ipad, wireUnassigned])
+    renderPage()
+
+    const section = await screen.findByTestId('unmanaged-devices-section')
+    expect(within(section).getByText('guest-phone')).toBeInTheDocument()
+    // And it must NOT also appear as a managed device: on main the strict `!== null`
+    // half was true for `undefined`, so an unassigned device rendered as managed.
+    expect(within(section).getByTestId('unmanaged-enroll-aa:bb:cc:dd:ee:09')).toBeInTheDocument()
+    expect(screen.getAllByText('guest-phone')).toHaveLength(1)
+  })
+})
+
 describe('DevicesPage — add', () => {
   it('opens modal with default profile, fills fields, and calls upsert', async () => {
     const user = userEvent.setup()
