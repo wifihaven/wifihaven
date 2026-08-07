@@ -198,11 +198,17 @@ def wait_for_next_poll(
 ROUTER_SNAPSHOT_PATH = "/etc/wifihaven/policy.json"
 
 
-def router_snapshot_etag() -> str | None:
-    """The etag in the router VM's on-disk snapshot, or None if unreadable.
+def router_snapshot(*, warn_label: str | None = None) -> dict | None:
+    """The router VM's on-disk policy snapshot, or None if absent/unreadable.
 
     Imported lazily: lib.wait is used by helpers that never touch a VM, and this
     keeps that import edge out of their path.
+
+    Pass `warn_label` where an unreadable snapshot would silently weaken a
+    caller — a None baseline makes a change-wait fire on its first poll, which
+    turns the barrier into a no-op with nothing in the log
+    (docs/process/no-dark-by-default.md). The read stays non-fatal either way;
+    a router that has not written a snapshot yet is a legitimate None.
     """
     from lib.vm import router_ssh  # noqa: PLC0415 — see docstring
 
@@ -211,11 +217,53 @@ def router_snapshot_etag() -> str | None:
     )
     out = (res.stdout or "").strip()
     if not out:
+        if warn_label:
+            log.warning(
+                "%s: %s is empty or unreadable (rc=%s) — any wait keyed on it "
+                "will be weaker than intended",
+                warn_label, ROUTER_SNAPSHOT_PATH, getattr(res, "returncode", "?"),
+            )
         return None
     try:
-        return json.loads(out).get("etag")
+        return json.loads(out)
     except (ValueError, AttributeError):
+        if warn_label:
+            log.warning("%s: %s is not valid JSON", warn_label, ROUTER_SNAPSHOT_PATH)
         return None
+
+
+def router_snapshot_etag(*, warn_label: str | None = None) -> str | None:
+    """The etag in the router VM's on-disk snapshot, or None if unreadable."""
+    snap = router_snapshot(warn_label=warn_label)
+    return snap.get("etag") if snap else None
+
+
+def wait_for_device_in_router_snapshot(
+    mac: str,
+    *,
+    timeout_s: float = 180,
+    interval_s: float = 2.0,
+) -> dict:
+    """Wait until the router's on-disk snapshot actually CONTAINS `mac`.
+
+    A sufficient condition, unlike "the etag moved": it says the policy the
+    router now holds includes this device, so a caller cannot proceed against a
+    snapshot that predates its own mutation. Works on both transports, since the
+    poll and the sidecar write the same file.
+    """
+    want = mac.lower()
+
+    def check():
+        snap = router_snapshot()
+        if not snap:
+            return None
+        devices = snap.get("devices") or {}
+        if any(k.lower() == want for k in devices):
+            return snap
+        return None
+
+    return wait_until(check, timeout_s=timeout_s, interval_s=interval_s,
+                      description=f"router snapshot to contain device {mac}")
 
 
 def policy_change_baseline(admin: AdminAPI, router_id: str) -> dict:
@@ -225,13 +273,17 @@ def policy_change_baseline(admin: AdminAPI, router_id: str) -> dict:
     theoretical into routine. Under the HTTP poll the agent needed seconds to
     notice a change, so a baseline read a moment late still predated the pickup.
     With ws the shipped default, `PolicyService.reevaluate` forks the push the
-    instant the mutation commits and the sidecar persists `policy.json` in well
-    under a second — comfortably faster than an admin-API round-trip plus an SSH
-    into the router VM. A baseline captured after the mutation then already holds
-    the NEW etag, and the wait can never fire.
+    instant the mutation commits, and this baseline costs an admin-API round-trip
+    plus an SSH into the router VM — so the push can land first, leaving the
+    baseline already holding the NEW etag and the wait unable to fire. That is
+    not hypothetical: it is what a draft of this change did, and the gate3
+    fixture hung its full 180s.
     """
     row = admin.get_router(router_id) or {}
-    return {"lastEtag": row.get("lastEtag"), "diskEtag": router_snapshot_etag()}
+    return {
+        "lastEtag": row.get("lastEtag"),
+        "diskEtag": router_snapshot_etag(warn_label="policy_change_baseline"),
+    }
 
 
 def wait_for_etag_change(
@@ -252,8 +304,10 @@ def wait_for_etag_change(
     the agent's HTTP poll goes dormant (#2037) — skipped entirely, not merely
     slowed. `routers.last_etag` is written only by the poll route (`RouterRoutes`
     passes `Some(snap.etag)` to `routerRepo.touch`; `RouterWsRoutes` touches
-    `last_seen_at` alone), so on a ws router that column is frozen by
-    construction and an admin-API-only wait would always time out.
+    `last_seen_at` alone), so for as long as the ws link stays healthy that
+    column does not move and an admin-API-only wait would time out. (It resumes
+    if the link drops past `ws_fallback_after` and the poll wakes up —
+    `wifihaven-agent:1334` — but a healthy router is the normal case.)
 
     So this checks BOTH: the server-side `lastEtag`, and the etag in the router's
     own on-disk snapshot — which both transports write, and which is the stronger

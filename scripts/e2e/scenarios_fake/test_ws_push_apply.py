@@ -37,16 +37,12 @@ from __future__ import annotations
 import pytest
 
 from lib.vm import router_ssh
-from lib.wait import ROUTER_SNAPSHOT_PATH, router_snapshot_etag, wait_until
+from lib.wait import router_snapshot_etag, wait_until
 
 from .snapshot_builder import SnapshotBuilder
 
 pytestmark = pytest.mark.ws_push
 
-# Single source for the agent's on-disk snapshot path + parser: lib.wait owns
-# them, because gate3's transport-agnostic policy-change wait needs the same read
-# (#2608). Aliased rather than re-declared so the two can't drift.
-SNAPSHOT_PATH = ROUTER_SNAPSHOT_PATH
 WS_METRICS_PATH = "/tmp/wifihaven-ws-metrics.txt"
 WS_HEALTH_PATH = "/tmp/wifihaven-ws-health"
 # #2229 event-driven apply trigger: the sidecar writes "<etag>\t<uptime>" here

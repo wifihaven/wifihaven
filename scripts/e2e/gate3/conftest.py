@@ -24,9 +24,8 @@ from lib.app_seed import pick_block_allow_apps
 from lib.enrollment import exchange_enrollment_token, provision_router_uci
 from lib.vm import Client, client_down, client_up, router_down, router_up
 from lib.wait import (
-    policy_change_baseline,
     wait_for_client_dns,
-    wait_for_etag_change,
+    wait_for_device_in_router_snapshot,
     wait_for_router_active,
 )
 
@@ -194,10 +193,6 @@ def scratch_profile_and_device(admin, enrolled_router, client_vm):
     admin.assign_app_policy(app_id=allowed_app_id, profile_id=pid, mode="allowed")
 
     mac = client_vm.mac
-    # Baseline BEFORE the mutation: with ws the default the push lands in well
-    # under a second, so a baseline captured afterwards would already hold the
-    # new etag and the wait could never fire (#2608).
-    baseline = policy_change_baseline(admin, enrolled_router["router_id"])
     admin.upsert_device(
         mac=mac,
         name=f"gate3-dev-{suffix}",
@@ -208,9 +203,15 @@ def scratch_profile_and_device(admin, enrolled_router, client_vm):
     # + the app assignments. PolicyApply restarts dnsmasq (#341); re-gate
     # the client on a fresh resolver answer before the test starts
     # probing traffic.
-    wait_for_etag_change(
-        admin, enrolled_router["router_id"], baseline=baseline, timeout_s=180,
-    )
+    #
+    # This waits on a SUFFICIENT condition — the device appearing in the
+    # router's own on-disk snapshot — not on "some etag moved". Every mutation
+    # above (create_profile, both assign_app_policy calls, upsert_device)
+    # triggers its own push, so an etag-change wait could be satisfied by an
+    # earlier one and let the test proceed against policy that predates
+    # upsert_device. Waiting for the device itself cannot be satisfied early,
+    # and it works on either transport since both write this file.
+    wait_for_device_in_router_snapshot(mac, timeout_s=180)
     wait_for_client_dns(client_vm, host=blocked_host, timeout_s=30)
 
     yield {
