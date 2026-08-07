@@ -66,18 +66,29 @@ local debug_opt = s:option(Flag, "debug", translate("Verbose logging"),
   translate("Emit debug-level entries to syslog."))
 debug_opt.default = "0"
 
--- ── WebSocket transport (see #1023 / #2037) ─────────────────────────────────
+-- ── WebSocket transport (see #1023 / #2037 / #2608) ─────────────────────────
 -- The ws sidecar toggle lives in its own named `config ws 'ws'` section
 -- (read as wifihaven.ws.<opt>), so it needs a NamedSection distinct from the
 -- anonymous default `wifihaven` section above. Flipping this replaces the CLI
--- `uci set wifihaven.ws.enabled=1`; the init script only starts the sidecar
--- when enabled=1, so a service restart is required (same note as the cadences).
-local ws = m:section(NamedSection, "ws", "ws", translate("WebSocket transport (experimental)"))
+-- `uci set wifihaven.ws.enabled=…`; the init script starts the sidecar unless
+-- the flag is explicitly 0, so a service restart is required (same note as the
+-- cadences). #2608 made ws the default transport, so the label no longer says
+-- "experimental" and the Flag defaults to on — matching what an unset key means
+-- to the agent, the sidecar and the init script. Turning it OFF here writes an
+-- explicit `enabled=0` (rmempty=false), which the one-shot uci-defaults
+-- migration then leaves alone forever. rmempty stays FALSE deliberately: with
+-- rmempty=true, unchecking the box would DELETE the key, and an absent key now
+-- means ON — so the toggle could never turn ws off. The cost is that saving this
+-- page also pins an explicit `enabled=1` for someone who never touched the
+-- field. That is benign: it writes the value the default already resolves to,
+-- and the migration marker means the migration would not have rewritten the key
+-- either way.
+local ws = m:section(NamedSection, "ws", "ws", translate("WebSocket transport"))
 ws.addremove = false
 
 local ws_enabled = ws:option(Flag, "enabled", translate("Enable WebSocket transport"),
-  translate("When on, the agent maintains a persistent WebSocket to the API for live policy push plus usage/event upload, and the HTTP poll goes dormant (see #2037). Default off; requires a wifihaven service restart to take effect."))
-ws_enabled.default = "0"
+  translate("When on, the agent maintains a persistent WebSocket to the API for live policy push plus usage/event upload, and the HTTP poll goes dormant (see #2037). Default on. Turning it off puts this router back on HTTP polling — which is also the automatic fallback whenever the WebSocket is down. Requires a wifihaven service restart to take effect."))
+ws_enabled.default = "1"
 ws_enabled.rmempty = false
 
 -- ── Emergency: disable all enforcement (escape hatch, #2381) ─────────────────

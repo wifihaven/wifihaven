@@ -1,12 +1,16 @@
 -- ws_outbound.lua — agent-side outbound tee for the ws transport (#1848).
 --
--- The main agent's loop is unchanged; this is the one additive, DEFAULT-OFF seam
--- it gains. It wraps the agent's `http_post` so that, ONLY when the ws sidecar is
--- enabled AND the link is healthy, an outbound usage/events body is handed to the
--- sidecar via the bounded spool (the sidecar frames + sends it) instead of being
--- POSTed here. In every other case it is a pure pass-through to the real
--- http_post, so with ws off (the shipped default) the agent's HTTP path is
--- byte-for-byte unchanged (back-compat, design §3.1).
+-- The main agent's loop is unchanged; this is the one additive seam it gains
+-- (default-off when it landed in #1848, default-ON as of #2608). It wraps the
+-- agent's `http_post` so that, ONLY when the ws sidecar is enabled AND the link
+-- is healthy, an outbound usage/events body is handed to the sidecar via the
+-- bounded spool (the sidecar frames + sends it) instead of being POSTed here.
+-- In every other case it is a pure pass-through to the real http_post, so with
+-- ws off — an explicit `wifihaven.ws.enabled=0`, or a sidecar that stopped
+-- refreshing the health sentinel (crash, TLS failure, a server that does not
+-- speak ws) — the agent's HTTP path is byte-for-byte unchanged (back-compat,
+-- design §3.1). That pass-through is why making ws the default cannot strand a
+-- router without a transport.
 --
 -- "Healthy" = the sidecar's ws-health sentinel (paths.ws_health) carries a
 -- timestamp within fallback_after of now. The sidecar writes os.time() into the

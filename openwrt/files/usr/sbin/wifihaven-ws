@@ -8,10 +8,13 @@
 -- built on the spike-proven (#1845) cqueues + luaossl + hand-rolled RFC 6455
 -- client (ws_client.lua) and the ws_loop.lua state machine.
 --
--- Default OFF. The init script only starts this instance when
--- `wifihaven.ws.enabled=1`; with the flag off (the shipped default) the agent's
--- HTTP poll/POST path is the sole transport, byte-for-byte unchanged. When on,
--- this sidecar: opens wss://…/api/router/ws with the bearer token in the upgrade
+-- Default ON as of #2608: the init script starts this instance unless
+-- `wifihaven.ws.enabled` is explicitly `0`. With it explicitly off — or whenever
+-- this sidecar is dead, cannot complete the TLS handshake, or reaches a server
+-- that does not speak ws — the agent's HTTP poll/POST path is the transport,
+-- byte-for-byte unchanged; the sidecar simply stops refreshing the health
+-- sentinel and the agent's fallback window (`ws_fallback_after`) expires. When
+-- up, this sidecar: opens wss://…/api/router/ws with the bearer token in the upgrade
 -- Authorization header; reconnects with exp backoff + jitter (§5.1); drains the
 -- agent's outbound usage/events spool OUT as frames (splitting an oversized
 -- UsageReport, the #1017 fix §5.3); writes a pushed `policy` frame IN to the
@@ -48,7 +51,8 @@ end
 local api_url      = uci_get("api_url", "http://192.168.1.1:8080")
 local router_token = uci_get("router_token", "")
 local router_id    = uci_get("router_id", "")
-local ws_enabled   = uci_get_ws("enabled", "0")
+-- #2608: unset ⇒ "1" (ws is the default transport); only an explicit "0" opts out.
+local ws_enabled   = uci_get_ws("enabled", "1")
 local heartbeat    = tonumber(uci_get_ws("heartbeat_interval", "30"))
 local fallback     = tonumber(uci_get_ws("fallback_after", "300"))
 local max_frame    = tonumber(uci_get_ws("max_frame_bytes", "65536"))

@@ -1,0 +1,92 @@
+#!/bin/sh
+# #2608: move an upgrading router onto the websocket transport, without ever
+# clobbering an operator who explicitly chose to stay on the HTTP poll path.
+#
+# The problem. Every pre-#2608 router carries a literal `option enabled '0'` in
+# `config ws 'ws'` — it was in the shipped /etc/config/wifihaven, which is a
+# conffile, so a package upgrade preserves it. UCI has no notion of provenance:
+# that 0 reads identically whether it came from the old default or from an
+# operator's `uci set`. So the value alone cannot answer "did anyone choose
+# this?", and simply flipping the code default would leave every existing
+# router behind while blindly deleting every 0 would silently re-enable ws for
+# someone who had turned it off.
+#
+# The mechanism. Explicitness is recorded out-of-band, once, by this script:
+#
+#   marker ABSENT  → this router has never been through the flip, so any
+#                    `enabled=0` on disk can ONLY be the old shipped default
+#                    (a hand-set 0 was a no-op back then — 0 already WAS the
+#                    default, so nobody had reason to write it). Delete the
+#                    key so the new default (on) applies. An `enabled=1` is a
+#                    real opt-IN and is left alone.
+#   marker PRESENT → the flip already happened on this router, so whatever
+#                    `enabled` holds now is the operator's own choice. Never
+#                    touched again, by this run or any future one. That is what
+#                    makes `uci set wifihaven.ws.enabled=0` a durable opt-out.
+#
+# An operator who wants to stay on poll ACROSS the flip can pre-pin before
+# upgrading:
+#   uci set wifihaven.ws=ws
+#   uci set wifihaven.ws.enabled=0
+#   uci set wifihaven.ws.default_on_migrated=1
+#   uci commit wifihaven
+#
+# Note this deletes rather than writes `enabled=1`: "unset" is the canonical
+# no-opinion state, so a future default change flows through instead of being
+# pinned by a value this script wrote.
+#
+# When it runs. uci-defaults executes at first boot (/etc/init.d/boot ->
+# uci_apply_defaults, which removes each script that exits 0) — that covers a
+# fresh install. It does NOT cover an in-place upgrade: wifihaven-update
+# installs the package and restarts the service without rebooting, so each
+# postinst producer (openwrt/Makefile, build-ipk.sh, build-apk.sh) invokes this
+# script directly, the same idiom openwrt/install.sh uses for
+# 96-wifihaven-settings. Running twice is a no-op — the marker is the guard.
+#
+# The HTTP poll path is untouched by all of this: it remains the transport for
+# an opted-out router AND the automatic fallback for a default-on router whose
+# sidecar is down past wifihaven.ws.fallback_after (design §3.1).
+
+# The marker guard comes FIRST so this script performs no UCI write at all on a
+# router that has already been through the flip. (Creating the section above the
+# guard would stage a write that the early exit then drops uncommitted.)
+if [ -n "$(uci -q get wifihaven.ws.default_on_migrated)" ]; then
+  exit 0
+fi
+
+if [ -z "$(uci -q get wifihaven.ws)" ]; then
+  if ! uci set wifihaven.ws=ws; then
+    logger -t wifihaven "ws default-on migration: could not create the 'ws' UCI section; leaving the flag alone (will retry)"
+    exit 1
+  fi
+fi
+
+# THE load-bearing write. It must be guarded: if the delete fails and we go on to
+# commit the marker anyway, the surviving `enabled=0` is thereafter indistinguish-
+# able from an operator's own opt-out (the marker is exactly what confers that
+# meaning) and this router is pinned on poll forever, with no retry and nothing in
+# the log. So a failed delete aborts BEFORE the marker is written, leaving the
+# router in its current state for the next boot to retry.
+if [ "$(uci -q get wifihaven.ws.enabled)" = "0" ]; then
+  if ! uci -q delete wifihaven.ws.enabled; then
+    logger -t wifihaven "ws default-on migration: could not clear the old shipped wifihaven.ws.enabled=0; NOT recording the marker (will retry on next boot)"
+    exit 1
+  fi
+fi
+
+if ! uci set wifihaven.ws.default_on_migrated='1'; then
+  logger -t wifihaven "ws default-on migration: could not record the marker; will retry on next boot"
+  exit 1
+fi
+
+# Fail LOUD rather than exiting 0 on a failed commit: uci_apply_defaults DELETES
+# a uci-defaults script that exits 0, so swallowing this would drop the migration
+# permanently and silently. A non-zero exit keeps the script in place and retries
+# on the next boot (docs/process/no-dark-by-default.md).
+if ! uci commit wifihaven; then
+  logger -t wifihaven "ws default-on migration: uci commit failed; will retry on next boot"
+  exit 1
+fi
+
+logger -t wifihaven "ws default-on migration applied (wifihaven.ws.enabled=$(uci -q get wifihaven.ws.enabled || echo unset))"
+exit 0

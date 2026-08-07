@@ -20,7 +20,7 @@ import logging
 import time
 
 from lib.traffic import http_get
-from lib.wait import wait_for_etag_change, wait_until
+from lib.wait import policy_change_baseline, wait_for_etag_change, wait_until
 
 log = logging.getLogger(__name__)
 
@@ -130,9 +130,13 @@ def test_gate3_smoke(admin, enrolled_router, client_vm, scratch_profile_and_devi
     # DNAT for a whole-MAC block is not gated on a resolved ipset, so any
     # HTTP/80 from the paused MAC lands on the page.
     neutral_host = "example.com"  # client_vm fixture already gated its DNS
+    # Baseline BEFORE the pause — see policy_change_baseline (#2608).
+    baseline = policy_change_baseline(admin, enrolled_router["router_id"])
     admin.set_profile_paused(profile_id, True)
     try:
-        wait_for_etag_change(admin, enrolled_router["router_id"], timeout_s=180)
+        wait_for_etag_change(
+            admin, enrolled_router["router_id"], baseline=baseline, timeout_s=180,
+        )
         blocked_probe = wait_until(
             lambda: _block_page_probe(client_vm, neutral_host),
             timeout_s=120, interval_s=3,

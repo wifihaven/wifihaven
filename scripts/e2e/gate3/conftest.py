@@ -23,7 +23,11 @@ from lib.api_admin import AdminAPI
 from lib.app_seed import pick_block_allow_apps
 from lib.enrollment import exchange_enrollment_token, provision_router_uci
 from lib.vm import Client, client_down, client_up, router_down, router_up
-from lib.wait import wait_for_client_dns, wait_for_etag_change, wait_for_router_active
+from lib.wait import (
+    wait_for_client_dns,
+    wait_for_device_in_router_snapshot,
+    wait_for_router_active,
+)
 
 log = logging.getLogger(__name__)
 
@@ -199,7 +203,15 @@ def scratch_profile_and_device(admin, enrolled_router, client_vm):
     # + the app assignments. PolicyApply restarts dnsmasq (#341); re-gate
     # the client on a fresh resolver answer before the test starts
     # probing traffic.
-    wait_for_etag_change(admin, enrolled_router["router_id"], timeout_s=180)
+    #
+    # This waits on a SUFFICIENT condition — the device appearing in the
+    # router's own on-disk snapshot — not on "some etag moved". Every mutation
+    # above (create_profile, both assign_app_policy calls, upsert_device)
+    # triggers its own push, so an etag-change wait could be satisfied by an
+    # earlier one and let the test proceed against policy that predates
+    # upsert_device. Waiting for the device itself cannot be satisfied early,
+    # and it works on either transport since both write this file.
+    wait_for_device_in_router_snapshot(mac, timeout_s=180)
     wait_for_client_dns(client_vm, host=blocked_host, timeout_s=30)
 
     yield {

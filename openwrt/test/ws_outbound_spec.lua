@@ -3,10 +3,11 @@
 -- When the ws sidecar is enabled AND the link is healthy, the main agent hands
 -- its outbound usage/events bodies to the sidecar over the bounded spool instead
 -- of POSTing them itself (the sidecar frames + sends them). When ws is disabled
--- (the default) OR the link has been down past fallback_after, the tee is a pure
--- pass-through to the real http_post — so the agent's HTTP path is byte-for-byte
--- unchanged in the default-off case (back-compat, design §3.1). Pure over
--- injected io/now/http_post, so it runs on the dev host as under OpenWrt 5.1.
+-- (an explicit `wifihaven.ws.enabled=0`; ws is the default as of #2608) OR the
+-- link has been down past fallback_after, the tee is a pure pass-through to the
+-- real http_post — so the agent's HTTP path is byte-for-byte unchanged whenever
+-- ws is off or the link is down (back-compat, design §3.1). Pure over injected
+-- io/now/http_post, so it runs on the dev host as under OpenWrt 5.1.
 
 local ws_outbound = require("wifihaven.ws_outbound")
 
@@ -107,6 +108,34 @@ describe("ws_outbound.make — enabled but link down (fallback)", function()
     })
     post(USAGE_URL, '{"records":[]}', {})
     assert.are.equal(1, #calls)
+  end)
+
+  -- #2608: ws is now the shipped default, so "the sidecar died" is a
+  -- first-boot-onwards reality, not an opt-in operator's problem. A sidecar
+  -- that crashes (or never got past the TLS handshake, or hit a server that
+  -- does not speak ws) stops refreshing the health sentinel; once it ages past
+  -- fallback_after BOTH gates flip together — the outbound tee resumes POSTing
+  -- and the policy poll resumes fetching — so a default-on router is never
+  -- left without a transport.
+  it("#2608 default-on + dead sidecar: usage AND events both resume HTTP", function()
+    local http, calls = rec_post()
+    local opts = {
+      enabled = true, http_post = http,
+      spool_append = function() error("must not spool with a dead sidecar") end,
+      health_read = function() return 1000 end,
+      now = function() return 1901 end,        -- 901s > 300 → sidecar gone
+      fallback_after = 300,
+    }
+    local post = ws_outbound.make(opts)
+    post(USAGE_URL, '{"records":[]}', {})
+    post(EVENTS_URL, '{"events":[]}', {})
+    assert.are.equal(2, #calls)
+    -- Same predicate drives the policy-poll dormancy gate (#2037), so the poll
+    -- resumes on the very same tick the tee falls back.
+    assert.is_false(ws_outbound.is_healthy({
+      enabled = true, health_read = opts.health_read,
+      now = opts.now, fallback_after = 300,
+    }))
   end)
 
   it("falls back to http_post if the spool write fails", function()

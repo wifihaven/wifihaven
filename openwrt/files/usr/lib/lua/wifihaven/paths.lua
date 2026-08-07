@@ -100,7 +100,8 @@ M.ws_outbound = "/tmp/wifihaven-ws-outbound.jsonl"
 -- stats it on its tick: a FRESH sentinel (mtime within ws_fallback_after) means
 -- "the sidecar owns outbound" → tee usage/events to the spool above; a STALE or
 -- absent sentinel means the link is down past the fallback window → the agent
--- resumes HTTP posting (design §3.1). Default-off: absent unless ws is enabled.
+-- resumes HTTP posting (design §3.1). Absent unless the sidecar is running, so
+-- a crashed sidecar reads as "link down" and the agent falls back (#2608).
 M.ws_health = "/tmp/wifihaven-ws-health"
 
 -- ws metrics tally: the sidecar has no metrics registry of its own (like the

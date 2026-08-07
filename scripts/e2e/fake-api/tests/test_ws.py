@@ -96,3 +96,54 @@ async def test_ws_push_to_all_with_no_connections_is_noop(client):
     resp = await client.post("/test/snapshot", json=new_snap)
     assert resp.status == 200
     assert (await resp.json())["wsPushed"] == 0
+
+
+async def test_ws_push_is_recorded_as_a_policy_fetch(client, auth_headers):
+    """#2608: a pushed snapshot lands in /test/policy_fetches, tagged transport=ws.
+
+    Once ws is the shipped router default the HTTP poll goes dormant on a healthy
+    link (#2037), so the ~40 Gate-2 scenarios that synchronise on
+    `wait_for_etag_served` — which scans this list for a 200 carrying the served
+    etag — would hang forever if only polls were recorded. Recording both
+    transports in ONE list keeps that helper transport-agnostic.
+    """
+    before = await (await client.get("/test/policy_fetches")).json()
+    assert before["count"] == 0
+
+    ws = await client.ws_connect("/api/router/ws", headers=auth_headers)
+    try:
+        await ws.receive_json(timeout=5)  # on-connect push
+
+        after_connect = await (await client.get("/test/policy_fetches")).json()
+        assert after_connect["count"] == 1
+        rec = after_connect["fetches"][-1]
+        assert rec["transport"] == "ws"
+        assert rec["status"] == 200
+        assert rec["servedEtag"]
+
+        new_snap = {
+            "etag": '"sha256:ws-fetchrec-0002"',
+            "generatedAt": "2026-05-19T12:00:00Z",
+            "devices": {},
+            "profiles": {},
+            "blocklists": {},
+        }
+        assert (await client.post("/test/snapshot", json=new_snap)).status == 200
+        await ws.receive_json(timeout=5)  # push-on-change
+
+        after_change = await (await client.get("/test/policy_fetches")).json()
+        pushed = after_change["fetches"][-1]
+        assert pushed["transport"] == "ws"
+        assert pushed["status"] == 200
+        # The etag recorded is the one actually delivered, which is what
+        # wait_for_etag_served matches on.
+        assert pushed["servedEtag"] == new_snap["etag"]
+    finally:
+        await ws.close()
+
+
+async def test_http_poll_is_still_recorded_as_transport_http(client, auth_headers):
+    """The poll path keeps its own record, tagged transport=http (#2608)."""
+    assert (await client.get("/api/router/policy", headers=auth_headers)).status == 200
+    body = await (await client.get("/test/policy_fetches")).json()
+    assert body["fetches"][-1]["transport"] == "http"

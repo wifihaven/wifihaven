@@ -73,12 +73,15 @@ start_service() {
 
     # ws sidecar (wifihaven-ws): the persistent-websocket transport (#1848).
     # Owns its own cqueues event loop, separate from the conntrack-driven agent
-    # loop (which is unchanged). DEFAULT OFF — started only when
-    # `wifihaven.ws.enabled=1`; with the flag off the agent's HTTP poll/POST path
-    # is the sole transport (back-compat, design §3.1). Niced below dnsmasq like
-    # the rest of the stack (#1864). Local agent config, NOT a policy field.
+    # loop (which is unchanged). DEFAULT ON as of #2608 — an UNSET flag starts
+    # the sidecar, so a fresh install lands on ws with no UCI step. Only an
+    # explicit `wifihaven.ws.enabled=0` keeps it off, and the agent's HTTP
+    # poll/POST path is untouched either way: it is what an opted-out router
+    # uses AND what a default-on router falls back to whenever the sidecar is
+    # down past ws_fallback_after (design §3.1). Niced below dnsmasq like the
+    # rest of the stack (#1864). Local agent config, NOT a policy field.
     local ws_enabled
-    config_get ws_enabled ws enabled '0'
+    config_get ws_enabled ws enabled '1'
     if [ "$ws_enabled" = "1" ]; then
         procd_open_instance "ws"
         procd_set_param command /usr/sbin/wifihaven-ws

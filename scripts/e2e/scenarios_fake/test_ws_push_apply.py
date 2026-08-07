@@ -6,8 +6,7 @@ tested in isolation (busted ws_*_spec.lua), and ingest parity uses the stdlib
 ws_send.py fake client (Gate 3). NONE drives a *server push* through the *real*
 OpenWRT agent's wifihaven-ws sidecar.
 
-This scenario does. With the sidecar enabled (UCI `wifihaven.ws.enabled=1`,
-default-off everywhere else) and pointed at the Gate-2 fake API, it asserts the
+This scenario does. Pointed at the Gate-2 fake API, it asserts the
 two legs of the push path end-to-end through the real agent:
 
   Leg A — policy-on-connect (#1849): on upgrade the fake pushes the current
@@ -35,18 +34,15 @@ runner→public-resolver egress flake (#1935).
 """
 from __future__ import annotations
 
-import json
-
 import pytest
 
 from lib.vm import router_ssh
-from lib.wait import wait_until
+from lib.wait import router_snapshot_etag, wait_until
 
 from .snapshot_builder import SnapshotBuilder
 
 pytestmark = pytest.mark.ws_push
 
-SNAPSHOT_PATH = "/etc/wifihaven/policy.json"
 WS_METRICS_PATH = "/tmp/wifihaven-ws-metrics.txt"
 WS_HEALTH_PATH = "/tmp/wifihaven-ws-health"
 # #2229 event-driven apply trigger: the sidecar writes "<etag>\t<uptime>" here
@@ -104,8 +100,16 @@ def _enable_ws_and_freeze_poll() -> None:
     Setting `policy_poll_interval=3600` neutralises the poll for the scenario's
     lifetime (the agent still does ONE startup poll, then sleeps an hour), so any
     policy.json change observed after the socket is up is attributable to the ws
-    push and nothing else. The settings live in the VM disk and are reverted by
-    the next test's `router` fixture (router_restore to the ws-off base snapshot).
+    push and nothing else.
+
+    The `ws.enabled=1` write is redundant since #2608 made ws the shipped default
+    (the base snapshot now comes up with the sidecar running and `enabled` unset).
+    It is kept because this scenario's whole point is to be explicit about which
+    transport it is testing — it must not silently start passing or failing on a
+    future default change. Freezing the poll is the part that still does work.
+
+    The settings live in the VM disk and are reverted by the next test's `router`
+    fixture (router_restore to the base snapshot, which is ws-ON as of #2608).
     """
     router_ssh(
         "uci set wifihaven.ws.enabled=1; "
@@ -116,15 +120,7 @@ def _enable_ws_and_freeze_poll() -> None:
     )
 
 
-def _router_snapshot_etag() -> str | None:
-    res = router_ssh(f"cat {SNAPSHOT_PATH} 2>/dev/null || true", check=False, timeout=10)
-    out = (res.stdout or "").strip()
-    if not out:
-        return None
-    try:
-        return json.loads(out).get("etag")
-    except (ValueError, AttributeError):
-        return None
+_router_snapshot_etag = router_snapshot_etag
 
 
 def _ws_recv_policy_count() -> int:

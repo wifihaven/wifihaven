@@ -33,11 +33,13 @@ local selfheal   = require("wifihaven.selfheal")
 local version      = require("wifihaven.version")
 local host_metrics = require("wifihaven.host_metrics")
 local sni          = require("wifihaven.sni")
--- #1848: ws transport sidecar bridge. Default-off; these only do work when
--- wifihaven.ws.enabled=1. ws_outbound tees outbound usage/events to the spool
--- the wifihaven-ws sidecar drains; ws_metrics folds the sidecar's tally into the
--- /api/router/metrics push. With ws off, ws_outbound is a pure pass-through and
--- the fold is a no-op (the tmpfs files never exist), so the agent is unchanged.
+-- #1848: ws transport sidecar bridge. Default-ON as of #2608; these only do
+-- work when wifihaven.ws.enabled resolves to 1 (unset counts). ws_outbound tees
+-- outbound usage/events to the spool the wifihaven-ws sidecar drains; ws_metrics
+-- folds the sidecar's tally into the /api/router/metrics push. With ws off — an
+-- explicit enabled=0, or a sidecar that is down past ws_fallback_after —
+-- ws_outbound is a pure pass-through to http_post and the fold is a no-op (the
+-- tmpfs files never exist), so the agent's HTTP path is unchanged.
 local ws_outbound  = require("wifihaven.ws_outbound")
 local ws_spool     = require("wifihaven.ws_spool")
 local ws_metrics   = require("wifihaven.ws_metrics")
@@ -130,14 +132,17 @@ local activity_sample_int = tonumber(uci_get("activity_sample_int", "10"))
 -- keeps the activity sampler within ~1 s of its 10 s cadence.
 local tick_int      = tonumber(uci_get("conntrack_tick_interval", "1"))
 local debug_opt     = uci_get("debug",                            "0")
--- #1848: ws transport config (named `config ws 'ws'` section). DEFAULT OFF.
+-- #1848: ws transport config (named `config ws 'ws'` section). DEFAULT ON as of
+-- #2608 — an UNSET flag means ws, so a fresh install needs no UCI step; an
+-- explicit `enabled=0` still selects the HTTP poll path, which stays intact and
+-- is also what a dead/unreachable sidecar falls back to (ws_link_healthy below).
 -- These only affect behaviour when ws_enabled == "1"; the sidecar (a separate
 -- procd instance) does the actual ws work, and the agent merely tees its
 -- outbound usage/events to the bounded spool the sidecar drains.
 local function uci_get_ws(opt, default)
   return cursor:get("wifihaven", "ws", opt) or default
 end
-local ws_enabled        = uci_get_ws("enabled", "0")
+local ws_enabled        = uci_get_ws("enabled", "1")
 local ws_fallback_after = tonumber(uci_get_ws("fallback_after", "300"))
 local ws_spool_max      = tonumber(uci_get_ws("spool_max_bytes", "1048576"))
 -- #1945: apply-on-push cadence (seconds). When ws is enabled the sidecar writes
@@ -1269,9 +1274,10 @@ conntrack.watch({
   -- #2024: idle-heartbeat cadence — drives on_tick on a wall-clock tick even
   -- when conntrack is silent, so the usage flush + activity sampler never stall.
   tick_interval   = tick_int,
-  -- #1848: events POST goes through the ws outbound tee (default-off → identical
-  -- to http_post). The tee routes /api/router/events to the spool only when ws
-  -- is enabled+healthy; everything else passes straight through.
+  -- #1848: events POST goes through the ws outbound tee. The tee routes
+  -- /api/router/events to the spool only when ws is enabled+healthy; everything
+  -- else — ws off, or the sidecar down past ws_fallback_after — passes straight
+  -- through to http_post unchanged.
   http_post       = usage_events_post,
   log             = log,
   register_batcher = function(b) ts.events_batcher = b end,
@@ -1682,8 +1688,9 @@ conntrack.watch({
                   #counters, report.records and #report.records or 0)
         -- Retry queue's next_attempt_at math runs on the monotonic clock so
         -- a backward wall-clock jump can't freeze the drain (#336).
-        -- #1848: usage POST goes through the ws outbound tee (default-off →
-        -- identical to http_post). A spool write counts as a successful "post"
+        -- #1848: usage POST goes through the ws outbound tee (pass-through to
+        -- http_post whenever ws is off or unhealthy). A spool write counts as a
+        -- successful "post"
         -- to the retry queue (at-least-once; the sidecar owns delivery + the
         -- server dedups), so the queue/reset semantics below are unchanged.
         local posted = usage.post_with_retry(

@@ -104,14 +104,23 @@ config settings 'settings'
 
 # Websocket transport sidecar (wifihaven-ws) toggle + tuning (#1848). Lives in
 # its own named `config ws 'ws'` section, read as `wifihaven.ws.<opt>`. DEFAULT
-# OFF: until the persistent-ws transport is proven in the field the agent uses
-# its unchanged HTTP poll/POST path (back-compat, design §3.1). Turn on per
-# router with `uci set wifihaven.ws.enabled=1 && /etc/init.d/wifihaven restart`.
-# The init script only starts the wifihaven-ws instance when enabled=1; with it
-# off the sidecar never runs and nothing about the agent changes. This is local
-# agent config — NOT a policy-snapshot field.
+# ON as of #2608, now that the transport is proven in the field: `enabled` is
+# deliberately NOT written here, and every reader (the agent, the sidecar, the
+# init script) treats an UNSET value as '1'. Leaving the key absent is what
+# makes "the operator never expressed an opinion" observable — a literal '0' in
+# this file would be indistinguishable from a hand-authored opt-out, which is
+# exactly the ambiguity /etc/uci-defaults/97-wifihaven-ws-default-on resolves
+# on upgrade.
+#
+# To opt a router OUT and stay on the HTTP poll path:
+#   uci set wifihaven.ws.enabled=0 && uci commit wifihaven \
+#     && /etc/init.d/wifihaven restart
+# That choice is durable: the migration records a one-shot
+# `default_on_migrated` marker and never rewrites `enabled` again. The poll path
+# is unchanged and remains the automatic fallback whenever the sidecar is down
+# past `fallback_after` below (design §3.1). This is local agent config — NOT a
+# policy-snapshot field.
 config ws 'ws'
-	option enabled '0'
 	# Heartbeat ping/pong cadence (seconds). Pinned below Render's ws idle
 	# timeout by the #1845 spike (design §5.5). The server closes a channel
 	# that misses a pong for 2× this.

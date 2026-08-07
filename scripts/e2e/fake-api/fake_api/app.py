@@ -168,6 +168,12 @@ async def _push_policy(state: State, ws: web.WebSocketResponse) -> bool:
     try:
         await ws.send_str(_policy_frame_text(state.snapshot))
         state.note_policy_frame_sent()
+        # #2608: a successful push DELIVERED this etag, so record it alongside
+        # the HTTP polls. With ws the shipped default the agent's poll is dormant
+        # on a healthy link (#2037), and every scenario that synchronises on
+        # `wait_for_etag_served` would otherwise wait forever for a fetch that no
+        # longer happens.
+        state.record_policy_push(served_etag=state.etag)
         return True
     except Exception:  # noqa: BLE001
         return False
@@ -306,6 +312,7 @@ async def test_get_policy_fetches(request: web.Request) -> web.Response:
                     "sinceQuery": f.since_query,
                     "servedEtag": f.served_etag,
                     "status": f.status,
+                    "transport": f.transport,
                 }
                 for f in fetches
             ],

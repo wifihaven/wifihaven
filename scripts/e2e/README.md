@@ -97,11 +97,27 @@ from lib.wait import (
     wait_until,                                # general purpose
     wait_for_router_active,                    # used after enrollment
     wait_for_next_poll,                        # lastSeenAt advances (every poll, 304 included)
-    wait_for_etag_change,                      # lastEtag advances (only on policy change)
+    policy_change_baseline,                    # capture BEFORE mutating (see below)
+    wait_for_etag_change,                      # lastEtag OR the router's on-disk etag moves
+    wait_for_device_in_router_snapshot,        # the router's snapshot CONTAINS this device
 )
 from lib.clock import set_router_clock, get_router_clock   # `date -s` on the router VM
 from lib.traffic import http_get, dns_query                # client-side probes
 ```
+
+Two notes on waiting for a policy change, both from #2608 (the websocket is the
+shipped router default now, so the HTTP poll is dormant while the link is
+healthy):
+
+- `wait_for_etag_change` needs a `baseline=` from `policy_change_baseline()`
+  captured **before** the mutation. A ws push lands in the time it takes to read
+  the baseline, so capturing it afterwards means the baseline already holds the
+  new etag and the wait can never fire.
+- Prefer a **sufficient** condition where one exists.
+  `wait_for_device_in_router_snapshot(mac)` says the policy the router now holds
+  includes that device; "an etag moved" can be satisfied by an earlier,
+  unrelated push and let a test proceed against stale policy.
+
 
 ### Tagging your scenarios
 
