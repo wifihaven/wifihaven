@@ -8,7 +8,7 @@ import { useEscapeClose } from '@/hooks/useEscapeClose'
 import { useNotificationPermission } from '@/hooks/useNotifyOnNewAlerts'
 import { useDebouncedSave, mergeSaveStatus } from '@/hooks/useDebouncedSave'
 import { EmptyState } from '@/components/EmptyState'
-import { InlineProfileCreator, NEW_PROFILE_VALUE } from '@/components/InlineProfileCreator'
+import { ProfilePicker } from '@/components/ProfilePicker'
 import { SaveStatusBadge } from '@/components/SaveStatusBadge'
 import type { Alert, Device, PatchDeviceRequest, ProfileDetail } from '@/types/api'
 import { PageLoader } from './DashboardPage'
@@ -52,12 +52,12 @@ export function DevicesPage() {
   const [editing,  setEditing]  = useState<Device | null>(null)
   const [form,     setForm]     = useState({ mac: '', name: '', profileId: 0 })
   const [editingMac, setEditingMac] = useState<string | null>(null)
-  // #2367 — inline "+ New profile…" creation from within the Add-Device modal,
-  // so a brand-new (zero-profile) household can onboard its first device without
-  // bouncing to Profiles. When the household has no profiles, the creator is
-  // shown in place of the (otherwise empty/invalid) select. The creator itself
-  // is `InlineProfileCreator`, shared with the row editor (#2560).
-  const [creatingProfile, setCreatingProfile] = useState(false)
+  // #2367 / #2607 — the modal's profile control is `ProfilePicker`, shared with
+  // the row editor and the new-device alert editor. It owns the "+ New profile…"
+  // branch and opens straight into the creator on a zero-profile household, so
+  // the modal only tracks what it needs to freeze its OWN controls: `commitBlocked`
+  // is the picker telling us it has no committable profile to hand over yet.
+  const [commitBlocked, setCommitBlocked] = useState(false)
   // Mirrored from the creator so the modal freezes the controls IT owns while a
   // create is in flight — cancelling mid-flight would create a profile and then
   // discard it unassigned, with nothing on screen saying so.
@@ -90,13 +90,16 @@ export function DevicesPage() {
     await deleteMutation.mutateAsync(mac)
   }
 
-  // Open the create/enroll modal. On an empty household start in profile-create
-  // mode so the operator is prompted to make the first profile (#2367) rather
-  // than facing an empty select.
+  // Open the create/enroll modal. The picker mounts with the dialog and decides
+  // for itself whether to open into the creator (#2607), so there is no
+  // empty-household branch to keep in step here.
   function openCreate(mac: string) {
     setEditing({} as Device)
-    setForm({ mac, name: '', profileId: profiles[0]?.profile.id ?? 0 })
-    setCreatingProfile(profiles.length === 0)
+    // `0` is "nothing picked yet". The picker reconciles it to a real id as soon
+    // as it mounts with a non-empty list (it owns that invariant now, #2366), and
+    // Save refuses to submit a `0` in the meantime — seeding it here as well
+    // would be a second place deciding the modal's default.
+    setForm({ mac, name: '', profileId: 0 })
   }
 
   if (loading) return <PageLoader />
@@ -150,7 +153,13 @@ export function DevicesPage() {
                   )}
                 </div>
                 {isWriter && editingMac === d.mac && (
-                  <DeviceRowEditor device={d} profiles={profiles} onClose={() => setEditingMac(null)} />
+                  <DeviceRowEditor
+                    device={d}
+                    profiles={profiles}
+                    profilesLoading={profilesQuery.isPending}
+                    profilesError={profilesQuery.isError}
+                    onClose={() => setEditingMac(null)}
+                  />
                 )}
               </div>
             ))
@@ -216,53 +225,25 @@ export function DevicesPage() {
             <h3 className="text-lg font-bold text-brand-ink">{form.mac ? 'Enroll Device' : 'Add Device'}</h3>
             <Field label="MAC Address" value={form.mac} onChange={v => setForm(f => ({...f, mac: v}))} placeholder="aa:bb:cc:dd:ee:ff" mono />
             <Field label="Name" value={form.name} onChange={v => setForm(f => ({...f, name: v}))} placeholder="Kid's iPad" />
-            <div>
-              <label className="block text-xs font-semibold text-brand-text-muted uppercase tracking-wider mb-2">Profile</label>
-              {profiles.length > 0 && (
-                <select
-                  value={creatingProfile ? NEW_PROFILE_VALUE : form.profileId}
-                  onChange={e => {
-                    if (e.target.value === NEW_PROFILE_VALUE) {
-                      setCreatingProfile(true)
-                    } else {
-                      setCreatingProfile(false)
-                      setForm(f => ({...f, profileId: Number(e.target.value)}))
-                    }
-                  }}
-                  disabled={createPending}
-                  data-testid="add-device-profile-select"
-                  className="w-full bg-brand-surface border border-brand-border-strong rounded-xl px-4 py-3 text-brand-ink disabled:opacity-60">
-                  {profiles.map(p => <option key={p.profile.id} value={p.profile.id}>{p.profile.name}</option>)}
-                  <option value={NEW_PROFILE_VALUE}>+ New profile…</option>
-                </select>
-              )}
-              {creatingProfile && (
-                <InlineProfileCreator
-                  testIdPrefix="add-device"
-                  isFirstProfile={profiles.length === 0}
-                  // Nothing to go back to on a zero-profile household — the
-                  // select isn't rendered, so cancelling would leave no way to
-                  // pick a profile at all.
-                  canCancel={profiles.length > 0}
-                  // The dialog opens straight into the creator on a zero-profile
-                  // household, so focusing the name would jump the operator past
-                  // the MAC and Name fields they have to fill first. When they
-                  // instead picked "+ New profile…", focus belongs on the name.
-                  autoFocusName={profiles.length > 0}
-                  onPendingChange={setCreatePending}
-                  onCreated={id => {
-                    setForm(f => ({ ...f, profileId: id }))
-                    setCreatingProfile(false)
-                  }}
-                  onCancel={() => setCreatingProfile(false)}
-                />
-              )}
-            </div>
+            <ProfilePicker
+              profiles={profiles}
+              isLoading={profilesQuery.isPending}
+              isError={profilesQuery.isError}
+              // A device added through this dialog is always assigned; `0` is
+              // "nothing picked yet", not a state the operator can choose.
+              allowNone={false}
+              value={form.profileId || null}
+              onChange={id => setForm(f => ({ ...f, profileId: id ?? 0 }))}
+              selectTestId="add-device-profile-select"
+              testIdPrefix="add-device"
+              onCommitBlockedChange={setCommitBlocked}
+              onPendingChange={setCreatePending}
+            />
             <div className="flex gap-3 pt-2">
               {/* Closing mid-create would create the profile and then discard
                   it unassigned, with nothing on screen saying so. */}
               <button onClick={() => setEditing(null)} disabled={createPending} data-testid="add-device-cancel" className="flex-1 py-3 rounded-xl bg-brand-alt text-brand-text font-medium disabled:opacity-60">Cancel</button>
-              <button onClick={save} disabled={creatingProfile} className="flex-1 py-3 rounded-xl bg-brand-accent text-white font-semibold disabled:opacity-60">Save</button>
+              <button onClick={save} disabled={commitBlocked || form.profileId === 0} className="flex-1 py-3 rounded-xl bg-brand-accent text-white font-semibold disabled:opacity-60">Save</button>
             </div>
           </div>
         </div>
@@ -275,19 +256,22 @@ export function DevicesPage() {
 // profile each debounce-PATCH /devices/:mac independently; the row's status
 // badge aggregates both fields and offers Retry on failure. No Save button.
 function DeviceRowEditor({
-  device, profiles, onClose,
+  device, profiles, profilesLoading, profilesError, onClose,
 }: {
   device: Device
   profiles: ProfileDetail[]
+  profilesLoading: boolean
+  profilesError: boolean
   onClose: () => void
 }) {
   const invalidators = useInvalidators()
   const [name, setName] = useState(device.name)
   const [profileId, setProfileId] = useState<number | null>(device.profileId)
-  // #2560 — the row's own "+ New profile…" branch. Without it the row could
-  // only assign a profile that already existed, so putting a device on a NEW
-  // profile meant leaving /devices for /profiles and coming back.
-  const [creatingProfile, setCreatingProfile] = useState(false)
+  // #2560 — the row's own "+ New profile…" branch, now via the shared picker
+  // (#2607). Without it the row could only assign a profile that already
+  // existed, so putting a device on a NEW profile meant leaving /devices. The
+  // picker raises `commitBlocked` while it has nothing committable to hand over.
+  const [commitBlocked, setCommitBlocked] = useState(false)
   useEffect(() => { setName(device.name) }, [device.name])
   useEffect(() => { setProfileId(device.profileId) }, [device.profileId])
 
@@ -328,35 +312,25 @@ function DeviceRowEditor({
           className="w-full bg-brand-surface border border-brand-border-strong rounded-xl px-4 py-2.5 text-brand-ink focus:outline-none focus:border-brand-accent"
         />
       </div>
-      <div className="min-w-[10rem]">
-        <label className="block text-xs font-semibold text-brand-text-muted uppercase tracking-wider mb-1">Profile</label>
-        <select
-          value={creatingProfile ? NEW_PROFILE_VALUE : profileId ?? ''}
-          onChange={e => {
-            if (e.target.value === NEW_PROFILE_VALUE) {
-              setCreatingProfile(true)
-            } else {
-              setCreatingProfile(false)
-              setProfileId(e.target.value === '' ? null : Number(e.target.value))
-            }
-          }}
-          // Frozen for as long as the creator is open (not just while a request
-          // is in flight): the row autosaves, so a pick made between "Create
-          // profile" and the response would be silently overwritten when the
-          // created profile lands. Cancel is the way back out.
-          disabled={creatingProfile}
-          data-testid={`device-profile-select-${device.mac}`}
-          className="w-full bg-brand-surface border border-brand-border-strong rounded-xl px-4 py-2.5 text-brand-ink disabled:opacity-60"
-        >
-          {/* #2366 — explicit null option so an unassigned device's displayed
-              selection matches state (no phantom first-profile), assigning is a
-              genuine onChange → autosave, and a profile can be removed. */}
-          <option value="">No profile</option>
-          {profiles.map(p => <option key={p.profile.id} value={p.profile.id}>{p.profile.name}</option>)}
-          {/* #2560 — assigning this device to a NEW profile without leaving
-              /devices for /profiles and coming back. */}
-          <option value={NEW_PROFILE_VALUE}>+ New profile…</option>
-        </select>
+      {/* The creator needs the full row width; the select alone does not. On this
+          surface `commitBlocked` is exactly "a creator the operator opened": the
+          row allows null, so the loading and error terms don't reach it, and the
+          picker never auto-opens on a failed fetch either. */}
+      <div className={commitBlocked ? 'basis-full order-last' : 'min-w-[10rem]'}>
+        <ProfilePicker
+          profiles={profiles}
+          isLoading={profilesLoading}
+          isError={profilesError}
+          allowNone
+          dense
+          value={profileId}
+          // Assigning through the same state the <select> writes means the row's
+          // existing debounced PATCH {profileId} carries it — no second save path.
+          onChange={setProfileId}
+          selectTestId={`device-profile-select-${device.mac}`}
+          testIdPrefix={`device-${device.mac}`}
+          onCommitBlockedChange={setCommitBlocked}
+        />
       </div>
       <div className="flex items-center gap-3 pb-2.5">
         <SaveStatusBadge
@@ -368,33 +342,14 @@ function DeviceRowEditor({
         <button
           type="button"
           onClick={onClose}
-          // Closing with the creator open would abandon it mid-flow, and
-          // closing mid-request would leave the profile created but never
-          // assigned, with nothing on screen saying so.
-          disabled={creatingProfile}
+          // Closing with a creator the operator opened would abandon it
+          // mid-flow, and closing mid-request would leave the profile created
+          // but never assigned, with nothing on screen saying so. (The outer
+          // Edit/Done toggle stays enabled either way, so this is never a trap.)
+          disabled={commitBlocked}
           className="text-xs text-brand-text hover:text-brand-ink bg-brand-alt px-3 py-1.5 rounded-lg transition-colors disabled:opacity-60"
         >Done</button>
       </div>
-      {creatingProfile && (
-        <div className="basis-full">
-          <InlineProfileCreator
-            testIdPrefix={`device-${device.mac}`}
-            isFirstProfile={profiles.length === 0}
-            // Always cancellable, independently of whether any profile exists:
-            // this row freezes its select and Done while the creator is open,
-            // so Cancel is the only exit, and a caller that can be left with no
-            // exit at all is the worse failure. (`autoFocusName` defaults true,
-            // which is right here — the row is only ever reached by an explicit
-            // "+ New profile…" pick, never auto-opened.)
-            canCancel
-            // Assigning through the same state the <select> writes means the
-            // row's existing debounced PATCH {profileId} carries it — there is
-            // no second save path.
-            onCreated={id => { setProfileId(id); setCreatingProfile(false) }}
-            onCancel={() => setCreatingProfile(false)}
-          />
-        </div>
-      )}
     </div>
   )
 }
@@ -489,6 +444,8 @@ function NewDeviceAlertsBanner({ canEdit }: { canEdit: boolean }) {
         <NewDeviceAlertEditor
           alert={editing}
           profiles={profiles}
+          profilesLoading={profilesQuery.isPending}
+          profilesError={profilesQuery.isError}
           onClose={() => setEditing(null)}
           onSaved={async ({ finalProfileId }) => {
             // A profile means the operator has decided this device belongs on
@@ -509,10 +466,12 @@ function NewDeviceAlertsBanner({ canEdit }: { canEdit: boolean }) {
 }
 
 function NewDeviceAlertEditor({
-  alert, profiles, onClose, onSaved,
+  alert, profiles, profilesLoading, profilesError, onClose, onSaved,
 }: {
   alert: Alert
   profiles: ProfileDetail[]
+  profilesLoading: boolean
+  profilesError: boolean
   onClose: () => void
   onSaved: (args: { finalProfileId: number | null }) => Promise<void>
 }) {
@@ -520,7 +479,18 @@ function NewDeviceAlertEditor({
   // null = leave unassigned (per #841, profileId is optional).
   const [profileId, setProfileId] = useState<number | null>(alert.profileId)
   const [error, setError] = useState<string | null>(null)
-  useEscapeClose(onClose, true)
+  // #2607 — this is the natural onboarding entry point (a device appears, the
+  // operator clicks the alert), so it is the surface that most needed to be able
+  // to create the profile it is assigning. Both flags come from the shared
+  // picker. `commitBlocked` freezes Save only when the picker has nothing
+  // committable to hand over — an auto-opened creator on an empty household does
+  // NOT block it, because saving with no profile is itself a decision here (it
+  // denies the alert). `createPending` freezes Escape/Cancel while a create is in
+  // flight: closing then would leave the profile created server-side and never
+  // assigned, with nothing on screen saying so.
+  const [commitBlocked, setCommitBlocked] = useState(false)
+  const [createPending, setCreatePending] = useState(false)
+  useEscapeClose(onClose, !createPending)
 
   const patchMutation = useMutation({
     mutationFn: (data: PatchDeviceRequest) => api.devices.patch(alert.mac, data),
@@ -556,31 +526,33 @@ function NewDeviceAlertEditor({
           </p>
         </div>
         <Field label="Name" value={name} onChange={setName} placeholder="Kid's iPad" />
-        <div>
-          <label className="block text-xs font-semibold text-brand-text-muted uppercase tracking-wider mb-2">Profile</label>
-          <select
-            data-testid="new-device-alert-profile"
-            value={profileId ?? ''}
-            onChange={e => setProfileId(e.target.value === '' ? null : Number(e.target.value))}
-            className="w-full bg-brand-surface border border-brand-border-strong rounded-xl px-4 py-3 text-brand-ink"
-          >
-            <option value="">— No profile —</option>
-            {profiles.map(p => (
-              <option key={p.profile.id} value={p.profile.id}>{p.profile.name}</option>
-            ))}
-          </select>
-        </div>
+        <ProfilePicker
+          profiles={profiles}
+          isLoading={profilesLoading}
+          isError={profilesError}
+          // Saving with no profile is a real decision here — it denies the alert.
+          allowNone
+          value={profileId}
+          onChange={setProfileId}
+          selectTestId="new-device-alert-profile"
+          testIdPrefix="new-device-alert"
+          onCommitBlockedChange={setCommitBlocked}
+          onPendingChange={setCreatePending}
+        />
         {error && (
           <p data-testid="new-device-alert-editor-error" className="text-sm text-red-700">{error}</p>
         )}
         <div className="flex gap-3 pt-2">
           <button
             onClick={onClose}
-            className="flex-1 py-3 rounded-xl bg-brand-alt text-brand-text font-medium"
+            disabled={createPending}
+            data-testid="new-device-alert-close"
+            className="flex-1 py-3 rounded-xl bg-brand-alt text-brand-text font-medium disabled:opacity-60"
           >Cancel</button>
           <button
             onClick={save}
-            disabled={patchMutation.isPending}
+            disabled={patchMutation.isPending || commitBlocked}
+            data-testid="new-device-alert-save"
             className="flex-1 py-3 rounded-xl bg-brand-accent text-white font-semibold disabled:opacity-60"
           >Save</button>
         </div>
