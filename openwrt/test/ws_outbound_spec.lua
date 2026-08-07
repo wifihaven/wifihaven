@@ -109,6 +109,34 @@ describe("ws_outbound.make — enabled but link down (fallback)", function()
     assert.are.equal(1, #calls)
   end)
 
+  -- #2608: ws is now the shipped default, so "the sidecar died" is a
+  -- first-boot-onwards reality, not an opt-in operator's problem. A sidecar
+  -- that crashes (or never got past the TLS handshake, or hit a server that
+  -- does not speak ws) stops refreshing the health sentinel; once it ages past
+  -- fallback_after BOTH gates flip together — the outbound tee resumes POSTing
+  -- and the policy poll resumes fetching — so a default-on router is never
+  -- left without a transport.
+  it("#2608 default-on + dead sidecar: usage AND events both resume HTTP", function()
+    local http, calls = rec_post()
+    local opts = {
+      enabled = true, http_post = http,
+      spool_append = function() error("must not spool with a dead sidecar") end,
+      health_read = function() return 1000 end,
+      now = function() return 1901 end,        -- 901s > 300 → sidecar gone
+      fallback_after = 300,
+    }
+    local post = ws_outbound.make(opts)
+    post(USAGE_URL, '{"records":[]}', {})
+    post(EVENTS_URL, '{"events":[]}', {})
+    assert.are.equal(2, #calls)
+    -- Same predicate drives the policy-poll dormancy gate (#2037), so the poll
+    -- resumes on the very same tick the tee falls back.
+    assert.is_false(ws_outbound.is_healthy({
+      enabled = true, health_read = opts.health_read,
+      now = opts.now, fallback_after = 300,
+    }))
+  end)
+
   it("falls back to http_post if the spool write fails", function()
     local http, calls = rec_post()
     local post = ws_outbound.make({

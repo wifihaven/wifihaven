@@ -1,10 +1,12 @@
 #!/bin/sh
 # Functional test for #1848: wifihaven.ws.enabled UCI toggle gates the
-# wifihaven-ws procd instance. DEFAULT OFF — the ws sidecar must NOT start
-# unless explicitly enabled, and the other instances must always start
-# regardless (back-compat: the agent's HTTP path is unaffected). We mock the
-# procd / UCI shell helpers, source the start_service body out of the init
-# script, and assert the ws instance is or is not opened based on the fixture.
+# wifihaven-ws procd instance. As of #2608 the DEFAULT is ON — an unset flag
+# starts the sidecar — while an explicit `enabled=0` still keeps it off (the
+# poll path stays a first-class, operator-selectable transport). The other
+# instances must always start regardless (back-compat: the agent's HTTP path is
+# unaffected). We mock the procd / UCI shell helpers, source the start_service
+# body out of the init script, and assert the ws instance is or is not opened
+# based on the fixture.
 set -e
 
 PASS=0; FAIL=0
@@ -21,7 +23,7 @@ check() {
 [ -f "$INIT" ] || { printf "MISSING: %s\n" "$INIT"; exit 1; }
 
 run_start_service() {
-  # $1 = fixture value for wifihaven.ws.enabled ("" means unset → default 0)
+  # $1 = fixture value for wifihaven.ws.enabled ("" means unset → default 1)
   WS_ENABLED_FIXTURE="$1"
   OPENED=""
 
@@ -55,14 +57,14 @@ run_start_service() {
   echo "$OPENED"
 }
 
-# 1. Default (option unset) → ws SKIPPED (default off). Other sidecars start.
+# 1. Default (option unset) → ws STARTS (#2608 default-on).
 out=$(run_start_service "")
 case " $out " in
-  *" ws "*) check "default: ws sidecar skipped when enabled unset" "OPENED=[$out]" ;;
-  *) check "default: ws sidecar skipped when enabled unset" ok ;;
+  *" ws "*) check "default: ws sidecar starts when enabled unset" ok ;;
+  *) check "default: ws sidecar starts when enabled unset" "OPENED=[$out]" ;;
 esac
 
-# 2. enabled=0 → ws SKIPPED.
+# 2. enabled=0 → ws SKIPPED (an explicit opt-out still wins over the default).
 out=$(run_start_service "0")
 case " $out " in
   *" ws "*) check "enabled=0: ws sidecar skipped" "OPENED=[$out]" ;;
@@ -92,9 +94,9 @@ fi
 
 # 5. Init script must invoke the UCI read in the documented form so a rename of
 # the option key is caught here.
-grep -q 'config_get .* ws enabled' "$INIT" \
-  && check "init script reads wifihaven.ws.enabled via config_get" ok \
-  || check "init script reads wifihaven.ws.enabled via config_get" "not found"
+grep -q "config_get .* ws enabled '1'" "$INIT" \
+  && check "init script reads wifihaven.ws.enabled via config_get, default 1" ok \
+  || check "init script reads wifihaven.ws.enabled via config_get, default 1" "not found"
 
 printf "\nResults: %d passed, %d failed\n" "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
