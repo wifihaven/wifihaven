@@ -454,7 +454,12 @@ services:
         value: "api.wifihaven.net,app.wifihaven.net"
       # #1969: SPA-websocket Origin allowlist (design §8). HOSTS only (scheme/port
       # ignored) — the cross-site-upgrade backstop that pairs with the SameSite=Strict
-      # wh_ws cookie. Mirrors the SPA origins above (where the dashboard ws client runs).
+      # wh_ws cookie. app.wifihaven.net is where the dashboard ws client runs.
+      # #1843/#2612: this set still carries apex + www and so no longer mirrors
+      # WIFIHAVEN_ALLOWED_ORIGINS above. Those two entries are dead for the same
+      # reason #1843 dropped them there (marketing-only since #1842, no ws
+      # client), but #1969 introduced this key after #1843 was filed, so the
+      # cleanup issue never enumerated it. Dropping them is tracked in #2612.
       - key: WIFIHAVEN_WS_ALLOWED_ORIGINS
         value: "wifihaven.net,www.wifihaven.net,app.wifihaven.net"
       # #614: SPA is served by the wifihaven-spa-prod Static Site (CDN).
