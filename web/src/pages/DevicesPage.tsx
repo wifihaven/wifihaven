@@ -95,7 +95,11 @@ export function DevicesPage() {
   // empty-household branch to keep in step here.
   function openCreate(mac: string) {
     setEditing({} as Device)
-    setForm({ mac, name: '', profileId: profiles[0]?.profile.id ?? 0 })
+    // `0` is "nothing picked yet". The picker reconciles it to a real id as soon
+    // as it mounts with a non-empty list (it owns that invariant now, #2366), and
+    // Save refuses to submit a `0` in the meantime — seeding it here as well
+    // would be a second place deciding the modal's default.
+    setForm({ mac, name: '', profileId: 0 })
   }
 
   if (loading) return <PageLoader />
@@ -239,7 +243,7 @@ export function DevicesPage() {
               {/* Closing mid-create would create the profile and then discard
                   it unassigned, with nothing on screen saying so. */}
               <button onClick={() => setEditing(null)} disabled={createPending} data-testid="add-device-cancel" className="flex-1 py-3 rounded-xl bg-brand-alt text-brand-text font-medium disabled:opacity-60">Cancel</button>
-              <button onClick={save} disabled={commitBlocked} className="flex-1 py-3 rounded-xl bg-brand-accent text-white font-semibold disabled:opacity-60">Save</button>
+              <button onClick={save} disabled={commitBlocked || form.profileId === 0} className="flex-1 py-3 rounded-xl bg-brand-accent text-white font-semibold disabled:opacity-60">Save</button>
             </div>
           </div>
         </div>
@@ -308,7 +312,11 @@ function DeviceRowEditor({
           className="w-full bg-brand-surface border border-brand-border-strong rounded-xl px-4 py-2.5 text-brand-ink focus:outline-none focus:border-brand-accent"
         />
       </div>
-      {/* The creator needs the full row width; the select alone does not. */}
+      {/* The creator needs the full row width; the select alone does not. On this
+          surface `commitBlocked` and "the creator is open" coincide: the row
+          always allows null, and it is only ever reached with at least one
+          profile (`knownDevices` filters `profileId !== null`), so the creator
+          here is always one the operator picked. */}
       <div className={commitBlocked ? 'basis-full order-last' : 'min-w-[10rem]'}>
         <ProfilePicker
           profiles={profiles}
@@ -335,9 +343,11 @@ function DeviceRowEditor({
         <button
           type="button"
           onClick={onClose}
-          // Closing with the creator open would abandon it mid-flow, and
-          // closing mid-request would leave the profile created but never
-          // assigned, with nothing on screen saying so.
+          // Closing while the picker has nothing to hand over would abandon the
+          // creator mid-flow, and closing mid-request would leave the profile
+          // created but never assigned, with nothing on screen saying so. (The
+          // outer Edit/Done toggle stays enabled either way, so this is never a
+          // trap.)
           disabled={commitBlocked}
           className="text-xs text-brand-text hover:text-brand-ink bg-brand-alt px-3 py-1.5 rounded-lg transition-colors disabled:opacity-60"
         >Done</button>

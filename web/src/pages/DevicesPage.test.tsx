@@ -347,7 +347,7 @@ describe('DevicesPage — add device with inline profile creation (#2367)', () =
     )
     // The failure path must also release the caller's freeze. A wedged
     // `createPending` would disable Cancel while Save is already disabled by
-    // `creatingProfile`, leaving no way out of the dialog.
+    // `commitBlocked`, leaving no way out of the dialog.
     expect(screen.getByTestId('add-device-cancel')).toBeEnabled()
     expect(screen.getByTestId('add-device-create-profile')).toBeEnabled()
   })

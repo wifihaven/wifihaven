@@ -157,6 +157,20 @@ describe('ProfilePicker (#2607)', () => {
     expect(await screen.findByTestId('host-profile-error')).toBeInTheDocument()
     expect(screen.queryByTestId('host-new-profile')).not.toBeInTheDocument()
     expect(screen.queryByTestId('pick')).not.toBeInTheDocument()
+  })
+
+  // A failed fetch is one more "nothing to hand over", so it follows the same
+  // rule as an auto-opened creator rather than a rule of its own: it blocks a
+  // caller with no null state, and leaves a caller that has one alone. The alert
+  // editor's deny path must survive a profiles outage.
+  it('a failed fetch blocks committing only for a caller with no null state', async () => {
+    const { unmount } = render(withQuery(<Host profiles={[]} isError />))
+    await screen.findByTestId('host-profile-error')
+    expect(screen.getByTestId('blocked')).toHaveTextContent('no')
+    unmount()
+
+    render(withQuery(<Host profiles={[]} isError allowNone={false} />))
+    await screen.findByTestId('host-profile-error')
     expect(screen.getByTestId('blocked')).toHaveTextContent('yes')
   })
 

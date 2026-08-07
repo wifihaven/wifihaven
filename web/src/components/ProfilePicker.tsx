@@ -108,6 +108,10 @@ export function ProfilePicker({
   // Reconciling it here keeps the invariant with the component that renders the
   // options rather than with each caller's form-seeding code, which is a
   // one-shot snapshot and goes stale when the list arrives late.
+  //
+  // Contract for `allowNone={false}` callers: hold what you are handed. This
+  // effect depends on `value`, so a caller that discards the id and re-presents
+  // null would be handed it again on every commit — a render loop.
   const changeCb = useRef(onChange)
   useEffect(() => { changeCb.current = onChange }, [onChange])
   useEffect(() => {
@@ -122,9 +126,15 @@ export function ProfilePicker({
   // `InlineProfileCreator` already performs this same dance on it internally —
   // doing it twice would buy nothing.)
   //
-  // A failed fetch blocks committing too: we cannot show the operator what they
-  // would be committing, so we do not let them commit it blind.
-  const commitBlocked = isLoading || isError || (creating && (pickedNew || !allowNone))
+  // One rule, applied to every source of "no profile to hand over yet": an open
+  // creator the operator did not ask for, a list still loading, a list that
+  // failed to load. Each of them blocks a caller with no null state, and none of
+  // them blocks a caller that has one — a failed fetch does not make "no
+  // profile" uncommittable, and the alert editor's deny path has to survive it.
+  // Only a creator the operator PICKED blocks unconditionally: they have said
+  // what they want and the commit would race the profile landing.
+  const nothingToHandOver = creating || isLoading || isError
+  const commitBlocked = (creating && pickedNew) || (nothingToHandOver && !allowNone)
   const blockedCb = useRef(onCommitBlockedChange)
   useEffect(() => { blockedCb.current = onCommitBlockedChange }, [onCommitBlockedChange])
   useEffect(() => { blockedCb.current?.(commitBlocked) }, [commitBlocked])
