@@ -20,20 +20,31 @@ icon_type: url
 #   neverssl.com  — exists precisely to serve plain HTTP and never redirect to
 #                   HTTPS (the standard captive-portal trick). Browsers'
 #                   HTTPS-First upgrading does not rewrite it, so this is the
-#                   host that reliably renders the block page. It is the
-#                   load-bearing one.
-#   example.com   — IANA-reserved, stable forever, and the neutral name people
-#                   reach for. Kept as a second target so the app is not a
-#                   single point of failure if neverssl.com is ever down or
-#                   itself blocked upstream.
+#                   host that reliably renders the block page.
 #
-# COLLATERAL: both are single-purpose domains on their own addresses — neither
-# is a shared vendor API or multi-tenant CDN, so blocking them drags nothing
-# else into the drop set. This is the opposite of the #1636 failure mode
-# (YouTube's shared-GFE apex taking Drive/OAuth down with it); see the
-# SHARED-POOL COLLATERAL section in _README.yml. Do not add hosts here that
-# resolve into a shared pool — the value of this app is that blocking it is
-# provably inert for everything else.
+# COLLATERAL — why this list is ONE host, and why example.com was removed.
+#
+# The first draft of this file also carried example.com, on the assumption that
+# an IANA-reserved documentation domain sits on its own dedicated address. That
+# was WRONG and was caught in review. It resolves into Cloudflare's shared
+# anycast ranges:
+#
+#   example.com  -> 104.20.23.154, 172.66.147.243, 2606:4700:10::…
+#                   (104.16.0.0/12, 172.64.0.0/13, 2606:4700::/32 — Cloudflare)
+#   neverssl.com -> 34.223.124.45, 2600:1f13:…  (a dedicated AWS EIP)
+#
+# Blocking a host on a shared pool is precisely the #1636 mechanism (YouTube's
+# shared-GFE apex taking Drive/OAuth down with it) and precisely what the
+# SHARED-POOL COLLATERAL section of _README.yml forbids. It is WORSE here than
+# a quiet drop: the same `eb_` predicate drives the block-page DNAT, so an
+# unrelated Cloudflare-fronted site sharing that IP would be served OUR block
+# page or a cert warning. And an operator could not undo it locally — the
+# seeder re-adds removed template hosts on every boot.
+#
+# So: neverssl.com carries the demo alone. That makes this app dependent on one
+# third party we do not control and do not monitor — an accepted, deliberate
+# tradeoff, because the alternative on offer was collateral damage. If a second
+# host is ever added here, RESOLVE IT FIRST and confirm the addresses are
+# dedicated; do not reason from what a domain is "for".
 hosts:
   - neverssl.com
-  - example.com
