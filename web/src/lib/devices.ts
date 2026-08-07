@@ -7,15 +7,24 @@ import type { Device } from '@/types/api'
 // under `block`, `PolicyService` ships these MACs to the router as
 // `blocked = true` with reason `Unmanaged` (api/src/policy/PolicyService.scala).
 //
-// The predicate was written out by hand in three places before this — the
-// Devices page's Unmanaged Devices split, the Profiles page's device grouping,
-// and the dashboard's onboarding banner — with the Profiles copy using a loose
-// `== null` where the others used strict. They agree today only because
-// `profileId` is `number | null` and never `undefined`; that is a coincidence of
-// the current wire shape, not something either check was asserting. One
-// exported function so a change to what "unmanaged" means lands in one place.
+// The comparison is LOOSE (`== null`) and must stay loose. `Device.profileId` is
+// `Option[ProfileId]` on the server (shared/src/Models.scala), the route encodes
+// the list with a derived zio-json codec (`visible.toJson`, api/src/routes/Routes.scala),
+// and zio-json OMITS a `None` field rather than emitting an explicit null. The
+// golden contract fixture pins that behaviour — the profileless device in
+// contract/api-to-router/policy_snapshot.json carries no `profileId` key at all.
+// So an unassigned device reaches the SPA as `{id, mac, name}` and `profileId`
+// reads back `undefined`, NOT `null`, and a strict `=== null` never fires.
+//
+// That is not hypothetical: the Devices page's Unmanaged Devices section and the
+// Profiles page's add-device picker each hand-wrote this check, one strict and
+// one loose, and only the loose one worked. Collapsing them here fixes the strict
+// site. The `web/src/types/api.ts` declaration still says `number | null`, which
+// is what let the strict version look correct. Tracked as #2623; until the type
+// admits `undefined`, this function is the only thing standing between us and a
+// silently empty unmanaged list.
 export function isUnmanaged(d: Device): boolean {
-  return d.profileId === null
+  return d.profileId == null
 }
 
 export function isManaged(d: Device): boolean {

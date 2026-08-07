@@ -216,10 +216,11 @@ export function ProfilesPage() {
   const devicesByProfile = useMemo(() => {
     const m = new Map<number, Device[]>()
     for (const d of devices) {
-      if (d.profileId == null) continue
-      const arr = m.get(d.profileId) ?? []
+      if (isUnmanaged(d)) continue
+      const pid = d.profileId as number
+      const arr = m.get(pid) ?? []
       arr.push(d)
-      m.set(d.profileId, arr)
+      m.set(pid, arr)
     }
     return m
   }, [devices])

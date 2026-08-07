@@ -44,8 +44,10 @@ const router = (over: Partial<RouterSummary> = {}): RouterSummary => ({
 
 const CONNECTED = router({ enrolled: true, lastSeenAt: '2026-05-12T00:00:00Z' })
 
-// `profileId === null` is the unmanaged predicate — the same one DevicesPage uses
-// to split its Unmanaged Devices section.
+// NOTE: this factory writes `profileId: null` explicitly, which is NOT how the API
+// encodes an unassigned device (the key is omitted — see lib/devices.test.ts). Both
+// shapes are unmanaged; `isUnmanaged` is pinned against the real wire shape there,
+// so these fixtures stay readable without re-proving it.
 const device = (over: Partial<Device> = {}): Device => ({
   id: 1, mac: 'aa:bb:cc:dd:ee:01', name: 'iPad', profileId: 7, profileName: 'Kids',
   lastSeenIp: '192.168.1.20', lastSeenAt: '2026-05-12T00:00:00Z',
@@ -195,20 +197,43 @@ describe('FirstRunHint — #2621 post-connection onboarding steps', () => {
     expect(hint).toHaveAttribute('data-state', 'devices')
   })
 
-  it('does not flash a post-connection step while devices or settings are still loading', async () => {
-    // Loading-states rule (#1098): a loading `[]` must not read as "no unmanaged
-    // devices" and flash the close-the-policy step at someone mid-onboarding.
+  // Loading-states rule (#1098): a loading `[]` must not read as "no unmanaged devices"
+  // and flash the close-the-policy step at someone mid-onboarding. One case per query,
+  // because a guard deleted for just one of them would otherwise slip through.
+  //
+  // The never-resolving query means the `Loaded` probe never appears either, so these
+  // settle on the call and then drain the microtask queue — enough for the OTHER two
+  // queries' data to land, which is exactly the state that would flash a banner if the
+  // missing guard let `?? []` be read as real data.
+  it.each([
+    ['devices',  () => listDevices.mockReturnValue(new Promise(() => {}))],
+    ['settings', () => getHousehold.mockReturnValue(new Promise(() => {}))],
+  ])('does not flash a post-connection step while %s is still loading', async (_which, stall) => {
     getHousehold.mockResolvedValue(household('allow'))
-    listDevices.mockReturnValue(new Promise(() => {}))
+    listDevices.mockResolvedValue([device({ profileId: 7 })])
+    stall()
     renderHint()
 
-    // `devices` never resolves, so the probe never appears either — settle on the
-    // household call and then let the microtask queue drain, which is enough for the
-    // routers + household data to land. If the guard were missing, `devices.data ?? []`
-    // would read as "no unmanaged devices" and flash the policy step here.
-    await waitFor(() => expect(getHousehold).toHaveBeenCalled())
+    await waitFor(() => expect(listRouters).toHaveBeenCalled())
     await act(async () => { await Promise.resolve() })
     expect(screen.queryByTestId('first-run-hint')).not.toBeInTheDocument()
+  })
+
+  // An ERROR must behave like pending, not fall through to a state conclusion. Without
+  // the `isError` half of each guard, a rejected query leaves `data` undefined and
+  // `?? []` reads as real data — the same #1098 failure by a different route.
+  // `queryWrapper` sets `retry: false`, so a rejection settles immediately.
+  it.each([
+    ['routers',  () => listRouters.mockRejectedValue(new Error('boom'))],
+    ['devices',  () => listDevices.mockRejectedValue(new Error('boom'))],
+    ['settings', () => getHousehold.mockRejectedValue(new Error('boom'))],
+  ])('renders nothing when the %s query errors', async (_which, fail) => {
+    getHousehold.mockResolvedValue(household('allow'))
+    listDevices.mockResolvedValue([device({ profileId: 7 })])
+    fail()
+    renderHint()
+
+    await expectNoBannerOnceLoaded()
   })
 
   it('keeps the router steps ahead of the policy step', async () => {
