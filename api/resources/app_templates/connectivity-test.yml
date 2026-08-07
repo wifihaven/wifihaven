@@ -31,7 +31,14 @@ icon_type: url
 #
 #   example.com  -> 104.20.23.154, 172.66.147.243, 2606:4700:10::…
 #                   (104.16.0.0/12, 172.64.0.0/13, 2606:4700::/32 — Cloudflare)
-#   neverssl.com -> 34.223.124.45, 2600:1f13:…  (a dedicated AWS EIP)
+#   neverssl.com -> 34.223.124.45, 2600:1f13:…  (EC2; PTR
+#                   ec2-34-223-124-45.us-west-2.compute.amazonaws.com — an
+#                   address bound to a single instance, NOT a shared front end.
+#                   That is the property that matters for collateral. Note it
+#                   is deliberately not described as a "dedicated Elastic IP":
+#                   the PTR does not establish that, and over-claiming from a
+#                   plausible-looking lookup is what put example.com in this
+#                   file in the first place.)
 #
 # Blocking a host on a shared pool is precisely the #1636 mechanism (YouTube's
 # shared-GFE apex taking Drive/OAuth down with it) and precisely what the
