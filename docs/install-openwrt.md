@@ -284,8 +284,8 @@ thermostats all appear on their own; you do not have to hunt for MAC addresses.
 In the dashboard, open **Devices**. The page is *designed* to collect anything
 without a profile into an **Unmanaged Devices** section at the bottom, each row
 carrying an **Enroll** button
-([`DevicesPage.tsx`](../web/src/pages/DevicesPage.tsx)) — but read the next
-paragraph before you rely on it.
+([`DevicesPage.tsx`](../web/src/pages/DevicesPage.tsx)) — but read the note
+below before you rely on it.
 
 > **That section does not render yet: work from the main list instead.** The
 > page's unmanaged check compares `profileId` against `null`, but the API omits
@@ -357,18 +357,20 @@ enforcement path a paused profile uses. Nothing new runs on the router.
 
 **What you will see when a new device is blocked this way:**
 
-- On **Devices**, the device shows up without a profile. Today that means a row
-  in the main list carrying a **No profile** pill. Once
-  [#2622](https://github.com/wifihaven/wifihaven/pull/2622) lands, it moves
-  instead to the **Unmanaged Devices** section, whose header says whether the
-  household is allowing or blocking these, with an **Unmanaged** badge. Either
-  way this is the answer to "why is this thing offline?" Check here first — on a
-  wide window, since both the pill and the badge are hidden below 640px.
-- Look as an **admin or an adult**. Other roles only ever see devices belonging
-  to a profile they are linked to
+- On **Devices**, the device shows up without a profile. This is the answer to
+  "why is this thing offline?" Check here first. Today that means a row in the
+  main list carrying a **No profile** pill, so use a window at least 640px wide —
+  that pill is hidden on narrower ones. Once
+  [#2622](https://github.com/wifihaven/wifihaven/pull/2622) lands the device
+  moves to the **Unmanaged Devices** section instead, and the section itself is
+  the signal at any width (its **Unmanaged** badge is still desktop-only, but the
+  heading, the row and its **Enroll** button are not).
+- Look as an **admin or an adult**. A `child` — the only other role
+  ([`Models.scala`](../shared/src/Models.scala), `UserRole`) — sees only devices
+  belonging to a profile they are linked to
   ([`Routes.scala`](../api/src/routes/Routes.scala), `filterDevices`), and a
-  device with no profile matches nothing — so to a read-only member the blocked
-  device is not merely un-enrollable, it is absent from the page entirely.
+  device with no profile matches nothing, so the blocked device is not merely
+  un-enrollable for them: it is absent from the page entirely.
 - An **alert** is raised for the new device, same as under `allow`.
 - On the **device itself**, the symptom is generic: connections fail. Web
   traffic on ports 80/443 is redirected to the local block page if you set that

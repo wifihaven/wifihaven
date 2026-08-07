@@ -138,10 +138,11 @@ is the block; enrolling it into one clears it on the next snapshot.
 
 Right now "has no profile" reads as a **No profile** pill on a row in the main
 list — and only on a window at least 640px wide, since that column is hidden on
-narrower screens. Check from a desktop; a phone shows no profile column at all,
-so the list looks the same whether or not anything is unassigned. Look as an
-admin or an adult, too: other roles only see devices attached to a profile they
-are linked to, so an unassigned device is absent from their page entirely.
+narrower screens — a narrow window hides it whatever the device. Widen the
+window before you conclude anything; below the threshold the list looks the same
+whether or not anything is unassigned. Look as an admin or an adult, too: a
+`child` sees only devices attached to a profile they are linked to, so an
+unassigned device is absent from their page entirely.
 
 The **Unmanaged Devices** section that is supposed to collect these never
 renders — the page compares `profileId` against `null` while the API omits the
