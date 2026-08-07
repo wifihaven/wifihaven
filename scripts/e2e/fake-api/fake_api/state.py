@@ -155,9 +155,12 @@ class State:
     def record_policy_push(self, *, served_etag: str) -> int:
         """#2608: record a snapshot DELIVERED over ws, in the same list as polls.
 
-        The real API has the equivalent: RouterWsRegistry stamps `routers
-        .last_etag` on a successful push, so "which policy version does this
-        router have" is answerable regardless of transport.
+        Deliberately UNLIKE the real API, which today records a policy version
+        only on the HTTP poll — `RouterWsRoutes` touches `last_seen_at` alone, so
+        a ws router's `routers.last_etag` is frozen (#2619). The fake records both
+        transports so Gate-2 scenarios keep a single delivery observable; Gate 3,
+        which runs against the real API, reads the router's own on-disk snapshot
+        instead (`lib/wait.py`).
         """
         return self.record_policy_fetch(
             if_none_match=None,

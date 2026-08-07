@@ -39,7 +39,6 @@ WS_BIN = "/usr/sbin/wifihaven-ws"
 # … ; pkill -f '[w]ifihaven-ws'` and the pkill SIGKILLed its own parent, so the
 # loop ran once and the `rm` after it never executed.
 WS_PATTERN = "[w]ifihaven-ws"
-WS_HEALTH_PATH = "/tmp/wifihaven-ws-health"
 
 
 def test_wifihaven_update_cron_entry_present(router):
@@ -156,7 +155,8 @@ def test_dead_ws_sidecar_falls_back_to_the_http_poll(router, fake_api):
         # sentinel is never fresh (ws_outbound.lua), while a stale-but-present one
         # would make the agent wait out ws_fallback_after (300s, longer than this
         # test's budget). This must run — it is why the kill above must not take
-        # its own shell down with it.
+        # its own shell down with it. The sentinel is /tmp/wifihaven-ws-health,
+        # assembled into "$h" above rather than named here for the same reason.
         'rm -f "$h"; '
         # Fail loudly if the sentinel somehow survived, rather than leaving the
         # assertion below to time out with a misleading message.

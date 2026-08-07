@@ -148,8 +148,11 @@ store_get() { printf '%s\n' "$1" | awk -F= -v k="$2" '$1 == k {v=$0} END {sub(/^
 # Every case requires __calls > 0: the migration must have actually invoked uci,
 # so none of these can pass because the script silently failed to run.
 ran() {
-  v=$(store_get "$1" '!calls')
-  [ -n "$v" ] && [ "$v" -gt 0 ]
+  wh_ran_calls=$(store_get "$1" '!calls')
+  case "$wh_ran_calls" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  [ "$wh_ran_calls" -gt 0 ]
 }
 
 # (a) Fresh install: nothing set → enabled stays unset (code default = on),

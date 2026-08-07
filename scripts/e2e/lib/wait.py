@@ -218,26 +218,47 @@ def router_snapshot_etag() -> str | None:
         return None
 
 
+def policy_change_baseline(admin: AdminAPI, router_id: str) -> dict:
+    """Capture what `wait_for_etag_change` compares against. Call BEFORE mutating.
+
+    Taking the baseline after the mutation is a race, and #2608 turned it from
+    theoretical into routine. Under the HTTP poll the agent needed seconds to
+    notice a change, so a baseline read a moment late still predated the pickup.
+    With ws the shipped default, `PolicyService.reevaluate` forks the push the
+    instant the mutation commits and the sidecar persists `policy.json` in well
+    under a second — comfortably faster than an admin-API round-trip plus an SSH
+    into the router VM. A baseline captured after the mutation then already holds
+    the NEW etag, and the wait can never fire.
+    """
+    row = admin.get_router(router_id) or {}
+    return {"lastEtag": row.get("lastEtag"), "diskEtag": router_snapshot_etag()}
+
+
 def wait_for_etag_change(
     admin: AdminAPI,
     router_id: str,
     *,
+    baseline: dict,
     timeout_s: float = 120,
     interval_s: float = 2.0,
 ) -> dict:
     """Wait for the agent to pick up a *new* policy, over EITHER transport.
 
+    `baseline` is required and must come from `policy_change_baseline()` called
+    BEFORE the policy mutation — see that function for why it cannot be captured
+    here.
+
     #2608 made the websocket the shipped router default, and on a healthy link
-    the agent's HTTP poll goes dormant (#2037). `routers.last_etag` is written
-    only by the poll route (`RouterRoutes` passes `Some(snap.etag)` to
-    `routerRepo.touch`; `RouterWsRoutes` touches `last_seen_at` alone), so on a
-    ws router that column can stop advancing entirely and an admin-API-only wait
-    would hang until it timed out.
+    the agent's HTTP poll goes dormant (#2037) — skipped entirely, not merely
+    slowed. `routers.last_etag` is written only by the poll route (`RouterRoutes`
+    passes `Some(snap.etag)` to `routerRepo.touch`; `RouterWsRoutes` touches
+    `last_seen_at` alone), so on a ws router that column is frozen by
+    construction and an admin-API-only wait would always time out.
 
     So this checks BOTH: the server-side `lastEtag`, and the etag in the router's
     own on-disk snapshot — which both transports write, and which is the stronger
     signal anyway (it says the ROUTER has the policy, not merely that the server
-    served it). Returns the router row either way.
+    served it).
 
     That `last_etag` freezes for a ws router is a real product gap, not just a
     test problem — it is what the operator's "who is on current policy?" view
@@ -248,9 +269,8 @@ def wait_for_etag_change(
     snapshot to every router, so stamping from the fan-out would persist the
     wrong household's etag.
     """
-    baseline = admin.get_router(router_id) or {}
     baseline_etag = baseline.get("lastEtag")
-    baseline_disk = router_snapshot_etag()
+    baseline_disk = baseline.get("diskEtag")
 
     def check():
         r = admin.get_router(router_id)
@@ -258,7 +278,10 @@ def wait_for_etag_change(
             return r
         disk = router_snapshot_etag()
         if disk and disk != baseline_disk:
-            return r or {}
+            # Must be truthy — wait_until treats a falsy return as "not yet", so
+            # an empty dict here would poll to timeout on the very signal that
+            # just fired.
+            return r or {"lastEtag": None, "diskEtag": disk}
         return None
 
     return wait_until(check, timeout_s=timeout_s, interval_s=interval_s,

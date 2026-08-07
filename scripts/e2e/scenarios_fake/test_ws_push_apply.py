@@ -34,18 +34,19 @@ runner→public-resolver egress flake (#1935).
 """
 from __future__ import annotations
 
-import json
-
 import pytest
 
 from lib.vm import router_ssh
-from lib.wait import wait_until
+from lib.wait import ROUTER_SNAPSHOT_PATH, router_snapshot_etag, wait_until
 
 from .snapshot_builder import SnapshotBuilder
 
 pytestmark = pytest.mark.ws_push
 
-SNAPSHOT_PATH = "/etc/wifihaven/policy.json"
+# Single source for the agent's on-disk snapshot path + parser: lib.wait owns
+# them, because gate3's transport-agnostic policy-change wait needs the same read
+# (#2608). Aliased rather than re-declared so the two can't drift.
+SNAPSHOT_PATH = ROUTER_SNAPSHOT_PATH
 WS_METRICS_PATH = "/tmp/wifihaven-ws-metrics.txt"
 WS_HEALTH_PATH = "/tmp/wifihaven-ws-health"
 # #2229 event-driven apply trigger: the sidecar writes "<etag>\t<uptime>" here
@@ -123,15 +124,7 @@ def _enable_ws_and_freeze_poll() -> None:
     )
 
 
-def _router_snapshot_etag() -> str | None:
-    res = router_ssh(f"cat {SNAPSHOT_PATH} 2>/dev/null || true", check=False, timeout=10)
-    out = (res.stdout or "").strip()
-    if not out:
-        return None
-    try:
-        return json.loads(out).get("etag")
-    except (ValueError, AttributeError):
-        return None
+_router_snapshot_etag = router_snapshot_etag
 
 
 def _ws_recv_policy_count() -> int:
