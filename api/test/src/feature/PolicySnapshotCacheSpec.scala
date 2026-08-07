@@ -40,7 +40,7 @@ object PolicySnapshotCacheSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedP
    */
   private final class ProbePublisher(ref: Ref[List[PolicySnapshot]])
       extends PolicySnapshotPublisher {
-    def publish(snap: PolicySnapshot): UIO[Unit] = ref.update(_ :+ snap)
+    def publish(household: HouseholdId, snap: PolicySnapshot): UIO[Unit] = ref.update(_ :+ snap)
   }
 
   /**

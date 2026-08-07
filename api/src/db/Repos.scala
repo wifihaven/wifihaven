@@ -1159,6 +1159,22 @@ trait RouterRepo {
   def touch(id: RouterId, etag: Option[ETag], agentVersion: Option[String]): Task[Unit]
 
   /**
+   * #2619: write `last_etag` ALONE, leaving `last_seen_at` untouched.
+   *
+   * `touch` also refreshes `last_seen_at`, and that is correct for every one of its callers because
+   * each is triggered by something the ROUTER did — a REST poll, a usage/event ingest, a ws
+   * heartbeat. `last_seen_at` therefore means "we heard from this router", which is what
+   * [[wifihaven.api.metrics.RouterPresenceMetrics]] counts for `agent_connected_routers` and what
+   * the SPA renders as connected.
+   *
+   * The ws policy push is SERVER-initiated, so it must not feed that signal. A half-open socket the
+   * registry still holds keeps accepting `channel.send` into the local buffer for as long as TCP
+   * retransmits (the #2561 scenario), so stamping through `touch` would let the server hold the
+   * liveness gauge green for a router that is gone. Hence a separate write.
+   */
+  def touchEtag(id: RouterId, etag: ETag): Task[Unit]
+
+  /**
    * #1204: routers whose last_seen_at is at or after `cutoff`. Drives the agent_connected_routers
    * gauge.
    */
@@ -2937,6 +2953,14 @@ class RouterRepoLive(xa: Transactor[Task]) extends RouterRepo {
               last_etag=COALESCE($etag,last_etag),
               agent_version=COALESCE($agentVersion,agent_version)
           WHERE id=$id""".update.run
+        .transact(xa)
+        .unit,
+    )
+  // #2619: last_etag only — deliberately NOT last_seen_at. See the trait's scaladoc: liveness must
+  // stay router-driven, and a ws policy push is server-driven.
+  def touchEtag(id: RouterId, etag: ETag)                                            =
+    DbMetrics.timed("router.touchEtag")(
+      sql"UPDATE routers SET last_etag=$etag WHERE id=$id".update.run
         .transact(xa)
         .unit,
     )

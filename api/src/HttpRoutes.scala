@@ -255,7 +255,13 @@ object HttpRoutes {
         hsRepo,
         spaEventBus,
       )
-      wsRegistry    <- RouterWsRegistry.make
+      // #2619: the registry's delivery sink stamps `routers.last_etag` with the etag a `policy`
+      // frame actually delivered — the same column the REST poll writes at serve time. ws is the
+      // shipped router default since #2608 and the poll goes dormant on a healthy link (#2037), so
+      // for most of the fleet this is the only writer. `touchEtag`, NOT `touch`: a server-initiated
+      // push must not refresh `last_seen_at`, which is the router-driven liveness signal behind
+      // `agent_connected_routers`.
+      wsRegistry    <- RouterWsRegistry.make(routerRepo.touchEtag)
       // #1968: the browser-facing SPA websocket registry (S1). A FORK of the router registry pattern
       // (design §5.1), not a generalization — keyed by per-connection id + role with a subscription
       // set. Additive: REST stays the fallback throughout the rollout (no flag day).

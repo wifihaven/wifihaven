@@ -1,7 +1,7 @@
 package wifihaven.api.feature
 
 import wifihaven.api.routes.RouterWsRegistry
-import wifihaven.shared.types.RouterId
+import wifihaven.shared.types.{ETag, HouseholdId, RouterId}
 import zio.*
 import zio.http.*
 import zio.metrics.Metric
@@ -34,6 +34,15 @@ object RouterWsConnectionsGaugeSpec extends ZIOSpec[Any] {
   override val bootstrap: ZLayer[Any, Nothing, Any] = ZLayer.empty
 
   private val routerId = RouterId(UUID.fromString("3498967e-3842-41d2-960f-b521c7809cf4"))
+
+  /**
+   * #2619: the registry's policy-delivery sink. This spec exercises register/deregister/supersede
+   * only — it never pushes a `policy` frame, so the sink is never invoked and a no-op is the honest
+   * wiring here (the sink is a required constructor parameter precisely so this is a deliberate
+   * choice rather than a silent default). The real `routers.last_etag` write is pinned end-to-end,
+   * against a real repo, in [[RouterWsSpec]].
+   */
+  private val noDeliverySink: (RouterId, ETag) => Task[Unit] = (_, _) => ZIO.unit
 
   /**
    * A minimal [[WebSocketChannel]] stand-in. The registry only ever holds a channel for identity
@@ -78,14 +87,14 @@ object RouterWsConnectionsGaugeSpec extends ZIOSpec[Any] {
   def spec = suite("router_ws_connections_active gauge (#2561)")(
     test("a reconnect for an already-connected router supersedes the stale channel") {
       for {
-        reg            <- RouterWsRegistry.make
+        reg            <- RouterWsRegistry.make(noDeliverySink)
         stale          <- stubChannel
         live           <- stubChannel
         supersededPre  <- supersededTotal
         // The prod sequence: `connected`, then `connected` again for the SAME router with no
         // `disconnected` between (the first socket went half-open; its teardown never ran).
-        _              <- reg.register(routerId, stale)
-        _              <- reg.register(routerId, live)
+        _              <- reg.register(routerId, HouseholdId.Default, stale)
+        _              <- reg.register(routerId, HouseholdId.Default, live)
         afterSecond    <- reg.activeCount
         gaugeWhileUp   <- connectionsActive
         staleClosed    <- stale.shutdownCalled.get
@@ -106,12 +115,12 @@ object RouterWsConnectionsGaugeSpec extends ZIOSpec[Any] {
     },
     test("distinct routers each hold their own channel — superseding is per router id") {
       for {
-        reg <- RouterWsRegistry.make
+        reg <- RouterWsRegistry.make(noDeliverySink)
         other = RouterId(UUID.fromString("f04dd490-a8c1-431a-9aec-44f64bff3b23"))
         chA     <- stubChannel
         chB     <- stubChannel
-        _       <- reg.register(routerId, chA)
-        _       <- reg.register(other, chB)
+        _       <- reg.register(routerId, HouseholdId.Default, chA)
+        _       <- reg.register(other, HouseholdId.Default, chB)
         both    <- reg.activeCount
         _       <- reg.deregister(routerId, chA)
         oneGone <- reg.activeCount

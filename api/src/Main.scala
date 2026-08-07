@@ -256,11 +256,17 @@ object Main extends ZIOAppDefault {
           wifihaven.api.policy.PolicySnapshotPublisher.broadcast(
             List(
               new wifihaven.api.policy.PolicySnapshotPublisher {
-                def publish(snap: wifihaven.shared.PolicySnapshot): UIO[Unit] =
-                  wsRegistry.publishPolicy(snap)
+                def publish(
+                    household: wifihaven.shared.types.HouseholdId,
+                    snap: wifihaven.shared.PolicySnapshot,
+                ): UIO[Unit] =
+                  wsRegistry.publishPolicy(household, snap)
               },
               new wifihaven.api.policy.PolicySnapshotPublisher {
-                def publish(snap: wifihaven.shared.PolicySnapshot): UIO[Unit] =
+                def publish(
+                    household: wifihaven.shared.types.HouseholdId,
+                    snap: wifihaven.shared.PolicySnapshot,
+                ): UIO[Unit] =
                   // #1974 (S6a): the #1849 reevaluate (fixed-interval ticker + every policy mutation)
                   // can change a profile's remaining-minutes / over-limit WITHOUT new usage (schedule
                   // boundary, cap exhaustion, unpause, +Time), so it is a `timeStatus`/`appUsage` push

@@ -391,10 +391,11 @@ object SpaWsS3Spec
         received <- Ref.make(Option.empty[PolicySnapshot])
         bus      <- SpaEventBus.make
         routerSink = new PolicySnapshotPublisher {
-          def publish(s: PolicySnapshot): UIO[Unit] = received.set(Some(s))
+          def publish(hh: HouseholdId, s: PolicySnapshot): UIO[Unit] = received.set(Some(s))
         }
         spaSink    = new PolicySnapshotPublisher {
-          def publish(s: PolicySnapshot): UIO[Unit] = bus.publish(SpaEvent.NowChanged)
+          def publish(hh: HouseholdId, s: PolicySnapshot): UIO[Unit] =
+            bus.publish(SpaEvent.NowChanged)
         }
         pub        = PolicySnapshotPublisher.broadcast(List(routerSink, spaSink))
         snap       = PolicySnapshot(
@@ -404,7 +405,9 @@ object SpaWsS3Spec
           profiles = Map.empty,
           blocklists = Map.empty,
         )
-        spaEvent <- ZIO.scoped(bus.subscribe.flatMap(q => pub.publish(snap) *> q.take))
+        spaEvent <- ZIO.scoped(
+          bus.subscribe.flatMap(q => pub.publish(HouseholdId.Default, snap) *> q.take),
+        )
         got      <- received.get
       } yield assertTrue(got.contains(snap)) && assertTrue(spaEvent == SpaEvent.NowChanged)
     },

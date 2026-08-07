@@ -87,13 +87,13 @@ object RouterWsRoutes {
               // has policy immediately (design §6.1). A snapshot-build failure must not tear the
               // socket down — log and carry on; the router still gets the next push-on-change and can
               // fall back to the REST poll.
-              registry.register(router.id, channel) *>
+              registry.register(router.id, router.householdId, channel) *>
                 ZIO.logInfo(s"router ws: connected router=${router.id}") *>
                 policy
                   // #2107: first-policy push is scoped to the router's household (same scoping as the
                   // REST /api/router/policy poll).
                   .snapshot(router.householdId)
-                  .flatMap(registry.pushPolicyTo(channel, _))
+                  .flatMap(registry.pushPolicyTo(router.id, router.householdId, channel, _))
                   .catchAllCause(c =>
                     ZIO.logWarningCause(
                       s"router ws: first-policy push failed router=${router.id}",

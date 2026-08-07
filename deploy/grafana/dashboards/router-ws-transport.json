@@ -1003,6 +1003,63 @@
           "refId": "A"
         }
       ]
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "title": "routers.last_etag stamp outcomes (#2619)",
+      "description": "rate of router_ws_etag_stamp_total by outcome — the delivery-time write of routers.last_etag that rides every websocket policy push. That column is what the operator's \"who is on current policy?\" view reads, and until #2619 only the REST poll wrote it; since #2608 made ws the router default the poll goes dormant on a healthy link (#2037), so this push is the only writer for most of the fleet. The stamp is best-effort — a DB failure must not tear down a policy delivery — so nothing else on the push path moves when it breaks, and this series is the only signal.\n\n`ok`: written; should track the policy-push rate.\n`error`: the write failed and the column is silently going stale. This is the ALERTABLE series — any sustained rate is actionable.\n`household_mismatch`: the pushed snapshot was built for a different household than the receiving router, so the stamp was refused. This is NOT expected to be zero while #2626 is open — PolicyService.reevaluate fans the default household's snapshot out to every connected router, so in steady state it fires once per policy change per connected non-default-household router. Read it as a RATIO against ok: it measures #2626's live blast radius, and a step change in that ratio is what is actionable, not the mere presence of the series. Those routers' last_etag also does not advance past their connect-time push until #2626 lands.\n`unregistered`: the router had no registry entry when the stamp ran (a disconnect racing a push), so its household could not be established. Expect near-zero and bursty.\n\nBounded 4-value enum; no per-router or per-household label rides it.",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 72
+      },
+      "id": 17,
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "cps",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "lineWidth": 1
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (outcome) (rate(router_ws_etag_stamp_total{env=\"$env\"}[5m]))",
+          "legendFormat": "{{outcome}}",
+          "refId": "A"
+        }
+      ]
     }
   ],
   "refresh": "30s",

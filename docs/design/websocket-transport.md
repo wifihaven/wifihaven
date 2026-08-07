@@ -388,6 +388,31 @@ agent boot
 - **`routers.last_seen_at`** is touched by *both* paths (the ws heartbeat and the
   REST poll both call `routerRepo.touch`), so liveness is uniform regardless of
   transport.
+- **`routers.last_etag`** is written by *both* paths too, as of
+  [#2619](https://github.com/wifihaven/wifihaven/issues/2619): the REST poll
+  stamps the etag it serves, and `RouterWsRegistry` stamps the etag a `policy`
+  frame delivered. Before that only the poll wrote it, which froze the column
+  for any router on a healthy ws link (the poll goes dormant, #2037).
+  The column means **the newest policy version the server has SENT this
+  router** — a send-time fact on either transport, never "the router has applied
+  it". The applied etag lives in the router's own on-disk snapshot.
+  Note that unlike `last_seen_at`, the ws stamp writes `last_etag` ALONE
+  (`RouterRepo.touchEtag`, not `touch`). `last_seen_at` means "we heard from
+  this router", and every writer of it is triggered by something the router did;
+  a server-initiated push must not be able to hold that gauge green for a router
+  whose socket has gone half-open.
+
+  One case where the ws path deliberately does NOT write: the push-on-change
+  fan-out is not household-scoped yet
+  ([#2626](https://github.com/wifihaven/wifihaven/issues/2626)), so the stamp is
+  skipped (and metered `router_ws_etag_stamp_total{outcome="household_mismatch"}`)
+  when the pushed snapshot's household differs from the router's. A stale etag
+  is recoverable; another tenant's etag written into this column is not.
+  **Consequence, stated plainly: until #2626 lands, a router in a NON-default
+  household does not get an advancing `last_etag` at all** beyond its
+  connect-time push, which is household-scoped and therefore does stamp. That
+  also makes `household_mismatch` a steady-state series rather than an anomaly —
+  read it as a ratio against `ok`, not against zero.
 
 ### 3.2 Detection: how the server knows which a router uses
 
