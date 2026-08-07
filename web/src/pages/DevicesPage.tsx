@@ -313,10 +313,9 @@ function DeviceRowEditor({
         />
       </div>
       {/* The creator needs the full row width; the select alone does not. On this
-          surface `commitBlocked` and "the creator is open" coincide: the row
-          always allows null, and it is only ever reached with at least one
-          profile (`knownDevices` filters `profileId !== null`), so the creator
-          here is always one the operator picked. */}
+          surface `commitBlocked` is exactly "a creator the operator opened": the
+          row allows null, so the loading and error terms don't reach it, and the
+          picker never auto-opens on a failed fetch either. */}
       <div className={commitBlocked ? 'basis-full order-last' : 'min-w-[10rem]'}>
         <ProfilePicker
           profiles={profiles}
@@ -343,11 +342,10 @@ function DeviceRowEditor({
         <button
           type="button"
           onClick={onClose}
-          // Closing while the picker has nothing to hand over would abandon the
-          // creator mid-flow, and closing mid-request would leave the profile
-          // created but never assigned, with nothing on screen saying so. (The
-          // outer Edit/Done toggle stays enabled either way, so this is never a
-          // trap.)
+          // Closing with a creator the operator opened would abandon it
+          // mid-flow, and closing mid-request would leave the profile created
+          // but never assigned, with nothing on screen saying so. (The outer
+          // Edit/Done toggle stays enabled either way, so this is never a trap.)
           disabled={commitBlocked}
           className="text-xs text-brand-text hover:text-brand-ink bg-brand-alt px-3 py-1.5 rounded-lg transition-colors disabled:opacity-60"
         >Done</button>
