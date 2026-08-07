@@ -47,12 +47,18 @@
 # an opted-out router AND the automatic fallback for a default-on router whose
 # sidecar is down past wifihaven.ws.fallback_after (design §3.1).
 
-if [ -z "$(uci -q get wifihaven.ws)" ]; then
-  uci set wifihaven.ws=ws
-fi
-
+# The marker guard comes FIRST so this script performs no UCI write at all on a
+# router that has already been through the flip. (Creating the section above the
+# guard would stage a write that the early exit then drops uncommitted.)
 if [ -n "$(uci -q get wifihaven.ws.default_on_migrated)" ]; then
   exit 0
+fi
+
+if [ -z "$(uci -q get wifihaven.ws)" ]; then
+  if ! uci set wifihaven.ws=ws; then
+    logger -t wifihaven "ws default-on migration: could not create the 'ws' UCI section; leaving the flag alone (will retry)"
+    exit 1
+  fi
 fi
 
 if [ "$(uci -q get wifihaven.ws.enabled)" = "0" ]; then
@@ -60,6 +66,15 @@ if [ "$(uci -q get wifihaven.ws.enabled)" = "0" ]; then
 fi
 
 uci set wifihaven.ws.default_on_migrated='1'
-uci commit wifihaven
 
+# Fail LOUD rather than exiting 0 on a failed commit: uci_apply_defaults DELETES
+# a uci-defaults script that exits 0, so swallowing this would drop the migration
+# permanently and silently. A non-zero exit keeps the script in place and retries
+# on the next boot (docs/process/no-dark-by-default.md).
+if ! uci commit wifihaven; then
+  logger -t wifihaven "ws default-on migration: uci commit failed; will retry on next boot"
+  exit 1
+fi
+
+logger -t wifihaven "ws default-on migration applied (wifihaven.ws.enabled=$(uci -q get wifihaven.ws.enabled || echo unset))"
 exit 0

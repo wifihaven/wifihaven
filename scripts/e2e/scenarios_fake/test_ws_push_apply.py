@@ -6,8 +6,7 @@ tested in isolation (busted ws_*_spec.lua), and ingest parity uses the stdlib
 ws_send.py fake client (Gate 3). NONE drives a *server push* through the *real*
 OpenWRT agent's wifihaven-ws sidecar.
 
-This scenario does. With the sidecar enabled (UCI `wifihaven.ws.enabled=1`,
-default-off everywhere else) and pointed at the Gate-2 fake API, it asserts the
+This scenario does. Pointed at the Gate-2 fake API, it asserts the
 two legs of the push path end-to-end through the real agent:
 
   Leg A — policy-on-connect (#1849): on upgrade the fake pushes the current
@@ -104,8 +103,16 @@ def _enable_ws_and_freeze_poll() -> None:
     Setting `policy_poll_interval=3600` neutralises the poll for the scenario's
     lifetime (the agent still does ONE startup poll, then sleeps an hour), so any
     policy.json change observed after the socket is up is attributable to the ws
-    push and nothing else. The settings live in the VM disk and are reverted by
-    the next test's `router` fixture (router_restore to the ws-off base snapshot).
+    push and nothing else.
+
+    The `ws.enabled=1` write is redundant since #2608 made ws the shipped default
+    (the base snapshot now comes up with the sidecar running and `enabled` unset).
+    It is kept because this scenario's whole point is to be explicit about which
+    transport it is testing — it must not silently start passing or failing on a
+    future default change. Freezing the poll is the part that still does work.
+
+    The settings live in the VM disk and are reverted by the next test's `router`
+    fixture (router_restore to the base snapshot, which is ws-ON as of #2608).
     """
     router_ssh(
         "uci set wifihaven.ws.enabled=1; "

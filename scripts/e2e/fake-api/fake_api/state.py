@@ -39,6 +39,14 @@ class PolicyFetchRecord:
     since_query: str | None
     served_etag: str
     status: int  # 200 or 304
+    # #2608: which transport DELIVERED this snapshot — "http" for a
+    # GET /api/router/policy poll, "ws" for a pushed `policy` frame. Once ws is
+    # the shipped default the poll goes dormant on a healthy link (#2037), so a
+    # scenario that waits for "the agent has the current etag" must be satisfied
+    # by either transport. Keeping both in ONE list is what makes
+    # `wait_for_etag_served` transport-agnostic instead of needing a parallel
+    # ws-only observable that would then have to be kept in sync.
+    transport: str = "http"
 
 
 @dataclass
@@ -128,6 +136,7 @@ class State:
         since_query: str | None,
         served_etag: str,
         status: int,
+        transport: str = "http",
     ) -> int:
         rec_id = self._next_policy_fetch_id
         self._next_policy_fetch_id += 1
@@ -138,9 +147,25 @@ class State:
                 since_query=since_query,
                 served_etag=served_etag,
                 status=status,
+                transport=transport,
             )
         )
         return rec_id
+
+    def record_policy_push(self, *, served_etag: str) -> int:
+        """#2608: record a snapshot DELIVERED over ws, in the same list as polls.
+
+        The real API has the equivalent: RouterWsRegistry stamps `routers
+        .last_etag` on a successful push, so "which policy version does this
+        router have" is answerable regardless of transport.
+        """
+        return self.record_policy_fetch(
+            if_none_match=None,
+            since_query=None,
+            served_etag=served_etag,
+            status=200,
+            transport="ws",
+        )
 
     def record_usage(self, body: dict[str, Any]) -> int:
         rec_id = self._next_usage_id

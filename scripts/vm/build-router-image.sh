@@ -271,15 +271,13 @@ HOST_GID=$(id -g)
 # cqueues + luaossl: the wifihaven-ws sidecar's hard runtime deps (the async
 # event loop + TLS/crypto the agent lacks, #1845/#1848). They ARE a package
 # DEPENDS of wifihaven as of #2036, and ws is the DEFAULT transport as of #2608
-# (see openwrt/files/etc/config/wifihaven), so a real install pulls them in; they
-# stay listed here because the Image Builder resolves this list against the
-# upstream feed directly. The Gate-2 ws push→apply
-# scenario (scripts/e2e/scenarios_fake/test_ws_push_apply.py, #1939) flips
-# `wifihaven.ws.enabled=1`, which only starts a *working* sidecar when these are
-# present. Both are in the official OpenWrt feeds for Lua 5.1 on the 23.05 (ipk)
-# and snapshot (apk) generations the matrix builds (verified by the #1845 spike),
-# so the Image Builder pulls them from the upstream feed. e2e image only —
-# production routers install these out-of-band when an operator opts into ws.
+# (see openwrt/files/etc/config/wifihaven), so the sidecar starts on every
+# e2e router and needs both present to work at all — not just in the ws push→apply
+# scenario (scripts/e2e/scenarios_fake/test_ws_push_apply.py, #1939). Listing them
+# explicitly here is belt-and-suspenders on top of the DEPENDS. Both are in the
+# official OpenWrt feeds for Lua 5.1 on the 23.05 (ipk) and snapshot (apk)
+# generations the matrix builds (verified by the #1845 spike), so the Image
+# Builder pulls them from the upstream feed.
 PACKAGES_LIST="wifihaven -dnsmasq dnsmasq-full uhttpd cqueues luaossl"
 
 # Per-flavor IB prep script — chosen branch is run inside the container.

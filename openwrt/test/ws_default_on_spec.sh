@@ -76,55 +76,81 @@ fi
   || check "migration script ships at /etc/uci-defaults/97-wifihaven-ws-default-on" "missing $MIGRATION"
 
 # Fake `uci` over a flat key=value store so the migration's decisions are
-# exercised for real (no OpenWrt/libuci needed on the dev host or in CI).
+# exercised for real (no OpenWrt/libuci needed on the dev host or in CI). The
+# shim also LOGS every invocation, so each case can prove the script actually
+# ran rather than passing because the seeded store came back untouched.
+#
+# Keys are matched exactly (awk field compare, not a grep pattern) so a key
+# containing a regex metacharacter can never match the wrong row.
 run_migration() {
   # args: zero or more "key=value" seed lines, e.g. ws.enabled=0
-  [ -f "$MIGRATION" ] || { echo "MIGRATION-MISSING"; return 0; }
   WS_TMP=$(mktemp -d)
   : > "$WS_TMP/store"
+  : > "$WS_TMP/calls"
   for kv in "$@"; do printf '%s\n' "$kv" >> "$WS_TMP/store"; done
 
   cat > "$WS_TMP/uci" <<'UCI'
 #!/bin/sh
-# Minimal uci stand-in: get/set/delete/commit over $WS_STORE (key=value lines).
+# Minimal uci stand-in: get/set/delete/commit over $WS_STORE (key=value lines),
+# logging each call to $WS_CALLS. `uci get` on a missing key exits 1 and prints
+# nothing, as real uci does.
 store="$WS_STORE"
 [ "$1" = "-q" ] && shift
 cmd="$1"; shift
 key="${1%%=*}"
 key="${key#wifihaven.}"
 val="${1#*=}"
+printf '%s %s\n' "$cmd" "$key" >> "$WS_CALLS"
+drop_key() {
+  awk -F= -v k="$key" '$1 != k' "$store" > "$store.new"
+  mv "$store.new" "$store"
+}
 case "$cmd" in
   get)
-    line=$(grep "^$key=" "$store" | tail -1) || true
+    line=$(awk -F= -v k="$key" '$1 == k' "$store" | tail -1)
     [ -n "$line" ] || exit 1
     printf '%s\n' "${line#*=}" ;;
   set)
-    grep -v "^$key=" "$store" > "$store.new" 2>/dev/null || true
-    mv "$store.new" "$store"
+    drop_key
     printf '%s=%s\n' "$key" "$val" >> "$store" ;;
   delete)
-    grep -v "^$key=" "$store" > "$store.new" 2>/dev/null || true
-    mv "$store.new" "$store" ;;
+    drop_key ;;
   commit) : ;;
   *) exit 1 ;;
 esac
 exit 0
 UCI
   chmod 0755 "$WS_TMP/uci"
-  WS_STORE="$WS_TMP/store" PATH="$WS_TMP:$PATH" sh "$MIGRATION" >/dev/null 2>&1 || true
+  # `logger` is not on a dev host / CI runner; stub it so the migration's syslog
+  # lines don't turn into "command not found" noise.
+  printf '#!/bin/sh\nexit 0\n' > "$WS_TMP/logger"
+  chmod 0755 "$WS_TMP/logger"
+
+  WS_STORE="$WS_TMP/store" WS_CALLS="$WS_TMP/calls" PATH="$WS_TMP:$PATH" \
+    sh "$MIGRATION" >/dev/null 2>&1 || true
   # Re-run once: the migration must be idempotent across the boot pass that
   # follows a postinst-triggered run.
-  WS_STORE="$WS_TMP/store" PATH="$WS_TMP:$PATH" sh "$MIGRATION" >/dev/null 2>&1 || true
+  WS_STORE="$WS_TMP/store" WS_CALLS="$WS_TMP/calls" PATH="$WS_TMP:$PATH" \
+    sh "$MIGRATION" >/dev/null 2>&1 || true
+
+  # Emit the resulting store plus a synthetic `__calls=<n>` / `__writes=<n>` row
+  # so every assertion below can require evidence the script executed.
   cat "$WS_TMP/store"
+  printf '__calls=%s\n' "$(wc -l < "$WS_TMP/calls" | tr -d ' ')"
+  printf '__writes=%s\n' "$(grep -cE '^(set|delete) ' "$WS_TMP/calls" || true)"
   rm -rf "$WS_TMP"
 }
 
-store_get() { printf '%s\n' "$1" | grep "^$2=" | tail -1 | sed "s/^$2=//"; }
+store_get() { printf '%s\n' "$1" | awk -F= -v k="$2" '$1 == k {v=$0} END {sub(/^[^=]*=/, "", v); print v}'; }
+
+# Every case requires __calls > 0: the migration must have actually invoked uci,
+# so none of these can pass because the script silently failed to run.
+ran() { [ "$(store_get "$1" __calls)" -gt 0 ] 2>/dev/null; }
 
 # (a) Fresh install: nothing set → enabled stays unset (code default = on),
 #     marker recorded so the migration never re-runs.
 out=$(run_migration)
-if [ -z "$(store_get "$out" ws.enabled)" ] && [ -n "$(store_get "$out" ws.default_on_migrated)" ]; then
+if ran "$out" && [ -z "$(store_get "$out" ws.enabled)" ] && [ -n "$(store_get "$out" ws.default_on_migrated)" ]; then
   check "fresh install: enabled stays unset (ws on) + marker set" ok
 else
   check "fresh install: enabled stays unset (ws on) + marker set" "store=[$(echo "$out" | tr '\n' ' ')]"
@@ -132,7 +158,7 @@ fi
 
 # (b) Pre-#2608 router carrying the OLD shipped default → migrated onto ws.
 out=$(run_migration "ws=ws" "ws.enabled=0")
-if [ -z "$(store_get "$out" ws.enabled)" ] && [ -n "$(store_get "$out" ws.default_on_migrated)" ]; then
+if ran "$out" && [ -z "$(store_get "$out" ws.enabled)" ] && [ -n "$(store_get "$out" ws.default_on_migrated)" ]; then
   check "upgrade with no explicit setting (shipped 0): moves to ws" ok
 else
   check "upgrade with no explicit setting (shipped 0): moves to ws" "store=[$(echo "$out" | tr '\n' ' ')]"
@@ -140,7 +166,7 @@ fi
 
 # (c) Explicit opt-IN survives untouched.
 out=$(run_migration "ws=ws" "ws.enabled=1")
-if [ "$(store_get "$out" ws.enabled)" = "1" ]; then
+if ran "$out" && [ "$(store_get "$out" ws.enabled)" = "1" ] && [ -n "$(store_get "$out" ws.default_on_migrated)" ]; then
   check "upgrade with explicit enabled=1: stays on ws" ok
 else
   check "upgrade with explicit enabled=1: stays on ws" "store=[$(echo "$out" | tr '\n' ' ')]"
@@ -148,8 +174,10 @@ fi
 
 # (d) THE critical case: an explicit opt-out (marker already present, so the
 #     0 on disk is the operator's, not the old shipped default) is preserved.
+#     __writes=0 proves the script ran and chose to write NOTHING, rather than
+#     the value merely surviving because the script never executed.
 out=$(run_migration "ws=ws" "ws.enabled=0" "ws.default_on_migrated=1")
-if [ "$(store_get "$out" ws.enabled)" = "0" ]; then
+if ran "$out" && [ "$(store_get "$out" ws.enabled)" = "0" ] && [ "$(store_get "$out" __writes)" = "0" ]; then
   check "explicit opt-out (enabled=0 + marker): stays on poll after upgrade" ok
 else
   check "explicit opt-out (enabled=0 + marker): stays on poll after upgrade" "store=[$(echo "$out" | tr '\n' ' ')]"
@@ -157,7 +185,7 @@ fi
 
 # (e) A router that opted out BEFORE the flip can pre-pin with the marker alone.
 out=$(run_migration "ws=ws" "ws.default_on_migrated=1")
-if [ -z "$(store_get "$out" ws.enabled)" ]; then
+if ran "$out" && [ -z "$(store_get "$out" ws.enabled)" ] && [ "$(store_get "$out" __writes)" = "0" ]; then
   check "pre-pinned marker with no value: migration writes nothing" ok
 else
   check "pre-pinned marker with no value: migration writes nothing" "store=[$(echo "$out" | tr '\n' ' ')]"
@@ -165,13 +193,17 @@ fi
 
 # ── 3. The migration runs on an in-place upgrade, not just at boot ──────────
 missing=""
-for p in "$ROOT/Makefile" "$ROOT/build-ipk.sh" "$ROOT/build-apk.sh"; do
+for p in "$ROOT/Makefile" "$ROOT/build-ipk.sh" "$ROOT/build-apk.sh" "$ROOT/install.sh"; do
   grep -q '97-wifihaven-ws-default-on' "$p" || missing="$missing $(basename "$p")"
 done
+# install.sh is in the list too: its #2554 config-recovery path re-runs the
+# package's pending uci-defaults, and a recovered router that skipped 97 would
+# have no marker — so a later upgrade would run the migration with the marker
+# absent and delete an opt-out the operator set after the recovery.
 if [ -z "$missing" ]; then
-  check "every postinst producer invokes the ws migration" ok
+  check "every postinst producer + install.sh recovery invokes the ws migration" ok
 else
-  check "every postinst producer invokes the ws migration" "missing in:$missing"
+  check "every postinst producer + install.sh recovery invokes the ws migration" "missing in:$missing"
 fi
 
 printf "\nResults: %d passed, %d failed\n" "$PASS" "$FAIL"

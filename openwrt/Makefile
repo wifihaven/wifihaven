@@ -41,7 +41,8 @@ define Package/wifihaven
   # #2036: cqueues + luaossl are the wifihaven-ws sidecar's runtime deps.
   # Shipping them in DEPENDS was the prod-cutover gate for #1023; as of #2608 ws
   # is the DEFAULT transport, so they are what makes a fresh install come up on
-  # ws with no manual `apk add` and no UCI step at all. Marginal cost is ~0.5 MB (cqueues 328 KiB +
+  # ws with no manual `apk add` and no UCI step at all.
+  # Marginal cost is ~0.5 MB (cqueues 328 KiB +
   # luaossl 205 KiB) and ZERO new transitive packages: their dep closure
   # (libc/liblua5.1.5/libopenssl3) is already pulled by +lua / +lua-openssl /
   # +openssl-util. luaossl (daurnimator) provides the `openssl.ssl.context`

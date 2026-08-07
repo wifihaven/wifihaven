@@ -31,6 +31,8 @@ pytestmark = pytest.mark.install_health
 CRONTAB_PATH = "/etc/crontabs/root"
 EXPECTED_SCRIPT = "/usr/sbin/wifihaven-update"
 WS_BIN = "/usr/sbin/wifihaven-ws"
+# `wifihaven-ws` minus its leading `w` — see _ws_sidecar_pids for why.
+WS_BIN_TAIL = "ifihaven-ws"
 WS_HEALTH_PATH = "/tmp/wifihaven-ws-health"
 
 
@@ -49,7 +51,16 @@ def test_wifihaven_update_cron_entry_present(router):
 
 
 def _ws_sidecar_pids() -> list[str]:
-    res = router_ssh(f"pgrep -f '{WS_BIN}' || true", check=False, timeout=20)
+    """PIDs of the running wifihaven-ws sidecar, [] when it is not running.
+
+    The bracket in the pattern is load-bearing. dropbear runs the remote command
+    as `sh -c "pgrep -f '<pattern>' || true"`, so the pattern is in the parent
+    shell's own /proc/<pid>/cmdline; busybox pgrep skips only its OWN pid, not
+    its parent, and would match that shell every time — making "the sidecar is
+    running" trivially true and "the sidecar is dead" unreachable. `[w]ifihaven`
+    matches the real process's cmdline but not the literal pattern string.
+    """
+    res = router_ssh(f"pgrep -f '[w]{WS_BIN_TAIL}' || true", check=False, timeout=20)
     return [p for p in (res.stdout or "").split() if p.strip()]
 
 
@@ -106,8 +117,16 @@ def test_dead_ws_sidecar_falls_back_to_the_http_poll(router, fake_api):
     `http_post`. A fresh `GET /api/router/policy` arriving at the fake AFTER the
     sidecar is gone is the proof: the router still has a transport.
 
-    The VM snapshot is restored by the `router` fixture, so the moved binary and
-    the killed instance do not leak into the next scenario.
+    The kill loop is sized off the init script's own budget: `procd_set_param
+    respawn 3600 5 5` (openwrt/files/etc/init.d/wifihaven, the ws instance) means
+    5s between attempts and 5 retries inside a 3600s window, so 7 kills spaced 5s
+    apart exhaust it. The `wait_until` below is the real assertion — if procd
+    were still respawning, it would fail rather than pass on the assumption.
+
+    Cleanup note: nothing is undone here. The moved binary and the stopped
+    instance live on in the VM until the NEXT `router`-fixture test restores the
+    base snapshot at ITS setup — which is how every scenario in this harness
+    behaves, and why the fixture restores on entry rather than on exit.
     """
     wait_until(
         _ws_sidecar_pids,
@@ -119,10 +138,10 @@ def test_dead_ws_sidecar_falls_back_to_the_http_poll(router, fake_api):
         f"mv {WS_BIN} {WS_BIN}.disabled; "
         # Kill it repeatedly so procd burns through its respawn retry budget
         # against a binary that is no longer there, then stops trying.
-        f"for i in 1 2 3 4 5 6 7; do pkill -9 -f '{WS_BIN}' 2>/dev/null; sleep 3; done; "
+        f"for i in 1 2 3 4 5 6 7; do pkill -9 -f '[w]{WS_BIN_TAIL}' 2>/dev/null; sleep 5; done; "
         f"rm -f {WS_HEALTH_PATH}",
         check=False,
-        timeout=120,
+        timeout=180,
     )
 
     wait_until(
@@ -131,5 +150,18 @@ def test_dead_ws_sidecar_falls_back_to_the_http_poll(router, fake_api):
         description="the ws sidecar to stay dead (procd respawn budget exhausted)",
     )
 
+    # Require an HTTP-transport fetch specifically. The fake records ws pushes in
+    # the same list (#2608, so wait_for_etag_served stays transport-agnostic), so
+    # asserting only "a new record appeared" could be satisfied by a last push
+    # racing the kill — which would prove nothing about the poll resuming.
     after = fake_api.latest_fetch_id()
-    fake_api.wait_for_policy_fetch(after_id=after, timeout_s=180)
+    wait_until(
+        lambda: [
+            f
+            for f in (fake_api.policy_fetches(since_id=after).get("fetches") or [])
+            if f.get("transport") == "http"
+        ],
+        timeout_s=180,
+        interval_s=2.0,
+        description="the HTTP policy poll to resume after the sidecar died",
+    )

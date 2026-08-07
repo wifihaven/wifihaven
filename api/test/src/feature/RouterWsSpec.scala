@@ -63,20 +63,13 @@ object RouterWsSpec
       cRepo   <- ZIO.service[ConnectionEventRepo]
       aRepo   <- ZIO.service[AlertRepo]
       hsr     <- ZIO.service[HouseholdSettingsRepo]
-      pRepo   <- ZIO.service[ProfileRepo]
-      tlr     <- ZIO.service[TimeLimitRepo]
-      atlr    <- ZIO.service[AppTimeLimitRepo]
-      er      <- ZIO.service[TimeExtensionRepo]
-      ar      <- ZIO.service[AppRepo]
-      clk     <- ZIO.service[Clock]
-      blr     <- ZIO.service[BlocklistRepo]
       metrics <- RouterMetricsService.make
-      reg     <- RouterWsRegistry.make
-      auth   = new RouterAuthLive(rRepo)
-      ingest = new RouterIngestService(rRepo, tRepo, tu, dRepo, cRepo, aRepo, hsr)
+      reg     <- RouterWsRegistry.make((id, etag) => rRepo.touch(id, Some(etag), None))
       // #1849: a PolicyService so the ws endpoint can push the current snapshot on connect. Cache
       // off here (the `apply` default) — the connect push reads `snapshot`, which builds fresh.
-      policy = PolicyServiceLive(pRepo, hsr, tlr, atlr, dRepo, blr, tRepo, er, ar, clk)
+      policy  <- buildPolicyService
+      auth   = new RouterAuthLive(rRepo)
+      ingest = new RouterIngestService(rRepo, tRepo, tu, dRepo, cRepo, aRepo, hsr)
       // Mount the ws route through the SAME aspect stack `Main` wraps the router routes in
       // (HttpMetrics.instrument → LoggingMiddleware.annotate → Readiness.gate → ErrorBoundary.observe)
       // so the test proves the HTTP/1.1 upgrade survives the production middleware, not just the raw
@@ -89,6 +82,41 @@ object RouterWsSpec
         ),
       )
     } yield (routes, reg)
+
+  /**
+   * A [[WebSocketChannel]] stand-in whose `send` simply succeeds — enough for the registry's push
+   * path, which only needs the send to resolve OK before it stamps the delivered etag (#2608). A
+   * socket is external I/O, the one stand-in `docs/process/testing.md` allows; every other
+   * collaborator in that test (registry, delivery sink, repo, Postgres) is real, and the end-to-end
+   * path over a REAL client and server is pinned by the tests above.
+   */
+  private final class SendOnlyChannel extends WebSocketChannel {
+    def awaitShutdown(implicit trace: Trace): UIO[Unit]                                 = ZIO.unit
+    def receive(implicit trace: Trace): Task[WebSocketChannelEvent]                     = ZIO.never
+    def receiveAll[Env, Err](f: WebSocketChannelEvent => ZIO[Env, Err, Any])(
+        implicit trace: Trace,
+    ): ZIO[Env, Err, Unit] = ZIO.never
+    def send(in: WebSocketChannelEvent)(implicit trace: Trace): Task[Unit]              = ZIO.unit
+    def sendAll(in: Iterable[WebSocketChannelEvent])(implicit trace: Trace): Task[Unit] = ZIO.unit
+    def shutdown(implicit trace: Trace): UIO[Unit]                                      = ZIO.unit
+  }
+
+  private def sendOnlyChannel: UIO[WebSocketChannel] = ZIO.succeed(new SendOnlyChannel)
+
+  /** The same PolicyServiceLive wiring [[buildWsRoutes]] uses, for a test that needs a snapshot. */
+  private def buildPolicyService =
+    for {
+      dRepo <- ZIO.service[DeviceRepo]
+      hsr   <- ZIO.service[HouseholdSettingsRepo]
+      pRepo <- ZIO.service[ProfileRepo]
+      tlr   <- ZIO.service[TimeLimitRepo]
+      atlr  <- ZIO.service[AppTimeLimitRepo]
+      er    <- ZIO.service[TimeExtensionRepo]
+      ar    <- ZIO.service[AppRepo]
+      clk   <- ZIO.service[Clock]
+      blr   <- ZIO.service[BlocklistRepo]
+      tRepo <- ZIO.service[TrafficReportRepo]
+    } yield PolicyServiceLive(pRepo, hsr, tlr, atlr, dRepo, blr, tRepo, er, ar, clk)
 
   /**
    * Open a ws connection to the bound server, drive it with `send` on handshake, and collect every
@@ -298,6 +326,49 @@ object RouterWsSpec
         assertTrue(policyFrame.contains(knownMac))).provideSome[
         TestDatabase.AllRepos & EmbeddedPostgres & Clock & Transactor[Task],
       ](Server.defaultWithPort(0), Client.default)
+    },
+    test("#2608: a pushed policy stamps routers.last_etag, like the REST poll does") {
+      // `last_etag` is "which policy version does this router have". Until #2608 only the REST poll
+      // wrote it (RouterRoutes passes Some(snap.etag) to touch); the ws path touched last_seen_at
+      // alone. That was survivable while ws was opt-in — but ws is the shipped router default now
+      // and the poll goes DORMANT on a healthy link (#2037), so without this stamp the column would
+      // freeze for the whole fleet and the operator's "who is on current policy?" view would go
+      // blind.
+      //
+      // Driven through the registry's push entrypoint directly rather than over a live socket. The
+      // stamp runs inside the push effect, so awaiting THAT effect is what makes the assertion
+      // deterministic — reading the row after a frame arrives at a client instead would race, since
+      // the server's HandshakeComplete handler and its first Read are not serialised against each
+      // other (no wall-clock waiting either way: docs/process/testing.md, #2042). The registry, the
+      // delivery sink and the repo are all real, against embedded Postgres; only the socket is
+      // stubbed, which is the external-I/O carve-out the testing doc allows.
+      for {
+        _         <- cleanDb
+        rRepo     <- ZIO.service[RouterRepo]
+        pRepo     <- ZIO.service[ProfileRepo]
+        dRepo     <- ZIO.service[DeviceRepo]
+        _         <- seedKnownDevice(dRepo, pRepo)
+        (rid, _)  <- seedRouter(rRepo)
+        // A freshly-enrolled router has never fetched policy, so the column starts NULL — that is
+        // what makes the post-push value attributable to the push and nothing else.
+        beforeRow <- rRepo.findById(rid)
+        (_, reg)  <- buildWsRoutes
+        policySvc <- buildPolicyService
+        snap      <- policySvc.snapshot
+        ch        <- sendOnlyChannel
+        _         <- reg.register(rid, ch)
+        _         <- reg.pushPolicyTo(rid, ch, snap)
+        afterPush <- rRepo.findById(rid)
+        // The push-on-change fan-out (publishPolicy) must stamp too — it is the path that carries
+        // the fleet once the poll is dormant, and it is a DIFFERENT call into sendPolicyFrame.
+        _         <- rRepo.touch(rid, None, None)
+        _         <- reg.publishPolicy(snap)
+        afterFan  <- rRepo.findById(rid)
+      } yield assertTrue(beforeRow.exists(_.lastEtag.isEmpty)) &&
+        assertTrue(afterPush.flatMap(_.lastEtag).contains(snap.etag)) &&
+        assertTrue(afterFan.flatMap(_.lastEtag).contains(snap.etag))
+      // No Server/Client layers here, unlike the socket-driving tests above: this one exercises the
+      // registry's push entrypoint directly, so it needs neither.
     },
     test("#2561: a second connection for the same router supersedes the first (registry holds 1)") {
       // The prod leak: a router whose socket went half-open reconnects, the server still holds the

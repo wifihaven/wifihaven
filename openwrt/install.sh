@@ -370,14 +370,22 @@ ensure_wifihaven_config() {
 
   # A synthesised file has none of the other shipped sections. Rather than
   # duplicate their contents here, run the package's own (idempotent)
-  # uci-defaults stub if it is still pending — that is the single source of
-  # truth for the `settings` escape-hatch section. Leaving the file in place is
-  # fine — it is idempotent, and OpenWrt's uci-defaults pass
-  # (`/etc/init.d/boot` -> `uci_apply_defaults`) runs whatever is still in
-  # /etc/uci-defaults/ on the next boot and deletes each script that exits 0.
-  if [ -f "$WIFIHAVEN_UCI_DEFAULTS/96-wifihaven-settings" ]; then
-    sh "$WIFIHAVEN_UCI_DEFAULTS/96-wifihaven-settings" >/dev/null 2>&1 || true
-  fi
+  # uci-defaults stubs if they are still pending — those scripts are the single
+  # source of truth for the sections they own (`settings`, the escape hatch; and
+  # `ws`, whose #2608 default-on marker must exist here too, or a later upgrade
+  # would run the migration with the marker absent and delete an opt-out the
+  # operator set after this recovery). Leaving the files in place is fine — they
+  # are idempotent, and OpenWrt's uci-defaults pass (`/etc/init.d/boot` ->
+  # `uci_apply_defaults`) runs whatever is still in /etc/uci-defaults/ on the
+  # next boot and deletes each script that exits 0.
+  #
+  # Keep this list in step with the uci-defaults scripts openwrt/Makefile
+  # installs; `openwrt/test/ws_default_on_spec.sh` pins that 97 is here.
+  for _wh_defaults in 96-wifihaven-settings 97-wifihaven-ws-default-on; do
+    if [ -f "$WIFIHAVEN_UCI_DEFAULTS/$_wh_defaults" ]; then
+      sh "$WIFIHAVEN_UCI_DEFAULTS/$_wh_defaults" >/dev/null 2>&1 || true
+    fi
+  done
 
   uci -q show wifihaven.@wifihaven[0] >/dev/null 2>&1
 }
