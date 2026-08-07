@@ -127,6 +127,13 @@ describe("ws_loop.sanitize_poll_interval (#2620)", function()
     assert.are.equal(2, ws_loop.sanitize_poll_interval(2, 30))
     assert.are.equal(2, ws_loop.sanitize_poll_interval("2", 30))
   end)
+
+  it("does not let an unparseable heartbeat drag the poll down to the floor", function()
+    -- The ceiling comes from the heartbeat; if that value is junk, falling back
+    -- to MIN would turn one bad config key into 10 wakeups/s.
+    assert.are.equal(ws_loop.DEFAULT_POLL_INTERVAL, ws_loop.sanitize_poll_interval(1, nil))
+    assert.are.equal(ws_loop.DEFAULT_POLL_INTERVAL, ws_loop.sanitize_poll_interval(1, "banana"))
+  end)
 end)
 
 describe("ws_loop.should_fallback", function()

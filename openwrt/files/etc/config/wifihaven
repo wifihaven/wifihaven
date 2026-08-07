@@ -131,10 +131,19 @@ config ws 'ws'
 	# outbound latency. Before #2620 the recv timeout WAS the tick, so a drop
 	# event spooled just after a drain waited up to heartbeat_interval (30s)
 	# to leave the router — the dominant hop in the ~26s drop-to-SPA delay.
-	# Clamped into [ws_loop.MIN_POLL_INTERVAL, heartbeat_interval] at runtime;
-	# a value at/above heartbeat_interval restores the old shape. Costs one
-	# tmpfs spool read per interval on an idle socket.
-	option poll_interval '1'
+	#
+	# The key is deliberately NOT written here. Its default is single-sourced at
+	# ws_loop.DEFAULT_POLL_INTERVAL (1 s, matching conntrack_tick_interval so the
+	# sidecar and the agent tick together), which wifihaven-ws reads as its
+	# uci_get default — writing a literal here would fork that default and a
+	# later bump to the constant would silently not reach a fresh install. To
+	# override on one router:
+	#   uci set wifihaven.ws.poll_interval=2 && uci commit wifihaven \
+	#     && /etc/init.d/wifihaven restart
+	# Clamped into [ws_loop.MIN_POLL_INTERVAL, heartbeat_interval] at runtime
+	# (the clamped value is what the sidecar logs at startup); a value at/above
+	# heartbeat_interval restores the pre-#2620 shape. Costs one tmpfs spool
+	# read per interval on an idle socket.
 	# How long (seconds) the socket may stay down before the main agent resumes
 	# HTTP polling (design §3.1 belt-and-suspenders). The agent reads the
 	# ws-health sentinel's mtime against this window.

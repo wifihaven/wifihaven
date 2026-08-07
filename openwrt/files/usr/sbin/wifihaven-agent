@@ -969,6 +969,12 @@ local ts = {
   last_ws_apply_run   = 0,  -- #1945: ws apply-on-push poll-of-disk cadence
   last_activity_sample = 0,
   last_nflog_run      = 0,  -- #1126: nflog drop-spool drain cadence
+  -- #2620: the dedup sweep keeps the ORIGINAL nflog_int cadence even when the
+  -- drain itself runs every tick on the ws path. gc() walks every live (mac,
+  -- dst, host) entry, so it is the one part of this block whose cost scales
+  -- with traffic — no reason to pay it 5x more often (#1864: agent CPU must
+  -- stay out of dnsmasq's way).
+  last_nflog_gc       = 0,
   -- Wall-clock anchor for usage report periodStart. Updated each time the usage
   -- timer fires; kept on os.time() because the API expects RFC3339 UTC, not a
   -- monotonic value. The "should this timer fire?" decision is monotonic
@@ -1290,9 +1296,16 @@ conntrack.watch({
     -- timestamps, mark_poll_success for human-readable poll_age display).
     local mono = clock.monotonic_seconds()
     local wall = os.time()
-    -- #2620: read the ws-health sentinel ONCE per tick and share it between the
-    -- policy-poll dormancy gate and the nflog drain cadence below — same
-    -- ws_outbound.is_healthy predicate, one tmpfs read instead of two.
+    -- #2620: one ws-health read per tick, shared by the policy-poll dormancy
+    -- gate and the events-flush/nflog-drain cadence below, so both see the same
+    -- ws_outbound.is_healthy answer within a tick.
+    --
+    -- This IS more sentinel reads than before, not fewer: the single prior call
+    -- site sat inside the `>= policy_int` branch, so it ran once per
+    -- policy_poll_interval (5 s); hoisted here it runs once per
+    -- conntrack_tick_interval (1 s). That is deliberate — the flush decision
+    -- needs a per-tick answer — and the cost is one io.open + short read of a
+    -- tmpfs file, the same thing ws_pending_read already does on EVERY tick.
     local ws_live = ws_link_healthy()
 
     -- #2381 escape-hatch reconciler. Runs every tick (a cheap local UCI read via
@@ -1633,15 +1646,26 @@ conntrack.watch({
           lookup_hostname = lookup_hostname,
         })
         log.debug("nflog drain: processed %d spool line(s)", #lines)
-        -- On the ws path the batch is a spool append, not a request — flush it
-        -- now rather than waiting out flush_int. The batcher's own tick() still
-        -- drives the HTTP-path cadence untouched.
-        if ws_live then ts.events_batcher.flush() end
       end
       -- Sweep dedup entries older than the window so `seen` can't grow
       -- unbounded over a long-lived agent (one entry per (mac, dst, host)).
-      nflog_dedup.gc()
+      -- Deliberately still on the nflog_int cadence, not the (now per-tick) ws
+      -- drain cadence — see ts.last_nflog_gc.
+      if (mono - ts.last_nflog_gc) >= nflog_int then
+        ts.last_nflog_gc = mono
+        nflog_dedup.gc()
+      end
     end
+
+    -- #2620: on the ws path, flush the shared events batcher every tick. It has
+    -- to sit OUTSIDE the nflog block: the conntrack watcher feeds the SAME
+    -- batcher (conntrack.lua handle_flow → batcher.add), so a whole-MAC block —
+    -- paused profile, schedule, time limit — produces a blocked event with no
+    -- nflog spool line at all, and flushing only when #lines > 0 would leave
+    -- that entire class waiting out flush_int. flush() is a no-op on an empty
+    -- buffer and does not touch the batcher's last_flush anchor, so the
+    -- HTTP-path cadence (batcher.tick at flush_int) is byte-for-byte unchanged.
+    if ts.events_batcher and ws_live then ts.events_batcher.flush() end
 
     -- Activity sampler (#295, #516): every 10 s, snapshot counters and feed
     -- them to the tracker so end-of-bucket activeSeconds reflects real

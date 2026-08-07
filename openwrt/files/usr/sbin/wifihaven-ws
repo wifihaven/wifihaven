@@ -54,11 +54,14 @@ local router_id    = uci_get("router_id", "")
 -- #2608: unset ⇒ "1" (ws is the default transport); only an explicit "0" opts out.
 local ws_enabled   = uci_get_ws("enabled", "1")
 local heartbeat    = tonumber(uci_get_ws("heartbeat_interval", "30"))
--- #2620: the loop tick / recv timeout, decoupled from the heartbeat. Default
--- comes from ws_loop so the constant has one home; ws_loop.sanitize_poll_interval
--- clamps it into [MIN_POLL_INTERVAL, heartbeat] inside serve().
-local poll_int     = tonumber(uci_get_ws("poll_interval",
-                                         tostring(ws_loop.DEFAULT_POLL_INTERVAL)))
+-- #2620: the loop tick / recv timeout, decoupled from the heartbeat. The
+-- default has ONE home (ws_loop.DEFAULT_POLL_INTERVAL — the shipped UCI file
+-- deliberately omits the key). Sanitize here as well as in serve() so the
+-- startup log reports the value the loop will ACTUALLY use, not the raw UCI
+-- string: silently clamping and then logging the pre-clamp number is how an
+-- operator ends up debugging against a cadence that was never in effect.
+local poll_raw     = uci_get_ws("poll_interval", tostring(ws_loop.DEFAULT_POLL_INTERVAL))
+local poll_int     = ws_loop.sanitize_poll_interval(poll_raw, heartbeat)
 local fallback     = tonumber(uci_get_ws("fallback_after", "300"))
 local max_frame    = tonumber(uci_get_ws("max_frame_bytes", "65536"))
 local connect_to   = tonumber(uci_get_ws("connect_timeout", "10"))
@@ -88,6 +91,11 @@ local function ws_url_of(base)
 end
 local ws_url = ws_url_of(api_url)
 
+if tostring(poll_int) ~= tostring(tonumber(poll_raw)) then
+  log.warn("wifihaven-ws: ws.poll_interval=%s clamped to %ss (valid range [%s, heartbeat=%d])",
+           tostring(poll_raw), tostring(poll_int),
+           tostring(ws_loop.MIN_POLL_INTERVAL), heartbeat)
+end
 log.info("wifihaven-ws: starting url=%s router_id=%s heartbeat=%ds poll=%ss fallback_after=%ds max_frame=%dB",
          ws_url, router_id, heartbeat, tostring(poll_int), fallback, max_frame)
 

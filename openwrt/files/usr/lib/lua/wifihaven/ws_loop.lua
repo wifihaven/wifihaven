@@ -39,10 +39,14 @@ local M = {}
 -- own `last_ping`), the loop tick is outbound latency. The recv timeout is now
 -- its own short interval.
 --
--- DEFAULT_POLL_INTERVAL is the single definition of the default; the UCI option
--- `wifihaven.ws.poll_interval` (documented in files/etc/config/wifihaven)
--- overrides it and the sidecar reads this constant as its uci_get default, so
--- the two cannot drift.
+-- DEFAULT_POLL_INTERVAL is the SINGLE definition of the default: the shipped
+-- files/etc/config/wifihaven deliberately does NOT write `poll_interval`, and
+-- wifihaven-ws passes this constant as its uci_get default, so there is exactly
+-- one literal to change. 1s is `conntrack_tick_interval`'s value
+-- (files/etc/config/wifihaven, `option conntrack_tick_interval '1'`) — the
+-- sidecar ticks with the agent rather than at some independently-chosen rate,
+-- and neither side is then the straggler. Measured against the pre-#2620 shape
+-- on a real Lua 5.1 + cqueues target: mean spool→wire 14.50s → 0.66s.
 M.DEFAULT_POLL_INTERVAL = 1
 -- Floor. A zero/negative recv timeout returns immediately, which would spin the
 -- cqueues fiber at 100% CPU on an idle socket; 0.1s bounds that at ≤10
@@ -57,8 +61,12 @@ M.MIN_POLL_INTERVAL = 0.1
 -- exactly the pre-#2620 shape). Unset/unparseable → DEFAULT_POLL_INTERVAL.
 -- Pure.
 function M.sanitize_poll_interval(v, heartbeat_interval)
+  -- An unparseable HEARTBEAT must not drag the poll down to the floor — that
+  -- would turn one bad config value into 10 wakeups/s. Fall back to the same
+  -- default the poll itself uses.
   local hb = tonumber(heartbeat_interval)
-  if not hb or hb < M.MIN_POLL_INTERVAL then hb = M.MIN_POLL_INTERVAL end
+  if not hb then hb = M.DEFAULT_POLL_INTERVAL end
+  if hb < M.MIN_POLL_INTERVAL then hb = M.MIN_POLL_INTERVAL end
   local n = tonumber(v)
   if not n then n = M.DEFAULT_POLL_INTERVAL end
   if n < M.MIN_POLL_INTERVAL then n = M.MIN_POLL_INTERVAL end
