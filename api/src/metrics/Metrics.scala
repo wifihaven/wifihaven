@@ -344,8 +344,10 @@ object MetricGuard {
     "spa_ws_reassembly_total"                   -> Set("result"),
     // #1849 — computed-snapshot cache + push-on-change. `policy_snapshot_build_total` splits policy
     // snapshot accesses into `result` ∈ {computed, cache_hit} (proves the cache works);
-    // `router_ws_policy_push_total` is the push fan-out, `result` ∈ {ok, channel_closed}. Both are
-    // fixed 2-value enums — bounded, no per-mac / per-host dimension. (Without these entries the
+    // `router_ws_policy_push_total` is the push fan-out, `result` ∈ {ok, channel_closed,
+    // unregistered, household_mismatch} — the last two are #2630's REFUSED deliveries, see the
+    // counter's own comment below. Both names are bounded, no per-mac / per-host / per-household
+    // dimension. (Without these entries the
     // firewall would reject both names as unknown_name and the series would never emit.)
     "policy_snapshot_build_total"               -> Set("result"),
     // #2382 — how often PolicyService serves a fully permissive (allow-all) snapshot instead of the

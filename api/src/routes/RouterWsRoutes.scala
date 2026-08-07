@@ -3,9 +3,8 @@ package wifihaven.api.routes
 import wifihaven.api.db.RouterRepo
 import wifihaven.api.metrics.{AppMetrics, RouterMetricsService}
 import wifihaven.api.observability.LogContext
-import wifihaven.api.policy.PolicyService
+import wifihaven.api.policy.{HouseholdScoped, PolicyService}
 import wifihaven.shared.{Router, RouterMetricsBatch}
-import wifihaven.api.policy.HouseholdScoped
 import zio.*
 import zio.http.*
 import zio.http.ChannelEvent.UserEvent

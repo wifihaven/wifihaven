@@ -8,7 +8,6 @@ import wifihaven.shared.types.*
 import wifihaven.testinfra.*
 import io.zonky.test.db.postgres.embedded.EmbeddedPostgres
 import zio.{Clock as _, *}
-import zio.metrics.Metric
 import zio.test.*
 
 import java.time.{LocalDateTime, LocalTime, ZoneId}
@@ -114,16 +113,6 @@ object PolicySnapshotCacheSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedP
       _      <- svc.setPublisher(new ProbePublisher(pushed, pushTargets, probeAlsoTry))
     } yield (svc, ref, pushed)
 
-  /**
-   * The cumulative `policy_snapshot_build_total{result=...}` count, read straight off the ZIO
-   * metric registry with the key `MetricGuard.counter` writes. Asserted as a DELTA around the
-   * action: the registry is JVM-global and this counter is additive, so an absolute read would
-   * couple this spec to whatever else in the suite built a snapshot. Exact rather than a lower
-   * bound because this suite is `TestAspect.sequential` and mill runs one spec class at a time.
-   */
-  private def snapshotBuildTotal(result: String): UIO[Double] =
-    Metric.counter("policy_snapshot_build_total").tagged("result", result).value.map(_.count)
-
   private def blockedMacs(snap: PolicySnapshot): List[String] =
     snap.devices.toList.flatMap { case (mac, dev) =>
       val rules = dev.rules.orElse(dev.profileId.flatMap(snap.profiles.get).map(_.rules))
@@ -226,15 +215,22 @@ object PolicySnapshotCacheSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedP
         // change rests entirely on it being the former. The probe attempts C explicitly
         // (`probeAlsoTry`), so "no push for C" is an observation rather than an omission.
         hhC        <- hRepo.create("Routerless household", "routerless-household")
+        // Count builds through `buildBarrier`, the per-SERVICE hook run once at the end of every
+        // `buildSnapshot` — NOT through `policy_snapshot_build_total`. That counter is JVM-global
+        // and additive, and an earlier test in this class calls `invalidate`, which ends in
+        // `reevaluate.forkDaemon`: a daemon fiber on a different service instance that can land its
+        // build inside this test's window and make an exact delta go red for an unrelated reason.
+        // `TestAspect.sequential` orders tests, it does not fence a fiber a previous test forked.
+        builds     <- Ref.make(0)
         triple     <- makeCachedSvc(
           TestClock.schoolDayAfternoon,
+          buildBarrier = builds.update(_ + 1),
           pushTargets = Set(hhB), // one connected router, in household B
           probeAlsoTry = Set(hhC),
         )
         (svc, _, pushed) = triple
-        buildsPre  <- snapshotBuildTotal("computed")
         _          <- svc.reevaluate
-        buildsPost <- snapshotBuildTotal("computed")
+        buildCount <- builds.get
         pushes     <- pushed.get
         // Both households were rebuilt and pushed: B because it has a router, Default because it is
         // always included (single-household installs, and the SPA change-bus sink, depend on it).
@@ -248,7 +244,7 @@ object PolicySnapshotCacheSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedP
         assertTrue(!households.contains(hhC)) &&
         // Two BUILDS, not three: C was never rebuilt either, which is the cost claim. Without this
         // the push assertions alone would also hold for "rebuild every household, push some".
-        assertTrue(buildsPost - buildsPre == 2.0) &&
+        assertTrue(buildCount == 2) &&
         assertTrue(scopedB.forHousehold(hhB).isDefined) &&
         assertTrue(scopedB.forHousehold(HouseholdId.Default).isEmpty)
     },

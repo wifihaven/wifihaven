@@ -203,8 +203,9 @@ final class RouterWsRegistryLive(
 
   // #2630: the households with at least one connected router — the set `PolicyService.reevaluate`
   // rebuilds a snapshot for. It is deliberately derived from live connections rather than from the
-  // households table: a rebuild is only worth its ~500ms if there is a socket to push it down, and
-  // an empty registry must cost no builds at all.
+  // households table: a rebuild is only worth its cost (a snapshot build is put at ~2.5s by the
+  // note at `Main.scala`, unmeasured at multi-household scale — #2635) if there is a socket to push
+  // it down, and an empty registry must cost no builds at all.
   def targetHouseholds: UIO[Set[HouseholdId]] =
     state.get.map(_.valuesIterator.filter(_.channels.nonEmpty).map(_.household).toSet)
 

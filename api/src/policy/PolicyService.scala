@@ -385,36 +385,41 @@ class PolicyServiceLive(
       // would otherwise escape the `foreachDiscard` above and kill the reconcile ticker fiber
       // outright — `Main` runs it as `.repeat(...).forkScoped` with nothing to restart it, so the
       // whole fleet would then sit on stale policy until a redeploy, with the REST poll dormant on
-      // a healthy ws link (#2037). Same reasoning as the stamp sink in `RouterWsRegistry`.
-      buildSnapshot(household).foldCauseZIO(
-        cause =>
-          // Keep the last good cache on a transient build failure (e.g. a DB blip) so the REST poll
-          // keeps serving the previous snapshot rather than a cold rebuild storm; the next tick
-          // retries. Per household, so one household's blip cannot skip another's push.
-          ZIO.logWarningCause(
-            s"policy reevaluate: snapshot rebuild failed for household=$household, keeping cache",
-            cause,
-          ),
-        snap => {
-          installSnapshot(household, gen, snap)
-          // Push only when the ETag actually moved since the last PUSH FOR THIS HOUSEHOLD — the
-          // same "change is exactly an ETag move" semantics the REST 200-vs-304 path uses (design
-          // §6.2), so we never fan out a frame the routers would treat as unchanged. Keyed off
-          // `lastPublishedEtag` (not the cache slot) so a racing REST poll repopulating the cache
-          // can't suppress the push.
-          //
-          // The snapshot goes out WRAPPED in its household (#2630): the publisher cannot read it
-          // without naming a recipient, so a sink physically cannot deliver it to another
-          // household's router. That is the guard — not this comment, and not a filter downstream
-          // that someone can forget to write.
-          val prevPublished = swapPublishedEtag(household, snap.etag)
-          ZIO
-            .when(!prevPublished.contains(snap.etag))(
-              publisher.get.publish(HouseholdScoped(household, snap)),
-            )
-            .unit
-        },
-      )
+      // a healthy ws link (#2037). Same reasoning AND the same shape as the stamp sink in
+      // `RouterWsRegistry`: `suspendSucceed` so a build that throws while its effect is being
+      // BUILT is caught by this fold too, rather than escaping into the loop before there is an
+      // effect to fold over.
+      ZIO
+        .suspendSucceed(buildSnapshot(household))
+        .foldCauseZIO(
+          cause =>
+            // Keep the last good cache on a transient build failure (e.g. a DB blip) so the REST poll
+            // keeps serving the previous snapshot rather than a cold rebuild storm; the next tick
+            // retries. Per household, so one household's blip cannot skip another's push.
+            ZIO.logWarningCause(
+              s"policy reevaluate: snapshot rebuild failed for household=$household, keeping cache",
+              cause,
+            ),
+          snap => {
+            installSnapshot(household, gen, snap)
+            // Push only when the ETag actually moved since the last PUSH FOR THIS HOUSEHOLD — the
+            // same "change is exactly an ETag move" semantics the REST 200-vs-304 path uses (design
+            // §6.2), so we never fan out a frame the routers would treat as unchanged. Keyed off
+            // `lastPublishedEtag` (not the cache slot) so a racing REST poll repopulating the cache
+            // can't suppress the push.
+            //
+            // The snapshot goes out WRAPPED in its household (#2630): the publisher cannot read it
+            // without naming a recipient, so a sink physically cannot deliver it to another
+            // household's router. That is the guard — not this comment, and not a filter downstream
+            // that someone can forget to write.
+            val prevPublished = swapPublishedEtag(household, snap.etag)
+            ZIO
+              .when(!prevPublished.contains(snap.etag))(
+                publisher.get.publish(HouseholdScoped(household, snap)),
+              )
+              .unit
+          },
+        )
     }
 
   def setPublisher(p: PolicySnapshotPublisher): UIO[Unit] =
