@@ -269,9 +269,11 @@ HOST_GID=$(id -g)
 # instead of receiving the block page.
 #
 # cqueues + luaossl: the wifihaven-ws sidecar's hard runtime deps (the async
-# event loop + TLS/crypto the agent lacks, #1845/#1848). They are NOT a package
-# DEPENDS of wifihaven (ws is opt-in, default-off — see openwrt/files/etc/config/
-# wifihaven), so they are not pulled in automatically. The Gate-2 ws push→apply
+# event loop + TLS/crypto the agent lacks, #1845/#1848). They ARE a package
+# DEPENDS of wifihaven as of #2036, and ws is the DEFAULT transport as of #2608
+# (see openwrt/files/etc/config/wifihaven), so a real install pulls them in; they
+# stay listed here because the Image Builder resolves this list against the
+# upstream feed directly. The Gate-2 ws push→apply
 # scenario (scripts/e2e/scenarios_fake/test_ws_push_apply.py, #1939) flips
 # `wifihaven.ws.enabled=1`, which only starts a *working* sidecar when these are
 # present. Both are in the official OpenWrt feeds for Lua 5.1 on the 23.05 (ipk)

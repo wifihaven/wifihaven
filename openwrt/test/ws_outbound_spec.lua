@@ -3,10 +3,11 @@
 -- When the ws sidecar is enabled AND the link is healthy, the main agent hands
 -- its outbound usage/events bodies to the sidecar over the bounded spool instead
 -- of POSTing them itself (the sidecar frames + sends them). When ws is disabled
--- (the default) OR the link has been down past fallback_after, the tee is a pure
--- pass-through to the real http_post — so the agent's HTTP path is byte-for-byte
--- unchanged in the default-off case (back-compat, design §3.1). Pure over
--- injected io/now/http_post, so it runs on the dev host as under OpenWrt 5.1.
+-- (an explicit `wifihaven.ws.enabled=0`; ws is the default as of #2608) OR the
+-- link has been down past fallback_after, the tee is a pure pass-through to the
+-- real http_post — so the agent's HTTP path is byte-for-byte unchanged whenever
+-- ws is off or the link is down (back-compat, design §3.1). Pure over injected
+-- io/now/http_post, so it runs on the dev host as under OpenWrt 5.1.
 
 local ws_outbound = require("wifihaven.ws_outbound")
 

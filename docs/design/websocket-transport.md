@@ -353,10 +353,22 @@ the websocket.
 
 ### 3.1 The agent decides per-boot; the server supports both forever (until deprecation)
 
+> **Default (as of [#2608](https://github.com/wifihaven/wifihaven/issues/2608)):
+> ws.** The UCI flag `wifihaven.ws.enabled` defaults to **1 when unset**, so a
+> fresh install and an upgraded router both land on the websocket with no manual
+> step. Only an explicit `enabled=0` selects the HTTP path up front — and the
+> shipped `/etc/config/wifihaven` deliberately writes no value, so "unset" stays
+> observable. The one-shot `/etc/uci-defaults/97-wifihaven-ws-default-on`
+> migration moves pre-#2608 routers over and records a
+> `wifihaven.ws.default_on_migrated` marker; once that marker exists the
+> migration never rewrites `enabled` again, which is what makes an operator's
+> opt-out durable. **Nothing else in this section changes** — every fallback
+> below is exactly as it was, and it is what keeps the default flip safe.
+
 ```
 agent boot
   │
-  ├─ ws-transport enabled in UCI?  ── no ──▶  HTTP poll/POST path (today's code, untouched)
+  ├─ ws-transport enabled in UCI?  ── explicit 0 ──▶  HTTP poll/POST path (today's code, untouched)
   │            │ yes
   ├─ open wss://…/api/router/ws
   │     ├─ 101 + first policy frame within connect_timeout?  ── no ──▶  log, mark ws-unhealthy, HTTP path  (no `ready` — handshake won't-do, §2)
@@ -697,7 +709,7 @@ and whatever minimal handshake it actually needs at that point.)
 | **D0** | **Spike: Lua websocket library viability on OpenWRT** — pick/prove a library, long-soak a TLS ws on real/qemu hardware, confirm Render limits. Gate for C. | yes (spike, no prod code) | n/a |
 | **A** | **API `/api/router/ws` endpoint + envelope demux + connection registry** — `RouterWsRoutes`, extract transport-agnostic ingest service from `RouterIngestRoutes` (no behavior change), per-frame structured logging, server metrics (§7). REST untouched. | yes | additive — new route only |
 | **B** | ~~**Capability handshake + `snapshotVersion` + Evolution-policy doc** — `hello`/`ready` frames, `min`-version rule, ignore-unknown rules.~~ **WON'T-DO ([#1847](https://github.com/wifihaven/wifihaven/issues/1847) closed 2026-06-23, see §2 status).** ws inherits the REST additive + ignore-unknown contract verbatim; the handshake gated zero behavior. Unknown-`op` forward-compat shipped in #1846. Version machinery deferred to F against a concrete need. | n/a (not built) | n/a |
-| **C** | **Agent websocket sidecar (`wifihaven-ws`)** — new procd instance, ws client over the proven library, drains existing tmpfs spools out / writes pushed `policy` in, HTTP-fallback wiring (§3.1), agent metrics. Gated on D0. **SHIPPED ([#1848](https://github.com/wifihaven/wifihaven/issues/1848)):** `wifihaven-ws` is a default-off (`wifihaven.ws.enabled=0`) procd instance built on the spike-proven `ws_client.lua` driven by `ws_loop.lua`; it reconnects with exp backoff+jitter (§5.1), heartbeats (§5.5), drains the agent's outbound usage/events bodies over a bounded tmpfs spool (the agent tees them when ws is healthy, else POSTs as before), splits an oversized `UsageReport` across `usage` frames (§5.3/#1017), writes a pushed `policy` to the snapshot file (dormant until the server push lands in #1849), and folds `ws_connect_total`/`ws_state`/`ws_fallback_total`/`ws_frames_{sent,recv}_total` into the `/metrics` push (§7). The main agent's HTTP poll/POST path is byte-for-byte unchanged with the flag off. Enabling ws needs `cqueues` + `luaossl` installed on the router (opt-in, not a hard package DEPENDS). | yes (behind UCI flag, default off until proven) | additive — main agent HTTP path unchanged |
+| **C** | **Agent websocket sidecar (`wifihaven-ws`)** — new procd instance, ws client over the proven library, drains existing tmpfs spools out / writes pushed `policy` in, HTTP-fallback wiring (§3.1), agent metrics. Gated on D0. **SHIPPED ([#1848](https://github.com/wifihaven/wifihaven/issues/1848)):** `wifihaven-ws` is a default-off (`wifihaven.ws.enabled=0`) procd instance built on the spike-proven `ws_client.lua` driven by `ws_loop.lua`; it reconnects with exp backoff+jitter (§5.1), heartbeats (§5.5), drains the agent's outbound usage/events bodies over a bounded tmpfs spool (the agent tees them when ws is healthy, else POSTs as before), splits an oversized `UsageReport` across `usage` frames (§5.3/#1017), writes a pushed `policy` to the snapshot file (dormant until the server push lands in #1849), and folds `ws_connect_total`/`ws_state`/`ws_fallback_total`/`ws_frames_{sent,recv}_total` into the `/metrics` push (§7). The main agent's HTTP poll/POST path is byte-for-byte unchanged with the flag off. `cqueues` + `luaossl` became hard package DEPENDS in [#2036](https://github.com/wifihaven/wifihaven/issues/2036), and [#2608](https://github.com/wifihaven/wifihaven/issues/2608) made ws the **default** transport (unset ⇒ on) with a marker-guarded upgrade migration, so a fresh install comes up on ws with no `apk add` and no UCI step. | yes (behind UCI flag; default off until proven, default ON as of #2608) | additive — main agent HTTP path unchanged |
 | **E** | **Push-on-change + computed-snapshot cache in `PolicyService`** (#1512) — cache + invalidation + time-boundary ticker; registry push on change; REST poll also reads the cache. | yes (improves REST path even with zero ws agents) | behavior-preserving (same snapshot bytes) |
 | **F** | **(deferred #376) per-field snapshot capability gating + `snapshotVersion ≥ 2` machinery** — only when the first breaking shape change needs it. (B is won't-do, so F lands both the version machinery **and** whatever minimal handshake it actually needs at that point — it no longer builds on a B handshake.) | yes, later | additive |
 | **G** | **Deprecate the REST poll** — after the operator confirms the ws path healthy across the fleet (the `router_transport` dashboard shows 100% ws), add a one-release deprecation log to the REST poll, then remove in a later release per the wire-contract deprecation window. | yes, last | the *only* non-additive step, gated on fleet rollover |

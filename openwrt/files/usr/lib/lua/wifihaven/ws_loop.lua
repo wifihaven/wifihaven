@@ -24,7 +24,7 @@
 -- outbound frames carry no `seq` yet. Full ack-gated at-least-once is the
 -- follow-up #1928, required before ws is armed in prod / the HTTP poll is
 -- deprecated (#1850). Until then the at-least-once guarantee rides the default-
--- on HTTP fallback path; this default-off ws path is best-effort-after-send.
+-- on HTTP fallback path; this ws path is best-effort-after-send.
 
 local ws_backoff = require("wifihaven.ws_backoff")
 
