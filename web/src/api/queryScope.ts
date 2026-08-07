@@ -18,9 +18,14 @@ const ANON = 'anon'
 
 /**
  * Non-cryptographic 32-bit FNV-1a, used ONLY for the fallback scope below. It exists so a
- * token we cannot decode still gets a session-distinct scope instead of collapsing onto
- * `anon` — collapsing is exactly the collision this module prevents. It is a
- * discriminator, never a credential or an integrity check.
+ * token we cannot decode still gets its own scope instead of collapsing onto `anon` —
+ * collapsing is exactly the collision this module prevents. It is a discriminator, never
+ * a credential or an integrity check.
+ *
+ * Being 32-bit, that separation is probabilistic (~2^-32 per pair), not guaranteed. That
+ * is acceptable here because the branch only fires for a token `AuthService.verify`
+ * rejects anyway, and `queryClient.clear()` on identity change (useAuth) is the primary
+ * fix — this is the backstop's backstop. Don't reuse it where a real identity is needed.
  */
 function digest(s: string): string {
   let h = 0x811c9dc5

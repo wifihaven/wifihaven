@@ -47,6 +47,12 @@ a shared `anon`. Collapsing two undecodable sessions onto one scope would
 recreate the collision this exists to prevent; `anon` is reserved for having no
 token at all.
 
+The digest is a 32-bit FNV-1a, so that separation is probabilistic (~2⁻³²
+per pair), not guaranteed. That is acceptable *here* and nowhere else: the
+branch only fires for a token `AuthService.verify` rejects anyway, and
+`queryClient.clear()` on identity change — not this digest — is the primary
+fix. Do not lean on it as if it were a real identity.
+
 ## The gate {#query-cache-scoping-gate}
 
 Convention alone did not hold — seven inline keys had accumulated by the time
@@ -55,4 +61,15 @@ Convention alone did not hold — seven inline keys had accumulated by the time
 array-literal first argument to `get`/`setQueryData`.
 
 If you are adding a key and the linter fires, the fix is to add it to
-`unscopedKeys` — not to disable the rule.
+`unscopedKeys` — not to disable the rule. That includes the case that looks
+like a false positive: composing onto an already-scoped key
+(`queryKey: [...qk.devices(), 'extra']`) is flagged, and the answer is to give
+that variant its own `unscopedKeys` entry, which is the shape the rule exists
+to push you toward.
+
+**The gate catches the literal form; the convention still owns the rest.** A key
+built through a variable (`const k = ['foo']; useQuery({ queryKey: k })`) is not
+caught, and the rarer accessors (`getQueryState`, `getQueriesData`,
+`setQueriesData`) are not in the selector — none of those appear in `web/src`
+today. Read the linter as a backstop against the mistake that actually happened
+seven times, not as proof that an unscoped key is impossible.
