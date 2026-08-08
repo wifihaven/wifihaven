@@ -167,18 +167,51 @@ trait SpaWsRegistry {
   def activeCount: UIO[Int]
 
   /**
-   * #1970 (S3): append new `connectionEvents` head rows (class-(1) live edge). For each connection
-   * subscribed to `ConnectionEvents` and authorized, the rows are filtered by THAT connection's
-   * subscription params (the verbatim `/api/logs` filter — `blocked`/`macs`/`profileIds`/`domain`,
-   * §1.4); a frame is sent only if ≥1 row matches, so an ingest that doesn't match a subscriber's
-   * filter pushes nothing to it. Metered per send like [[deliver]].
+   * #1970 (S3): the DISTINCT households across every connection that BOTH subscribed to
+   * `ConnectionEvents` AND whose role may see it (§4.4). [[SpaPush]] re-reads the head ONCE PER
+   * household, scoped to that household, and fans each result only into that household — an empty
+   * result means no subscriber, so no query runs ("don't compute what nobody watches").
+   *
+   * #2636 (SECURITY): the `connectionEvents` sibling of [[trafficUsageParamSets]] (#2257). The rows
+   * are NOT param-keyed here — unlike `trafficUsage` the per-subscriber `LogSubParams` filter is
+   * applied to the shared head at fan-out time, so household is the only dimension the READ has to
+   * be partitioned by.
    */
-  def fanOutConnectionEvents(rows: List[QueryLog]): UIO[Unit]
+  def connectionEventHouseholds: UIO[Set[HouseholdId]]
+
+  /**
+   * #1970 (S3): append new `connectionEvents` head rows (class-(1) live edge). For each connection
+   * IN `household` subscribed to `ConnectionEvents` and authorized, the rows are filtered by THAT
+   * connection's subscription params (the verbatim `/api/logs` filter —
+   * `blocked`/`macs`/`profileIds`/`domain`, §1.4); a frame is sent only if ≥1 row matches, so an
+   * ingest that doesn't match a subscriber's filter pushes nothing to it. Metered per send like
+   * [[deliver]].
+   *
+   * #2636 (SECURITY): `household` is REQUIRED and is the tenant gate, exactly as
+   * [[fanOutTrafficUsage]]'s is. Before the fix this method gated only on the subscriber's own
+   * params + role — neither of which is a tenant boundary — so a household-B admin with the
+   * Connection Events surface open received household A's MACs, hostnames, blocked/allowed status
+   * and the device/profile names the `/api/logs` joins resolve, live and continuously. Note the
+   * subscriber's own filter does NOT help: a `{blocked:true}` subscriber received every household's
+   * blocked events, and the default household-wide `{}` received everything.
+   */
+  def fanOutConnectionEvents(household: HouseholdId, rows: List[QueryLog]): UIO[Unit]
 
   /**
    * #1970 (S3): fan a contentless class-(3) `stale{topic, scope?}` nudge to every connection
    * subscribed to `Stale` and authorized (§3.2 — the client invalidates the mapped query). Metered
    * `spa_ws_push_total{op="stale", ...}`.
+   *
+   * #2636: this is DELIBERATELY still household-global, and it is the one fan-out on this registry
+   * that is. The frame carries no content — just `{topic, scope?}` — and what it triggers is a
+   * client refetch through the ALREADY household-scoped REST reads, so it discloses no other
+   * household's data. What it does cost is a refetch in every household on any household's write (a
+   * load multiplier) plus a weak "someone, somewhere, changed something" existence signal. Scoping
+   * it is not a registry change: the three [[SpaEvent.Stale]] publish sites in `HttpRoutes` ride
+   * the shared `invalidateSnapshot: UIO[Unit]` callback, which has no household in scope, so the
+   * fix is to thread the writer's household through that callback across the
+   * profile/schedule/device routes. Tracked separately by #2639 rather than smuggled into a
+   * SECURITY fix.
    */
   def fanOutStale(topic: StaleTopic, scope: Option[String]): UIO[Unit]
 
@@ -341,22 +374,50 @@ final class SpaWsRegistryLive(
   // raced a disconnect: meter `channel_closed` and drop it (the receive loop's `ensuring` also
   // deregisters; doing it here keeps the gauges honest if the push won the race).
 
-  def fanOutConnectionEvents(rows: List[QueryLog]): UIO[Unit] =
+  /**
+   * #2636 (SECURITY): the ONE gate every content-bearing fan-out consults, so the tenant dimension
+   * is single-sourced in this file (`docs/process/single-source-of-truth.md`) rather than
+   * hand-written per method — the failure mode that produced #2251, #2257, #2314 and then this
+   * issue was a new fan-out re-deriving the gate and omitting the household term. Three independent
+   * conditions, all required: the connection is in THIS household, it SUBSCRIBED to the topic
+   * (§1.4), and its role may SEE the topic (§4.4). `params`, when given, additionally requires the
+   * subscription's params to equal it (the `trafficUsage` body is built per param-set, so a
+   * differently-parameterized subscriber must not receive it).
+   */
+  private def eligible(
+      s: SpaConnState,
+      topic: SpaTopic,
+      household: HouseholdId,
+      params: Option[Json] = None,
+  ): Boolean =
+    s.household == household &&
+      SpaTopic.visibleTo(topic, s.role) &&
+      s.subscriptions.get(topic).exists(p => params.forall(_ == p))
+
+  def connectionEventHouseholds: UIO[Set[HouseholdId]] =
+    state.get.map(
+      _.values.iterator
+        .collect {
+          case s
+              if s.subscriptions.contains(SpaTopic.ConnectionEvents) &&
+                SpaTopic.visibleTo(SpaTopic.ConnectionEvents, s.role) =>
+            s.household
+        }
+        .toSet,
+    )
+
+  def fanOutConnectionEvents(household: HouseholdId, rows: List[QueryLog]): UIO[Unit] =
     state.get.flatMap { m =>
       val op = SpaTopic.wire(SpaTopic.ConnectionEvents)
       ZIO.foreachDiscard(m.toList) { case (id, s) =>
-        val gated =
-          s.subscriptions.get(SpaTopic.ConnectionEvents).filter { _ =>
-            SpaTopic.visibleTo(SpaTopic.ConnectionEvents, s.role)
-          }
-        gated match {
-          case None         => ZIO.unit
-          case Some(params) =>
+        s.subscriptions.get(SpaTopic.ConnectionEvents) match {
+          case Some(params) if eligible(s, SpaTopic.ConnectionEvents, household) =>
             val filter  = LogSubParams.decode(params)
             val matched = rows.filter(filter.matches)
             ZIO.when(matched.nonEmpty)(
               sendPush(id, s.channel, op, frameText(op, matched.toJson)),
             )
+          case _                                                                 => ZIO.unit
         }
       }
     }
@@ -378,11 +439,9 @@ final class SpaWsRegistryLive(
       val op    = SpaTopic.wire(SpaTopic.TrafficUsage)
       val frame = frameText(op, payload.toJson)
       ZIO.foreachDiscard(m.toList) { case (id, s) =>
-        ZIO.when(
-          s.household == household &&
-            s.subscriptions.get(SpaTopic.TrafficUsage).contains(params) &&
-            SpaTopic.visibleTo(SpaTopic.TrafficUsage, s.role),
-        )(sendPush(id, s.channel, op, frame))
+        ZIO.when(eligible(s, SpaTopic.TrafficUsage, household, Some(params)))(
+          sendPush(id, s.channel, op, frame),
+        )
       }
     }
 

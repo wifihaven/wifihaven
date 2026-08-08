@@ -306,6 +306,20 @@ object SpaPush {
    * pushed `QueryLog` rows byte-identical to what the page loads (joins, FQDN resolution — SSOT);
    * the `since` floor is what makes the push carry only the NEW rows (an ingest that didn't match a
    * subscriber's filter then pushes nothing to it).
+   *
+   * #2636 (SECURITY): the head is re-read ONCE PER SUBSCRIBED HOUSEHOLD with that household's
+   * `LogFilter.household` set, and each result is fanned only into that household — the same shape
+   * `pushTrafficUsage` (#2257) and `pushNow` (#2251) already use, for the same reason: ONE global
+   * query cannot serve subscribers in different tenants. Before the fix this ran one UNSCOPED
+   * `LogFilter` (`household = None` ⇒ every household's rows, per its own doc at `Repos.scala`) and
+   * handed the result to a fan-out with no household gate, so every subscribed household received
+   * every other household's connection events live.
+   *
+   * The per-household read is also strictly cheaper than the global one it replaces in the common
+   * case: no subscriber ⇒ no query at all, and each query that does run is narrowed by the
+   * `routers.household_id` predicate (index-backed by `idx_routers_household`, V65) that `GET
+   * /api/logs` has run in prod since #2108 — same access pattern, same plan, N = the number of
+   * households with a Connection Events surface actually open (typically 0 or 1 per ingest).
    */
   private def pushConnectionEvents(
       registry: SpaWsRegistry,
@@ -313,15 +327,34 @@ object SpaPush {
       clock: Clock,
       since: Instant,
   ): Task[Unit] =
-    for {
-      now <- clock.instant
-      // Window covers [since, now]; the head is then trimmed to ts >= since to drop older rows the
-      // window may include. Cap at 24h so a stale `since` can't widen the scan unboundedly.
-      hrs = math.min(24, math.max(1, Duration.between(since, now).toHours.toInt + 1))
-      rows <- connRepo.query(LogFilter(hours = hrs, limit = ConnEventHeadLimit, until = Some(now)))
-      fresh = rows.filter(r => atOrAfter(r.ts, since))
-      _ <- ZIO.when(fresh.nonEmpty)(registry.fanOutConnectionEvents(fresh))
-    } yield ()
+    registry.connectionEventHouseholds.flatMap { households =>
+      ZIO
+        .when(households.nonEmpty) {
+          for {
+            now <- clock.instant
+            // Window covers [since, now]; the head is then trimmed to ts >= since to drop older rows
+            // the window may include. Cap at 24h so a stale `since` can't widen the scan unboundedly.
+            hrs = math.min(24, math.max(1, Duration.between(since, now).toHours.toInt + 1))
+            _ <- ZIO.foreachDiscard(households.toList) { household =>
+              for {
+                rows <- connRepo.query(
+                  LogFilter(
+                    hours = hrs,
+                    limit = ConnEventHeadLimit,
+                    until = Some(now),
+                    household = Some(household),
+                  ),
+                )
+                fresh = rows.filter(r => atOrAfter(r.ts, since))
+                _ <- ZIO.when(fresh.nonEmpty)(
+                  registry.fanOutConnectionEvents(household, fresh),
+                )
+              } yield ()
+            }
+          } yield ()
+        }
+        .unit
+    }
 
   /**
    * #1971 (S4): the `trafficUsage` live-edge aggregator (design §5.3). For each DISTINCT subscribed
