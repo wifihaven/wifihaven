@@ -41,14 +41,21 @@ local function new_fs()
     return handle
   end
 
+  function fs.rename(from, to)
+    if fs.data[from] == nil then return nil end
+    fs.data[to] = fs.data[from]
+    fs.data[from] = nil
+    return true
+  end
+
   return fs
 end
 
 describe("ws_spool.append_bounded + drain", function()
   it("round-trips appended frame lines through a drain", function()
     local fs = new_fs()
-    ws_spool.append_bounded("/tmp/sp", '{"op":"usage","seq":1}', 1e6, fs.open)
-    ws_spool.append_bounded("/tmp/sp", '{"op":"events","seq":2}', 1e6, fs.open)
+    ws_spool.append_bounded("/tmp/sp", '{"op":"usage","seq":1}', 1e6, fs.open, fs.rename)
+    ws_spool.append_bounded("/tmp/sp", '{"op":"events","seq":2}', 1e6, fs.open, fs.rename)
     local state = {}
     local lines = ws_spool.drain("/tmp/sp", state, fs.open)
     assert.are.same({ '{"op":"usage","seq":1}', '{"op":"events","seq":2}' }, lines)
@@ -57,11 +64,11 @@ describe("ws_spool.append_bounded + drain", function()
   it("drains only NEW complete lines on a second call (offset advances)", function()
     local fs = new_fs()
     local state = {}
-    ws_spool.append_bounded("/tmp/sp", "a", 1e6, fs.open)
+    ws_spool.append_bounded("/tmp/sp", "a", 1e6, fs.open, fs.rename)
     assert.are.same({ "a" }, ws_spool.drain("/tmp/sp", state, fs.open))
     -- nothing new yet
     assert.are.same({}, ws_spool.drain("/tmp/sp", state, fs.open))
-    ws_spool.append_bounded("/tmp/sp", "b", 1e6, fs.open)
+    ws_spool.append_bounded("/tmp/sp", "b", 1e6, fs.open, fs.rename)
     assert.are.same({ "b" }, ws_spool.drain("/tmp/sp", state, fs.open))
   end)
 
@@ -78,11 +85,11 @@ describe("ws_spool.append_bounded + drain", function()
     -- matters — it is the recovery `size < offset -> offset = 0` used to provide.
     local fs = new_fs()
     local state = {}
-    ws_spool.append_bounded("/tmp/sp", "first-long-line", 1e6, fs.open)
+    ws_spool.append_bounded("/tmp/sp", "first-long-line", 1e6, fs.open, fs.rename)
     ws_spool.drain("/tmp/sp", state, fs.open)
     fs.data["/tmp/sp"] = ""                       -- copytruncate, ledger intact
     assert.are.same({}, ws_spool.drain("/tmp/sp", state, fs.open))
-    ws_spool.append_bounded("/tmp/sp", "x", 1e6, fs.open)
+    ws_spool.append_bounded("/tmp/sp", "x", 1e6, fs.open, fs.rename)
     assert.are.same({ "x" }, ws_spool.drain("/tmp/sp", state, fs.open))
   end)
 
@@ -94,32 +101,36 @@ describe("ws_spool.append_bounded + drain", function()
     local fs = new_fs()
     local state = {}
     for i = 1, 20 do
-      ws_spool.append_bounded("/tmp/sp", "line" .. i .. "xxxx", 1e6, fs.open)
+      ws_spool.append_bounded("/tmp/sp", "line" .. i .. "xxxx", 1e6, fs.open, fs.rename)
     end
     ws_spool.drain("/tmp/sp", state, fs.open)
     fs.data["/tmp/sp"] = nil                      -- /tmp cleared: spool AND
     fs.data[ws_spool.ledger_path("/tmp/sp")] = nil -- ledger both gone
     for i = 21, 23 do
-      ws_spool.append_bounded("/tmp/sp", "line" .. i .. "xxxx", 1e6, fs.open)
+      ws_spool.append_bounded("/tmp/sp", "line" .. i .. "xxxx", 1e6, fs.open, fs.rename)
     end
     assert.are.same({ "line21xxxx", "line22xxxx", "line23xxxx" },
                     ws_spool.drain("/tmp/sp", state, fs.open))
   end)
 
-  it("refuses the append when the ledger cannot be written, so the tee falls back", function()
-    -- /tmp full: the ledger write fails. Spooling anyway would diverge the
-    -- reader's cursor from the file permanently, so append_bounded reports
-    -- failure instead and ws_outbound.make posts the body over HTTP.
+  it("still delivers frames when the ledger write fails and later recovers", function()
+    -- /tmp full: the ledger write fails while the spool append lands. The ledger
+    -- then UNDER-counts, which is the recoverable direction — the cursor outruns
+    -- it and the lost-sync branch resyncs. Frames must keep flowing, never as a
+    -- fragment, and delivery must resume when the ledger recovers.
     local fs = new_fs()
     local realopen = fs.open
     fs.open = function(path, mode)
       if path:match("%.written$") and (mode or ""):match("w") then return nil end
       return realopen(path, mode)
     end
-    local ok, _, ledger_ok = ws_spool.append_bounded("/tmp/sp", "line1xxxx", 1e6, fs.open)
-    assert.is_nil(ok)                 -- caller falls back to HTTP
-    assert.is_false(ledger_ok)
-    assert.is_nil(fs.data["/tmp/sp"]) -- and nothing was spooled behind its back
+    local state = {}
+    for i = 1, 3 do
+      ws_spool.append_bounded("/tmp/sp", "line" .. i .. "xxxx", 1e6, fs.open, fs.rename)
+    end
+    local got = ws_spool.drain("/tmp/sp", state, fs.open)
+    assert.are.equal("line3xxxx", got[#got])
+    for _, l in ipairs(got) do assert.are.equal(9, #l, "fragment: " .. l) end
   end)
 
   it("never ships a fragment when a failed spool write leaves the ledger ahead", function()
@@ -131,7 +142,7 @@ describe("ws_spool.append_bounded + drain", function()
     local fs = new_fs()
     local state = {}
     for i = 1, 3 do
-      ws_spool.append_bounded("/tmp/sp", "line" .. i .. "xxxx", 1e6, fs.open)
+      ws_spool.append_bounded("/tmp/sp", "line" .. i .. "xxxx", 1e6, fs.open, fs.rename)
     end
     ws_spool.drain("/tmp/sp", state, fs.open)
 
@@ -141,9 +152,9 @@ describe("ws_spool.append_bounded + drain", function()
       return realopen(path, mode)
     end
     -- Uneven length, so an overshoot would land mid-line rather than on a boundary.
-    assert.is_nil(ws_spool.append_bounded("/tmp/sp", "a-much-longer-line", 1e6, fs.open))
+    assert.is_nil(ws_spool.append_bounded("/tmp/sp", "a-much-longer-line", 1e6, fs.open, fs.rename))
     fs.open = realopen
-    ws_spool.append_bounded("/tmp/sp", "line4xxxx", 1e6, fs.open)
+    ws_spool.append_bounded("/tmp/sp", "line4xxxx", 1e6, fs.open, fs.rename)
 
     local got = ws_spool.drain("/tmp/sp", state, fs.open)
     for _, l in ipairs(got) do
@@ -163,10 +174,10 @@ describe("ws_spool.append_bounded + drain", function()
     local fs = new_fs()
     local state = {}
     for i = 1, 5 do
-      ws_spool.append_bounded("/tmp/sp", "line" .. i .. "xxxx", 1000, fs.open)
+      ws_spool.append_bounded("/tmp/sp", "line" .. i .. "xxxx", 1000, fs.open, fs.rename)
     end
     assert.are.equal(5, #ws_spool.drain("/tmp/sp", state, fs.open))
-    ws_spool.append_bounded("/tmp/sp", "line6xxxx", 40, fs.open)
+    ws_spool.append_bounded("/tmp/sp", "line6xxxx", 40, fs.open, fs.rename)
     assert.are.same({ "line6xxxx" }, ws_spool.drain("/tmp/sp", state, fs.open))
   end)
 
@@ -174,10 +185,10 @@ describe("ws_spool.append_bounded + drain", function()
     local fs = new_fs()
     local state = {}
     for i = 1, 3 do
-      ws_spool.append_bounded("/tmp/sp", "line" .. i .. "xxxx", 1000, fs.open)
+      ws_spool.append_bounded("/tmp/sp", "line" .. i .. "xxxx", 1000, fs.open, fs.rename)
     end
     ws_spool.drain("/tmp/sp", state, fs.open)
-    ws_spool.append_bounded("/tmp/sp", "line9xxxx", 10, fs.open)
+    ws_spool.append_bounded("/tmp/sp", "line9xxxx", 10, fs.open, fs.rename)
     assert.are.same({ "line9xxxx" }, ws_spool.drain("/tmp/sp", state, fs.open))
   end)
 
@@ -187,12 +198,12 @@ describe("ws_spool.append_bounded + drain", function()
     local fs = new_fs()
     local state = {}
     for i = 1, 4 do
-      ws_spool.append_bounded("/tmp/sp", "line" .. i .. "xxxx", 1000, fs.open)
+      ws_spool.append_bounded("/tmp/sp", "line" .. i .. "xxxx", 1000, fs.open, fs.rename)
     end
     ws_spool.drain("/tmp/sp", state, fs.open)
     fs.data["/tmp/sp"] = ""
     for i = 5, 8 do
-      ws_spool.append_bounded("/tmp/sp", "line" .. i .. "xxxx", 30, fs.open)
+      ws_spool.append_bounded("/tmp/sp", "line" .. i .. "xxxx", 30, fs.open, fs.rename)
     end
     local got = ws_spool.drain("/tmp/sp", state, fs.open)
     assert.is_true(#got > 0)
@@ -210,24 +221,67 @@ describe("ws_spool.append_bounded + drain", function()
       if path:match("%.written$") and (mode or ""):match("w") then return nil end
       return realopen(path, mode)
     end
-    local ok, _, ledger_ok = ws_spool.append_bounded("/tmp/sp", "line1xxxx", 1e6, fs.open)
-    assert.is_nil(ok)                 -- refused, so the tee falls back to HTTP
-    assert.is_false(ledger_ok)        -- and the caller is told why
+    local ok, _, ledger_ok = ws_spool.append_bounded("/tmp/sp", "line1xxxx", 1e6, fs.open, fs.rename)
+    assert.is_true(ok)                -- the datum is spooled: it IS readable
+    assert.is_false(ledger_ok)        -- and the caller is told the ledger lagged
   end)
 
   it("reports ledger success on an ordinary append", function()
     local fs = new_fs()
-    local ok, dropped, ledger_ok = ws_spool.append_bounded("/tmp/sp", "a", 1e6, fs.open)
+    local ok, dropped, ledger_ok = ws_spool.append_bounded("/tmp/sp", "a", 1e6, fs.open, fs.rename)
     assert.is_true(ok)
     assert.are.equal(0, dropped)
     assert.is_true(ledger_ok)
+  end)
+
+  it("never loses a frame to a drain landing inside the eviction rewrite", function()
+    -- The eviction rewrite used to be open(path,"w"), which truncates at OPEN, so
+    -- the spool sat EMPTY for the whole rebuild while the ledger already counted
+    -- the new entry. A drain in that window saw size 0, concluded the entire
+    -- stream had been evicted, and advanced the cursor past a frame that was
+    -- never readable — permanent loss, and worse than the replay the pre-#2634
+    -- code paid for the same interleaving. At the 1 MiB default cap the whole
+    -- spool is rewritten on every append, so the window was open constantly.
+    -- Writing to <spool>.tmp and renaming over closes it: the reader re-opens the
+    -- path each drain, so it sees the whole old file or the whole new one.
+    local fs = new_fs()
+    local state = {}
+    for i = 1, 5 do
+      ws_spool.append_bounded("/tmp/sp", "line" .. i .. "xxxx", 1e6, fs.open, fs.rename)
+    end
+    ws_spool.drain("/tmp/sp", state, fs.open)
+
+    -- Drive the writer's rewrite by hand, draining at the moment the spool would
+    -- have been truncated but the new content is not in place yet.
+    local realrename = fs.rename
+    local drained_mid
+    fs.rename = function(from, to)
+      drained_mid = ws_spool.drain("/tmp/sp", state, fs.open)
+      return realrename(from, to)
+    end
+    ws_spool.append_bounded("/tmp/sp", "line6xxxx", 30, fs.open, fs.rename)
+    fs.rename = realrename
+
+    -- Mid-rewrite the reader sees the OLD file, with the ledger already counting
+    -- the pending entry. That over-count makes it re-read the tail — a duplicate,
+    -- which the server dedups. What it must never do is skip ahead.
+    for _, l in ipairs(drained_mid) do
+      assert.are.equal(9, #l, "fragment mid-rewrite: " .. l)
+    end
+    local got = ws_spool.drain("/tmp/sp", state, fs.open)
+    local saw_six = false
+    for _, l in ipairs(got) do
+      assert.are.equal(9, #l, "fragment: " .. l)
+      if l == "line6xxxx" then saw_six = true end
+    end
+    assert.is_true(saw_six, "the frame written during the rewrite was lost")
   end)
 
   it("self-bounds the spool at the byte cap, dropping oldest lines", function()
     local fs = new_fs()
     -- cap small: each line "L<n>\n" is 4 bytes. Cap 10 holds ~2 lines.
     for i = 1, 5 do
-      ws_spool.append_bounded("/tmp/sp", "L" .. i, 10, fs.open)
+      ws_spool.append_bounded("/tmp/sp", "L" .. i, 10, fs.open, fs.rename)
     end
     assert.is_true(#(fs.data["/tmp/sp"]) <= 10,
       "spool grew past cap: " .. #(fs.data["/tmp/sp"]))
@@ -241,9 +295,9 @@ describe("ws_spool.append_bounded + drain", function()
 
   it("reports how many lines were dropped to bound the cap", function()
     local fs = new_fs()
-    for i = 1, 4 do ws_spool.append_bounded("/tmp/sp", "L" .. i, 10, fs.open) end
+    for i = 1, 4 do ws_spool.append_bounded("/tmp/sp", "L" .. i, 10, fs.open, fs.rename) end
     -- the 4th append must have evicted at least one earlier line.
-    local _, dropped = ws_spool.append_bounded("/tmp/sp", "L5", 10, fs.open)
+    local _, dropped = ws_spool.append_bounded("/tmp/sp", "L5", 10, fs.open, fs.rename)
     assert.is_true(dropped >= 1)
   end)
 end)

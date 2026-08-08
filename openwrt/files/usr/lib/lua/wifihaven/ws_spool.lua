@@ -99,17 +99,22 @@ local function bump_ledger(path, bytes, open_fn)
   if bytes <= 0 then return true end
   local total = read_ledger(path, open_fn)
   if total == nil then
-    -- Seeding: the file does not yet hold this entry (we run before the write),
-    -- so the total written so far is the current size plus it.
-    total = file_size(path, open_fn) + bytes
+    -- Seeding: we run AFTER the write, so the file already holds this entry and
+    -- its size IS the total written so far. Adding `bytes` again would push
+    -- `written` past the readable stream, the direction that swallows frames.
+    total = file_size(path, open_fn)
   else
     total = total + bytes
   end
   local f = open_fn(ledger_path(path), "w")
   if not f then return false end
-  f:write(string.format("%d", total))   -- %d, not tostring: a large running
-  f:close()                             -- total must never render as 1.2e+14
-  return true                           -- and reparse as 1
+  -- Check the WRITE and the CLOSE, not just the open. On tmpfs, opening an
+  -- existing ledger with "w" truncates and frees its blocks first, so a full /tmp
+  -- fails at the write — the very case this guard exists for. An unchecked write
+  -- would leave the ledger silently EMPTIED and still report success.
+  local wrote = f:write(string.format("%d", total))  -- %d, not tostring: a large
+  local closed = f:close()                           -- total must never render
+  return (wrote and closed) and true or false        -- as 1.2e+14 and reparse as 1
 end
 
 -- append_bounded(path, line, max_bytes, open_fn) → ok, dropped
@@ -119,29 +124,26 @@ end
 -- the new line remains — a single line over the cap is still written; we never
 -- silently lose the newest datum). Returns ok plus the count of lines dropped to
 -- make room, so the caller can meter spool pressure.
-function M.append_bounded(path, line, max_bytes, open_fn)
+function M.append_bounded(path, line, max_bytes, open_fn, rename_fn)
   open_fn = open_fn or io.open
+  rename_fn = rename_fn or os.rename
   local entry = line .. "\n"
   local existing = slurp(path, open_fn) or ""
   local dropped = 0
-  -- #2634: bump the ledger FIRST, and treat a failed bump as a failed append.
+  -- #2634: the ledger is bumped only once the entry is READABLE — after the
+  -- append, or after the rename that publishes the rewritten spool.
   --
-  -- The ledger is what lets the reader locate itself in the stream, so writing to
-  -- the spool without it is worse than not writing at all: the reader's cursor
-  -- and the file silently diverge and the divergence survives the ledger
-  -- recovering. Refusing the append instead makes the failure honest — the
-  -- caller's tee (ws_outbound.make) falls straight back to HTTP, so the datum
-  -- still reaches the API and nothing is lost.
+  -- Bumping first is unsafe even with an atomic rename, and not merely because it
+  -- over-counts: a drain landing between the bump and the publish reads the OLD
+  -- file at an offset derived from the NEW total, consumes bytes it has already
+  -- seen, and credits them against the pending entry's place in the stream. The
+  -- cursor then equals `written` with that entry never delivered, and it is gone.
+  -- (Pinned by the drain-inside-the-rewrite spec case.)
   --
-  -- That leaves only one ordering hazard, and it is the recoverable one: if the
-  -- ledger lands and the spool write then fails (or we die between them), the
-  -- ledger runs AHEAD of the file, so `written - size` overshoots and the reader
-  -- seeks too early. It cannot ship a fragment for it — the newline guard in
-  -- drain() catches a non-line-aligned offset and resyncs to the file start — so
-  -- the cost is duplicates, which the server dedups on the persistence-layer
-  -- unique keys. The reverse ordering would under-count and SKIP live frames,
-  -- which nothing downstream can recover.
-  if not bump_ledger(path, #entry, open_fn) then return nil, 0, false end
+  -- Trailing leaves only the recoverable direction: if we die between the publish
+  -- and the bump, the ledger under-counts, `written - size` undershoots, the
+  -- cursor outruns it, and drain()'s lost-sync branch resyncs and re-reads.
+  -- Duplicates, which the server dedups on the persistence-layer unique keys.
   local ledger_ok = true
 
   if #existing + #entry > max_bytes then
@@ -163,10 +165,22 @@ function M.append_bounded(path, line, max_bytes, open_fn)
     local kept = {}
     for j = i, #lines do kept[#kept + 1] = lines[j] end
     local rebuilt = (#kept > 0 and (table.concat(kept, "\n") .. "\n") or "") .. entry
-    local wf = open_fn(path, "w")
+    -- Write-then-rename, NOT open(path,"w"). `w` truncates at OPEN, so the spool
+    -- would sit EMPTY for the whole rebuild — and at the default 1 MiB cap the
+    -- steady state rewrites the entire spool on every append, so that window is
+    -- open constantly. A drain landing in it sees size 0 with the ledger already
+    -- counting the entry, concludes the whole stream was evicted, and advances
+    -- the cursor past a frame that was never readable: permanent loss, and worse
+    -- than the replay the pre-#2634 code paid for the same interleaving. rename
+    -- is atomic, so the reader (which re-opens the path on every drain) gets the
+    -- whole old file or the whole new one, never an empty one.
+    local tmp = path .. ".tmp"
+    local wf = open_fn(tmp, "w")
     if not wf then return nil, dropped, ledger_ok end
     wf:write(rebuilt)
     wf:close()
+    if not rename_fn(tmp, path) then return nil, dropped, ledger_ok end
+    ledger_ok = bump_ledger(path, #entry, open_fn)
     return true, dropped, ledger_ok
   end
 
@@ -174,6 +188,7 @@ function M.append_bounded(path, line, max_bytes, open_fn)
   if not af then return nil, 0, ledger_ok end
   af:write(entry)
   af:close()
+  ledger_ok = bump_ledger(path, #entry, open_fn)
   return true, 0, ledger_ok
 end
 
@@ -199,9 +214,10 @@ function M.drain(path, state, open_fn)
   -- lock between them, and the writer is another process. If it appends or
   -- evicts in that window we would compute the wrong file offset and could skip
   -- live frames. Re-read the ledger afterwards and retry when it moved, bounded
-  -- at MAX_SEQLOCK_TRIES so a busy router cannot livelock the drain; the last
-  -- attempt is taken as-is, which is no worse than the pre-#2634 behaviour.
-  local data, base
+  -- at MAX_SEQLOCK_TRIES so a busy router cannot livelock the drain. A last
+  -- attempt taken as-is may SKIP (a base computed too small), not merely replay,
+  -- which is why the bound is a backstop and not the mechanism.
+  local data
   for _ = 1, M.MAX_SEQLOCK_TRIES do
     local written = read_ledger(path, open_fn)
 
@@ -212,13 +228,18 @@ function M.drain(path, state, open_fn)
 
     -- No ledger yet (pre-#2634 spool, or a hand-deleted file): assume nothing
     -- was lost off the front. Worst case that re-reads the current file once.
-    base = (written and written >= size) and (written - size) or 0
+    local base = (written and written >= size) and (written - size) or 0
 
     -- First drain adopts the current file start, so a restart reads what is in
     -- the spool rather than re-deriving the router's whole history. A cursor
     -- BEHIND the file start means the front was evicted or truncated away, so
     -- skip to what survives.
-    if state.consumed == nil or state.consumed < base then state.consumed = base end
+    -- `size == 0` is not evidence the stream advanced: it is also what a reader
+    -- sees mid-rewrite, or right after a copytruncate. Advancing the cursor on it
+    -- would skip frames that are about to exist. Only ever move FORWARD against a
+    -- file that actually has content.
+    if state.consumed == nil then state.consumed = base
+    elseif state.consumed < base and size > 0 then state.consumed = base end
 
     -- LOST SYNC. A cursor past everything the ledger can account for means the
     -- ledger under-counts the stream: /tmp cleared under a running sidecar, the
@@ -239,7 +260,7 @@ function M.drain(path, state, open_fn)
     -- fragment as if it were a frame — resync rather than ship garbage.
     if off > 0 and data ~= "" then
       f:seek("set", off - 1)
-      if (f:read("*a") or ""):sub(1, 1) ~= "\n" then
+      if (f:read(1) or ""):sub(1, 1) ~= "\n" then
         state.consumed = base
         f:seek("set", 0)
         data = f:read("*a") or ""
