@@ -1473,22 +1473,21 @@ object AppMetrics {
     )
 
   // #1849: counts policy-snapshot accesses split by whether they hit the computed-snapshot cache.
-  // `computed` = an actual PolicyService rebuild (its wall-clock is
-  // `policy_snapshot_build_seconds`, #2635); `failed` = a build that threw (#2635);
-  // `cache_hit` = served from
-  // the cache without rebuilding. The ratio proves the cache is working — once the reconcile ticker
-  // keeps the cache warm, REST polls and ws fan-outs should be overwhelmingly `cache_hit`, with
-  // `computed` tracking the change/tick rate rather than the poll rate. `result` is a fixed 3-value
-  // enum (bounded label, per docs/process/instrumentation.md).
+  // `computed` = an actual PolicyService rebuild (its wall-clock is the #2635 histogram
+  // `policy_snapshot_build_seconds`); `failed` = a build that threw (#2635); `cache_hit` = served
+  // from the cache without rebuilding. The ratio proves the cache is working — once the reconcile
+  // ticker keeps the cache warm, REST polls and ws fan-outs should be overwhelmingly `cache_hit`,
+  // with `computed` tracking the change/tick rate rather than the poll rate. `result` is a fixed
+  // 3-value enum (bounded label, per docs/process/instrumentation.md). An INTERRUPTED build is
+  // none of the three and is not counted at all — see `PolicyService.timedBuild`.
   def recordSnapshotBuild(result: String): UIO[Unit] =
     MetricGuard.counter("policy_snapshot_build_total", Map("result" -> result))
 
   // #2635: bucket boundaries in SECONDS, chosen around the two numbers that matter — a build
   // measured at ~0.62s median on a prod-shaped seed (2026-08-07), and the reconcile ticker's period
-  // (`PolicyConfig.snapshotCacheRefreshInterval`, 5s by its default). The buckets straddle both
-  // so a
-  // panel can show the median AND answer "are builds approaching the tick period?", which is the
-  // point at which `Schedule.fixed` stops keeping its period and the sweep runs back to back.
+  // (`PolicyConfig.snapshotCacheRefreshInterval`, 5s by its default). The buckets straddle both, so
+  // a panel can show the median AND answer "are builds approaching the tick period?" — the point at
+  // which `Schedule.fixed` stops keeping its period and the sweep runs back to back.
   val SnapshotBuildDurationBoundaries: MetricKeyType.Histogram.Boundaries =
     MetricKeyType.Histogram.Boundaries.fromChunk(
       Chunk(0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0),

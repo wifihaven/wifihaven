@@ -472,8 +472,10 @@ object PolicySnapshotCacheSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedP
   // #2635: the two `reconciled.await` fences in this suite are unbounded by design — that is what
   // makes them deterministic. The cost is that a regression which drops the fork (or kills the
   // fiber before `reconcileBarrier` runs) would HANG rather than fail, and a hang gives CI no test
-  // name and no assertion diff. This bound converts that into a normal red. It runs on the LIVE
-  // clock, not the spec's frozen `TestClock`, and is far above any real runtime here (the whole
-  // suite is ~8s), so it is a failure-mode backstop and never a timing assertion.
+  // name and no assertion diff. This bound converts that into a normal red. `TestAspect.timeout` is
+  // PER-TEST, not a budget for the suite, and it runs on the LIVE clock (it wraps the body in
+  // `Live.withLive`, which restores the test services inside) so the spec's frozen `TestClock` is
+  // untouched. 60s is orders of magnitude above any test here — the whole suite runs in ~8s — so it
+  // is a failure-mode backstop and never a timing assertion.
     @@ TestAspect.timeout(60.seconds)
 }
