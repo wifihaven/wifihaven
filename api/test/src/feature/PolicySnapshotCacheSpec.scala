@@ -18,12 +18,17 @@ import java.time.{LocalDateTime, LocalTime, ZoneId}
  *
  *   1. With the cache ON, a second `snapshot` is served from the cache (does NOT rebuild), so a DB
  *      change made WITHOUT invalidating is not yet visible — proving the read path is cached. 2.
- *      `invalidate` (what mutating routes call) drops the cache so the next `snapshot` reflects the
- *      change — proving invalidation works. 3. `reevaluate` (what the reconcile ticker +
- *      post-mutation reconcile call) rebuilds, and pushes the new snapshot to the publisher IFF the
- *      ETag moved — proving push-on-change (and that an unchanged state does NOT spam a push). 4. A
- *      time-dependent transition (a schedule boundary crossed with NO DB write) is caught by
- *      `reevaluate` — the ticker mechanism — and pushed, even though `invalidate` was never called.
+ *      `invalidate` (what mutating routes call) stales that household's entry so the next
+ *      `snapshot` reflects the change — proving invalidation works. 3. A rebuild pushes the new
+ *      snapshot to the publisher IFF the ETag moved — proving push-on-change (and that an unchanged
+ *      state does NOT spam a push). 4. A time-dependent transition (a schedule boundary crossed
+ *      with NO DB write) is caught by `reevaluate` — the ticker mechanism — and pushed, even though
+ *      `invalidate` was never called.
+ *
+ * #2635 split the two rebuild paths that used to be one: the TICKER calls `reevaluate` (the sweep
+ * over every household with a connected router, plus Default), while a MUTATION goes through
+ * `invalidate` → `invalidateMany`, which reconciles only the households it was given. Properties 3
+ * and 4 above are the ticker's; the `#2635` tests below are the mutation path's.
  *
  * The default `apply` factory leaves the cache OFF (so the ~40 other snapshot specs keep building
  * every call); these tests construct with `cacheEnabled = true` explicitly.
@@ -75,7 +80,8 @@ object PolicySnapshotCacheSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedP
    */
   private def makeCachedSvc(
       startAt: LocalDateTime,
-      buildBarrier: UIO[Unit] = ZIO.unit,
+      buildBarrier: HouseholdId => UIO[Unit] = _ => ZIO.unit,
+      reconcileBarrier: UIO[Unit] = ZIO.unit,
       pushTargets: Set[HouseholdId] = Set.empty,
       probeAlsoTry: Set[HouseholdId] = Set.empty,
   ) =
@@ -108,6 +114,7 @@ object PolicySnapshotCacheSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedP
         namedScheduleRepo = nsr,
         cacheEnabled = true,
         buildBarrier = buildBarrier,
+        reconcileBarrier = reconcileBarrier,
       )
       pushed <- Ref.make(List.empty[(HouseholdId, PolicySnapshot)])
       _      <- svc.setPublisher(new ProbePublisher(pushed, pushTargets, probeAlsoTry))
@@ -173,8 +180,9 @@ object PolicySnapshotCacheSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedP
         (svc, _, _) = triple
         snap1 <- svc.snapshot
         _     <- setBlockEncryptedDns(true)
-        _     <- svc.invalidate
-        // `invalidate` clears the cache synchronously; the next read rebuilds. (It also forks a
+        _     <- svc.invalidate(HouseholdId.Default)
+        // `invalidate` bumps this household's `mutationVersions` entry synchronously, so its cached
+        // snapshot no longer matches the current stamp and the next read rebuilds. (It also forks a
         // background reconcile, but we don't depend on that fiber here.)
         snap2 <- svc.snapshot
       } yield assertTrue(snap2.blockEncryptedDns) && assertTrue(snap2.etag != snap1.etag)
@@ -218,13 +226,14 @@ object PolicySnapshotCacheSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedP
         // Count builds through `buildBarrier`, the per-SERVICE hook run once at the end of every
         // `buildSnapshot` — NOT through `policy_snapshot_build_total`. That counter is JVM-global
         // and additive, and an earlier test in this class calls `invalidate`, which ends in
-        // `reevaluate.forkDaemon`: a daemon fiber on a different service instance that can land its
-        // build inside this test's window and make an exact delta go red for an unrelated reason.
+        // `invalidateMany`'s `forkDaemon`: a daemon fiber on a different service instance that can
+        // land its build inside this test's window and make an exact delta go red for an unrelated
+        // reason.
         // `TestAspect.sequential` orders tests, it does not fence a fiber a previous test forked.
         builds     <- Ref.make(0)
         triple     <- makeCachedSvc(
           TestClock.schoolDayAfternoon,
-          buildBarrier = builds.update(_ + 1),
+          buildBarrier = _ => builds.update(_ + 1),
           pushTargets = Set(hhB), // one connected router, in household B
           probeAlsoTry = Set(hhC),
         )
@@ -273,6 +282,97 @@ object PolicySnapshotCacheSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedP
         assertTrue(newPushes.head._1 == HouseholdId.Default) &&
         assertTrue(newPushes.head._2.blockEncryptedDns)
     },
+    test("#2635: invalidate rebuilds ONLY the household it named, not the connected fleet") {
+      // The cost half of #2630, asserted on `invalidate` itself — the method every mutating route
+      // calls. It used to fork the full `reevaluate` sweep, so one household's SPA edit rebuilt a
+      // snapshot for every OTHER connected household. Reverting `invalidate`'s body to that sweep
+      // must turn this test red, which is the only thing that makes it a regression pin rather than
+      // a restatement of the implementation.
+      //
+      // `invalidate` reconciles in a DETACHED daemon, so "household B was not rebuilt" is a claim
+      // about a fiber this test does not own. `reconcileBarrier` — run at the end of that fiber —
+      // is the fence that makes it decidable: awaiting it means the whole reconcile has finished,
+      // so `built` is complete and can be compared exactly. No timeout, no wall-clock wait (#2042),
+      // and no dependence on the order `foreachDiscard` happens to visit a Set in — a sweep is red
+      // whichever household it reaches first.
+      for {
+        _          <- cleanDb
+        hRepo      <- ZIO.service[HouseholdRepo]
+        hhB        <- hRepo.create("Other household", "other-household")
+        built      <- Ref.make(List.empty[HouseholdId])
+        reconciled <- Promise.make[Nothing, Unit]
+        triple     <- makeCachedSvc(
+          TestClock.schoolDayAfternoon,
+          buildBarrier = hh => built.update(_ :+ hh),
+          reconcileBarrier = reconciled.succeed(()).unit,
+          // B has a connected router — the set the sweep targets, and so exactly what the mutation
+          // path used to rebuild along with Default.
+          pushTargets = Set(hhB),
+        )
+        (svc, _, pushed) = triple
+        _           <- svc.reevaluate   // baseline: the ticker's sweep builds Default + B
+        _           <- built.set(Nil)
+        _           <- pushed.set(Nil)
+        // A mutation in Default only.
+        _           <- setBlockEncryptedDns(true)
+        _           <- svc.invalidate(HouseholdId.Default)
+        _           <- reconciled.await // the forked reconcile has fully finished
+        afterBuilt  <- built.get
+        afterPushed <- pushed.get
+      } yield assertTrue(afterBuilt == List(HouseholdId.Default)) &&
+        assertTrue(afterPushed.map(_._1) == List(HouseholdId.Default))
+    },
+    test("#2635: invalidateMany reconciles every named household, each exactly once") {
+      // The bulk form `FlipService` uses at the beta→paid window end. This pins WHAT it reconciles:
+      // every named household, once each, pushed under its own scope.
+      //
+      // It does NOT pin the other half of why `invalidateMany` exists — that the reconcile is a
+      // SINGLE fiber rather than one fork per household. That is a negative claim about
+      // concurrency, and asserting it would mean proving a second build never ran in parallel,
+      // which against forked fibers is a race rather than a test. It is enforced structurally
+      // instead: `invalidateMany` contains exactly one `forkDaemon`, and a reviewer can see that at
+      // a glance. Do not let this comment grow into a claim the assertions below don't make.
+      for {
+        _          <- cleanDb
+        hRepo      <- ZIO.service[HouseholdRepo]
+        hhB        <- hRepo.create("Other household", "other-household")
+        built      <- Ref.make(List.empty[HouseholdId])
+        reconciled <- Promise.make[Nothing, Unit]
+        triple     <- makeCachedSvc(
+          TestClock.schoolDayAfternoon,
+          buildBarrier = hh => built.update(_ :+ hh),
+          reconcileBarrier = reconciled.succeed(()).unit,
+          pushTargets = Set(hhB),
+        )
+        (svc, _, pushed) = triple
+        _          <- svc.invalidateMany(List(HouseholdId.Default, hhB))
+        _          <- reconciled.await
+        afterBuilt <- built.get
+        pushes     <- pushed.get
+      } yield assertTrue(afterBuilt.toSet == Set(HouseholdId.Default, hhB)) &&
+        assertTrue(afterBuilt.size == 2) && // each named household built exactly once
+        assertTrue(pushes.map(_._1).toSet == Set(HouseholdId.Default, hhB))
+    },
+    test("#2635: a mutation in one household does not stale another household's cache") {
+      // `mutationVersion` was a single JVM-global counter, so ANY household's `invalidate` marked
+      // every cached entry stale-stamped and the next REST poll for an untouched household rebuilt
+      // synchronously on the request path. Same amplification, moved off the ticker and onto the
+      // poll. Content-based and synchronous: Default's bytes must still be the cached ones after
+      // a DB change it never invalidated.
+      for {
+        _      <- cleanDb
+        hRepo  <- ZIO.service[HouseholdRepo]
+        hhB    <- hRepo.create("Other household", "other-household")
+        triple <- makeCachedSvc(TestClock.schoolDayAfternoon)
+        (svc, _, _) = triple
+        warm  <- svc.snapshot(HouseholdId.Default) // warm Default's cache entry
+        // A mutation lands in B: B's row changes and B is invalidated. Default is untouched, so
+        // its cached entry must still be trusted.
+        _     <- setBlockEncryptedDns(true)        // a Default-scoped DB change, NOT invalidated
+        _     <- svc.invalidate(hhB)
+        after <- svc.snapshot(HouseholdId.Default)
+      } yield assertTrue(after.etag == warm.etag) && assertTrue(!after.blockEncryptedDns)
+    },
     test(
       "a schedule boundary crossed with no DB write is caught + pushed by reevaluate (the ticker mechanism)",
     ) {
@@ -306,7 +406,7 @@ object PolicySnapshotCacheSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedP
         dr   <- ZIO.service[DeviceRepo]
         pid  <- pr.create("e2e-router", Nil)
         _    <- TestLayers.seedDevice(dr, "e2:e2:e2:8e:79:5b", "e2e-dev", pid)
-        _    <- svc.invalidate
+        _    <- svc.invalidate(HouseholdId.Default)
         snap <- svc.snapshot
       } yield assertTrue(snap.profiles.contains(pid)) &&
         assertTrue(
@@ -324,10 +424,10 @@ object PolicySnapshotCacheSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedP
         (svc, _, _) = triple
         pr      <- ZIO.service[ProfileRepo]
         pid     <- pr.create("temp", Nil)
-        _       <- svc.invalidate
+        _       <- svc.invalidate(HouseholdId.Default)
         present <- svc.snapshot
         _       <- pr.delete(pid)
-        _       <- svc.invalidate
+        _       <- svc.invalidate(HouseholdId.Default)
         gone    <- svc.snapshot
       } yield assertTrue(present.profiles.contains(pid)) &&
         assertTrue(!gone.profiles.contains(pid))
@@ -351,10 +451,11 @@ object PolicySnapshotCacheSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedP
         armed   <- Ref.make(true)
         // Gate the FIRST build only: it signals `entered` (with {A,B} already read) and parks on
         // `release`; once disarmed, every later build passes straight through.
-        barrier     = armed.get.flatMap {
-          case true  => entered.succeed(()) *> release.await
-          case false => ZIO.unit
-        }
+        barrier     = (_: HouseholdId) =>
+          armed.get.flatMap {
+            case true  => entered.succeed(()) *> release.await
+            case false => ZIO.unit
+          }
         triple <- makeCachedSvc(TestClock.schoolDayAfternoon, buildBarrier = barrier)
         (svc, _, _) = triple
         // The stale in-flight build: reads {A,B} (C not yet created), then parks in the barrier.
@@ -364,7 +465,7 @@ object PolicySnapshotCacheSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedP
         // A mutation lands while the stale build is parked: create C + invalidate (version bump) +
         // a fresh rebuild that installs {A,B,C}.
         pidC     <- pr.create("C", Nil)
-        _        <- svc.invalidate
+        _        <- svc.invalidate(HouseholdId.Default)
         _        <- svc.reevaluate   // fresh build installs {A,B,C} under the new version
         // Now release the stale build so its pre-mutation {A,B} result tries to install LAST.
         _        <- release.succeed(())
@@ -375,4 +476,13 @@ object PolicySnapshotCacheSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedP
         assertTrue(snap.profiles.contains(pidC)) // the stale build did NOT clobber C away
     },
   ) @@ TestAspect.sequential
+  // #2635: the two `reconciled.await` fences in this suite are unbounded by design — that is what
+  // makes them deterministic. The cost is that a regression which drops the fork (or kills the
+  // fiber before `reconcileBarrier` runs) would HANG rather than fail, and a hang gives CI no test
+  // name and no assertion diff. This bound converts that into a normal red. `TestAspect.timeout` is
+  // PER-TEST, not a budget for the suite, and it runs on the LIVE clock (it wraps the body in
+  // `Live.withLive`, which restores the test services inside) so the spec's frozen `TestClock` is
+  // untouched. 60s is orders of magnitude above any test here — the whole suite runs in ~8s — so it
+  // is a failure-mode backstop and never a timing assertion.
+    @@ TestAspect.timeout(60.seconds)
 }

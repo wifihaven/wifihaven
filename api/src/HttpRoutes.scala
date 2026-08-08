@@ -558,12 +558,12 @@ object HttpRoutes {
         // #1970 (S3): also nudge `stale{profiles}` so an open SPA re-fetches the class-(3)
         // profiles resource (design §3.2) — composed onto the existing invalidate callback, so
         // every profile mutation publishes without touching the route's signature.
-        policy.invalidate <* spaEventBus.publish(SpaEvent.Stale(StaleTopic.Profiles)),
+        hh => policy.invalidate(hh) <* spaEventBus.publish(SpaEvent.Stale(StaleTopic.Profiles)),
       ) ++
       ScheduleRoutes.routes(
         auth,
         namedSchedRepo,
-        policy.invalidate <* spaEventBus.publish(SpaEvent.Stale(StaleTopic.Schedules)),
+        hh => policy.invalidate(hh) <* spaEventBus.publish(SpaEvent.Stale(StaleTopic.Schedules)),
       ) ++
       HouseholdSettingsRoutes.routes(auth, hsRepo, policy.invalidate) ++
       // #2382: the server-level per-household "disable enforcement" escape hatch (admin-write). The
@@ -575,7 +575,7 @@ object HttpRoutes {
         deviceRepo,
         upRepo,
         profileRepo,
-        policy.invalidate <* spaEventBus.publish(SpaEvent.Stale(StaleTopic.Devices)),
+        hh => policy.invalidate(hh) <* spaEventBus.publish(SpaEvent.Stale(StaleTopic.Devices)),
       )
 
   private def buildStatsRoutes(

@@ -3,6 +3,7 @@ package wifihaven.api.routes
 import wifihaven.api.auth.*
 import wifihaven.api.db.HouseholdSettingsRepo
 import wifihaven.shared.*
+import wifihaven.shared.types.HouseholdId
 import zio.*
 import zio.http.*
 import zio.json.*
@@ -33,7 +34,7 @@ object HouseholdEnforcementRoutes {
       settingsRepo: HouseholdSettingsRepo,
       // Defaulted to a no-op for test call sites; production passes `policy.invalidate` so a toggle
       // takes effect on the fleet immediately.
-      invalidateSnapshot: UIO[Unit] = ZIO.unit,
+      invalidateSnapshot: HouseholdId => UIO[Unit] = _ => ZIO.unit,
   ): Routes[Any, Response] =
     Routes(
       Method.GET / "api" / "household" / "enforcement" ->
@@ -60,7 +61,7 @@ object HouseholdEnforcementRoutes {
             _      <- ZIO
               .fail(ApiError.NotFound("household not found"))
               .when(!ok)
-            _      <- invalidateSnapshot
+            _      <- invalidateSnapshot(claims.hh)
           } yield Response.json(EnforcementStatusResponse(upd.enforcementDisabled).toJson)
           handle.mapError(ErrorMapper.errorToResponse)
         },

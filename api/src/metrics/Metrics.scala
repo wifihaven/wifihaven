@@ -343,13 +343,21 @@ object MetricGuard {
     "router_ws_reassembly_total"                -> Set("result"),
     "spa_ws_reassembly_total"                   -> Set("result"),
     // #1849 — computed-snapshot cache + push-on-change. `policy_snapshot_build_total` splits policy
-    // snapshot accesses into `result` ∈ {computed, cache_hit} (proves the cache works);
+    // snapshot accesses into `result` ∈ {computed, cache_hit, failed} (proves the cache works;
+    // #2635 added `failed`, a build that threw — a fixed 3-value enum);
     // `router_ws_policy_push_total` is the push fan-out, `result` ∈ {ok, channel_closed,
     // unregistered, household_mismatch} — the last two are #2630's REFUSED deliveries, see the
     // counter's own comment below. Both names are bounded, no per-mac / per-host / per-household
     // dimension. (Without these entries the firewall would reject both names as unknown_name and
     // the series would never emit.)
     "policy_snapshot_build_total"               -> Set("result"),
+    // #2635 — how long ONE household's snapshot build actually takes. The repo carried two
+    // unmeasured figures for this (~2.5s at Main.scala, ~500ms at Config.scala) and the cost of the
+    // per-household rebuild loop turns on which is right, so the number is now measured rather than
+    // asserted. Unlabelled on purpose: a per-household label is exactly the unbounded tenant
+    // dimension docs/process/instrumentation.md forbids, and the operational question ("is a build
+    // approaching the tick period?") is answered by the distribution, not by which household.
+    "policy_snapshot_build_seconds"             -> Set.empty[String],
     // #2382 — how often PolicyService serves a fully permissive (allow-all) snapshot instead of the
     // household's real policy, by `reason` ∈ {lapsed, enforcement_disabled} — a fixed 2-value enum,
     // bounded, no per-household dimension. A sustained rate on `enforcement_disabled` is the signal
@@ -1465,13 +1473,37 @@ object AppMetrics {
     )
 
   // #1849: counts policy-snapshot accesses split by whether they hit the computed-snapshot cache.
-  // `computed` = an actual PolicyService rebuild (the ~500ms #1512 work); `cache_hit` = served from
-  // the cache without rebuilding. The ratio proves the cache is working — once the reconcile ticker
-  // keeps the cache warm, REST polls and ws fan-outs should be overwhelmingly `cache_hit`, with
-  // `computed` tracking the change/tick rate rather than the poll rate. `result` is a fixed 2-value
-  // enum (bounded label, per docs/process/instrumentation.md).
+  // `computed` = an actual PolicyService rebuild (its wall-clock is the #2635 histogram
+  // `policy_snapshot_build_seconds`); `failed` = a build that threw (#2635); `cache_hit` = served
+  // from the cache without rebuilding. The ratio proves the cache is working — once the reconcile
+  // ticker keeps the cache warm, REST polls and ws fan-outs should be overwhelmingly `cache_hit`,
+  // with `computed` tracking the change/tick rate rather than the poll rate. `result` is a fixed
+  // 3-value enum (bounded label, per docs/process/instrumentation.md). An interrupted build is not
+  // counted `failed` — `PolicyService.timedBuild` excludes it deliberately — though one interrupted
+  // after this counter has already fired is still counted `computed`; see that method's docstring.
   def recordSnapshotBuild(result: String): UIO[Unit] =
     MetricGuard.counter("policy_snapshot_build_total", Map("result" -> result))
+
+  // #2635: bucket boundaries in SECONDS, chosen around the two numbers that matter — a build
+  // measured at ~0.62s median on a prod-shaped seed (2026-08-07), and the reconcile ticker's period
+  // (`PolicyConfig.snapshotCacheRefreshInterval`, 5s by its default). The buckets straddle both, so
+  // a panel can show the median AND answer "are builds approaching the tick period?" — the point at
+  // which `Schedule.fixed` stops keeping its period and the sweep runs back to back.
+  val SnapshotBuildDurationBoundaries: MetricKeyType.Histogram.Boundaries =
+    MetricKeyType.Histogram.Boundaries.fromChunk(
+      Chunk(0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0),
+    )
+
+  // #2635: wall-clock of one `buildSnapshot`, observed once per ACTUAL build (never on a cache
+  // hit). See `SnapshotBuildDurationBoundaries` for why these buckets and
+  // docs/process/instrumentation.md for why there is no household label.
+  def recordSnapshotBuildDuration(seconds: Double): UIO[Unit] =
+    MetricGuard.histogram(
+      "policy_snapshot_build_seconds",
+      Map.empty[String, String],
+      seconds,
+      SnapshotBuildDurationBoundaries,
+    )
 
   // #2382: counts each time PolicyService serves a fully PERMISSIVE (allow-all) snapshot instead of
   // the household's real policy, split by why. `reason` ∈ {lapsed, enforcement_disabled} — a fixed

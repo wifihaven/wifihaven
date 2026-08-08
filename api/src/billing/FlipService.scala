@@ -178,7 +178,14 @@ final case class FlipService(
     for {
       ids     <- cohortRepo.betaHouseholdIds
       _       <- ZIO.foreachDiscard(ids)(hid => billingRepo.markLapsed(hid, now))
-      _       <- ZIO.when(ids.nonEmpty)(policyService.invalidate)
+      // #2635: reconcile exactly the households actually flipped — each rebuilds its OWN snapshot.
+      // Previously a single no-arg `invalidate` forked the full sweep, which happened to cover the
+      // flipped set only because the sweep covered everything. `invalidateMany`, not a loop over
+      // `invalidate`: `invalidate` returns as soon as it forks, so looping it would put one build
+      // per flipped household in flight at once on the shared Hikari pool.
+      // Guarded on `nonEmpty` (as the pre-#2635 call was): `invalidateMany(Nil)` bumps nothing but
+      // would still fork a fiber only to run the barrier and exit.
+      _       <- ZIO.when(ids.nonEmpty)(policyService.invalidateMany(ids))
       latched <- cohortRepo.markFlipped(now)
       _       <- ZIO.when(latched)(
         ZIO.logInfo(

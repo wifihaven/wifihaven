@@ -509,7 +509,7 @@
         "uid": "${datasource}"
       },
       "title": "Policy snapshot builds: computed vs cache_hit (#1849 / #1512)",
-      "description": "sum by (result) (rate(policy_snapshot_build_total[5m])) — proves the computed-snapshot cache is working. result=computed is an actual ~500ms PolicyService rebuild (the #1512 cost); result=cache_hit is a poll/ws-fanout served from the cache without rebuilding. Once the reconcile ticker keeps the cache warm, cache_hit should dominate and computed should track the policy-change/tick rate (≈1 per snapshotCacheRefreshSeconds), NOT the per-poll-per-router rate. A computed rate that scales with router count means the cache is not being read.",
+      "description": "sum by (result) (rate(policy_snapshot_build_total[5m])) — proves the computed-snapshot cache is working. result=computed is an actual PolicyService rebuild (the #1512 cost — its wall-clock is the \"Policy snapshot build duration\" panel); result=cache_hit is a poll/ws-fanout served from the cache without rebuilding; result=failed is a build that threw (#2635) — it is the outcome most likely to correlate with the duration panel creeping toward the tick period, since a build that runs long tends to end in a pool-acquisition timeout. Once the reconcile ticker keeps the cache warm, cache_hit should dominate and computed should track the policy-change/tick rate (≈1 per snapshotCacheRefreshSeconds), NOT the per-poll-per-router rate. A computed rate that scales with router count means the cache is not being read.",
       "type": "timeseries",
       "gridPos": {
         "h": 8,
@@ -671,6 +671,72 @@
           "expr": "sum by (reason) (rate(policy_poll_skipped_total{env=\"$env\"}[5m]))",
           "legendFormat": "{{reason}}",
           "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "title": "Policy snapshot build duration (#2635)",
+      "description": "histogram_quantile over policy_snapshot_build_seconds_bucket — the wall-clock of ONE household's buildSnapshot, sampled once per COMPLETED build — success or failure, never on a cache hit, and never for a build that was interrupted (a shutdown would otherwise contribute a truncated sample). Note the count of builds STARTED is not recoverable from this panel: an interrupted build is absent here whether it was fast or slow. See PolicyService.timedBuild. The reconcile ticker does one build per household with a connected router every snapshotCacheRefreshSeconds, so the operational number is (p99 × connected households) against that period: once the sweep exceeds its own period, Schedule.fixed stops keeping the period and the loop runs back to back on the shared Hikari pool. The repo previously carried two unmeasured figures (~2.5s and ~500ms) for this cost; this panel is the measurement.",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 40
+      },
+      "id": 18,
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "s",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "lineWidth": 1
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(policy_snapshot_build_seconds_bucket{env=\"$env\"}[5m])))",
+          "legendFormat": "p99",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(policy_snapshot_build_seconds_bucket{env=\"$env\"}[5m])))",
+          "legendFormat": "p50",
+          "refId": "B"
         }
       ]
     },
