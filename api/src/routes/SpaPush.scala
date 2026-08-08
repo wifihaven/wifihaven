@@ -315,11 +315,14 @@ object SpaPush {
    * handed the result to a fan-out with no household gate, so every subscribed household received
    * every other household's connection events live.
    *
-   * The per-household read is also strictly cheaper than the global one it replaces in the common
-   * case: no subscriber ⇒ no query at all, and each query that does run is narrowed by the
-   * `routers.household_id` predicate (index-backed by `idx_routers_household`, V65) that `GET
-   * /api/logs` has run in prod since #2108 — same access pattern, same plan, N = the number of
-   * households with a Connection Events surface actually open (typically 0 or 1 per ingest).
+   * Cost: N queries per coalesced ingest batch, N = the number of households with a Connection
+   * Events surface actually OPEN, against the previous ONE unconditional global query. Each query
+   * is the same access pattern and plan `GET /api/logs` has run in prod since #2108 (the
+   * `routers.household_id` predicate, index-backed by `idx_routers_household`, V65) and is narrower
+   * than the global read it replaces, so N = 0 (nobody watching — the common case, and no query
+   * runs at all) and N = 1 are both cheaper than before. N > 1 is more queries than before; that is
+   * the price of the tenant boundary, and N is bounded by concurrently-open dashboards, never by
+   * data volume.
    */
   private def pushConnectionEvents(
       registry: SpaWsRegistry,

@@ -375,34 +375,48 @@ final class SpaWsRegistryLive(
   // deregisters; doing it here keeps the gauges honest if the push won the race).
 
   /**
-   * #2636 (SECURITY): the ONE gate every content-bearing fan-out consults, so the tenant dimension
-   * is single-sourced in this file (`docs/process/single-source-of-truth.md`) rather than
-   * hand-written per method — the failure mode that produced #2251, #2257, #2314 and then this
-   * issue was a new fan-out re-deriving the gate and omitting the household term. Three independent
-   * conditions, all required: the connection is in THIS household, it SUBSCRIBED to the topic
-   * (§1.4), and its role may SEE the topic (§4.4). `params`, when given, additionally requires the
+   * The two NON-tenant gates, in one place: the connection SUBSCRIBED to the topic (§1.4) and its
+   * role may SEE the topic (§4.4). Returns the subscription's params so a caller that needs them
+   * (the per-subscriber `connectionEvents` filter, the `trafficUsage` param-set key) doesn't look
+   * them up a second time. Every collector and every fan-out in this file goes through here — the
+   * pair used to be hand-written in four places, which is the same re-derivation shape #2636 was.
+   */
+  private def subscribedAndVisible(s: SpaConnState, topic: SpaTopic): Option[Json] =
+    s.subscriptions.get(topic).filter(_ => SpaTopic.visibleTo(topic, s.role))
+
+  /**
+   * #2636 (SECURITY): the ONE gate every `fanOut*` method that carries CONTENT consults, so the
+   * tenant dimension is single-sourced in this file (`docs/process/single-source-of-truth.md`)
+   * rather than hand-written per method — the failure mode that produced #2251, #2257, #2314 and
+   * then this issue was a new fan-out re-deriving the gate and omitting the household term. Three
+   * independent conditions, all required: the connection is in THIS household, it SUBSCRIBED to the
+   * topic, and its role may SEE the topic. `params`, when given, additionally requires the
    * subscription's params to equal it (the `trafficUsage` body is built per param-set, so a
-   * differently-parameterized subscriber must not receive it).
+   * differently-parameterized subscriber must not receive it). Returns the subscription's params on
+   * a match, so the `connectionEvents` fan-out can build its per-subscriber filter from them.
+   *
+   * NOTE this covers the `fanOut*` methods ONLY. [[deliver]] also ships content (the `now` /
+   * `timeStatus` / `appUsage` bodies) and deliberately consults NOTHING: those bodies are built PER
+   * HOUSEHOLD by the caller, so their tenant gate is [[SpaPush]]'s
+   * `recipients.groupBy(_.household)` plus the [[recipientsFor]] role/subscription gate, not this
+   * predicate. A future push that builds ONE body and delivers it to many recipients must come
+   * through here instead.
    */
   private def eligible(
       s: SpaConnState,
       topic: SpaTopic,
       household: HouseholdId,
       params: Option[Json] = None,
-  ): Boolean =
-    s.household == household &&
-      SpaTopic.visibleTo(topic, s.role) &&
-      s.subscriptions.get(topic).exists(p => params.forall(_ == p))
+  ): Option[Json] =
+    if s.household == household then
+      subscribedAndVisible(s, topic).filter(p => params.forall(_ == p))
+    else None
 
   def connectionEventHouseholds: UIO[Set[HouseholdId]] =
     state.get.map(
       _.values.iterator
-        .collect {
-          case s
-              if s.subscriptions.contains(SpaTopic.ConnectionEvents) &&
-                SpaTopic.visibleTo(SpaTopic.ConnectionEvents, s.role) =>
-            s.household
-        }
+        .filter(subscribedAndVisible(_, SpaTopic.ConnectionEvents).isDefined)
+        .map(_.household)
         .toSet,
     )
 
@@ -410,14 +424,14 @@ final class SpaWsRegistryLive(
     state.get.flatMap { m =>
       val op = SpaTopic.wire(SpaTopic.ConnectionEvents)
       ZIO.foreachDiscard(m.toList) { case (id, s) =>
-        s.subscriptions.get(SpaTopic.ConnectionEvents) match {
-          case Some(params) if eligible(s, SpaTopic.ConnectionEvents, household) =>
+        eligible(s, SpaTopic.ConnectionEvents, household) match {
+          case None         => ZIO.unit
+          case Some(params) =>
             val filter  = LogSubParams.decode(params)
             val matched = rows.filter(filter.matches)
             ZIO.when(matched.nonEmpty)(
               sendPush(id, s.channel, op, frameText(op, matched.toJson)),
             )
-          case _                                                                 => ZIO.unit
         }
       }
     }
@@ -425,12 +439,7 @@ final class SpaWsRegistryLive(
   def trafficUsageParamSets: UIO[Set[(HouseholdId, Json)]] =
     state.get.map(
       _.values.iterator
-        .collect {
-          case s
-              if s.subscriptions.contains(SpaTopic.TrafficUsage) &&
-                SpaTopic.visibleTo(SpaTopic.TrafficUsage, s.role) =>
-            (s.household, s.subscriptions(SpaTopic.TrafficUsage))
-        }
+        .flatMap(s => subscribedAndVisible(s, SpaTopic.TrafficUsage).map(s.household -> _))
         .toSet,
     )
 
@@ -439,7 +448,7 @@ final class SpaWsRegistryLive(
       val op    = SpaTopic.wire(SpaTopic.TrafficUsage)
       val frame = frameText(op, payload.toJson)
       ZIO.foreachDiscard(m.toList) { case (id, s) =>
-        ZIO.when(eligible(s, SpaTopic.TrafficUsage, household, Some(params)))(
+        ZIO.when(eligible(s, SpaTopic.TrafficUsage, household, Some(params)).isDefined)(
           sendPush(id, s.channel, op, frame),
         )
       }
@@ -454,9 +463,8 @@ final class SpaWsRegistryLive(
       }
       val frame   = frameText(op, payload)
       ZIO.foreachDiscard(m.toList) { case (id, s) =>
-        ZIO.when(
-          s.subscriptions.contains(SpaTopic.Stale) && SpaTopic.visibleTo(SpaTopic.Stale, s.role),
-        )(
+        // Subscription + role only — no household term, deliberately (see the trait doc, #2639).
+        ZIO.when(subscribedAndVisible(s, SpaTopic.Stale).isDefined)(
           sendPush(id, s.channel, op, frame),
         )
       }
@@ -480,9 +488,8 @@ final class SpaWsRegistryLive(
   private def recipientsFor(topic: SpaTopic): UIO[List[SpaRecipient]] =
     state.get.map(
       _.iterator
-        .collect {
-          case (id, s) if s.subscriptions.contains(topic) && SpaTopic.visibleTo(topic, s.role) =>
-            SpaRecipient(id, s.role, s.username, s.subscriptions(topic), s.household)
+        .flatMap { case (id, s) =>
+          subscribedAndVisible(s, topic).map(SpaRecipient(id, s.role, s.username, _, s.household))
         }
         .toList,
     )
