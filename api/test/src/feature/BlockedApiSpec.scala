@@ -284,7 +284,6 @@ object BlockedApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
           )
         def invalidateMany(households: Iterable[HouseholdId]): UIO[Unit] = ZIO.unit
         def reevaluate: UIO[Unit]                                        = ZIO.unit
-        def reevaluate(household: HouseholdId): UIO[Unit]                = ZIO.unit
         def setPublisher(publisher: wifihaven.api.policy.PolicySnapshotPublisher): UIO[Unit] =
           ZIO.unit
       }
@@ -337,7 +336,6 @@ object BlockedApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
           ZIO.succeed(RouterDecisionResponse(ConnectionDecision.Block, wire, None))
         def invalidateMany(households: Iterable[HouseholdId]): UIO[Unit] = ZIO.unit
         def reevaluate: UIO[Unit]                                        = ZIO.unit
-        def reevaluate(household: HouseholdId): UIO[Unit]                = ZIO.unit
         def setPublisher(publisher: wifihaven.api.policy.PolicySnapshotPublisher): UIO[Unit] =
           ZIO.unit
       }

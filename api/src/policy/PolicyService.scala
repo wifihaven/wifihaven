@@ -88,14 +88,6 @@ trait PolicyService {
   def reevaluate: UIO[Unit]
 
   /**
-   * #2635: rebuild ONE household's snapshot and push it iff that household's ETag moved. The unit
-   * of work [[reevaluate]] sweeps and [[invalidate]] forks — exposed so the mutation path can name
-   * its household and so a test can drive a single rebuild synchronously. A no-op when the cache is
-   * disabled.
-   */
-  def reevaluate(household: HouseholdId): UIO[Unit]
-
-  /**
    * #1849: install the sink that [[reevaluate]] pushes changed snapshots to. Wired once at startup
    * (the websocket registry is constructed after the policy layer); until then the publisher is
    * [[PolicySnapshotPublisher.noop]].
@@ -466,9 +458,10 @@ class PolicyServiceLive(
         .map(_ + HouseholdId.Default)
         .flatMap(ZIO.foreachDiscard(_)(reevaluateHousehold))
 
-  def reevaluate(household: HouseholdId): UIO[Unit] =
-    if (!cacheEnabled) ZIO.unit else reevaluateHousehold(household)
-
+  // #2635: the single-household unit of work — rebuild ONE household's snapshot and push it iff
+  // that household's ETag moved. Both callers are in this class ([[reevaluate]]'s sweep and the
+  // fiber [[invalidateMany]] forks) and both apply the `cacheEnabled` guard upstream, so this stays
+  // private: a public overload would be trait surface every implementor has to stub for no caller.
   private def reevaluateHousehold(household: HouseholdId): UIO[Unit] =
     ZIO.succeed(versionOf(household)).flatMap { gen =>
       // `foldCauseZIO`, not `foldZIO`: a DEFECT (not just a typed failure) in one household's build
