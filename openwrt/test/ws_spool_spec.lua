@@ -80,6 +80,53 @@ describe("ws_spool.append_bounded + drain", function()
     assert.are.same({ "x" }, ws_spool.drain("/tmp/sp", state, fs.open))
   end)
 
+  -- #2634: the eviction/cursor interaction. append_bounded bounds the spool by
+  -- REWRITING it shorter, and drain treats "shorter than my cursor" as a
+  -- copytruncate rotation and restarts from byte 0. Both are individually
+  -- reasonable; together they make every post-eviction drain replay the whole
+  -- surviving spool. Measured on hardware: ~30 frames/s for a handful of real
+  -- events, and end-to-end latency growing without bound as new events queue
+  -- behind the replay.
+  it("does not replay surviving lines after a cap eviction shrank the spool", function()
+    local fs = new_fs()
+    local state = {}
+    -- 5 lines of 10 bytes each (9 chars + newline) = 50 bytes, well under cap.
+    for i = 1, 5 do
+      ws_spool.append_bounded("/tmp/sp", "line" .. i .. "xxxx", 1000, fs.open)
+    end
+    assert.are.equal(5, #ws_spool.drain("/tmp/sp", state, fs.open))
+
+    -- Append under a cap that forces the writer to evict the two oldest lines
+    -- and rewrite the file at 40 bytes — shorter than the reader's 50-byte
+    -- cursor. Only the NEW line is new; line3..line5 were already delivered.
+    ws_spool.append_bounded("/tmp/sp", "line6xxxx", 40, fs.open)
+    assert.are.same({ "line6xxxx" }, ws_spool.drain("/tmp/sp", state, fs.open))
+  end)
+
+  it("still returns the new line when eviction drops everything before it", function()
+    local fs = new_fs()
+    local state = {}
+    for i = 1, 3 do
+      ws_spool.append_bounded("/tmp/sp", "line" .. i .. "xxxx", 1000, fs.open)
+    end
+    ws_spool.drain("/tmp/sp", state, fs.open)
+    -- Cap smaller than one surviving line + the entry: everything older goes.
+    ws_spool.append_bounded("/tmp/sp", "line9xxxx", 10, fs.open)
+    assert.are.same({ "line9xxxx" }, ws_spool.drain("/tmp/sp", state, fs.open))
+  end)
+
+  it("still treats a genuine copytruncate rotation as a full restart", function()
+    -- The rotation fallback must survive the #2634 fix: a cron copytruncate
+    -- shrinks the file WITHOUT the writer evicting anything, so there is no
+    -- eviction delta to rebase against and reading from 0 is correct.
+    local fs = new_fs()
+    local state = {}
+    ws_spool.append_bounded("/tmp/sp", "first-long-line", 1e6, fs.open)
+    ws_spool.drain("/tmp/sp", state, fs.open)
+    fs.data["/tmp/sp"] = "x\n"
+    assert.are.same({ "x" }, ws_spool.drain("/tmp/sp", state, fs.open))
+  end)
+
   it("self-bounds the spool at the byte cap, dropping oldest lines", function()
     local fs = new_fs()
     -- cap small: each line "L<n>\n" is 4 bytes. Cap 10 holds ~2 lines.
