@@ -178,7 +178,10 @@ final case class FlipService(
     for {
       ids     <- cohortRepo.betaHouseholdIds
       _       <- ZIO.foreachDiscard(ids)(hid => billingRepo.markLapsed(hid, now))
-      _       <- ZIO.when(ids.nonEmpty)(policyService.invalidate)
+      // #2635: one invalidate per household actually flipped — each rebuilds its OWN snapshot.
+      // Previously a single no-arg `invalidate` forked the full sweep, which happened to cover the
+      // flipped set only because the sweep covered everything.
+      _       <- ZIO.foreachDiscard(ids)(policyService.invalidate)
       latched <- cohortRepo.markFlipped(now)
       _       <- ZIO.when(latched)(
         ZIO.logInfo(

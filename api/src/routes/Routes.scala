@@ -485,7 +485,7 @@ object ProfileRoutes {
       // attach, default-deny, time limit, categories, create/delete) so the change propagates to the
       // fleet at once rather than waiting for the reconcile ticker. Defaulted to a no-op so test call
       // sites keep their arity; production passes `policy.invalidate`.
-      invalidateSnapshot: UIO[Unit] = ZIO.unit,
+      invalidateSnapshot: HouseholdId => UIO[Unit] = _ => ZIO.unit,
   ): Routes[Any, Response] =
     Routes(
       Method.GET / "api" / "profiles"                            ->
@@ -587,7 +587,7 @@ object ProfileRoutes {
             _      <- cache.invalidateProfile(pid)
             // #1849: the attached schedule set is snapshot content, so drop the computed-snapshot
             // cache too.
-            _      <- invalidateSnapshot
+            _      <- invalidateSnapshot(claims.hh)
           } yield Response.ok
           handle.mapError(ErrorMapper.errorToResponse)
         },
@@ -639,7 +639,7 @@ object ProfileRoutes {
               .foreachDiscard(upr.timeLimit)(mins => timeLimitRepo.upsert(id, mins))
               .mapError(ApiError.Db(_))
             // #1849: a new profile changes the snapshot's profile set.
-            _      <- invalidateSnapshot
+            _      <- invalidateSnapshot(claims.hh)
           } yield Response.json(s"""{"id":${id.value}}""")
           handle.mapError(ErrorMapper.errorToResponse)
         },
@@ -697,7 +697,7 @@ object ProfileRoutes {
             }).mapError(ApiError.Db(_))
             // #1849: a full-replace PUT can move paused / categories / failureMode / blockIpOnly /
             // defaultDeny / timeLimit — all snapshot content.
-            _      <- invalidateSnapshot
+            _      <- invalidateSnapshot(claims.hh)
           } yield Response.ok
           handle.mapError(ErrorMapper.errorToResponse)
         },
@@ -730,7 +730,7 @@ object ProfileRoutes {
             _      <- requireNotGlobalProfile(profileRepo, pid, "profile (DELETE)")
             _      <- profileRepo.delete(pid).mapError(ApiError.Db(_))
             // #1849: a deleted profile drops out of the snapshot's profile set.
-            _      <- invalidateSnapshot
+            _      <- invalidateSnapshot(claims.hh)
           } yield Response.ok
           handle.mapError(ErrorMapper.errorToResponse)
         },
@@ -888,7 +888,7 @@ object ProfileRoutes {
             // #1849: any recognized patch (pause, pauseMode, defaultDeny, timeLimit, name,
             // categories) is snapshot content, so drop the computed-snapshot cache so the change
             // reaches the fleet at once.
-            _                       <- invalidateSnapshot
+            _                       <- invalidateSnapshot(claims.hh)
             // Log only recognized keys; unknown keys are ignored per the
             // backwards-compat rule and would mislead ops triage if echoed.
             recognizedKeys = obj.fields.map(_._1).filter(ProfileRoutes.PatchableKeys.contains)
@@ -964,7 +964,7 @@ object DeviceRoutes {
       // computed-snapshot cache on upsert/delete/reassign so the change reaches the fleet at once.
       // Defaulted to a no-op so test call sites keep their arity; production passes
       // `policy.invalidate`.
-      invalidateSnapshot: UIO[Unit] = ZIO.unit,
+      invalidateSnapshot: HouseholdId => UIO[Unit] = _ => ZIO.unit,
   ): Routes[Any, Response] =
     Routes(
       Method.GET / "api" / "devices"                    ->
@@ -1017,7 +1017,7 @@ object DeviceRoutes {
                 )
               }
             }
-            _  <- invalidateSnapshot
+            _  <- invalidateSnapshot(claims.hh)
           } yield Response.json(s"""{"id":${id.value}}""")
           handle.mapError(ErrorMapper.errorToResponse)
         },
@@ -1040,7 +1040,7 @@ object DeviceRoutes {
             _ <- LogContext.annotate(LogContext.Mac, normalized.value)(
               ZIO.logInfo(s"device deleted: mac=${normalized.value}"),
             )
-            _ <- invalidateSnapshot
+            _ <- invalidateSnapshot(claims.hh)
           } yield Response.ok
           handle.mapError(ErrorMapper.errorToResponse)
         },
@@ -1095,7 +1095,7 @@ object DeviceRoutes {
                 )
               }
             }
-            _ <- invalidateSnapshot
+            _ <- invalidateSnapshot(claims.hh)
           } yield Response.ok
           handle.mapError(ErrorMapper.errorToResponse)
         },
@@ -1130,7 +1130,7 @@ object TimeRoutes {
       // #1849: a +Time grant can flip a profile's daily-limit block off, which is snapshot content —
       // drop the computed-snapshot cache so the fleet sees the unblock at once. Defaulted to a no-op
       // for test call sites; production passes `policy.invalidate`.
-      invalidateSnapshot: UIO[Unit] = ZIO.unit,
+      invalidateSnapshot: HouseholdId => UIO[Unit] = _ => ZIO.unit,
       // #1974 (SPA-ws S6a): a +Time grant immediately changes remaining-minutes, so it is a
       // `timeStatus` push write site (design §5.2). One-liner publish on the SPA change bus; never
       // blocks/fails the grant (sliding hub, UIO). Defaulted to the noop for test call sites that
@@ -1551,7 +1551,7 @@ object TimeRoutes {
             _  <- cache.invalidateProfile(ger.profileId)
             // #1849: a grant can lift a TimeLimit block — snapshot content — so drop the
             // computed-snapshot cache too.
-            _  <- invalidateSnapshot
+            _  <- invalidateSnapshot(claims.hh)
             // #1974 (S6a): the grant changed remaining-minutes — push fresh `timeStatus`/`appUsage`
             // to live SPA subscribers (design §5.2). Contentless trigger; the consumer rebuilds.
             _  <- spaBus.publish(SpaEvent.TimeStatusChanged)
@@ -2280,7 +2280,7 @@ object HouseholdSettingsRoutes {
       // unmanaged-MAC block rules, the latter the top-level `blockEncryptedDns` flag), so drop the
       // computed-snapshot cache on a settings write. Defaulted to a no-op for test call sites;
       // production passes `policy.invalidate`.
-      invalidateSnapshot: UIO[Unit] = ZIO.unit,
+      invalidateSnapshot: HouseholdId => UIO[Unit] = _ => ZIO.unit,
   ): Routes[Any, Response] =
     Routes(
       Method.GET / "api" / "household" / "settings"   ->
@@ -2326,7 +2326,7 @@ object HouseholdSettingsRoutes {
                 ),
               )
               .mapError(ApiError.Db(_))
-            _      <- invalidateSnapshot
+            _      <- invalidateSnapshot(claims.hh)
           } yield Response.ok
           handle.mapError(ErrorMapper.errorToResponse)
         },
@@ -2426,7 +2426,7 @@ object HouseholdSettingsRoutes {
               },
             )
             _            <- repo.update(claims.hh, merged).mapError(ApiError.Db(_))
-            _            <- invalidateSnapshot
+            _            <- invalidateSnapshot(claims.hh)
           } yield Response.ok
           handle.mapError(ErrorMapper.errorToResponse)
         },

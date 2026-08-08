@@ -282,8 +282,9 @@ object BlockedApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
           ZIO.succeed(
             RouterDecisionResponse(ConnectionDecision.Block, "future_app:slack", None),
           )
-        def invalidate: UIO[Unit]                                  = ZIO.unit
+        def invalidate(household: HouseholdId): UIO[Unit]          = ZIO.unit
         def reevaluate: UIO[Unit]                                  = ZIO.unit
+        def reevaluate(household: HouseholdId): UIO[Unit]          = ZIO.unit
         def setPublisher(publisher: wifihaven.api.policy.PolicySnapshotPublisher): UIO[Unit] =
           ZIO.unit
       }
@@ -334,8 +335,9 @@ object BlockedApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
             hostname: String,
         ): Task[RouterDecisionResponse] =
           ZIO.succeed(RouterDecisionResponse(ConnectionDecision.Block, wire, None))
-        def invalidate: UIO[Unit]                                  = ZIO.unit
+        def invalidate(household: HouseholdId): UIO[Unit]          = ZIO.unit
         def reevaluate: UIO[Unit]                                  = ZIO.unit
+        def reevaluate(household: HouseholdId): UIO[Unit]          = ZIO.unit
         def setPublisher(publisher: wifihaven.api.policy.PolicySnapshotPublisher): UIO[Unit] =
           ZIO.unit
       }

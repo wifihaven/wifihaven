@@ -47,21 +47,42 @@ trait PolicyService {
     renderBlocklist(HouseholdId.Default, id)
 
   /**
-   * #1849: drop the cached snapshot so the next [[snapshot]]/[[reevaluate]] rebuilds. Called by
-   * policy-mutating routes (pause/unpause, manual block/allow, profile/device/schedule/blocklist
-   * edits, time-extension grants) so an admin change propagates immediately rather than waiting for
-   * the reconcile ticker. A no-op when the cache is disabled.
+   * #1849: stale `household`'s cached snapshot so its next [[snapshot]] rebuilds, and reconcile it
+   * in the background. Called by policy-mutating routes (pause/unpause, manual block/allow,
+   * profile/device/schedule/blocklist edits, time-extension grants) so an admin change propagates
+   * immediately rather than waiting for the reconcile ticker. A no-op when the cache is disabled.
+   *
+   * #2635: takes the household the mutation TOUCHED, and rebuilds only that one. Before this it
+   * took no argument and forked the full [[reevaluate]] sweep, so one household's SPA edit rebuilt
+   * a snapshot for every OTHER household with a connected router — none of which the edit changed.
+   * The argument is never guessed at a call site: every mutating route already holds the
+   * authenticated household (`claims.hh`) and already scopes its own repo write to it, so passing a
+   * different one here would mean the write itself was cross-tenant.
    */
-  def invalidate: UIO[Unit]
+  def invalidate(household: HouseholdId): UIO[Unit]
 
   /**
-   * #1849: rebuild the snapshot once and, if its ETag moved since the last cached value, store it
-   * and push it to the configured [[PolicySnapshotPublisher]] (one `policy` frame per connected
-   * router). This is the single rebuild-and-publish point driven both by the time-boundary
-   * reconcile ticker (schedule edges, daily-limit/usage transitions) and immediately after an
-   * [[invalidate]]. A no-op when the cache is disabled.
+   * #1849: rebuild EVERY reachable household's snapshot once and, for each whose ETag moved since
+   * that household's last push, store it and push it to the configured [[PolicySnapshotPublisher]].
+   * This is the reconcile TICKER's entry point (`Main`, every `snapshotCacheRefreshInterval`).
+   *
+   * #2635: the sweep stays a sweep. Its whole job is catching time-dependent transitions that have
+   * NO DB write behind them — a schedule edge opening or closing, a daily limit running out, a
+   * pause expiring — which move a household's ETag with no [[invalidate]] to announce them.
+   * Narrowing it to "recently mutated households" would silently stop pushing schedule edges, so
+   * the mutation-path narrowing in [[invalidate]] deliberately does not touch it.
+   *
+   * A no-op when the cache is disabled.
    */
   def reevaluate: UIO[Unit]
+
+  /**
+   * #2635: rebuild ONE household's snapshot and push it iff that household's ETag moved. The unit
+   * of work [[reevaluate]] sweeps and [[invalidate]] forks — exposed so the mutation path can name
+   * its household and so a test can drive a single rebuild synchronously. A no-op when the cache is
+   * disabled.
+   */
+  def reevaluate(household: HouseholdId): UIO[Unit]
 
   /**
    * #1849: install the sink that [[reevaluate]] pushes changed snapshots to. Wired once at startup
@@ -175,7 +196,9 @@ class PolicyServiceLive(
     // result is returned to the caller that installs it in the cache). Defaults to a no-op for
     // production and the ~40 existing specs; PolicySnapshotCacheSpec wires a gate here to suspend an
     // in-flight build deterministically and prove a stale build cannot clobber a fresher cache entry.
-    buildBarrier: UIO[Unit] = ZIO.unit,
+    // #2635: takes the household being built, so a test can assert WHICH households a rebuild
+    // touched rather than only how many builds ran — the whole claim of #2635 is about which.
+    buildBarrier: HouseholdId => UIO[Unit] = _ => ZIO.unit,
     // #2137 (multi-tenant P5-6): the billing-status gate. A `lapsed` household gets a PERMISSIVE
     // snapshot — enforcement STOPS (design §5.3, never brick the network) — built through the
     // existing wire fields (no new field, no wire change; the router stays a dumb applier and never
@@ -309,7 +332,10 @@ class PolicyServiceLive(
         case _                                                          => buildVersioned(household)
       }
 
-  def invalidate: UIO[Unit] =
+  // TDD step 1 (#2635): the signature the mutation path needs, with the OLD behaviour still behind
+  // it — the household is accepted and ignored, and the full sweep is forked exactly as before. The
+  // #2635 tests are red against this; the next commit makes them green.
+  def invalidate(@scala.annotation.unused household: HouseholdId): UIO[Unit] =
     if (!cacheEnabled) ZIO.unit
     else
       // Bump the version so every cache entry built before this mutation is now stale-stamped and the
@@ -379,6 +405,10 @@ class PolicyServiceLive(
         .map(_ + HouseholdId.Default)
         .flatMap(ZIO.foreachDiscard(_)(reevaluateHousehold))
 
+  // TDD step 1 (#2635): still the full sweep, ignoring the household. Made single-household in the
+  // next commit.
+  def reevaluate(@scala.annotation.unused household: HouseholdId): UIO[Unit] = reevaluate
+
   private def reevaluateHousehold(household: HouseholdId): UIO[Unit] =
     ZIO.succeed(mutationVersion.get).flatMap { gen =>
       // `foldCauseZIO`, not `foldZIO`: a DEFECT (not just a typed failure) in one household's build
@@ -444,6 +474,10 @@ class PolicyServiceLive(
         if (disabled) permissiveBuild("enforcement_disabled")
         else if (status.contains("lapsed")) permissiveBuild("lapsed")
         else buildEnforcingSnapshot(household)
+      // #1954: test-only suspension point (no-op in production), run at the END of every build
+      // whichever branch produced it and BEFORE the caller installs the result in the cache — see
+      // `buildBarrier`. #2635: carries the household so a test can name which builds ran.
+      _        <- buildBarrier(household)
     } yield snap
 
   // #2137/#2382: build (and meter) the shared permissive snapshot. `reason` ∈
@@ -458,7 +492,6 @@ class PolicyServiceLive(
         .zipRight(logSnapshotChanged(snap))
         .zipRight(AppMetrics.recordSnapshotBuild("computed"))
         .zipRight(AppMetrics.recordPermissiveSnapshot(reason))
-        .zipLeft(buildBarrier)
         .as(snap)
     }
 
@@ -680,8 +713,6 @@ class PolicyServiceLive(
         .setGlobalPolicy(snap.global.extraAllowed.size, defaultDenyProfiles)
         .zipRight(logSnapshotChanged(snap))
         .zipRight(AppMetrics.recordSnapshotBuild("computed"))
-        // #1954: test-only suspension point (no-op in production); see `buildBarrier`.
-        .zipLeft(buildBarrier)
         .as(snap)
     }
 

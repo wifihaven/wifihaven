@@ -90,11 +90,11 @@ object EnforcementDisableSpec
         snapBefore   <- policy.snapshot(hid)
         // Flip the escape hatch on → permissive.
         _            <- hsr.setEnforcementDisabled(hid, true)
-        _            <- policy.invalidate // bust any cached build
+        _            <- policy.invalidate(hid) // bust any cached build
         snapDisabled <- policy.snapshot(hid)
         // Flip it back off → enforcement returns.
         _            <- hsr.setEnforcementDisabled(hid, false)
-        _            <- policy.invalidate
+        _            <- policy.invalidate(hid)
         snapAfter    <- policy.snapshot(hid)
       } yield assertTrue(
         snapBefore.devices.contains(mac),
@@ -115,7 +115,7 @@ object EnforcementDisableSpec
         (hidB, macB) <- seedHousehold("iso-b")
         // Disable enforcement for A only.
         _            <- hsr.setEnforcementDisabled(hidA, true)
-        _            <- policy.invalidate
+        _            <- policy.invalidate(hidA)
         snapA        <- policy.snapshot(hidA)
         snapB        <- policy.snapshot(hidB)
         // The stored flags themselves are per-household.

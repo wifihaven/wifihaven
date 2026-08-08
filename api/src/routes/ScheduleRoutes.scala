@@ -59,7 +59,7 @@ object ScheduleRoutes {
       // production passes `policy.invalidate`. Create alone is NOT invalidated: a brand-new schedule
       // is referenced by no profile, so it is invisible to the snapshot until a profile attaches it
       // via PUT /api/profiles/{id}/schedules — which invalidates there.
-      invalidateSnapshot: UIO[Unit] = ZIO.unit,
+      invalidateSnapshot: HouseholdId => UIO[Unit] = _ => ZIO.unit,
   ): Routes[Any, Response] =
     Routes(
       Method.GET / "api" / "schedules"                 ->
@@ -153,7 +153,7 @@ object ScheduleRoutes {
                 ZIO.fromOption(_).orElseFail(ApiError.Internal("Schedule vanished")),
               )
             _       <- AppMetrics.scheduleMutation("update")
-            _       <- invalidateSnapshot
+            _       <- invalidateSnapshot(claims.hh)
           } yield Response.json(s.toJson)
           handle.mapError(ErrorMapper.errorToResponse)
         },
@@ -165,7 +165,7 @@ object ScheduleRoutes {
             // #2126: reject a cross-household delete with 404 (never mutate another tenant's row).
             _      <- requireScheduleInHousehold(claims, sid, scheduleRepo)
             _      <- scheduleRepo.delete(sid).mapError(ApiError.Db(_))
-            _      <- invalidateSnapshot
+            _      <- invalidateSnapshot(claims.hh)
             _      <- AppMetrics.scheduleMutation("delete")
           } yield Response.ok
           handle.mapError(ErrorMapper.errorToResponse)
