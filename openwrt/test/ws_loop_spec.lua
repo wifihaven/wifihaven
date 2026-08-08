@@ -74,6 +74,7 @@ local function base_cfg(overrides)
     frame_op = function(f) return f.op end,
     split_usage = function(f) return { f } end,   -- no split by default
     heartbeat_interval = 30,
+    poll_interval = 1,
     fallback_after = 300,
     rng = function() return 1 end,
     log = { info = function() end, warn = function() end, err = function() end, debug = function() end },
@@ -96,6 +97,42 @@ describe("ws_loop.classify_connect_error", function()
   it("falls back to upgrade_fail for anything else", function()
     assert.are.equal("upgrade_fail", ws_loop.classify_connect_error("connect: connection refused"))
     assert.are.equal("upgrade_fail", ws_loop.classify_connect_error(nil))
+  end)
+end)
+
+-- stop_after(n) → a cfg.stop closure that lets the outer reconnect loop run n
+-- passes. Same idiom the older cases inline; named here because the #2620 cases
+-- below all want exactly one pass.
+local function stop_after(n)
+  local calls = 0
+  return function() calls = calls + 1; return calls > n end
+end
+
+describe("ws_loop.sanitize_poll_interval (#2620)", function()
+  it("falls back to the documented default when unset or unparseable", function()
+    assert.are.equal(ws_loop.DEFAULT_POLL_INTERVAL, ws_loop.sanitize_poll_interval(nil, 30))
+    assert.are.equal(ws_loop.DEFAULT_POLL_INTERVAL, ws_loop.sanitize_poll_interval("banana", 30))
+  end)
+
+  it("clamps up to the busy-loop floor", function()
+    assert.are.equal(ws_loop.MIN_POLL_INTERVAL, ws_loop.sanitize_poll_interval(0, 30))
+    assert.are.equal(ws_loop.MIN_POLL_INTERVAL, ws_loop.sanitize_poll_interval(-5, 30))
+  end)
+
+  it("clamps down to the heartbeat interval — polling slower than that is today's pre-#2620 shape", function()
+    assert.are.equal(30, ws_loop.sanitize_poll_interval(120, 30))
+  end)
+
+  it("passes a sane in-range value through", function()
+    assert.are.equal(2, ws_loop.sanitize_poll_interval(2, 30))
+    assert.are.equal(2, ws_loop.sanitize_poll_interval("2", 30))
+  end)
+
+  it("does not let an unparseable heartbeat drag the poll down to the floor", function()
+    -- The ceiling comes from the heartbeat; if that value is junk, falling back
+    -- to MIN would turn one bad config key into 10 wakeups/s.
+    assert.are.equal(ws_loop.DEFAULT_POLL_INTERVAL, ws_loop.sanitize_poll_interval(1, nil))
+    assert.are.equal(ws_loop.DEFAULT_POLL_INTERVAL, ws_loop.sanitize_poll_interval(1, "banana"))
   end)
 end)
 
@@ -300,5 +337,93 @@ describe("ws_loop.run — inbound + heartbeat", function()
     client.recv = function(self, to) t = t + 31; return orig_recv(self, to) end
     ws_loop.run(cfg)
     assert.is_true(client.pings >= 1)
+  end)
+end)
+
+-- ── #2620: the outbound drain tick is decoupled from the heartbeat ───────────
+-- serve() used to block in client:recv(heartbeat_interval), so a frame spooled
+-- just after a drain waited up to heartbeat_interval (default 30s) before
+-- anything sent it — the dominant hop in the measured 26s drop→SPA latency.
+-- The recv timeout is now its own short poll_interval; the heartbeat keeps its
+-- own last_ping-gated cadence.
+describe("ws_loop.run — outbound drain tick (#2620)", function()
+  it("blocks in recv for poll_interval, not heartbeat_interval", function()
+    local timeouts = {}
+    local client = new_client({ { timeout = true }, { drop = "closed" } })
+    local orig_recv = client.recv
+    client.recv = function(self, to) timeouts[#timeouts + 1] = to; return orig_recv(self, to) end
+    local cfg = base_cfg({
+      connect = function() return client, nil end,
+      heartbeat_interval = 30,
+      poll_interval = 1,
+      stop = stop_after(1),
+    })
+    ws_loop.run(cfg)
+    assert.are.equal(1, timeouts[1])
+    assert.are.equal(1, timeouts[2])
+  end)
+
+  it("sends a frame spooled after the first drain within one poll tick", function()
+    local t = 0
+    local drains = 0
+    local sent_at
+    local client = new_client({ { timeout = true }, { timeout = true }, { drop = "closed" } })
+    local orig_recv = client.recv
+    client.recv = function(self, to) t = t + to; return orig_recv(self, to) end
+    client.send_text = function(self, s)
+      sent_at = t; self.sent[#self.sent + 1] = s; return true
+    end
+    local cfg = base_cfg({
+      connect = function() return client, nil end,
+      now = function() return t end,
+      heartbeat_interval = 30,
+      poll_interval = 1,
+      spool_drain = function()
+        drains = drains + 1
+        -- Nothing on the first drain; the event lands on the spool right after,
+        -- i.e. exactly the case that used to wait out the heartbeat.
+        if drains == 2 then return { { op = "events", payload = {} } } end
+        return {}
+      end,
+      stop = stop_after(1),
+    })
+    ws_loop.run(cfg)
+    assert.are.equal(1, #client.sent)
+    assert.are.equal(1, sent_at)   -- one poll tick, not the 30s heartbeat
+  end)
+
+  it("still beats the heartbeat on its own cadence when the recv timeout is shorter", function()
+    local t = 0
+    local recvs = {}
+    for _ = 1, 65 do recvs[#recvs + 1] = { timeout = true } end
+    recvs[#recvs + 1] = { drop = "closed" }
+    local client = new_client(recvs)
+    local orig_recv = client.recv
+    client.recv = function(self, to) t = t + to; return orig_recv(self, to) end
+    local cfg = base_cfg({
+      connect = function() return client, nil end,
+      now = function() return t end,
+      heartbeat_interval = 30,
+      poll_interval = 1,
+      stop = stop_after(1),
+    })
+    ws_loop.run(cfg)
+    -- 66 polls of 1s each. The heartbeat is last_ping-gated, so it fires at
+    -- t=30 and t=60 — twice, not once per poll.
+    assert.are.equal(2, client.pings)
+  end)
+
+  it("sanitizes a poll_interval of 0 so an idle socket cannot busy-spin", function()
+    local timeouts = {}
+    local client = new_client({ { timeout = true }, { drop = "closed" } })
+    local orig_recv = client.recv
+    client.recv = function(self, to) timeouts[#timeouts + 1] = to; return orig_recv(self, to) end
+    local cfg = base_cfg({
+      connect = function() return client, nil end,
+      poll_interval = 0,
+      stop = stop_after(1),
+    })
+    ws_loop.run(cfg)
+    assert.are.equal(ws_loop.MIN_POLL_INTERVAL, timeouts[1])
   end)
 end)

@@ -359,3 +359,62 @@ describe("nflog.drain_file (#1126 production reader — file-offset tail)", func
     assert.equal(1, #batched)  -- cross-tick dedup suppressed it (persistent dedup)
   end)
 end)
+
+-- #2620: the drop-event pipeline cadence (drain the nflog spool, then flush the
+-- shared events batcher).
+--
+-- nflog_poll_interval (5s) + event_flush_interval (10s) exist to bound HTTP
+-- REQUEST volume: each flush is one POST /api/router/events. When the ws link
+-- is healthy the events instead ride an already-open persistent socket via the
+-- outbound tee, so the request-volume argument buys nothing and the batching is
+-- pure added latency (up to 15s of the measured 26s drop-to-SPA delay). On the
+-- HTTP fallback path the interval still holds, unchanged.
+describe("nflog.pipeline_interval (#2620)", function()
+  it("keeps the HTTP-path interval when the ws link is not healthy", function()
+    assert.are.equal(5, nflog.pipeline_interval(5, 1, false))
+  end)
+
+  it("drops to the agent tick interval on the ws path", function()
+    assert.are.equal(1, nflog.pipeline_interval(5, 1, true))
+  end)
+
+  -- The ws path must never be SLOWER than the HTTP path it exists to beat, no
+  -- matter what conntrack_tick_interval has been tuned to (the shipped config
+  -- invites tuning it, bounded only by the activity sampler).
+  it("never lets the ws path come out slower than the HTTP cadence", function()
+    assert.are.equal(5, nflog.pipeline_interval(5, 30, true))
+    assert.are.equal(5, nflog.pipeline_interval(5, 5, true))
+  end)
+end)
+
+describe("nflog.due (#2620)", function()
+  it("is false before the interval has elapsed and true at/after it", function()
+    assert.is_false(nflog.due(103, 100, 5))
+    assert.is_true(nflog.due(105, 100, 5))
+    assert.is_true(nflog.due(140, 100, 5))
+  end)
+
+  it("fires on the first tick against the zero anchor the agent boots with", function()
+    -- ts.last_nflog_run / ts.last_nflog_gc start at 0 and `mono` is
+    -- clock.monotonic_seconds() (uptime), so the very first on_tick is already
+    -- far past any interval — no cold-start stall.
+    assert.is_true(nflog.due(3600, 0, 5))
+    -- Degenerate: an anchor equal to now is genuinely not due yet.
+    assert.is_false(nflog.due(0, 0, 5))
+  end)
+
+  -- Pinned together: on the ws path the step runs about once a second, NOT on
+  -- every call. Ten on_tick calls inside one second must yield one run.
+  it("runs once per ws interval across a burst of on_tick calls", function()
+    local anchor, runs = 0, 0
+    local interval = nflog.pipeline_interval(5, 1, true)
+    for i = 1, 10 do
+      local mono = i * 0.1          -- ten calls spread over one second
+      if nflog.due(mono, anchor, interval) then
+        anchor = mono
+        runs = runs + 1
+      end
+    end
+    assert.are.equal(1, runs)
+  end)
+end)
