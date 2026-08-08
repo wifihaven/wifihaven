@@ -175,12 +175,15 @@ case class PolicyConfig(
     // move. Bounds the staleness of time/usage-dependent transitions (schedule edges, daily-limit
     // exhaustion) on the cached REST poll path; defaulted to 5s to match the agent's
     // `policy_poll_interval` so the cache preserves the pre-cache ~per-poll freshness exactly while
-    // moving the ~500ms build off the request path (#1512). Mutations invalidate immediately and do
+    // moving the build off the request path (#1512). Mutations invalidate immediately and do
     // not wait for this tick.
+    // #2635: the tick is now one build per household with a connected router, so the period has to
+    // stay comfortably above (fleet size x build cost) or `Schedule.fixed` stops keeping it. Build
+    // cost is measured by `policy_snapshot_build_seconds`; do not re-hardcode a figure here.
     snapshotCacheRefreshSeconds: Int = 5,
 ) {
   // Clamp to a 1s floor so a misconfigured `0`/negative can't turn `Schedule.fixed(Duration.Zero)`
-  // into a no-delay tight loop that pegs the DB with back-to-back ~500ms snapshot builds.
+  // into a no-delay tight loop that pegs the DB with back-to-back snapshot builds.
   val snapshotCacheRefreshInterval: zio.Duration =
     zio.Duration.fromSeconds(math.max(1, snapshotCacheRefreshSeconds).toLong)
 

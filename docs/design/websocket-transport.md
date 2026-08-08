@@ -694,6 +694,7 @@ Grafana panel per the dashboard rule — sub-issue tasks include the panel):
 | `router_ws_policy_push_total` | counter | `result` (`ok`/`dropped_full`/`channel_closed`) | push fan-out health |
 | `router_transport` | counter/gauge | `transport` (`ws`/`http`) | rollout-progress dashboard (§3.2) |
 | `policy_snapshot_build_total` | counter | `result` (`computed`/`cache_hit`) | proves the #1512 cache is working |
+| `policy_snapshot_build_seconds` | histogram | — (no household label; #2635) | wall-clock of one household's `buildSnapshot`, one sample per actual build |
 
 **Agent** (folded into the existing `/metrics` push registry, `metrics.lua`):
 

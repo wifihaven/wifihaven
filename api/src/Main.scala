@@ -235,16 +235,22 @@ object Main extends ZIOAppDefault {
         // it rebuilds the snapshot once and pushes it to every connected router IFF the ETag moved
         // (schedule edges, daily-limit/usage transitions). This is the single rebuild point that
         // keeps the cache warm so REST polls read it (#1512) and ws routers are pushed on change —
-        // not one ~500ms recompute per poll per router. forkScoped (like the rollup loops) so it is
+        // not one recompute per poll per router. forkScoped (like the rollup loops) so it is
         // interrupted before the Hikari pool closes on shutdown. The first tick fires immediately;
         // `reevaluate` swallows+logs a transient build failure and keeps the last good cache.
         // Idle cost: the tick rebuilds unconditionally even with zero connected routers / no recent
         // poll — but for an always-polling household fleet that is ≈ the pre-cache per-poll load
         // (which also ran every ~5s), so it is not a regression; gating on "any consumer present" is
         // a possible later refinement.
+        // #2635: the sweep is ONE BUILD PER HOUSEHOLD with a connected router (plus Default), and
+        // it stays that way — it is the only thing that catches a transition with no DB write
+        // behind it (schedule edge, daily-limit exhaustion, unpause). The mutation path no longer
+        // rides it: `PolicyService.invalidate` reconciles only the household the mutation touched.
+        // A build measured ~620ms median on a prod-shaped seed (2026-08-07); the live figure is
+        // `policy_snapshot_build_seconds`, which is what to read rather than trusting this comment.
         // TODO(#1936): replace this fixed-interval ticker with a boundary-scheduled refresh — compute
         // the next schedule-edge / daily-reset / limit-exhaustion instant from the data buildSnapshot
-        // already loads and sleep until then, so the ~2.5s build runs at real transitions instead of
+        // already loads and sleep until then, so the build runs at real transitions instead of
         // every tick.
         policyForPush <- ZIO.service[PolicyService]
         // #1970 (S3): the publisher is now MULTI-subscriber (design §5.2.1). Sink 1 is the router
