@@ -9,7 +9,7 @@
 -- (sidecar) pattern the nflog spool uses. The EVICTION path is not: bounding the
 -- spool rewrites the file, which renumbers every byte offset in it including the
 -- reader's cursor in the other process. That rewrite is the one cross-process
--- race here, and #2634 is what it cost — see the eviction ledger below, which
+-- race here, and #2634 is what it cost — see the spool ledger below, which
 -- publishes the shift so the reader can follow it.
 --
 -- Bounded-writes (docs/process/router-agent-bounded-writes.md): /tmp is tmpfs =
@@ -17,7 +17,8 @@
 -- dropping OLDEST whole lines first (the existing usage retry queue's
 -- oldest-first high-water behaviour, §5.2) so a wedged socket can never grow
 -- tmpfs without limit. A copytruncate rotation cron entry is added as a second
--- belt (the drain detects the resulting shrink and resets its offset).
+-- belt; the drain follows both the eviction and the rotation through the
+-- ledger described below (#2634).
 --
 -- Pure over an injected `open_fn` (io.open in production), so the whole
 -- writer/reader contract is unit-tested on the dev host exactly as it runs under
@@ -39,7 +40,7 @@ local function slurp(path, open_fn)
   return data
 end
 
--- #2634: the eviction ledger.
+-- #2634: the spool ledger.
 --
 -- The writer bounds the spool by REWRITING it shorter, which silently renumbers
 -- every byte offset in the file — including the cursor the reader holds in
@@ -49,8 +50,8 @@ end
 -- state, since nothing truncates the spool after a successful drain) that is a
 -- full replay per drain.
 --
--- The writer knows exactly how many bytes it dropped, so it publishes a running
--- total here and the reader rebases its cursor by the delta. Same file-content
+-- The writer publishes a running total of bytes appended and the reader derives
+-- the file's first surviving byte from it (see the ledger block below). Same file-content
 -- IPC idiom as paths.ws_health / paths.ws_pending (busybox has no `stat -c %Y`,
 -- and the two processes share nothing but the filesystem). The ledger is one
 -- short integer, rewritten in place — fixed-size, so it needs no rotation of
@@ -83,10 +84,10 @@ local function file_size(path, open_fn)
   return n
 end
 
--- Add `bytes` to the running total. Seeds from the spool's CURRENT size when the
--- ledger does not exist yet, so a router upgrading with an already-full spool
--- starts consistent (`written >= size`) instead of reporting a total far below
--- the file it describes, which would peg the reader at EOF.
+-- Add `bytes` to the running total. When the ledger does not exist yet it is
+-- seeded from the spool's CURRENT size instead, so a router upgrading with an
+-- already-full spool starts consistent (`written >= size`) rather than reporting
+-- a total far below the file it describes.
 --
 -- Returns true on success, false if the ledger could not be written. A failure
 -- is NOT silent-by-design: the most likely cause of open(…,"w") failing on tmpfs
@@ -97,8 +98,13 @@ end
 local function bump_ledger(path, bytes, open_fn)
   if bytes <= 0 then return true end
   local total = read_ledger(path, open_fn)
-  if total == nil then total = file_size(path, open_fn) end
-  total = total + bytes
+  if total == nil then
+    -- Seeding: the file does not yet hold this entry (we run before the write),
+    -- so the total written so far is the current size plus it.
+    total = file_size(path, open_fn) + bytes
+  else
+    total = total + bytes
+  end
   local f = open_fn(ledger_path(path), "w")
   if not f then return false end
   f:write(string.format("%d", total))   -- %d, not tostring: a large running
@@ -118,12 +124,25 @@ function M.append_bounded(path, line, max_bytes, open_fn)
   local entry = line .. "\n"
   local existing = slurp(path, open_fn) or ""
   local dropped = 0
-  -- #2634: count this entry into the total-written ledger BEFORE the spool write.
-  -- Order is load-bearing: ledger-then-spool can only make the reader think less
-  -- has been written than really has (it re-reads and duplicates, which the
-  -- server dedups); spool-then-ledger would make it think MORE was written and
-  -- skip live frames.
-  local ledger_ok = bump_ledger(path, #entry, open_fn)
+  -- #2634: bump the ledger FIRST, and treat a failed bump as a failed append.
+  --
+  -- The ledger is what lets the reader locate itself in the stream, so writing to
+  -- the spool without it is worse than not writing at all: the reader's cursor
+  -- and the file silently diverge and the divergence survives the ledger
+  -- recovering. Refusing the append instead makes the failure honest — the
+  -- caller's tee (ws_outbound.make) falls straight back to HTTP, so the datum
+  -- still reaches the API and nothing is lost.
+  --
+  -- That leaves only one ordering hazard, and it is the recoverable one: if the
+  -- ledger lands and the spool write then fails (or we die between them), the
+  -- ledger runs AHEAD of the file, so `written - size` overshoots and the reader
+  -- seeks too early. It cannot ship a fragment for it — the newline guard in
+  -- drain() catches a non-line-aligned offset and resyncs to the file start — so
+  -- the cost is duplicates, which the server dedups on the persistence-layer
+  -- unique keys. The reverse ordering would under-count and SKIP live frames,
+  -- which nothing downstream can recover.
+  if not bump_ledger(path, #entry, open_fn) then return nil, 0, false end
+  local ledger_ok = true
 
   if #existing + #entry > max_bytes then
     -- Collect existing whole lines (drop any partial tail) and evict from the
@@ -161,7 +180,7 @@ end
 -- drain(path, state, open_fn) → { line, … }
 --
 -- Returns the complete lines appended since the last drain, advancing
--- state.offset past them. A partial trailing line (no newline yet) is left in
+-- state.consumed past them (a STREAM offset, not a file offset — #2634). A partial trailing line (no newline yet) is left in
 -- place for the next call. Detects a copytruncate/rotation (file shorter than
 -- our cursor) and resets the offset. Mirrors nflog.drain_file — the proven
 -- offset-cursor pattern — but is its own spool (a distinct concern), so it stays
@@ -196,15 +215,36 @@ function M.drain(path, state, open_fn)
     base = (written and written >= size) and (written - size) or 0
 
     -- First drain adopts the current file start, so a restart reads what is in
-    -- the spool rather than re-deriving the router's whole history. Thereafter a
-    -- cursor behind the file start means content was evicted or truncated out
-    -- from under us — resync to what survives instead of reading a fragment.
+    -- the spool rather than re-deriving the router's whole history. A cursor
+    -- BEHIND the file start means the front was evicted or truncated away, so
+    -- skip to what survives.
     if state.consumed == nil or state.consumed < base then state.consumed = base end
 
+    -- LOST SYNC. A cursor past everything the ledger can account for means the
+    -- ledger under-counts the stream: /tmp cleared under a running sidecar, the
+    -- ledger file deleted, or a ledger write that failed while the spool write
+    -- succeeded. origin/main recovered from this via `size < offset → offset =
+    -- 0`; moving the cursor into stream coordinates removed that branch, and
+    -- without a replacement the drain wedges permanently and drops every later
+    -- frame in silence. Resync to the file start and re-read: duplicates, which
+    -- the server dedups, in place of loss, which it cannot.
+    if state.consumed > base + size then state.consumed = base end
+
     local off = state.consumed - base
-    if off > size then off = size end     -- ledger behind the file: nothing new
     f:seek("set", off)
     data = f:read("*a") or ""
+
+    -- A non-zero offset must land just past a newline. If it does not, `base`
+    -- disagrees with the file by a partial line and reading on would emit a
+    -- fragment as if it were a frame — resync rather than ship garbage.
+    if off > 0 and data ~= "" then
+      f:seek("set", off - 1)
+      if (f:read("*a") or ""):sub(1, 1) ~= "\n" then
+        state.consumed = base
+        f:seek("set", 0)
+        data = f:read("*a") or ""
+      end
+    end
     f:close()
 
     if read_ledger(path, open_fn) == written then break end

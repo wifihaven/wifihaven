@@ -569,7 +569,7 @@ local function ws_spool_append(line)
     local now = clock.monotonic_seconds()
     if (now - ws_ledger_warn_at) >= 60 then
       ws_ledger_warn_at = now
-      log.warn("ws spool: could not write the eviction ledger %q — the sidecar " ..
+      log.warn("ws spool: could not write the spool ledger %q — the sidecar " ..
                "will re-send the whole spool on its next drain (#2634). /tmp full?",
                ws_spool.ledger_path(paths.ws_outbound))
     end

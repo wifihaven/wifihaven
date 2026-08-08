@@ -15,8 +15,12 @@
 #                                 (default 1 MB, oldest-first drop) on every
 #                                 append, so this 20 MB cron is a belt-and-
 #                                 suspenders backstop that should never fire; the
-#                                 sidecar's offset-cursor drain detects the
-#                                 truncation (size < offset → reset) like dns-tail.
+#                                 sidecar's drain keeps its cursor in STREAM
+#                                 coordinates against the <spool>.written ledger
+#                                 (#2634) and so follows this truncation the same
+#                                 way it follows a cap eviction. That ledger is a
+#                                 single integer rewritten in place — fixed-size,
+#                                 so it is deliberately NOT rotated here.
 #
 # Truncating the original (rather than renaming it) is the "copytruncate"
 # pattern. dnsmasq / sni-tail hold the log fd open for the lifetime of the

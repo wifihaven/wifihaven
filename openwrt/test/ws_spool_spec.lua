@@ -71,43 +71,101 @@ describe("ws_spool.append_bounded + drain", function()
   end)
 
   it("resets the offset when the spool was truncated/rotated under it", function()
-    -- #2634 changed HOW this is expressed, not WHETHER it holds. The cursor is
-    -- now kept in stream coordinates against a total-bytes-written ledger, so a
-    -- rotation has to be performed the way the cron actually does it — copy the
-    -- file aside, then EMPTY it (`: > "$log"`), after which the writer keeps
-    -- appending. The old form poked new content straight into the file behind
-    -- the writer's back, which under the new model is indistinguishable from
-    -- content the reader already consumed. Same property, supported API.
+    -- #2634 changed HOW the cursor is expressed (stream coordinates against the
+    -- <spool>.written ledger), not WHETHER this holds. Two halves, both required:
+    -- the ledger-INTACT rotation, and the LOST-SYNC case where the cursor ends up
+    -- past everything the ledger can account for. The second is the one that
+    -- matters — it is the recovery `size < offset -> offset = 0` used to provide.
     local fs = new_fs()
     local state = {}
     ws_spool.append_bounded("/tmp/sp", "first-long-line", 1e6, fs.open)
     ws_spool.drain("/tmp/sp", state, fs.open)
-    fs.data["/tmp/sp"] = ""                       -- copytruncate
+    fs.data["/tmp/sp"] = ""                       -- copytruncate, ledger intact
     assert.are.same({}, ws_spool.drain("/tmp/sp", state, fs.open))
     ws_spool.append_bounded("/tmp/sp", "x", 1e6, fs.open)
-    -- the reader follows the rotation instead of wedging past the new EOF
     assert.are.same({ "x" }, ws_spool.drain("/tmp/sp", state, fs.open))
   end)
 
+  it("resyncs when the cursor outruns the ledger (/tmp cleared under the sidecar)", function()
+    -- The sidecar is its own procd process and does NOT restart when /tmp is
+    -- cleared, so it keeps a megabyte-scale cursor against a spool that can never
+    -- grow back past it. Without a lost-sync branch the drain wedges forever and
+    -- every later frame is silently lost.
+    local fs = new_fs()
+    local state = {}
+    for i = 1, 20 do
+      ws_spool.append_bounded("/tmp/sp", "line" .. i .. "xxxx", 1e6, fs.open)
+    end
+    ws_spool.drain("/tmp/sp", state, fs.open)
+    fs.data["/tmp/sp"] = nil                      -- /tmp cleared: spool AND
+    fs.data[ws_spool.ledger_path("/tmp/sp")] = nil -- ledger both gone
+    for i = 21, 23 do
+      ws_spool.append_bounded("/tmp/sp", "line" .. i .. "xxxx", 1e6, fs.open)
+    end
+    assert.are.same({ "line21xxxx", "line22xxxx", "line23xxxx" },
+                    ws_spool.drain("/tmp/sp", state, fs.open))
+  end)
+
+  it("refuses the append when the ledger cannot be written, so the tee falls back", function()
+    -- /tmp full: the ledger write fails. Spooling anyway would diverge the
+    -- reader's cursor from the file permanently, so append_bounded reports
+    -- failure instead and ws_outbound.make posts the body over HTTP.
+    local fs = new_fs()
+    local realopen = fs.open
+    fs.open = function(path, mode)
+      if path:match("%.written$") and (mode or ""):match("w") then return nil end
+      return realopen(path, mode)
+    end
+    local ok, _, ledger_ok = ws_spool.append_bounded("/tmp/sp", "line1xxxx", 1e6, fs.open)
+    assert.is_nil(ok)                 -- caller falls back to HTTP
+    assert.is_false(ledger_ok)
+    assert.is_nil(fs.data["/tmp/sp"]) -- and nothing was spooled behind its back
+  end)
+
+  it("never ships a fragment when a failed spool write leaves the ledger ahead", function()
+    -- The one hazard the ledger-first ordering accepts: the bump lands, the spool
+    -- write then fails, so `written` exceeds the stream and `written - size`
+    -- overshoots. The reader must not seek into the middle of a line and emit the
+    -- tail as if it were a frame — it resyncs and duplicates instead, which the
+    -- server dedups.
+    local fs = new_fs()
+    local state = {}
+    for i = 1, 3 do
+      ws_spool.append_bounded("/tmp/sp", "line" .. i .. "xxxx", 1e6, fs.open)
+    end
+    ws_spool.drain("/tmp/sp", state, fs.open)
+
+    local realopen = fs.open
+    fs.open = function(path, mode)
+      if path == "/tmp/sp" and (mode or ""):match("[wa]") then return nil end
+      return realopen(path, mode)
+    end
+    -- Uneven length, so an overshoot would land mid-line rather than on a boundary.
+    assert.is_nil(ws_spool.append_bounded("/tmp/sp", "a-much-longer-line", 1e6, fs.open))
+    fs.open = realopen
+    ws_spool.append_bounded("/tmp/sp", "line4xxxx", 1e6, fs.open)
+
+    local got = ws_spool.drain("/tmp/sp", state, fs.open)
+    for _, l in ipairs(got) do
+      assert.is_true(l:match("^line%d+xxxx$") ~= nil,
+                     "fragment shipped as a frame: " .. string.format("%q", l))
+    end
+    assert.are.equal("line4xxxx", got[#got])
+  end)
+
   -- #2634: the eviction/cursor interaction. append_bounded bounds the spool by
-  -- REWRITING it shorter, and drain treats "shorter than my cursor" as a
-  -- copytruncate rotation and restarts from byte 0. Both are individually
-  -- reasonable; together they make every post-eviction drain replay the whole
-  -- surviving spool. Measured on hardware: ~30 frames/s for a handful of real
-  -- events, and end-to-end latency growing without bound as new events queue
-  -- behind the replay.
+  -- REWRITING it shorter, and the pre-#2634 drain treated "shorter than my
+  -- cursor" as a copytruncate rotation and restarted from byte 0. Both are
+  -- individually reasonable; together they made every post-eviction drain replay
+  -- the whole surviving spool. Measured on hardware: 591 event frames in 60s for
+  -- a handful of real events, against 7 with the fix.
   it("does not replay surviving lines after a cap eviction shrank the spool", function()
     local fs = new_fs()
     local state = {}
-    -- 5 lines of 10 bytes each (9 chars + newline) = 50 bytes, well under cap.
     for i = 1, 5 do
       ws_spool.append_bounded("/tmp/sp", "line" .. i .. "xxxx", 1000, fs.open)
     end
     assert.are.equal(5, #ws_spool.drain("/tmp/sp", state, fs.open))
-
-    -- Append under a cap that forces the writer to evict the two oldest lines
-    -- and rewrite the file at 40 bytes — shorter than the reader's 50-byte
-    -- cursor. Only the NEW line is new; line3..line5 were already delivered.
     ws_spool.append_bounded("/tmp/sp", "line6xxxx", 40, fs.open)
     assert.are.same({ "line6xxxx" }, ws_spool.drain("/tmp/sp", state, fs.open))
   end)
@@ -119,31 +177,24 @@ describe("ws_spool.append_bounded + drain", function()
       ws_spool.append_bounded("/tmp/sp", "line" .. i .. "xxxx", 1000, fs.open)
     end
     ws_spool.drain("/tmp/sp", state, fs.open)
-    -- Cap smaller than one surviving line + the entry: everything older goes.
     ws_spool.append_bounded("/tmp/sp", "line9xxxx", 10, fs.open)
     assert.are.same({ "line9xxxx" }, ws_spool.drain("/tmp/sp", state, fs.open))
   end)
 
   it("still restarts cleanly when a rotation and an eviction both land between drains", function()
-    -- The one case where the rotation belt and the #2634 ledger interact. A cron
-    -- copytruncate empties the spool WITHOUT touching the ledger, so the reader
-    -- gets no eviction delta for it; a later eviction then rebases the cursor
-    -- down. The reader must not end up mid-file reading a fragment.
+    -- Where the rotation belt and the ledger interact: a cron copytruncate empties
+    -- the spool, then the writer evicts on a file already shorter than the cursor.
     local fs = new_fs()
     local state = {}
     for i = 1, 4 do
       ws_spool.append_bounded("/tmp/sp", "line" .. i .. "xxxx", 1000, fs.open)
     end
-    ws_spool.drain("/tmp/sp", state, fs.open)          -- cursor at 40
-    fs.data["/tmp/sp"] = ""                             -- cron copytruncate
-    -- Refill past the cap so the writer evicts (bumping the ledger) on a file
-    -- that is already shorter than the stale cursor.
+    ws_spool.drain("/tmp/sp", state, fs.open)
+    fs.data["/tmp/sp"] = ""
     for i = 5, 8 do
       ws_spool.append_bounded("/tmp/sp", "line" .. i .. "xxxx", 30, fs.open)
     end
     local got = ws_spool.drain("/tmp/sp", state, fs.open)
-    -- Whatever survived the cap must come back whole and in order, with no
-    -- fragment and no duplicate.
     assert.is_true(#got > 0)
     for _, l in ipairs(got) do
       assert.are.equal(9, #l, "fragmented line: " .. l)
@@ -152,23 +203,19 @@ describe("ws_spool.append_bounded + drain", function()
     assert.are.same({}, ws_spool.drain("/tmp/sp", state, fs.open))
   end)
 
-  it("reports a failed eviction-ledger write instead of swallowing it", function()
+  it("reports a failed ledger write instead of swallowing it", function()
     local fs = new_fs()
     local realopen = fs.open
-    -- Simulate a full /tmp: the ledger cannot be created, the spool still can.
     fs.open = function(path, mode)
       if path:match("%.written$") and (mode or ""):match("w") then return nil end
       return realopen(path, mode)
     end
-    for i = 1, 3 do
-      ws_spool.append_bounded("/tmp/sp", "line" .. i .. "xxxx", 1000, fs.open)
-    end
-    local ok, _, ledger_ok = ws_spool.append_bounded("/tmp/sp", "line4xxxx", 20, fs.open)
-    assert.is_true(ok)                -- the datum is still spooled
-    assert.is_false(ledger_ok)        -- but the caller is told the ledger failed
+    local ok, _, ledger_ok = ws_spool.append_bounded("/tmp/sp", "line1xxxx", 1e6, fs.open)
+    assert.is_nil(ok)                 -- refused, so the tee falls back to HTTP
+    assert.is_false(ledger_ok)        -- and the caller is told why
   end)
 
-  it("reports ledger success when no eviction was needed", function()
+  it("reports ledger success on an ordinary append", function()
     local fs = new_fs()
     local ok, dropped, ledger_ok = ws_spool.append_bounded("/tmp/sp", "a", 1e6, fs.open)
     assert.is_true(ok)
