@@ -561,6 +561,17 @@ class PolicyServiceLive(
    * Both would corrupt exactly the signal the new panel exists to read. `onExit`'s finalizer runs
    * uninterruptibly, so these samples would definitely land if we took them.
    *
+   * Two limits of that, stated so nobody has to rediscover them:
+   *   - An interrupt is excluded HERE, but `recordSnapshotBuild("computed")` fires INSIDE the build
+   *     (`buildEnforcingSnapshot` / `permissiveBuild`) and is plainly interruptible, so a build
+   *     interrupted after that point is already counted `computed` while contributing no duration
+   *     and no `failed`. The window is a couple of continuation boundaries wide; it is not zero.
+   *   - A build that ran long and was THEN interrupted contributes no duration sample at all. That
+   *     matters more than it looks: `snapshot` builds synchronously on the request fiber via
+   *     `buildVersioned`, so a REST poll that disconnects BECAUSE the build was slow is invisible
+   *     here. The trade is still right — the alternative makes every ordinary deploy look like a
+   *     failure — but neither series is a complete census of builds STARTED.
+   *
    * `zio.Clock.nanoTime`, matching every other duration metric in this codebase (`DbMetrics.timed`,
    * the two ws registries).
    */

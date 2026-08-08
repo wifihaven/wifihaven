@@ -1478,8 +1478,9 @@ object AppMetrics {
   // from the cache without rebuilding. The ratio proves the cache is working — once the reconcile
   // ticker keeps the cache warm, REST polls and ws fan-outs should be overwhelmingly `cache_hit`,
   // with `computed` tracking the change/tick rate rather than the poll rate. `result` is a fixed
-  // 3-value enum (bounded label, per docs/process/instrumentation.md). An INTERRUPTED build is
-  // none of the three and is not counted at all — see `PolicyService.timedBuild`.
+  // 3-value enum (bounded label, per docs/process/instrumentation.md). An interrupted build is not
+  // counted `failed` — `PolicyService.timedBuild` excludes it deliberately — though one interrupted
+  // after this counter has already fired is still counted `computed`; see that method's docstring.
   def recordSnapshotBuild(result: String): UIO[Unit] =
     MetricGuard.counter("policy_snapshot_build_total", Map("result" -> result))
 
