@@ -183,7 +183,9 @@ final case class FlipService(
       // flipped set only because the sweep covered everything. `invalidateMany`, not a loop over
       // `invalidate`: `invalidate` returns as soon as it forks, so looping it would put one build
       // per flipped household in flight at once on the shared Hikari pool.
-      _       <- policyService.invalidateMany(ids)
+      // Guarded on `nonEmpty` (as the pre-#2635 call was): `invalidateMany(Nil)` bumps nothing but
+      // would still fork a fiber only to run the barrier and exit.
+      _       <- ZIO.when(ids.nonEmpty)(policyService.invalidateMany(ids))
       latched <- cohortRepo.markFlipped(now)
       _       <- ZIO.when(latched)(
         ZIO.logInfo(

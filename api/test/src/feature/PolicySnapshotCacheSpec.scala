@@ -18,12 +18,17 @@ import java.time.{LocalDateTime, LocalTime, ZoneId}
  *
  *   1. With the cache ON, a second `snapshot` is served from the cache (does NOT rebuild), so a DB
  *      change made WITHOUT invalidating is not yet visible — proving the read path is cached. 2.
- *      `invalidate` (what mutating routes call) drops the cache so the next `snapshot` reflects the
- *      change — proving invalidation works. 3. `reevaluate` (what the reconcile ticker +
- *      post-mutation reconcile call) rebuilds, and pushes the new snapshot to the publisher IFF the
- *      ETag moved — proving push-on-change (and that an unchanged state does NOT spam a push). 4. A
- *      time-dependent transition (a schedule boundary crossed with NO DB write) is caught by
- *      `reevaluate` — the ticker mechanism — and pushed, even though `invalidate` was never called.
+ *      `invalidate` (what mutating routes call) stales that household's entry so the next
+ *      `snapshot` reflects the change — proving invalidation works. 3. A rebuild pushes the new
+ *      snapshot to the publisher IFF the ETag moved — proving push-on-change (and that an unchanged
+ *      state does NOT spam a push). 4. A time-dependent transition (a schedule boundary crossed
+ *      with NO DB write) is caught by `reevaluate` — the ticker mechanism — and pushed, even though
+ *      `invalidate` was never called.
+ *
+ * #2635 split the two rebuild paths that used to be one: the TICKER calls `reevaluate` (the sweep
+ * over every household with a connected router, plus Default), while a MUTATION goes through
+ * `invalidate` → `invalidateMany`, which reconciles only the households it was given. Properties 3
+ * and 4 above are the ticker's; the `#2635` tests below are the mutation path's.
  *
  * The default `apply` factory leaves the cache OFF (so the ~40 other snapshot specs keep building
  * every call); these tests construct with `cacheEnabled = true` explicitly.
@@ -176,7 +181,8 @@ object PolicySnapshotCacheSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedP
         snap1 <- svc.snapshot
         _     <- setBlockEncryptedDns(true)
         _     <- svc.invalidate(HouseholdId.Default)
-        // `invalidate` clears the cache synchronously; the next read rebuilds. (It also forks a
+        // `invalidate` bumps this household's `mutationVersions` entry synchronously, so its cached
+        // snapshot no longer matches the current stamp and the next read rebuilds. (It also forks a
         // background reconcile, but we don't depend on that fiber here.)
         snap2 <- svc.snapshot
       } yield assertTrue(snap2.blockEncryptedDns) && assertTrue(snap2.etag != snap1.etag)
@@ -220,8 +226,9 @@ object PolicySnapshotCacheSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedP
         // Count builds through `buildBarrier`, the per-SERVICE hook run once at the end of every
         // `buildSnapshot` — NOT through `policy_snapshot_build_total`. That counter is JVM-global
         // and additive, and an earlier test in this class calls `invalidate`, which ends in
-        // `reevaluate.forkDaemon`: a daemon fiber on a different service instance that can land its
-        // build inside this test's window and make an exact delta go red for an unrelated reason.
+        // `invalidateMany`'s `forkDaemon`: a daemon fiber on a different service instance that can
+        // land its build inside this test's window and make an exact delta go red for an unrelated
+        // reason.
         // `TestAspect.sequential` orders tests, it does not fence a fiber a previous test forked.
         builds     <- Ref.make(0)
         triple     <- makeCachedSvc(
