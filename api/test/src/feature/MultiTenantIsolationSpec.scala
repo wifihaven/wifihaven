@@ -1682,6 +1682,88 @@ object MultiTenantIsolationSpec
           Client.default,
         )
     },
+    // #2636 (SECURITY): the SPA `connectionEvents` live push had BOTH halves of the tenant boundary
+    // missing — `SpaPush.pushConnectionEvents` read the head with an UNSCOPED `LogFilter` (household
+    // = None ⇒ every household's rows), and `SpaWsRegistry.fanOutConnectionEvents` gated only on the
+    // subscriber's own params + role, never on `s.household`. So a household-B admin with the
+    // Connection Events surface open received household A's device MACs, hostnames and
+    // blocked/allowed status live. The assertion is on DELIVERY PER CONNECTION (B's frame promise
+    // never completes), not on a downstream side effect — #2619's test passed while the leaked frame
+    // was still going out because it asserted only on the refused durable write.
+    test(
+      "pin (#2636) — the ws `connectionEvents` push reaches ONLY the household the events are in",
+    ) {
+      // Anchored just under the TestClock's `now` (2025-01-06T14:00Z) so SpaPush's `until = now`
+      // head window (`ts > now - hours` .. `ts <= now`) includes the seeded rows.
+      val eventTs = java.time.Instant.parse("2025-01-06T13:59:30Z")
+      val since   = java.time.Instant.parse("2025-01-06T13:59:00Z")
+      (for {
+        _      <- cleanDb
+        two    <- TestLayers.seedTwoHouseholds(macA, macB)
+        clk    <- ZIO.service[Clock]
+        tr     <- ZIO.service[TrafficReportRepo]
+        rlr    <- ZIO.service[RollupRepo]
+        cer    <- ZIO.service[ConnectionEventRepo]
+        dr     <- ZIO.service[DeviceRepo]
+        pr     <- ZIO.service[ProfileRepo]
+        apr    <- ZIO.service[AppRepo]
+        atlr   <- ZIO.service[AppTimeLimitRepo]
+        // Events land in household A ONLY (posted under A's router — connection_events are
+        // router_id-keyed, so household is transitive).
+        _      <- cer.insertBatch(
+          List(
+            ConnectionEventInsert(
+              two.routerIdA,
+              Some(macA),
+              HostId.Fqdn(Hostname.unsafe("secret-a.example.com")),
+              None,
+              false,
+              BlockReason.fromWire("blocked"),
+              eventTs,
+            ),
+          ),
+        )
+        auth   <- makeAuth
+        tokenA <- login(auth, two.adminA, two.password)
+        tokenB <- login(auth, two.adminB, two.password, Some(two.slugB))
+        reg    <- SpaWsRegistry.make
+        bus    <- SpaEventBus.make
+        routes = SpaWsRoutes.routes(
+          auth,
+          reg,
+          clk,
+          WsConfig(allowedOrigins = "", expiryCheckSeconds = 60),
+        )
+        port <- Server.install(routes)
+        // The DEFAULT household-wide subscription (`{}`) in BOTH households — identical params, so
+        // the subscriber's own filter cannot be doing the isolating.
+        subs = List(
+          """{"op":"hello"}""",
+          """{"op":"subscribe","payload":{"topic":"connectionEvents","params":{}}}""",
+        )
+        out <- ZIO.scoped {
+          SpaPush.run(bus, reg, tr, rlr, cer, dr, pr, apr, atlr, clk) *>
+            wsIsolation(
+              port,
+              tokenA,
+              tokenB,
+              subs,
+              subs,
+              "connectionEvents",
+              bus.publish(SpaEvent.ConnectionEventsIngested(since)),
+            )
+        }
+        (aFrame, bFrame) = out
+      } yield
+      // A receives its own event; B receives NO `connectionEvents` frame at all — not a filtered
+      // one, not an empty one.
+      assertTrue(aFrame.isDefined, bFrame.isEmpty) &&
+        assertTrue(aFrame.exists(_.contains("secret-a.example.com"))))
+        .provideSome[TestDatabase.AllRepos & EmbeddedPostgres & Clock & Transactor[Task]](
+          Server.defaultWithPort(0),
+          Client.default,
+        )
+    },
     test(
       "pin (#2257) — the ws `trafficUsage` push carries ONLY the caller's household traffic",
     ) {
