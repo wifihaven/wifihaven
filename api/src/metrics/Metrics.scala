@@ -1473,8 +1473,9 @@ object AppMetrics {
     )
 
   // #1849: counts policy-snapshot accesses split by whether they hit the computed-snapshot cache.
-  // `computed` = an actual PolicyService rebuild (its wall-clock is `policy_snapshot_build_seconds`,
-  // #2635); `failed` = a build that threw (#2635); `cache_hit` = served from
+  // `computed` = an actual PolicyService rebuild (its wall-clock is
+  // `policy_snapshot_build_seconds`, #2635); `failed` = a build that threw (#2635);
+  // `cache_hit` = served from
   // the cache without rebuilding. The ratio proves the cache is working — once the reconcile ticker
   // keeps the cache warm, REST polls and ws fan-outs should be overwhelmingly `cache_hit`, with
   // `computed` tracking the change/tick rate rather than the poll rate. `result` is a fixed 3-value
@@ -1484,7 +1485,8 @@ object AppMetrics {
 
   // #2635: bucket boundaries in SECONDS, chosen around the two numbers that matter — a build
   // measured at ~0.62s median on a prod-shaped seed (2026-08-07), and the reconcile ticker's period
-  // (`PolicyConfig.snapshotCacheRefreshInterval`, 5s by its default). The buckets straddle both so a
+  // (`PolicyConfig.snapshotCacheRefreshInterval`, 5s by its default). The buckets straddle both
+  // so a
   // panel can show the median AND answer "are builds approaching the tick period?", which is the
   // point at which `Schedule.fixed` stops keeping its period and the sweep runs back to back.
   val SnapshotBuildDurationBoundaries: MetricKeyType.Histogram.Boundaries =

@@ -315,12 +315,16 @@ object PolicySnapshotCacheSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedP
       } yield assertTrue(afterBuilt == List(HouseholdId.Default)) &&
         assertTrue(afterPushed.map(_._1) == List(HouseholdId.Default))
     },
-    test("#2635: invalidateMany reconciles every named household in ONE fiber") {
-      // The bulk form `FlipService` uses at the beta→paid window end. A loop over `invalidate`
-      // would leave N builds in flight at once (it returns as soon as it forks), so this pins both
-      // halves of the contract: every named household is reconciled, and the reconcile is a single
-      // fiber whose completion is observable — the same fence as above, which only exists because
-      // there is exactly one fork.
+    test("#2635: invalidateMany reconciles every named household, each exactly once") {
+      // The bulk form `FlipService` uses at the beta→paid window end. This pins WHAT it reconciles:
+      // every named household, once each, pushed under its own scope.
+      //
+      // It does NOT pin the other half of why `invalidateMany` exists — that the reconcile is a
+      // SINGLE fiber rather than one fork per household. That is a negative claim about
+      // concurrency, and asserting it would mean proving a second build never ran in parallel,
+      // which against forked fibers is a race rather than a test. It is enforced structurally
+      // instead: `invalidateMany` contains exactly one `forkDaemon`, and a reviewer can see that at
+      // a glance. Do not let this comment grow into a claim the assertions below don't make.
       for {
         _          <- cleanDb
         hRepo      <- ZIO.service[HouseholdRepo]
@@ -465,4 +469,11 @@ object PolicySnapshotCacheSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedP
         assertTrue(snap.profiles.contains(pidC)) // the stale build did NOT clobber C away
     },
   ) @@ TestAspect.sequential
+  // #2635: the two `reconciled.await` fences in this suite are unbounded by design — that is what
+  // makes them deterministic. The cost is that a regression which drops the fork (or kills the
+  // fiber before `reconcileBarrier` runs) would HANG rather than fail, and a hang gives CI no test
+  // name and no assertion diff. This bound converts that into a normal red. It runs on the LIVE
+  // clock, not the spec's frozen `TestClock`, and is far above any real runtime here (the whole
+  // suite is ~8s), so it is a failure-mode backstop and never a timing assertion.
+    @@ TestAspect.timeout(60.seconds)
 }

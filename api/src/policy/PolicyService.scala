@@ -210,13 +210,13 @@ class PolicyServiceLive(
     // #2635: takes the household being built, so a test can assert WHICH households a rebuild
     // touched rather than only how many builds ran — the whole claim of #2635 is about which.
     buildBarrier: HouseholdId => UIO[Unit] = _ => ZIO.unit,
-    // #2635: test-only hook run at the END of the fiber `invalidateMany` forks, after every named
-    // household has been reconciled. It is the FENCE that makes the central claim of #2635 testable:
-    // `invalidate` reconciles in a detached daemon, and "household B was NOT rebuilt" is a statement
-    // about a fiber the test does not own — without a completion signal the only ways to assert it
-    // are a wall-clock timeout (the #2042 flake class) or a bet on `Set` iteration order. With this,
-    // a test awaits the reconcile's completion and then reads the exact set of households built.
-    // Defaults to a no-op for production and every other spec.
+    // #2635: test-only hook run at the END of the fiber `invalidateMany` forks, after every
+    // named household has been reconciled. It is the FENCE that makes the central claim of
+    // #2635 testable: `invalidate` reconciles in a detached daemon, so "household B was NOT
+    // rebuilt" is a statement about a fiber the test does not own — without a completion
+    // signal the only ways to assert it are a wall-clock timeout (the #2042 flake class) or a
+    // bet on `Set` iteration order. With this, a test awaits the reconcile's completion and
+    // then reads the exact set of households built. A no-op for production and every other spec.
     reconcileBarrier: UIO[Unit] = ZIO.unit,
     // #2137 (multi-tenant P5-6): the billing-status gate. A `lapsed` household gets a PERMISSIVE
     // snapshot — enforcement STOPS (design §5.3, never brick the network) — built through the
@@ -383,8 +383,8 @@ class PolicyServiceLive(
     else {
       // Bump the named households' versions so their cache entries built before this mutation are
       // now stale-stamped and their next REST poll rebuilds immediately (fresh bytes), then
-      // reconcile in the background so any connected ws router is pushed the change without blocking
-      // the mutating request on a build. Bumping (rather than clearing) is what makes this
+      // reconcile in the background so any connected ws router is pushed the change without
+      // blocking the mutating request on a build. Bumping (rather than clearing) is what makes this
       // race-safe: an in-flight build that began before this call and completes after it lands
       // stamped with the OLD version, so readers reject it instead of getting a cache HIT on stale
       // bytes (#1954). The push still fires exactly once — the reconcile keys its push decision off
@@ -397,8 +397,8 @@ class PolicyServiceLive(
       // identical to the cache entry it replaced. The ticker, NOT this path, is what covers the
       // time-dependent transitions that have no mutation behind them; see `reevaluate`.
       //
-      // ONE fiber, reconciling sequentially: a fork per household would put every build in flight at
-      // once on the shared Hikari pool.
+      // ONE fiber, reconciling sequentially: a fork per household would put every build in
+      // flight at once on the shared Hikari pool.
       val hs = households.toList.distinct
       ZIO.succeed(hs.foreach(bumpVersion)) *>
         (ZIO.foreachDiscard(hs)(reevaluateHousehold) *> reconcileBarrier).forkDaemon.unit
@@ -540,27 +540,39 @@ class PolicyServiceLive(
       // #1954: test-only suspension point (no-op in production), run at the END of every build
       // whichever branch produced it and BEFORE the caller installs the result in the cache — see
       // `buildBarrier`. #2635: carries the household so a test can name which builds ran, and it is
-      // deliberately OUTSIDE the timed window: timing a parked fiber would report it as a slow build.
+      // deliberately OUTSIDE the timed window: timing a parked fiber would report it as slow.
       buildBarrier(household),
     )
 
   /**
-   * #2635: time one build and meter it, on BOTH exits. `onExit` rather than a straight-line
-   * `nanoTime` pair because the outcome this panel exists to catch — a build creeping toward the
-   * tick period — is the one most likely to END in a pool-acquisition timeout, and a success-only
-   * sample would drop exactly those. A failure also records `policy_snapshot_build_total{failed}`,
-   * so a build that threw is never invisible in both series at once.
+   * #2635: time one build and meter it, on success AND on failure. `onExit` rather than a
+   * straight-line `nanoTime` pair because the outcome this panel exists to catch — a build creeping
+   * toward the tick period — is the one most likely to END in a pool-acquisition timeout, and a
+   * success-only sample would drop exactly those. A failure also records
+   * `policy_snapshot_build_total{failed}`, so a build that threw is never invisible in both series
+   * at once.
+   *
+   * INTERRUPTION IS NOT A BUILD OUTCOME and is deliberately not sampled at all. `Exit.isFailure` is
+   * true for an interrupt, and interruption here is routine rather than exotic: the reconcile
+   * ticker is `forkScoped` precisely so it is interrupted before the Hikari pool closes on shutdown
+   * (`Main.scala`), and the fiber `invalidateMany` forks is torn down the same way — so counting it
+   * would give `result=failed` a nonzero baseline on every single deploy, and would feed the
+   * histogram a TRUNCATED duration for a build that was cut short rather than one that ran long.
+   * Both would corrupt exactly the signal the new panel exists to read. `onExit`'s finalizer runs
+   * uninterruptibly, so these samples would definitely land if we took them.
    *
    * `zio.Clock.nanoTime`, matching every other duration metric in this codebase (`DbMetrics.timed`,
    * the two ws registries).
    */
   private def timedBuild(build: Task[PolicySnapshot]): Task[PolicySnapshot] =
     zio.Clock.nanoTime.flatMap { startedNanos =>
-      build.onExit { exit =>
-        zio.Clock.nanoTime.flatMap { endedNanos =>
-          AppMetrics.recordSnapshotBuildDuration((endedNanos - startedNanos) / 1e9) *>
-            ZIO.when(exit.isFailure)(AppMetrics.recordSnapshotBuild("failed")).unit
-        }
+      build.onExit {
+        case Exit.Failure(cause) if cause.isInterruptedOnly => ZIO.unit
+        case exit                                           =>
+          zio.Clock.nanoTime.flatMap { endedNanos =>
+            AppMetrics.recordSnapshotBuildDuration((endedNanos - startedNanos) / 1e9) *>
+              ZIO.when(exit.isFailure)(AppMetrics.recordSnapshotBuild("failed")).unit
+          }
       }
     }
 
