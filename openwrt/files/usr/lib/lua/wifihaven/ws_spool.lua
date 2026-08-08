@@ -30,6 +30,39 @@ local function slurp(path, open_fn)
   return data
 end
 
+-- #2634: the eviction ledger.
+--
+-- The writer bounds the spool by REWRITING it shorter, which silently renumbers
+-- every byte offset in the file — including the cursor the reader holds in
+-- another process. Before this, drain saw only "the file got shorter" and could
+-- not tell an eviction from a copytruncate rotation, so it restarted from byte
+-- 0 and re-sent every surviving line. On a router pinned at the cap (the steady
+-- state, since nothing truncates the spool after a successful drain) that is a
+-- full replay per drain.
+--
+-- The writer knows exactly how many bytes it dropped, so it publishes a running
+-- total here and the reader rebases its cursor by the delta. Same file-content
+-- IPC idiom as paths.ws_health / paths.ws_pending (busybox has no `stat -c %Y`,
+-- and the two processes share nothing but the filesystem). The ledger is one
+-- short integer, rewritten in place — fixed-size, so it needs no rotation of
+-- its own (docs/process/router-agent-bounded-writes.md).
+local function ledger_path(path) return path .. ".evicted" end
+
+local function read_ledger(path, open_fn)
+  local raw = slurp(ledger_path(path), open_fn)
+  if not raw then return 0 end
+  return tonumber(raw:match("%d+")) or 0
+end
+
+local function bump_ledger(path, bytes, open_fn)
+  if bytes <= 0 then return end
+  local total = read_ledger(path, open_fn) + bytes
+  local f = open_fn(ledger_path(path), "w")
+  if not f then return end          -- best-effort: a failed bump degrades to
+  f:write(tostring(total))          -- today's behaviour, never to lost data
+  f:close()
+end
+
 -- append_bounded(path, line, max_bytes, open_fn) → ok, dropped
 --
 -- Appends `line` + "\n". Before appending, if the existing spool plus the new
@@ -53,11 +86,17 @@ function M.append_bounded(path, line, max_bytes, open_fn)
     local total = 0
     for _, l in ipairs(lines) do total = total + #l + 1 end
     local i = 1
+    local evicted_bytes = 0
     while i <= #lines and total + #entry > max_bytes do
       total = total - (#lines[i] + 1)
+      evicted_bytes = evicted_bytes + #lines[i] + 1
       i = i + 1
       dropped = dropped + 1
     end
+    -- #2634: publish what we removed from the FRONT of the file so the sidecar
+    -- can rebase its byte cursor instead of concluding it was rotated and
+    -- replaying the survivors.
+    bump_ledger(path, evicted_bytes, open_fn)
     -- Rewrite the spool with the surviving lines, then the new entry.
     local kept = {}
     for j = i, #lines do kept[#kept + 1] = lines[j] end
@@ -89,10 +128,25 @@ function M.drain(path, state, open_fn)
   state = state or {}
   state.offset = state.offset or 0
 
+  -- #2634: rebase past anything the writer evicted from the FRONT since our
+  -- last drain, BEFORE the rotation check below — an eviction and a rotation
+  -- both shrink the file, and only the ledger tells them apart. On the very
+  -- first drain adopt the current total as the baseline rather than subtracting
+  -- the router's whole eviction history from a cursor of 0.
+  local evicted = read_ledger(path, open_fn)
+  if state.evicted_seen == nil then
+    state.evicted_seen = evicted
+  elseif evicted > state.evicted_seen then
+    state.offset = math.max(0, state.offset - (evicted - state.evicted_seen))
+    state.evicted_seen = evicted
+  end
+
   local f = open_fn(path, "r")
   if not f then return {} end
   local size = f:seek("end")
   if size == nil then f:close(); return {} end
+  -- Still shorter than the rebased cursor → a genuine copytruncate rotation
+  -- (the cron second belt), which the ledger says nothing about. Restart.
   if size < state.offset then state.offset = 0 end
   f:seek("set", state.offset)
   local data = f:read("*a") or ""
