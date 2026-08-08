@@ -1,7 +1,7 @@
 package wifihaven.api.routes
 
 import wifihaven.api.metrics.AppMetrics
-import wifihaven.api.policy.PolicySnapshotPublisher
+import wifihaven.api.policy.{HouseholdScoped, PolicySnapshotPublisher}
 import wifihaven.shared.PolicySnapshot
 import wifihaven.shared.types.{ETag, HouseholdId, RouterId}
 import zio.*
@@ -30,10 +30,12 @@ import zio.json.*
  * Every mutation refreshes the `router_ws_connections_active` gauge to the live total channel
  * count, so the gauge is a pure function of registry state and ages out cleanly on disconnect (§7).
  *
- * **#2619: each entry also carries the router's [[HouseholdId]]**, captured at register time from
- * the already-authenticated [[wifihaven.shared.Router]]. It does not route frames — delivery is
- * unchanged. It exists so the delivery-time `routers.last_etag` stamp can REFUSE to write an etag
- * from a snapshot built for a different household than the router receiving it.
+ * **#2619/#2630: each entry also carries the router's [[HouseholdId]]**, captured at register time
+ * from the already-authenticated [[wifihaven.shared.Router]]. #2619 used it to refuse a
+ * `routers.last_etag` write from another household's snapshot; #2630 makes it ROUTE. A push carries
+ * a [[HouseholdScoped]] snapshot, and a channel is a recipient only if its entry's household can
+ * unwrap it — which is not a filter the fan-out can skip, because the snapshot is unreadable
+ * without presenting a recipient household (see [[HouseholdScoped]]).
  */
 trait RouterWsRegistry {
 
@@ -58,18 +60,31 @@ trait RouterWsRegistry {
   def activeCount: UIO[Int]
 
   /**
+   * #2630: the households with at least one connected router. [[PolicyService.reevaluate]] rebuilds
+   * and pushes one snapshot per household in this set, instead of rebuilding household 1's and
+   * broadcasting it to everyone. Derived from live connections, not from the households table: a
+   * rebuild is only worth its cost if there is a socket to push it down.
+   */
+  def targetHouseholds: UIO[Set[HouseholdId]]
+
+  /**
    * #1849: fan a freshly-changed snapshot out as one `policy` frame to every connected channel. The
    * server-side end of push-on-change: [[wifihaven.api.policy.PolicyService.reevaluate]] calls this
    * (via the [[PolicySnapshotPublisher]] seam) only when the snapshot's ETag actually moved, so a
    * change is computed once and pushed, not recomputed per poll per router (#1512). A send failure
    * (a racing disconnect) deregisters that channel and is metered `channel_closed`.
    *
-   * `household` is the household `snap` was BUILT for (#2619). Frame DELIVERY is unchanged — the
-   * snapshot still goes to every connected channel, which is the open #2626 fan-out gap this change
-   * deliberately does not touch — but only channels whose own household matches get their
-   * `routers.last_etag` stamped; the rest are metered `household_mismatch`.
+   * **#2630: the fan-out is household-scoped.** `scoped` carries the household the snapshot was
+   * BUILT for, and only channels registered under that household are recipients — every other
+   * connected router sees nothing at all. Before this, one flat `Map[RouterId, …]` was iterated and
+   * every connected channel got the frame, so a router in household B was handed (and applied)
+   * household A's device names, MACs, profile names and blocked hosts. That was live on prod
+   * hardware, not a code reading.
+   *
+   * The scoping is not an `if` inside this method: the snapshot cannot be read out of `scoped`
+   * without naming a recipient household, so an unscoped fan-out does not compile.
    */
-  def publishPolicy(household: HouseholdId, snap: PolicySnapshot): UIO[Unit]
+  def publishPolicy(scoped: HouseholdScoped[PolicySnapshot]): UIO[Unit]
 
   /**
    * #1849: push the current snapshot to a single freshly-connected channel (design §6.1 first-
@@ -78,17 +93,22 @@ trait RouterWsRegistry {
    * deregister on close). `household` is the household `snap` was built for; on this path that is
    * by construction the router's own (the caller reads `policy.snapshot(router.householdId)`).
    *
-   * **Precondition (#2619): `id` must already be registered.** The `routers.last_etag` stamp reads
-   * the router's household back from the registry so it has ONE source, so a push for an
-   * unregistered id delivers the frame but writes nothing (metered `unregistered`). The production
-   * caller registers first — `RouterWsRoutes` does `register *> … pushPolicyTo` — and any new
-   * caller must too.
+   * **Precondition (#2619/#2630): `id` must already be registered.** The recipient household is
+   * read from the registry entry, never from the caller — that is what makes it impossible to hand
+   * this the wrong household's snapshot, rather than merely inadvisable. So a push for an
+   * unregistered id sends NOTHING (metered `router_ws_policy_push_total{result="unregistered"}`):
+   * with no entry there is no household to unwrap against, and an unverifiable delivery is exactly
+   * what #2630 was. The production caller registers first — `RouterWsRoutes` does `register *> …
+   * pushPolicyTo` — and any new caller must too.
+   *
+   * A snapshot built for a household other than the router's own is likewise refused and metered
+   * `household_mismatch`; on this path that is a caller bug, not a steady state (the caller reads
+   * `policy.snapshot(router.householdId)`).
    */
   def pushPolicyTo(
       id: RouterId,
-      household: HouseholdId,
       channel: WebSocketChannel,
-      snap: PolicySnapshot,
+      scoped: HouseholdScoped[PolicySnapshot],
   ): UIO[Unit]
 }
 
@@ -178,36 +198,75 @@ final class RouterWsRegistryLive(
     state.get.map(_.valuesIterator.map(_.channels.size).sum)
 
   // The `PolicySnapshotPublisher` sink PolicyService.reevaluate pushes changed snapshots to.
-  def publish(household: HouseholdId, snap: PolicySnapshot): UIO[Unit] =
-    publishPolicy(household, snap)
+  def publish(scoped: HouseholdScoped[PolicySnapshot]): UIO[Unit] =
+    publishPolicy(scoped)
 
-  def publishPolicy(household: HouseholdId, snap: PolicySnapshot): UIO[Unit] =
+  // #2630: the households with at least one connected router — the set `PolicyService.reevaluate`
+  // rebuilds a snapshot for. It is deliberately derived from live connections rather than from the
+  // households table: a rebuild is only worth its cost (a snapshot build is put at ~2.5s by the
+  // note at `Main.scala`, unmeasured at multi-household scale — #2635) if there is a socket to push
+  // it down, and an empty registry must cost no builds at all.
+  def targetHouseholds: UIO[Set[HouseholdId]] =
+    state.get.map(_.valuesIterator.filter(_.channels.nonEmpty).map(_.household).toSet)
+
+  def publishPolicy(scoped: HouseholdScoped[PolicySnapshot]): UIO[Unit] =
     state.get.flatMap { m =>
-      val frame = RouterWsRegistry.policyFrameText(snap)
-      ZIO.foreachDiscard(m.toList) { case (id, conn) =>
-        ZIO.foreachDiscard(conn.channels)(ch =>
-          sendPolicyFrame(id, household, ch, frame, snap, deregisterOnFailure = true),
-        )
+      // Recipients FIRST, payload second. `forHousehold` is the only way to a snapshot, so a router
+      // in another household is not "filtered out" here — it is unreachable from this method, and
+      // the unscoped version of this loop does not typecheck (#2630).
+      val recipients = m.toList.flatMap { case (id, conn) =>
+        scoped.forHousehold(conn.household).map(snap => (id, conn.channels, snap))
+      }
+      // Serialise once for the whole household, as the pre-#2630 broadcast did — and not at all
+      // when this household has no connected router, which with many tenants is now the common case
+      // for any given push.
+      recipients.headOption.fold(ZIO.unit) { case (_, _, snap) =>
+        val frame = RouterWsRegistry.policyFrameText(snap)
+        ZIO.foreachDiscard(recipients) { case (id, channels, _) =>
+          ZIO.foreachDiscard(channels)(ch =>
+            sendPolicyFrame(id, ch, frame, snap, deregisterOnFailure = true),
+          )
+        }
       }
     }
 
   def pushPolicyTo(
       id: RouterId,
-      household: HouseholdId,
       channel: WebSocketChannel,
-      snap: PolicySnapshot,
+      scoped: HouseholdScoped[PolicySnapshot],
   ): UIO[Unit] =
-    // `deregisterOnFailure = false` preserves this path's pre-existing behaviour: the caller
-    // (RouterWsRoutes' HandshakeComplete branch) has its own `ensuring` teardown, and the channel
-    // was registered microseconds ago.
-    sendPolicyFrame(
-      id,
-      household,
-      channel,
-      RouterWsRegistry.policyFrameText(snap),
-      snap,
-      deregisterOnFailure = false,
-    )
+    // The recipient household is read from the REGISTRY, never taken from the caller — a caller
+    // that could assert its own household could assert the wrong one, which is the bug (#2630).
+    state.get.map(_.get(id).map(_.household)).flatMap {
+      case None     =>
+        AppMetrics.recordWsPolicyPush("unregistered") *>
+          ZIO.logWarning(
+            s"router ws: refusing first-policy push to unregistered router=$id - no registry " +
+              "entry, so the recipient household cannot be established",
+          )
+      case Some(hh) =>
+        scoped.forHousehold(hh) match {
+          case None       =>
+            // A caller bug on this path, not a steady state: RouterWsRoutes reads
+            // `policy.snapshot(router.householdId)`. Loud, and nothing is sent.
+            AppMetrics.recordWsPolicyPush("household_mismatch") *>
+              ZIO.logWarning(
+                s"router ws: refusing policy push to router=$id - snapshot " +
+                  s"${scoped.ownerLabel} but router household=$hh",
+              )
+          case Some(snap) =>
+            // `deregisterOnFailure = false` preserves this path's pre-existing behaviour: the
+            // caller (RouterWsRoutes' HandshakeComplete branch) has its own `ensuring` teardown,
+            // and the channel was registered microseconds ago.
+            sendPolicyFrame(
+              id,
+              channel,
+              RouterWsRegistry.policyFrameText(snap),
+              snap,
+              deregisterOnFailure = false,
+            )
+        }
+    }
 
   /**
    * #2619: stamp `routers.last_etag` with the etag this push DELIVERED.
@@ -225,18 +284,14 @@ final class RouterWsRegistryLive(
    * liveness signal behind `agent_connected_routers`, and a server-initiated push must not be able
    * to hold it green for a router whose socket has gone half-open.
    *
-   * **Household guard.** The receiving router's household is read HERE, from the registry entry, so
-   * there is one source for "which household is this router" and the guard is non-vacuous on both
-   * push paths (a caller cannot supply it, correctly or otherwise). The etag is written only when
-   * the snapshot was built for that same household. `PolicyService.reevaluate` still rebuilds the
-   * `HouseholdId.Default` snapshot and fans it out to every connected router regardless of
-   * household (`api/src/policy/PolicyService.scala`, the open #2626 gap), so an unguarded stamp
-   * would persist household 1's etag onto another household's row — turning a transient
-   * wrong-content push into a durable wrong value in the very column this is making authoritative.
-   *
-   * A router with no registry entry (deregistered between the send and this stamp) is metered
-   * `unregistered` and skipped: we cannot establish whose etag this is, and the guard's whole point
-   * is that an unverifiable write is worse than no write.
+   * **No household check here any more (#2630).** #2619 re-read the router's household at stamp
+   * time and refused a mismatched write, because the fan-out above it was unscoped and would
+   * otherwise have persisted household 1's etag onto another household's row. The fan-out is now
+   * scoped: a frame reaches this router only by having been unwrapped against THIS router's
+   * household, so by the time we get here the match is established by construction rather than
+   * re-asserted. Keeping a second copy of the check would leave an unreachable branch and a metric
+   * label that can never fire — the guard moved, it was not dropped
+   * (`AGENTS.md#single-source-of-truth`).
    *
    * Best-effort: a DB hiccup must never tear down a push, so failures are caught — `foldCauseZIO`,
    * not `foldZIO`, because a DEFECT in the sink would otherwise kill the fiber and
@@ -244,48 +299,24 @@ final class RouterWsRegistryLive(
    * not silent: `router_ws_etag_stamp_total{outcome}` is dashboarded
    * (deploy/grafana/dashboards/router-ws-transport.json), per `docs/process/no-dark-by-default.md`.
    */
-  private def stampEtag(
-      id: RouterId,
-      snapHousehold: HouseholdId,
-      snap: PolicySnapshot,
-  ): UIO[Unit] =
-    state.get.map(_.get(id).map(_.household)).flatMap {
-      case None                            =>
-        AppMetrics.recordWsEtagStamp("unregistered") *>
-          ZIO.logDebug(
-            s"router ws: not stamping last_etag for router=$id - no registry entry " +
-              "(deregistered between send and stamp)",
-          )
-      case Some(hh) if hh != snapHousehold =>
-        // DEBUG, not WARN: while #2626 is open this fires once per policy change per connected
-        // non-default-household router, so it is a steady-state condition rather than an anomaly.
-        // The counter is the signal; a per-push WARN would just be noise that trains the operator
-        // to ignore it.
-        AppMetrics.recordWsEtagStamp("household_mismatch") *>
-          ZIO.logDebug(
-            s"router ws: not stamping last_etag for router=$id - snapshot household=" +
-              s"$snapHousehold but router household=$hh (#2626 fan-out is not household-scoped)",
-          )
-      case Some(_)                         =>
-        // `suspendSucceed` so a sink that throws while BUILDING its effect is caught by the same
-        // fold as one that returns a failed/dying effect — otherwise it escapes back into
-        // `publishPolicy`'s `foreachDiscard`, which is the failure mode this fold exists for.
-        ZIO
-          .suspendSucceed(onDelivered(id, snap.etag))
-          .foldCauseZIO(
-            c =>
-              AppMetrics.recordWsEtagStamp("error") *>
-                // logError, not logWarning: this is the ONLY writer of `last_etag` for a router on a
-                // healthy ws link (the poll is dormant, #2037), so a failure here is the operator's
-                // "who is on current policy?" view silently going stale.
-                ZIO.logErrorCause(s"router ws: last_etag stamp failed for router=$id", c),
-            _ => AppMetrics.recordWsEtagStamp("ok"),
-          )
-    }
+  private def stampEtag(id: RouterId, snap: PolicySnapshot): UIO[Unit] =
+    // `suspendSucceed` so a sink that throws while BUILDING its effect is caught by the same fold
+    // as one that returns a failed/dying effect — otherwise it escapes back into `publishPolicy`'s
+    // `foreachDiscard`, which is the failure mode this fold exists for.
+    ZIO
+      .suspendSucceed(onDelivered(id, snap.etag))
+      .foldCauseZIO(
+        c =>
+          AppMetrics.recordWsEtagStamp("error") *>
+            // logError, not logWarning: this is the ONLY writer of `last_etag` for a router on a
+            // healthy ws link (the poll is dormant, #2037), so a failure here is the operator's
+            // "who is on current policy?" view silently going stale.
+            ZIO.logErrorCause(s"router ws: last_etag stamp failed for router=$id", c),
+        _ => AppMetrics.recordWsEtagStamp("ok"),
+      )
 
   private def sendPolicyFrame(
       id: RouterId,
-      snapHousehold: HouseholdId,
       channel: WebSocketChannel,
       frame: String,
       snap: PolicySnapshot,
@@ -295,7 +326,7 @@ final class RouterWsRegistryLive(
       case true  =>
         AppMetrics.recordWsFrame("policy", "out", "ok") *>
           AppMetrics.recordWsPolicyPush("ok") *>
-          stampEtag(id, snapHousehold, snap)
+          stampEtag(id, snap)
       case false =>
         // A racing disconnect: meter the failed push and drop the dead channel. The receive loop's
         // `ensuring` also deregisters, but doing it here too keeps the gauge honest if the push

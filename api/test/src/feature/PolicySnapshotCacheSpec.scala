@@ -36,11 +36,36 @@ object PolicySnapshotCacheSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedP
   private val cleanDb = TestDatabase.cleanAndMigrate
 
   /**
-   * A probe publisher that records every pushed snapshot, so a test can assert push count + bytes.
+   * A probe publisher that records every pushed snapshot WITH the household it was published for,
+   * so a test can assert push count, bytes, and (since #2630) scope.
+   *
+   * `targets` is what the sink reports as having a live recipient — the production registry answers
+   * this with the households that have a connected router, and it is what `reevaluate` rebuilds
+   * for. Defaults to empty, which reproduces the pre-#2630 shape (Default alone) for the tests that
+   * predate household scoping.
+   *
+   * It reads the payload exactly the way the production registry does: try each household it could
+   * plausibly be delivering to, and record the one that unwraps. It does NOT ask the wrapper who it
+   * belongs to and then unwrap against that answer — that would launder the payload out with no
+   * recipient named, which is the read [[HouseholdScoped]] exists to prevent, and a probe that can
+   * see more than the production sink is not a probe.
+   *
+   * `alsoTry` widens the set of households the probe attempts to unwrap against beyond its own
+   * targets, so a test can prove a push did NOT arrive for a household — an unattempted household
+   * would read as "not pushed" no matter what happened.
    */
-  private final class ProbePublisher(ref: Ref[List[PolicySnapshot]])
-      extends PolicySnapshotPublisher {
-    def publish(household: HouseholdId, snap: PolicySnapshot): UIO[Unit] = ref.update(_ :+ snap)
+  private final class ProbePublisher(
+      ref: Ref[List[(HouseholdId, PolicySnapshot)]],
+      targets: Set[HouseholdId] = Set.empty,
+      alsoTry: Set[HouseholdId] = Set.empty,
+  ) extends PolicySnapshotPublisher {
+    private val candidates: Set[HouseholdId] = targets ++ alsoTry + HouseholdId.Default
+
+    def publish(scoped: HouseholdScoped[PolicySnapshot]): UIO[Unit] =
+      ZIO.foreachDiscard(candidates.toList) { hh =>
+        ZIO.foreachDiscard(scoped.forHousehold(hh))(snap => ref.update(_ :+ (hh, snap)))
+      }
+    def targetHouseholds: UIO[Set[HouseholdId]]                     = ZIO.succeed(targets)
   }
 
   /**
@@ -48,7 +73,12 @@ object PolicySnapshotCacheSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedP
    * cross a schedule boundary), with a probe publisher attached. Returns the service, the clock
    * ref, and the probe's record.
    */
-  private def makeCachedSvc(startAt: LocalDateTime, buildBarrier: UIO[Unit] = ZIO.unit) =
+  private def makeCachedSvc(
+      startAt: LocalDateTime,
+      buildBarrier: UIO[Unit] = ZIO.unit,
+      pushTargets: Set[HouseholdId] = Set.empty,
+      probeAlsoTry: Set[HouseholdId] = Set.empty,
+  ) =
     for {
       pr     <- ZIO.service[ProfileRepo]
       nsr    <- ZIO.service[NamedScheduleRepo]
@@ -79,8 +109,8 @@ object PolicySnapshotCacheSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedP
         cacheEnabled = true,
         buildBarrier = buildBarrier,
       )
-      pushed <- Ref.make(List.empty[PolicySnapshot])
-      _      <- svc.setPublisher(new ProbePublisher(pushed))
+      pushed <- Ref.make(List.empty[(HouseholdId, PolicySnapshot)])
+      _      <- svc.setPublisher(new ProbePublisher(pushed, pushTargets, probeAlsoTry))
     } yield (svc, ref, pushed)
 
   private def blockedMacs(snap: PolicySnapshot): List[String] =
@@ -166,8 +196,82 @@ object PolicySnapshotCacheSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedP
       } yield assertTrue(afterBaseline.size == 1) &&
         assertTrue(afterNoop.size == 1) && // no re-push on the unchanged re-eval
         assertTrue(afterChange.size == 2) &&
-        assertTrue(!afterBaseline.head.blockEncryptedDns) &&
-        assertTrue(afterChange.last.blockEncryptedDns)
+        assertTrue(!afterBaseline.head._2.blockEncryptedDns) &&
+        assertTrue(afterChange.last._2.blockEncryptedDns)
+    },
+    test("#2630: reevaluate rebuilds and pushes ONE snapshot per household with a router") {
+      // The other half of #2630. Scoping the registry fan-out alone would have left a second
+      // household's routers receiving nothing at all on change — `reevaluate` only ever rebuilt
+      // `HouseholdId.Default` and relied on the broadcast to reach everyone else, and the HTTP poll
+      // that used to repair that goes dormant on a healthy ws link (#2037). So the rebuild is now
+      // per household, driven by which households actually have a connected router.
+      for {
+        _          <- cleanDb
+        hRepo      <- ZIO.service[HouseholdRepo]
+        hhB        <- hRepo.create("Other household", "other-household")
+        // Household C exists in the `households` table but has NO connected router. It is what
+        // separates "rebuild the connected fleet" from "rebuild every row in the table" — with only
+        // two households the push count cannot tell those apart, and the cost argument for this
+        // change rests entirely on it being the former. The probe attempts C explicitly
+        // (`probeAlsoTry`), so "no push for C" is an observation rather than an omission.
+        hhC        <- hRepo.create("Routerless household", "routerless-household")
+        // Count builds through `buildBarrier`, the per-SERVICE hook run once at the end of every
+        // `buildSnapshot` — NOT through `policy_snapshot_build_total`. That counter is JVM-global
+        // and additive, and an earlier test in this class calls `invalidate`, which ends in
+        // `reevaluate.forkDaemon`: a daemon fiber on a different service instance that can land its
+        // build inside this test's window and make an exact delta go red for an unrelated reason.
+        // `TestAspect.sequential` orders tests, it does not fence a fiber a previous test forked.
+        builds     <- Ref.make(0)
+        triple     <- makeCachedSvc(
+          TestClock.schoolDayAfternoon,
+          buildBarrier = builds.update(_ + 1),
+          pushTargets = Set(hhB), // one connected router, in household B
+          probeAlsoTry = Set(hhC),
+        )
+        (svc, _, pushed) = triple
+        _          <- svc.reevaluate
+        buildCount <- builds.get
+        pushes     <- pushed.get
+        // Both households were rebuilt and pushed: B because it has a router, Default because it is
+        // always included (single-household installs, and the SPA change-bus sink, depend on it).
+        households = pushes.map(_._1).toSet
+        // And each push is readable ONLY by its own household — the property the registry routes
+        // on. `forHousehold(other)` is None, so no sink could deliver B's snapshot to a Default
+        // router even if it tried.
+        scopedB    = HouseholdScoped(hhB, pushes.find(_._1 == hhB).get._2)
+      } yield assertTrue(pushes.size == 2) &&
+        assertTrue(households == Set(HouseholdId.Default, hhB)) &&
+        assertTrue(!households.contains(hhC)) &&
+        // Two BUILDS, not three: C was never rebuilt either, which is the cost claim. Without this
+        // the push assertions alone would also hold for "rebuild every household, push some".
+        assertTrue(buildCount == 2) &&
+        assertTrue(scopedB.forHousehold(hhB).isDefined) &&
+        assertTrue(scopedB.forHousehold(HouseholdId.Default).isEmpty)
+    },
+    test("#2630: an unchanged household does not suppress another household's push") {
+      // `lastPublishedEtag` was a single slot, correct only while one household was ever rebuilt.
+      // Per-household rebuilds through a shared slot would have two tenants overwriting each
+      // other's "last pushed" value, so an alternating pair of changes would each look unchanged
+      // and neither household would be pushed — a silent policy freeze, which on this path means
+      // routers enforcing stale policy indefinitely.
+      for {
+        _      <- cleanDb
+        hRepo  <- ZIO.service[HouseholdRepo]
+        hhB    <- hRepo.create("Other household", "other-household")
+        triple <- makeCachedSvc(TestClock.schoolDayAfternoon, pushTargets = Set(hhB))
+        (svc, _, pushed) = triple
+        _         <- svc.reevaluate // baseline: one push per household
+        baseline  <- pushed.get
+        // Change DEFAULT's policy only. B is untouched, so B must not re-push and — the part a
+        // shared slot broke — Default must.
+        _         <- setBlockEncryptedDns(true)
+        _         <- svc.reevaluate
+        afterEdit <- pushed.get
+        newPushes = afterEdit.drop(baseline.size)
+      } yield assertTrue(baseline.size == 2) &&
+        assertTrue(newPushes.size == 1) &&
+        assertTrue(newPushes.head._1 == HouseholdId.Default) &&
+        assertTrue(newPushes.head._2.blockEncryptedDns)
     },
     test(
       "a schedule boundary crossed with no DB write is caught + pushed by reevaluate (the ticker mechanism)",
@@ -188,7 +292,7 @@ object PolicySnapshotCacheSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedP
         assertTrue(blockedMacs(snapStale).isEmpty) && // cache held across the time move
         assertTrue(blockedMacs(snapFresh) == List("aa:bb:cc:11:22:33")) &&
         assertTrue(pushes.size == 1) &&               // pushed once, on the transition
-        assertTrue(blockedMacs(pushes.head) == List("aa:bb:cc:11:22:33"))
+        assertTrue(blockedMacs(pushes.head._2) == List("aa:bb:cc:11:22:33"))
     },
     // #1954: the create-then-read invariant Gate 1 checks — a profile created + invalidated is in the
     // VERY NEXT read. (Passes pre-#1954 too; pinned so the wiring can't silently regress.)

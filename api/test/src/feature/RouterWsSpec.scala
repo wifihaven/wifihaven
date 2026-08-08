@@ -4,7 +4,7 @@ import wifihaven.api.{ErrorBoundary, Readiness}
 import wifihaven.api.db.*
 import wifihaven.api.metrics.{HttpMetrics, RouterMetricsService}
 import wifihaven.api.observability.LoggingMiddleware
-import wifihaven.api.policy.PolicyServiceLive
+import wifihaven.api.policy.{HouseholdScoped, PolicyServiceLive}
 import wifihaven.api.routes.*
 import wifihaven.shared.*
 import wifihaven.shared.types.*
@@ -63,7 +63,7 @@ object RouterWsSpec
    * collaborator in those tests (registry, delivery sink, repo, Postgres) is real, and the
    * end-to-end path over a REAL client and server is pinned by the socket-driving tests below.
    */
-  private final class SendOnlyChannel extends WebSocketChannel {
+  private class SendOnlyChannel extends WebSocketChannel {
     def awaitShutdown(implicit trace: Trace): UIO[Unit]                                 = ZIO.unit
     def receive(implicit trace: Trace): Task[WebSocketChannelEvent]                     = ZIO.never
     def receiveAll[Env, Err](f: WebSocketChannelEvent => ZIO[Env, Err, Any])(
@@ -75,6 +75,24 @@ object RouterWsSpec
   }
 
   private def sendOnlyChannel: UIO[WebSocketChannel] = ZIO.succeed(new SendOnlyChannel)
+
+  /**
+   * A [[SendOnlyChannel]] that also RECORDS the text of every frame handed to it. `SendOnlyChannel`
+   * proves a push resolved OK; this proves WHO it reached, which is what #2630 turns on — a leak is
+   * a frame arriving at a channel that should never have been a recipient, and a channel that only
+   * swallows sends cannot tell that apart from no frame at all.
+   */
+  private final class RecordingChannel(sent: Ref[Chunk[String]]) extends SendOnlyChannel {
+    override def send(in: WebSocketChannelEvent)(implicit trace: Trace): Task[Unit] =
+      in match {
+        case ChannelEvent.Read(WebSocketFrame.Text(t)) => sent.update(_ :+ t)
+        case _                                         => ZIO.unit
+      }
+  }
+
+  /** A recording channel plus the handle to read back what it was sent. */
+  private def recordingChannel: UIO[(WebSocketChannel, Ref[Chunk[String]])] =
+    Ref.make(Chunk.empty[String]).map(r => (new RecordingChannel(r), r))
 
   /**
    * The cumulative `router_ws_etag_stamp_total{outcome=...}` count (#2619), read straight off the
@@ -389,7 +407,7 @@ object RouterWsSpec
         ch        <- sendOnlyChannel
         okPre     <- etagStampTotal("ok")
         _         <- reg.register(rid, HouseholdId.Default, ch)
-        _         <- reg.pushPolicyTo(rid, HouseholdId.Default, ch, snap)
+        _         <- reg.pushPolicyTo(rid, ch, HouseholdScoped(HouseholdId.Default, snap))
         afterPush <- rRepo.findById(rid)
         // The push-on-change fan-out (publishPolicy) must stamp too — it is the path that carries
         // the fleet once the poll is dormant, and it is a DIFFERENT call into sendPolicyFrame. It
@@ -398,7 +416,7 @@ object RouterWsSpec
         // this path stamped nothing. (Resetting the column first does not work either — the repo's
         // `last_etag = COALESCE($etag, last_etag)` makes `touch(id, None, None)` a no-op on it.)
         fanSnap = snap.copy(etag = ETag.unsafe("etag-2619-fanout"))
-        _        <- reg.publishPolicy(HouseholdId.Default, fanSnap)
+        _        <- reg.publishPolicy(HouseholdScoped(HouseholdId.Default, fanSnap))
         afterFan <- rRepo.findById(rid)
         okPost   <- etagStampTotal("ok")
         // ...and last_seen_at must NOT have moved. That column means "we heard from this router" —
@@ -417,14 +435,58 @@ object RouterWsSpec
       // No Server/Client layers here, unlike the socket-driving tests around it: this exercises the
       // registry's push entrypoints directly, so it needs neither.
     },
-    test("#2619: a push carrying another household's snapshot does not stamp that router") {
-      // The reason the same stamp was reverted from #2608's PR. `PolicyService.reevaluate` still
-      // rebuilds the `HouseholdId.Default` snapshot and fans it out to EVERY connected router
-      // (`api/src/policy/PolicyService.scala`) — the still-open fan-out gap, #2626. Delivery is out of scope
-      // here, but the DURABLE write is not: persisting household 1's etag onto household 2's router
-      // would turn a transient wrong-content push into a permanently wrong value in the very column
-      // this change is making authoritative. A stale etag is recoverable; a confidently wrong one
-      // is not.
+    test("#2630: a policy push reaches only the publishing household's routers") {
+      // The beta-launch blocker. `publishPolicy` iterated the WHOLE registry and sent the same
+      // frame to every connected channel, so a router in household B was handed household A's
+      // snapshot — device names, MAC addresses, profile names, blocked hosts — and, being a dumb
+      // applier, wrote it to /etc/wifihaven/policy.json and into its nft ruleset. Observed on live
+      // hardware (#2630): a test-household router carried the operator's family household's 33
+      // device names and real MACs for ~8 minutes.
+      //
+      // What makes this test the one that would have caught it: it asserts on DELIVERY, per
+      // channel. The #2619 test below asserts only that the DURABLE `last_etag` write is refused,
+      // which was true throughout the leak — the frame still went out.
+      for {
+        _         <- cleanDb
+        rRepo     <- ZIO.service[RouterRepo]
+        pRepo     <- ZIO.service[ProfileRepo]
+        dRepo     <- ZIO.service[DeviceRepo]
+        hRepo     <- ZIO.service[HouseholdRepo]
+        _         <- seedKnownDevice(dRepo, pRepo)
+        // Household A = the default household, with the seeded device/profile; household B = a
+        // second tenant whose router is connected at the same time. Both routers are real rows.
+        (ridA, _) <- seedRouter(rRepo)
+        hhB       <- hRepo.create("Other household", "other-household")
+        ridB      <- rRepo.create("other-router", Sha256Hex.unsafe("n" * 64), hhB)
+        _ <- rRepo.completeEnrollment(ridB, Sha256Hex.unsafe(RouterAuth.sha256Hex("TOKEN_B")))
+        policySvc    <- buildPolicyService
+        snapA        <- policySvc.snapshot(HouseholdId.Default)
+        (_, reg)     <- buildWsRoutes
+        (chA, sentA) <- recordingChannel
+        (chB, sentB) <- recordingChannel
+        _            <- reg.register(ridA, HouseholdId.Default, chA)
+        _            <- reg.register(ridB, hhB, chB)
+        _            <- reg.publishPolicy(HouseholdScoped(HouseholdId.Default, snapA))
+        framesA      <- sentA.get
+        framesB      <- sentB.get
+        // A's router got the policy frame, and it is the real snapshot (the seeded MAC rides it) —
+        // so a "fix" that simply stopped pushing would not pass.
+      } yield assertTrue(framesA.size == 1) &&
+        assertTrue(framesA.head.contains("\"op\":\"policy\"")) &&
+        assertTrue(framesA.head.contains(knownMac)) &&
+        // ...and B's router got NOTHING. Not a redacted frame, not an empty one: no frame.
+        assertTrue(framesB.isEmpty)
+    },
+    test("#2630: a first-policy push carrying another household's snapshot is refused") {
+      // The other push entrypoint. `publishPolicy` gets its household from the snapshot it is
+      // handed and matches it against each registry entry; `pushPolicyTo` targets ONE channel, and
+      // #2619 originally let the caller assert that channel's household — a caller that can assert
+      // its household can assert the wrong one. It now reads the household from the REGISTRY entry,
+      // so the wrong snapshot cannot be delivered even by a caller that insists.
+      //
+      // Before #2630 this case delivered the frame and refused only the durable `last_etag` write
+      // (metered `router_ws_etag_stamp_total{outcome="household_mismatch"}`). The frame was the
+      // leak, so the refusal moved to the delivery.
       for {
         _     <- cleanDb
         rRepo <- ZIO.service[RouterRepo]
@@ -436,20 +498,25 @@ object RouterWsSpec
         ridB  <- rRepo.create("other-router", Sha256Hex.unsafe("n" * 64), other)
         _     <- rRepo.completeEnrollment(ridB, Sha256Hex.unsafe(RouterAuth.sha256Hex("TOKEN_B")))
         policySvc    <- buildPolicyService
-        snap         <- policySvc.snapshot(HouseholdId.Default)
+        snapA        <- policySvc.snapshot(HouseholdId.Default)
         (_, reg)     <- buildWsRoutes
-        ch           <- sendOnlyChannel
-        mismatchPre  <- etagStampTotal("household_mismatch")
+        (ch, sent)   <- recordingChannel
+        mismatchPre  <- policyPushTotal("household_mismatch")
+        okPre        <- policyPushTotal("ok")
         _            <- reg.register(ridB, other, ch)
-        _            <- reg.publishPolicy(HouseholdId.Default, snap)
+        _            <- reg.pushPolicyTo(ridB, ch, HouseholdScoped(HouseholdId.Default, snapA))
+        frames       <- sent.get
         after        <- rRepo.findById(ridB)
-        mismatchPost <- etagStampTotal("household_mismatch")
-        // Nothing written, AND the refusal is visible. Not a zero-vs-nonzero alarm: while #2626 is
-        // open this fires once per policy change per connected non-default-household router, so it
-        // is a steady-state series read as a RATIO against `ok`, and what it measures is #2626's
-        // live blast radius. A silent skip would leave that immeasurable.
-      } yield assertTrue(after.exists(_.lastEtag.isEmpty)) &&
-        assertTrue(mismatchPost - mismatchPre == 1.0)
+        mismatchPost <- policyPushTotal("household_mismatch")
+        okPost       <- policyPushTotal("ok")
+        // Nothing delivered, nothing written, and the refusal is visible. The counter matters
+        // because this is now a should-never-happen: the caller reads
+        // `policy.snapshot(router.householdId)`, so a non-zero rate is a caller bug, and a silent
+        // skip would leave a router with no first policy and no signal saying why.
+      } yield assertTrue(frames.isEmpty) &&
+        assertTrue(after.exists(_.lastEtag.isEmpty)) &&
+        assertTrue(mismatchPost - mismatchPre == 1.0) &&
+        assertTrue(okPost - okPre == 0.0)
     },
     test("#2619: a failed stamp is metered and does not tear down the push") {
       // The stamp is a best-effort side-write hanging off the push path. A DB hiccup must never
@@ -477,7 +544,7 @@ object RouterWsSpec
         chA      <- sendOnlyChannel
         _        <- failing.register(ridA, HouseholdId.Default, chA)
         // Completes normally: the failure is caught inside the registry, not propagated.
-        _        <- failing.publishPolicy(HouseholdId.Default, emptySnapshot)
+        _        <- failing.publishPolicy(HouseholdScoped(HouseholdId.Default, emptySnapshot))
         // The channel is still registered — a stamp failure is not a delivery failure, so it must
         // not deregister the router the way a `channel_closed` send failure does.
         stillA   <- failing.isConnected(ridA)
@@ -487,7 +554,7 @@ object RouterWsSpec
         _        <- dying.register(ridA, HouseholdId.Default, chB)
         _        <- dying.register(ridB, HouseholdId.Default, chC)
         // Must not die, and must reach BOTH routers: two `error` samples, not one.
-        _        <- dying.publishPolicy(HouseholdId.Default, emptySnapshot)
+        _        <- dying.publishPolicy(HouseholdScoped(HouseholdId.Default, emptySnapshot))
         // Third mode: a sink that THROWS while building its effect rather than returning a failed
         // or dying one. `foldCauseZIO` alone cannot see that — the throw happens before there is an
         // effect to fold over — so it relies on the `suspendSucceed` in `stampEtag`. Without that,
@@ -495,44 +562,45 @@ object RouterWsSpec
         throwing <- RouterWsRegistry.make((_, _) => throw new RuntimeException("sink threw"))
         chD      <- sendOnlyChannel
         _        <- throwing.register(ridA, HouseholdId.Default, chD)
-        _        <- throwing.publishPolicy(HouseholdId.Default, emptySnapshot)
+        _        <- throwing.publishPolicy(HouseholdScoped(HouseholdId.Default, emptySnapshot))
         okPost   <- etagStampTotal("ok")
         errPost  <- etagStampTotal("error")
       } yield assertTrue(errPost - errPre == 4.0) &&
         assertTrue(okPost - okPre == 0.0) &&
         assertTrue(stillA)
     },
-    test("#2619: a push to an unregistered router delivers the frame but writes nothing") {
-      // `stampEtag` reads the receiving router's household back from the registry so there is ONE
-      // source for it and no caller can defeat the guard by passing the wrong value. The cost is
-      // that an id with no entry — deregistered between the send and the stamp — has no
-      // establishable household, and the guard's premise is that an unverifiable write is worse
-      // than no write. So it is skipped, and metered `unregistered` rather than silently dropped.
-      // `pushPolicyTo` documents the matching precondition; the production caller
-      // (`RouterWsRoutes`) registers before it pushes.
+    test("#2630: a push to an unregistered router sends nothing") {
+      // `pushPolicyTo` reads the recipient household from the registry entry, so an id with no
+      // entry has no establishable household — and an unverifiable delivery is precisely what
+      // #2630 was. So the frame is NOT sent, and the refusal is metered rather than silent.
+      //
+      // This inverts the #2619 behaviour, which delivered the frame and skipped only the
+      // `last_etag` stamp: back then the household guard sat on the write, so the delivery was
+      // never the thing being gated. `pushPolicyTo` documents the matching precondition; the
+      // production caller (`RouterWsRoutes`) registers before it pushes, so nothing in the fleet
+      // relies on the old behaviour.
       // No device seed: this pushes `emptySnapshot` rather than building one, so no profile or
       // device is read.
       for {
-        _         <- cleanDb
-        rRepo     <- ZIO.service[RouterRepo]
-        (rid, _)  <- seedRouter(rRepo)
-        unregPre  <- etagStampTotal("unregistered")
-        okPre     <- etagStampTotal("ok")
-        pushPre   <- policyPushTotal("ok")
-        (_, reg)  <- buildWsRoutes
-        ch        <- sendOnlyChannel
-        // Deliberately NO `register` — this is the deregistered-mid-push shape.
-        _         <- reg.pushPolicyTo(rid, HouseholdId.Default, ch, emptySnapshot)
-        after     <- rRepo.findById(rid)
-        unregPost <- etagStampTotal("unregistered")
-        okPost    <- etagStampTotal("ok")
-        pushPost  <- policyPushTotal("ok")
-        // Both halves of the name. The frame WENT OUT (the push counter moved) and the stamp was
-        // declined — not a push that bailed before sending, which would look the same on the
-        // last_etag column alone.
-      } yield assertTrue(pushPost - pushPre == 1.0) &&
-        assertTrue(after.exists(_.lastEtag.isEmpty)) &&
+        _          <- cleanDb
+        rRepo      <- ZIO.service[RouterRepo]
+        (rid, _)   <- seedRouter(rRepo)
+        okPre      <- etagStampTotal("ok")
+        pushOkPre  <- policyPushTotal("ok")
+        unregPre   <- policyPushTotal("unregistered")
+        (_, reg)   <- buildWsRoutes
+        (ch, sent) <- recordingChannel
+        // Deliberately NO `register`.
+        _          <- reg.pushPolicyTo(rid, ch, HouseholdScoped(HouseholdId.Default, emptySnapshot))
+        frames     <- sent.get
+        after      <- rRepo.findById(rid)
+        okPost     <- etagStampTotal("ok")
+        pushOkPost <- policyPushTotal("ok")
+        unregPost  <- policyPushTotal("unregistered")
+      } yield assertTrue(frames.isEmpty) &&
+        assertTrue(pushOkPost - pushOkPre == 0.0) &&
         assertTrue(unregPost - unregPre == 1.0) &&
+        assertTrue(after.exists(_.lastEtag.isEmpty)) &&
         assertTrue(okPost - okPre == 0.0)
     },
     test("#2561: a second connection for the same router supersedes the first (registry holds 1)") {

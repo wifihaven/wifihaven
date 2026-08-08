@@ -176,7 +176,10 @@ The ETag stays the snapshot's identity, but the *transfer* inverts:
   agent applies it before sending any data frame (avoids a first-connect policy
   race — same guarantee #1023 calls out).
 - **On change**, the server pushes a fresh `policy` frame to every connected
-  agent (§6.2). The agent compares the pushed snapshot's `etag` to the
+  agent **in the household whose policy changed** (§6.2; household scoping is
+  [#2630](https://github.com/wifihaven/wifihaven/issues/2630) — a snapshot is
+  carried as `HouseholdScoped[PolicySnapshot]` and is unreadable without naming
+  the recipient household, so a cross-tenant fan-out cannot be written). The agent compares the pushed snapshot's `etag` to the
   currently-applied one and **applies only if it differs** (the agent keeps its
   existing "apply iff etag changed" guard from `policy.lua`, so a redundant push
   is a cheap no-op, not a re-render).
@@ -402,17 +405,16 @@ agent boot
   a server-initiated push must not be able to hold that gauge green for a router
   whose socket has gone half-open.
 
-  One case where the ws path deliberately does NOT write: the push-on-change
-  fan-out is not household-scoped yet
-  ([#2626](https://github.com/wifihaven/wifihaven/issues/2626)), so the stamp is
-  skipped (and metered `router_ws_etag_stamp_total{outcome="household_mismatch"}`)
-  when the pushed snapshot's household differs from the router's. A stale etag
-  is recoverable; another tenant's etag written into this column is not.
-  **Consequence, stated plainly: until #2626 lands, a router in a NON-default
-  household does not get an advancing `last_etag` at all** beyond its
-  connect-time push, which is household-scoped and therefore does stamp. That
-  also makes `household_mismatch` a steady-state series rather than an anomaly —
-  read it as a ratio against `ok`, not against zero.
+  The stamp had a household guard for as long as the fan-out was unscoped: it
+  refused to write when the pushed snapshot's household differed from the
+  router's, metering `router_ws_etag_stamp_total{outcome="household_mismatch"}`,
+  because a stale etag is recoverable and another tenant's is not. That guard
+  was treating the symptom. [#2630](https://github.com/wifihaven/wifihaven/issues/2630)
+  fixed the cause — the frame itself was going to the wrong household — and with
+  it the guard moved off the stamp and onto the delivery, so both that outcome
+  and `unregistered` are retired from the stamp series. A non-default household's
+  `last_etag` now advances normally, because its routers now receive their own
+  household's pushes.
 
 ### 3.2 Detection: how the server knows which a router uses
 
@@ -644,9 +646,10 @@ Today every poll calls `policy.snapshot` (~500 ms recompute, #1512). Under push:
    re-evaluates; see #1512's note on time-dependent fields). This is filed as
    sub-issue **E** and is the concrete realization of #1512's "computed-snapshot
    cache with correct invalidation."
-2. **On invalidation**, `PolicyService` rebuilds once and **publishes** the new
-   snapshot to the registry, which pushes one `policy` frame to every connected
-   channel. So the snapshot is computed **once per change**, not once per poll
+2. **On invalidation**, `PolicyService` rebuilds once **per household with a
+   connected router** and **publishes** each snapshot to the registry, which
+   pushes one `policy` frame to that household's channels and no others (#2630).
+   So the snapshot is computed **once per change per household**, not once per poll
    per router — for the single-household fleet that is the difference between
    ~500 ms every 5 s and ~500 ms only when policy actually changes.
 3. **The REST poll path also reads the cache** (returns the cached snapshot /

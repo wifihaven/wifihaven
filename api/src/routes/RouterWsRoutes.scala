@@ -3,7 +3,7 @@ package wifihaven.api.routes
 import wifihaven.api.db.RouterRepo
 import wifihaven.api.metrics.{AppMetrics, RouterMetricsService}
 import wifihaven.api.observability.LogContext
-import wifihaven.api.policy.PolicyService
+import wifihaven.api.policy.{HouseholdScoped, PolicyService}
 import wifihaven.shared.{Router, RouterMetricsBatch}
 import zio.*
 import zio.http.*
@@ -93,7 +93,16 @@ object RouterWsRoutes {
                   // #2107: first-policy push is scoped to the router's household (same scoping as the
                   // REST /api/router/policy poll).
                   .snapshot(router.householdId)
-                  .flatMap(registry.pushPolicyTo(router.id, router.householdId, channel, _))
+                  // #2630: wrapped in the household it was built for. The registry checks it
+                  // against the household it registered this router under, so a snapshot from the
+                  // wrong household is refused rather than trusted from the caller.
+                  .flatMap(snap =>
+                    registry.pushPolicyTo(
+                      router.id,
+                      channel,
+                      HouseholdScoped(router.householdId, snap),
+                    ),
+                  )
                   .catchAllCause(c =>
                     ZIO.logWarningCause(
                       s"router ws: first-policy push failed router=${router.id}",

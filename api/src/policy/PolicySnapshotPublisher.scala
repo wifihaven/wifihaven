@@ -19,19 +19,38 @@ import zio.*
  * snapshot rebuilt before the registry exists, or in a test that never sets a publisher, simply
  * isn't pushed.
  *
- * #2619: `publish` carries the [[HouseholdId]] the snapshot was BUILT for, alongside the snapshot
- * itself. A `PolicySnapshot` has no household on it (the wire is deliberately tenant-blind — the
- * router is a dumb applier and never learns which household it belongs to), so without this
- * parameter a sink cannot tell whose policy it is holding. The router registry needs exactly that
- * to decide whether stamping `routers.last_etag` from a delivery is truthful.
+ * #2619/#2630: `publish` takes a [[HouseholdScoped]] snapshot rather than a bare one. A
+ * `PolicySnapshot` has no household on it (the wire is deliberately tenant-blind — the router is a
+ * dumb applier and never learns which household it belongs to), so without the wrapper a sink
+ * cannot tell whose policy it is holding, and #2630 is what that cost: the router registry fanned
+ * whatever it was handed to every connected channel across every tenant. The wrapper makes that
+ * unwritable — a sink cannot read the snapshot at all without naming the recipient household.
  */
 trait PolicySnapshotPublisher {
-  def publish(household: HouseholdId, snap: PolicySnapshot): UIO[Unit]
+
+  /** Push a changed snapshot to whichever recipients this sink has for its household. */
+  def publish(scoped: HouseholdScoped[PolicySnapshot]): UIO[Unit]
+
+  /**
+   * #2630: the households this sink currently has a recipient for — for the router registry, the
+   * households with at least one connected router. [[PolicyService.reevaluate]] rebuilds and pushes
+   * ONCE PER household in this set (plus [[HouseholdId.Default]]) instead of rebuilding household 1
+   * and broadcasting it, so a non-default household's routers get their OWN policy on change rather
+   * than someone else's.
+   *
+   * Required, not defaulted: a sink that silently reported no targets would be pushed nothing, and
+   * a push path that goes quiet without saying so is the shape `docs/process/no-dark-by-default.md`
+   * forbids. A sink with no household dimension (the SPA change-bus bridge, which fires a
+   * contentless nudge and lets each subscriber rebuild under its own scope) returns the empty set
+   * explicitly.
+   */
+  def targetHouseholds: UIO[Set[HouseholdId]]
 }
 
 object PolicySnapshotPublisher {
   val noop: PolicySnapshotPublisher = new PolicySnapshotPublisher {
-    def publish(household: HouseholdId, snap: PolicySnapshot): UIO[Unit] = ZIO.unit
+    def publish(scoped: HouseholdScoped[PolicySnapshot]): UIO[Unit] = ZIO.unit
+    def targetHouseholds: UIO[Set[HouseholdId]]                     = ZIO.succeed(Set.empty)
   }
 
   /**
@@ -53,7 +72,11 @@ object PolicySnapshotPublisher {
    */
   def broadcast(sinks: List[PolicySnapshotPublisher]): PolicySnapshotPublisher =
     new PolicySnapshotPublisher {
-      def publish(household: HouseholdId, snap: PolicySnapshot): UIO[Unit] =
-        ZIO.foreachDiscard(sinks)(_.publish(household, snap))
+      def publish(scoped: HouseholdScoped[PolicySnapshot]): UIO[Unit] =
+        ZIO.foreachDiscard(sinks)(_.publish(scoped))
+
+      // #2630: the union — reevaluate must rebuild a household if ANY sink has a recipient for it.
+      def targetHouseholds: UIO[Set[HouseholdId]] =
+        ZIO.foreach(sinks)(_.targetHouseholds).map(_.foldLeft(Set.empty[HouseholdId])(_ ++ _))
     }
 }
