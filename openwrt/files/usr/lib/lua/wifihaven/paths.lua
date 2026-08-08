@@ -95,15 +95,15 @@ M.nflog_drops = "/tmp/wifihaven-nflog.log"
 -- first drop) plus a copytruncate rotation belt.
 M.ws_outbound = "/tmp/wifihaven-ws-outbound.jsonl"
 
--- #2634: the outbound spool's eviction ledger — a running total of bytes the
--- writer has dropped off the FRONT of ws_outbound to stay under the cap. The
--- reader subtracts the delta from its byte cursor, so an oldest-first eviction
--- renumbering the file no longer looks like a rotation and no longer makes the
--- sidecar replay every surviving line. Derived from the spool path inside
--- ws_spool (`<spool>.evicted`) — named here only so the file is discoverable
--- alongside the spool it belongs to. One short integer, rewritten in place:
--- fixed-size, so unlike the spool it needs no rotation of its own.
-M.ws_outbound_evicted = M.ws_outbound .. ".evicted"
+-- #2634: the spool has a companion ledger file alongside it (`<spool>.written`)
+-- holding the total bytes ever appended. The reader keeps its cursor in stream
+-- coordinates and derives the file's first surviving byte as `written - size`,
+-- which is correct whether the missing prefix was EVICTED by the cap or emptied
+-- by the copytruncate cron — an evicted-bytes counter only describes the first,
+-- and the two can mask each other. Deliberately NOT a constant here:
+-- `ws_spool.ledger_path(spool)` is the single definition of the name, so there is
+-- no second copy of the suffix to drift. Fixed-size (one integer rewritten in
+-- place), so unlike the spool it needs no rotation.
 
 -- ws-health sentinel: the sidecar touches this file's mtime on every successful
 -- send/recv while the socket is up, and removes it on disconnect. The main agent

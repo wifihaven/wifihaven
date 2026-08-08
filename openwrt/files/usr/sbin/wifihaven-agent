@@ -556,8 +556,25 @@ local function read_uptime_seconds()
   f:close()
   return up
 end
+-- #2634: a failed spool-ledger write is NOT a silent degrade. Its likeliest
+-- cause is /tmp (tmpfs) being full, which is precisely when the spool is at its
+-- cap and evicting on every append — i.e. when falling back to the pre-#2634
+-- full-replay behaviour costs the most. Log it loudly, rate-limited to once a
+-- minute so a wedged /tmp cannot itself flood the ring buffer we log into.
+local ws_ledger_warn_at = 0
 local function ws_spool_append(line)
-  return ws_spool.append_bounded(paths.ws_outbound, line, ws_spool_max, io.open)
+  local ok, dropped, ledger_ok =
+    ws_spool.append_bounded(paths.ws_outbound, line, ws_spool_max, io.open)
+  if ledger_ok == false then
+    local now = clock.monotonic_seconds()
+    if (now - ws_ledger_warn_at) >= 60 then
+      ws_ledger_warn_at = now
+      log.warn("ws spool: could not write the eviction ledger %q — the sidecar " ..
+               "will re-send the whole spool on its next drain (#2634). /tmp full?",
+               ws_spool.ledger_path(paths.ws_outbound))
+    end
+  end
+  return ok, dropped
 end
 local usage_events_post = ws_outbound.make({
   enabled        = (ws_enabled == "1"),

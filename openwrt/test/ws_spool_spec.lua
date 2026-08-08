@@ -71,12 +71,21 @@ describe("ws_spool.append_bounded + drain", function()
   end)
 
   it("resets the offset when the spool was truncated/rotated under it", function()
+    -- #2634 changed HOW this is expressed, not WHETHER it holds. The cursor is
+    -- now kept in stream coordinates against a total-bytes-written ledger, so a
+    -- rotation has to be performed the way the cron actually does it — copy the
+    -- file aside, then EMPTY it (`: > "$log"`), after which the writer keeps
+    -- appending. The old form poked new content straight into the file behind
+    -- the writer's back, which under the new model is indistinguishable from
+    -- content the reader already consumed. Same property, supported API.
     local fs = new_fs()
     local state = {}
     ws_spool.append_bounded("/tmp/sp", "first-long-line", 1e6, fs.open)
     ws_spool.drain("/tmp/sp", state, fs.open)
-    -- simulate copytruncate: file shrinks below the saved offset.
-    fs.data["/tmp/sp"] = "x\n"
+    fs.data["/tmp/sp"] = ""                       -- copytruncate
+    assert.are.same({}, ws_spool.drain("/tmp/sp", state, fs.open))
+    ws_spool.append_bounded("/tmp/sp", "x", 1e6, fs.open)
+    -- the reader follows the rotation instead of wedging past the new EOF
     assert.are.same({ "x" }, ws_spool.drain("/tmp/sp", state, fs.open))
   end)
 
@@ -115,16 +124,56 @@ describe("ws_spool.append_bounded + drain", function()
     assert.are.same({ "line9xxxx" }, ws_spool.drain("/tmp/sp", state, fs.open))
   end)
 
-  it("still treats a genuine copytruncate rotation as a full restart", function()
-    -- The rotation fallback must survive the #2634 fix: a cron copytruncate
-    -- shrinks the file WITHOUT the writer evicting anything, so there is no
-    -- eviction delta to rebase against and reading from 0 is correct.
+  it("still restarts cleanly when a rotation and an eviction both land between drains", function()
+    -- The one case where the rotation belt and the #2634 ledger interact. A cron
+    -- copytruncate empties the spool WITHOUT touching the ledger, so the reader
+    -- gets no eviction delta for it; a later eviction then rebases the cursor
+    -- down. The reader must not end up mid-file reading a fragment.
     local fs = new_fs()
     local state = {}
-    ws_spool.append_bounded("/tmp/sp", "first-long-line", 1e6, fs.open)
-    ws_spool.drain("/tmp/sp", state, fs.open)
-    fs.data["/tmp/sp"] = "x\n"
-    assert.are.same({ "x" }, ws_spool.drain("/tmp/sp", state, fs.open))
+    for i = 1, 4 do
+      ws_spool.append_bounded("/tmp/sp", "line" .. i .. "xxxx", 1000, fs.open)
+    end
+    ws_spool.drain("/tmp/sp", state, fs.open)          -- cursor at 40
+    fs.data["/tmp/sp"] = ""                             -- cron copytruncate
+    -- Refill past the cap so the writer evicts (bumping the ledger) on a file
+    -- that is already shorter than the stale cursor.
+    for i = 5, 8 do
+      ws_spool.append_bounded("/tmp/sp", "line" .. i .. "xxxx", 30, fs.open)
+    end
+    local got = ws_spool.drain("/tmp/sp", state, fs.open)
+    -- Whatever survived the cap must come back whole and in order, with no
+    -- fragment and no duplicate.
+    assert.is_true(#got > 0)
+    for _, l in ipairs(got) do
+      assert.are.equal(9, #l, "fragmented line: " .. l)
+    end
+    assert.are.equal("line8xxxx", got[#got])
+    assert.are.same({}, ws_spool.drain("/tmp/sp", state, fs.open))
+  end)
+
+  it("reports a failed eviction-ledger write instead of swallowing it", function()
+    local fs = new_fs()
+    local realopen = fs.open
+    -- Simulate a full /tmp: the ledger cannot be created, the spool still can.
+    fs.open = function(path, mode)
+      if path:match("%.written$") and (mode or ""):match("w") then return nil end
+      return realopen(path, mode)
+    end
+    for i = 1, 3 do
+      ws_spool.append_bounded("/tmp/sp", "line" .. i .. "xxxx", 1000, fs.open)
+    end
+    local ok, _, ledger_ok = ws_spool.append_bounded("/tmp/sp", "line4xxxx", 20, fs.open)
+    assert.is_true(ok)                -- the datum is still spooled
+    assert.is_false(ledger_ok)        -- but the caller is told the ledger failed
+  end)
+
+  it("reports ledger success when no eviction was needed", function()
+    local fs = new_fs()
+    local ok, dropped, ledger_ok = ws_spool.append_bounded("/tmp/sp", "a", 1e6, fs.open)
+    assert.is_true(ok)
+    assert.are.equal(0, dropped)
+    assert.is_true(ledger_ok)
   end)
 
   it("self-bounds the spool at the byte cap, dropping oldest lines", function()
