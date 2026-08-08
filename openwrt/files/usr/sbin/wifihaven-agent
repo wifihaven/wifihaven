@@ -569,8 +569,9 @@ local function ws_spool_append(line)
     local now = clock.monotonic_seconds()
     if (now - ws_ledger_warn_at) >= 60 then
       ws_ledger_warn_at = now
-      log.warn("ws spool: could not write the spool ledger %q — this body was " ..
-               "REFUSED and posted over HTTP instead (#2634). /tmp full?",
+      log.warn("ws spool: could not write the spool ledger %q — the append was " ..
+               "reported failed so this body goes out over HTTP instead (#2634). " ..
+               "/tmp full?",
                ws_spool.ledger_path(paths.ws_outbound))
     end
   end

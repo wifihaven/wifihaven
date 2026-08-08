@@ -117,16 +117,18 @@ local function bump_ledger(path, bytes, open_fn)
   return (wrote and closed) and true or false        -- as 1.2e+14 and reparse as 1
 end
 
--- append_bounded(path, line, max_bytes, open_fn) → ok, dropped
+-- append_bounded(path, line, max_bytes, open_fn, rename_fn, remove_fn)
+--   → ok, dropped, ledger_ok
 --
 -- Appends `line` + "\n". Before appending, if the existing spool plus the new
 -- line would exceed `max_bytes`, drops oldest whole lines until it fits (or only
 -- the new line remains — a single line over the cap is still written; we never
 -- silently lose the newest datum). Returns ok plus the count of lines dropped to
 -- make room, so the caller can meter spool pressure.
-function M.append_bounded(path, line, max_bytes, open_fn, rename_fn)
+function M.append_bounded(path, line, max_bytes, open_fn, rename_fn, remove_fn)
   open_fn = open_fn or io.open
   rename_fn = rename_fn or os.rename
+  remove_fn = remove_fn or os.remove
   local entry = line .. "\n"
   local existing = slurp(path, open_fn) or ""
   local dropped = 0
@@ -140,10 +142,21 @@ function M.append_bounded(path, line, max_bytes, open_fn, rename_fn)
   -- cursor then equals `written` with that entry never delivered, and it is gone.
   -- (Pinned by the drain-inside-the-rewrite spec case.)
   --
-  -- Trailing leaves only the recoverable direction: if we die between the publish
-  -- and the bump, the ledger under-counts, `written - size` undershoots, the
-  -- cursor outruns it, and drain()'s lost-sync branch resyncs and re-reads.
-  -- Duplicates, which the server dedups on the persistence-layer unique keys.
+  -- The entry is then READABLE but UNACCOUNTED until the bump lands, and that gap
+  -- is not self-healing: the lost-sync test is `consumed > base + size`, i.e.
+  -- `consumed > written`, and a missing bump leaves the cursor at exactly
+  -- `consumed == written` — one entry short, missed by the strict comparison by
+  -- the width of the very frame it should rescue. Widening it to `>=` is not the
+  -- answer; that resyncs on every idle drain and turns the steady state back into
+  -- the #2634 full replay.
+  --
+  -- So a failed bump REPORTS FAILURE (returns nil) even though the spool write
+  -- landed. The tee (ws_outbound.make) then posts the body over HTTP, so the
+  -- datum is delivered; the spooled copy may be re-read later, and a duplicate is
+  -- what the server dedups. RESIDUAL: a crash between the publish and the bump
+  -- has no such report and loses that one frame. Closing that needs the accounting
+  -- to live INSIDE the spool file so publish and account are one atomic write —
+  -- tracked separately rather than bolted on here.
   local ledger_ok = true
 
   if #existing + #entry > max_bytes then
@@ -176,11 +189,25 @@ function M.append_bounded(path, line, max_bytes, open_fn, rename_fn)
     -- whole old file or the whole new one, never an empty one.
     local tmp = path .. ".tmp"
     local wf = open_fn(tmp, "w")
-    if not wf then return nil, dropped, ledger_ok end
-    wf:write(rebuilt)
-    wf:close()
-    if not rename_fn(tmp, path) then return nil, dropped, ledger_ok end
+    if not wf then return nil, 0, ledger_ok end
+    -- Check the write AND the close, not just the open: a short write here would
+    -- publish a TRUNCATED spool through the rename, losing whole frames and the
+    -- entry we are carrying, while telling the caller it succeeded. Same defect
+    -- bump_ledger just had, on the writer that is ~150,000x larger.
+    local wrote = wf:write(rebuilt)
+    local closed = wf:close()
+    if not (wrote and closed) then
+      remove_fn(tmp)
+      return nil, 0, ledger_ok
+    end
+    if not rename_fn(tmp, path) then
+      -- Nothing was published; drop the copy rather than parking max_bytes of
+      -- tmpfs until the next eviction happens to overwrite it.
+      remove_fn(tmp)
+      return nil, 0, ledger_ok
+    end
     ledger_ok = bump_ledger(path, #entry, open_fn)
+    if not ledger_ok then return nil, dropped, false end
     return true, dropped, ledger_ok
   end
 
@@ -189,6 +216,7 @@ function M.append_bounded(path, line, max_bytes, open_fn, rename_fn)
   af:write(entry)
   af:close()
   ledger_ok = bump_ledger(path, #entry, open_fn)
+  if not ledger_ok then return nil, 0, false end
   return true, 0, ledger_ok
 end
 

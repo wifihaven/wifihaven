@@ -41,6 +41,11 @@ local function new_fs()
     return handle
   end
 
+  function fs.remove(path)
+    fs.data[path] = nil
+    return true
+  end
+
   function fs.rename(from, to)
     if fs.data[from] == nil then return nil end
     fs.data[to] = fs.data[from]
@@ -113,55 +118,70 @@ describe("ws_spool.append_bounded + drain", function()
                     ws_spool.drain("/tmp/sp", state, fs.open))
   end)
 
-  it("still delivers frames when the ledger write fails and later recovers", function()
-    -- /tmp full: the ledger write fails while the spool append lands. The ledger
-    -- then UNDER-counts, which is the recoverable direction — the cursor outruns
-    -- it and the lost-sync branch resyncs. Frames must keep flowing, never as a
-    -- fragment, and delivery must resume when the ledger recovers.
+  it("never silently loses a frame to ONE transient ledger-write failure at the cap", function()
+    -- The shape every earlier ledger case missed: a ledger that EXISTS and goes
+    -- STALE for one append, with the spool AT ITS CAP so evictions are running.
+    -- The spool write lands, so the entry is readable but unaccounted, and the
+    -- lost-sync test (`consumed > written`) misses it by exactly one entry. If
+    -- append_bounded reported success here the tee would not fall back and the
+    -- frame would be gone with no signal at all.
     local fs = new_fs()
+    local state = {}
     local realopen = fs.open
-    fs.open = function(path, mode)
-      if path:match("%.written$") and (mode or ""):match("w") then return nil end
+    local fail_on = 6
+    local n = 0
+    local hooked = function(path, mode)
+      if path:match("%.written$") and (mode or ""):match("w") and n == fail_on then
+        return nil
+      end
       return realopen(path, mode)
     end
-    local state = {}
-    for i = 1, 3 do
-      ws_spool.append_bounded("/tmp/sp", "line" .. i .. "xxxx", 1e6, fs.open, fs.rename)
+    local seen, refused = {}, {}
+    for i = 1, 12 do
+      n = i
+      local ok = ws_spool.append_bounded("/tmp/sp", "line" .. string.format("%02d", i) .. "xxx",
+                                         40, hooked, fs.rename)
+      if not ok then refused[i] = true end
+      for _, l in ipairs(ws_spool.drain("/tmp/sp", state, fs.open)) do seen[l] = true end
     end
-    local got = ws_spool.drain("/tmp/sp", state, fs.open)
-    assert.are.equal("line3xxxx", got[#got])
-    for _, l in ipairs(got) do assert.are.equal(9, #l, "fragment: " .. l) end
+    -- Frame 6's ledger bump failed, so the append MUST report failure — that is
+    -- what routes the body to HTTP instead of dropping it.
+    assert.is_true(refused[fail_on], "a failed ledger bump was reported as success")
+    -- Every frame the caller was told succeeded must actually have been delivered.
+    for i = 1, 12 do
+      if not refused[i] then
+        local f = "line" .. string.format("%02d", i) .. "xxx"
+        assert.is_true(seen[f] == true, "silently lost " .. f)
+      end
+    end
   end)
 
-  it("never ships a fragment when a failed spool write leaves the ledger ahead", function()
-    -- The one hazard the ledger-first ordering accepts: the bump lands, the spool
-    -- write then fails, so `written` exceeds the stream and `written - size`
-    -- overshoots. The reader must not seek into the middle of a line and emit the
-    -- tail as if it were a frame — it resyncs and duplicates instead, which the
-    -- server dedups.
+  it("keeps the spool intact when the rebuilt copy cannot be written", function()
+    -- A short write on the .tmp must not be published: renaming a truncated
+    -- rebuild over the spool loses whole frames AND the entry being carried,
+    -- while telling the caller it succeeded.
     local fs = new_fs()
     local state = {}
-    for i = 1, 3 do
+    for i = 1, 5 do
       ws_spool.append_bounded("/tmp/sp", "line" .. i .. "xxxx", 1e6, fs.open, fs.rename)
     end
     ws_spool.drain("/tmp/sp", state, fs.open)
+    local before = fs.data["/tmp/sp"]
 
     local realopen = fs.open
     fs.open = function(path, mode)
-      if path == "/tmp/sp" and (mode or ""):match("[wa]") then return nil end
-      return realopen(path, mode)
+      local h = realopen(path, mode)
+      if h and path:match("%.tmp$") then
+        h.write = function() return nil end     -- ENOSPC part-way through
+      end
+      return h
     end
-    -- Uneven length, so an overshoot would land mid-line rather than on a boundary.
-    assert.is_nil(ws_spool.append_bounded("/tmp/sp", "a-much-longer-line", 1e6, fs.open, fs.rename))
+    local ok = ws_spool.append_bounded("/tmp/sp", "line6xxxx", 30, fs.open, fs.rename, fs.remove)
     fs.open = realopen
-    ws_spool.append_bounded("/tmp/sp", "line4xxxx", 1e6, fs.open, fs.rename)
 
-    local got = ws_spool.drain("/tmp/sp", state, fs.open)
-    for _, l in ipairs(got) do
-      assert.is_true(l:match("^line%d+xxxx$") ~= nil,
-                     "fragment shipped as a frame: " .. string.format("%q", l))
-    end
-    assert.are.equal("line4xxxx", got[#got])
+    assert.is_nil(ok, "a failed rebuild reported success")
+    assert.are.equal(before, fs.data["/tmp/sp"], "the spool was clobbered")
+    assert.is_nil(fs.data["/tmp/sp.tmp"], "the abandoned copy was left in tmpfs")
   end)
 
   -- #2634: the eviction/cursor interaction. append_bounded bounds the spool by
@@ -222,8 +242,11 @@ describe("ws_spool.append_bounded + drain", function()
       return realopen(path, mode)
     end
     local ok, _, ledger_ok = ws_spool.append_bounded("/tmp/sp", "line1xxxx", 1e6, fs.open, fs.rename)
-    assert.is_true(ok)                -- the datum is spooled: it IS readable
-    assert.is_false(ledger_ok)        -- and the caller is told the ledger lagged
+    -- The entry is readable but UNACCOUNTED, and the drain's lost-sync test misses
+    -- that by exactly one entry — so the append reports failure and the tee posts
+    -- the body over HTTP rather than letting it vanish.
+    assert.is_nil(ok)
+    assert.is_false(ledger_ok)
   end)
 
   it("reports ledger success on an ordinary append", function()
