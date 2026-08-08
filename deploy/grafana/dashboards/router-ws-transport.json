@@ -509,7 +509,7 @@
         "uid": "${datasource}"
       },
       "title": "Policy snapshot builds: computed vs cache_hit (#1849 / #1512)",
-      "description": "sum by (result) (rate(policy_snapshot_build_total[5m])) — proves the computed-snapshot cache is working. result=computed is an actual PolicyService rebuild (the #1512 cost — its wall-clock is the neighbouring policy_snapshot_build_seconds panel); result=cache_hit is a poll/ws-fanout served from the cache without rebuilding. Once the reconcile ticker keeps the cache warm, cache_hit should dominate and computed should track the policy-change/tick rate (≈1 per snapshotCacheRefreshSeconds), NOT the per-poll-per-router rate. A computed rate that scales with router count means the cache is not being read.",
+      "description": "sum by (result) (rate(policy_snapshot_build_total[5m])) — proves the computed-snapshot cache is working. result=computed is an actual PolicyService rebuild (the #1512 cost — its wall-clock is the neighbouring policy_snapshot_build_seconds panel); result=cache_hit is a poll/ws-fanout served from the cache without rebuilding; result=failed is a build that threw (#2635) — it is the outcome most likely to correlate with the duration panel creeping toward the tick period, since a build that runs long tends to end in a pool-acquisition timeout. Once the reconcile ticker keeps the cache warm, cache_hit should dominate and computed should track the policy-change/tick rate (≈1 per snapshotCacheRefreshSeconds), NOT the per-poll-per-router rate. A computed rate that scales with router count means the cache is not being read.",
       "type": "timeseries",
       "gridPos": {
         "h": 8,
@@ -572,7 +572,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 32
+        "y": 40
       },
       "id": 18,
       "fieldConfig": {

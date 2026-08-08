@@ -59,7 +59,18 @@ trait PolicyService {
    * authenticated household (`claims.hh`) and already scopes its own repo write to it, so passing a
    * different one here would mean the write itself was cross-tenant.
    */
-  def invalidate(household: HouseholdId): UIO[Unit]
+  final def invalidate(household: HouseholdId): UIO[Unit] = invalidateMany(household :: Nil)
+
+  /**
+   * #2635: [[invalidate]] for a SET of households, for the one caller that flips several at once
+   * (`FlipService`, at the beta→paid window end). It is a distinct method rather than a loop over
+   * `invalidate` because `invalidate` returns as soon as it forks: looping it would put N rebuilds
+   * in flight SIMULTANEOUSLY against the shared Hikari pool, which is a worse burst than the
+   * sequential sweep this change is removing. Here the versions are all bumped synchronously (so
+   * read-after-write holds for every one of them the instant this returns) and the reconciles run
+   * sequentially inside a SINGLE forked fiber, matching [[reevaluate]]'s shape.
+   */
+  def invalidateMany(households: Iterable[HouseholdId]): UIO[Unit]
 
   /**
    * #1849: rebuild EVERY reachable household's snapshot once and, for each whose ETag moved since
@@ -199,6 +210,14 @@ class PolicyServiceLive(
     // #2635: takes the household being built, so a test can assert WHICH households a rebuild
     // touched rather than only how many builds ran — the whole claim of #2635 is about which.
     buildBarrier: HouseholdId => UIO[Unit] = _ => ZIO.unit,
+    // #2635: test-only hook run at the END of the fiber `invalidateMany` forks, after every named
+    // household has been reconciled. It is the FENCE that makes the central claim of #2635 testable:
+    // `invalidate` reconciles in a detached daemon, and "household B was NOT rebuilt" is a statement
+    // about a fiber the test does not own — without a completion signal the only ways to assert it
+    // are a wall-clock timeout (the #2042 flake class) or a bet on `Set` iteration order. With this,
+    // a test awaits the reconcile's completion and then reads the exact set of households built.
+    // Defaults to a no-op for production and every other spec.
+    reconcileBarrier: UIO[Unit] = ZIO.unit,
     // #2137 (multi-tenant P5-6): the billing-status gate. A `lapsed` household gets a PERMISSIVE
     // snapshot — enforcement STOPS (design §5.3, never brick the network) — built through the
     // existing wire fields (no new field, no wire change; the router stays a dumb applier and never
@@ -227,7 +246,8 @@ class PolicyServiceLive(
   // cache hit. For a single-household install the map has exactly one entry (`HouseholdId.Default`),
   // so behavior is identical to the old single-slot cache.
   //
-  // #1954: each entry is STAMPED with the household's `mutationVersions` value observed at the START of its build (the
+  // #1954: each entry is STAMPED with the household's `mutationVersions` value observed at the
+  // START of its build (the
   // leading `Long` of the tuple — the `gen` captured in `buildVersioned`/`reevaluate`). A reader
   // trusts a cached entry only when its stamp is still the
   // current version; a stamp older than the current version means a mutation landed since the build
@@ -358,24 +378,31 @@ class PolicyServiceLive(
         case _ => buildVersioned(household)
       }
 
-  def invalidate(household: HouseholdId): UIO[Unit] =
+  def invalidateMany(households: Iterable[HouseholdId]): UIO[Unit] =
     if (!cacheEnabled) ZIO.unit
-    else
-      // Bump THIS household's version so its cache entries built before this mutation are now
-      // stale-stamped and its next REST poll rebuilds immediately (fresh bytes), then reconcile it
-      // in the background so any connected ws router is pushed the change without blocking the
-      // mutating request on a build. Bumping (rather than clearing) is what makes this race-safe: an
-      // in-flight build that began before this call and completes after it lands stamped with the
-      // OLD version, so readers reject it instead of getting a cache HIT on stale bytes (#1954). The
-      // push still fires exactly once — `reevaluate` keys its push decision off `lastPublishedEtag`,
-      // not the cache slot. The reconcile ticker is a backstop on the same bound.
+    else {
+      // Bump the named households' versions so their cache entries built before this mutation are
+      // now stale-stamped and their next REST poll rebuilds immediately (fresh bytes), then
+      // reconcile in the background so any connected ws router is pushed the change without blocking
+      // the mutating request on a build. Bumping (rather than clearing) is what makes this
+      // race-safe: an in-flight build that began before this call and completes after it lands
+      // stamped with the OLD version, so readers reject it instead of getting a cache HIT on stale
+      // bytes (#1954). The push still fires exactly once — the reconcile keys its push decision off
+      // `lastPublishedEtag`, not the cache slot. The reconcile ticker is a backstop on the same
+      // bound.
       //
-      // #2635: both halves are scoped to `household`. A mutation cannot change another household's
-      // snapshot — every mutating route's own write is already `WHERE household_id = claims.hh` —
-      // so rebuilding the others was work whose result was identical to the cache entry it
-      // replaced. The ticker, NOT this path, is what covers the time-dependent transitions that
-      // have no mutation behind them; see `reevaluate`.
-      ZIO.succeed(bumpVersion(household)) *> reevaluate(household).forkDaemon.unit
+      // #2635: both halves are scoped to the NAMED households. A mutation cannot change another
+      // household's snapshot — every mutating route's own write is already
+      // `WHERE household_id = claims.hh` — so rebuilding the others was work whose result was
+      // identical to the cache entry it replaced. The ticker, NOT this path, is what covers the
+      // time-dependent transitions that have no mutation behind them; see `reevaluate`.
+      //
+      // ONE fiber, reconciling sequentially: a fork per household would put every build in flight at
+      // once on the shared Hikari pool.
+      val hs = households.toList.distinct
+      ZIO.succeed(hs.foreach(bumpVersion)) *>
+        (ZIO.foreachDiscard(hs)(reevaluateHousehold) *> reconcileBarrier).forkDaemon.unit
+    }
 
   // #1954: rebuild and install under the version observed BEFORE the DB read. The install is a CAS
   // loop that only replaces an entry whose stamp is <= ours, so a slower build (older stamp) can
@@ -426,14 +453,11 @@ class PolicyServiceLive(
       // DB write at all, so any narrowing keyed off "recently mutated" would stop pushing schedule
       // edges without a single failing test to say so.
       //
-      // The bound is the connected fleet, not the households table. Cost per build, measured
-      // 2026-08-07 on a seed shaped to prod's row counts (8 profiles / 26 devices / 180,410
-      // blocklist_domains rows across 10 categories, read back from wifihaven-pg-prod): ~620 ms
-      // median for that household, ~294 ms for a household with no profiles or devices at all —
-      // because the blocklist CATALOG read is household-independent and dominates. Neither the
-      // ~2.5 s nor the ~500 ms figure this file and `Main.scala` used to carry was measured; the
-      // live number is `policy_snapshot_build_seconds` (#2635), which is what to read rather than
-      // trusting this comment.
+      // The bound is the connected fleet, not the households table. The per-build cost is
+      // `policy_snapshot_build_seconds` (#2635) — read the metric, not a comment. This file and
+      // `Main.scala` used to carry two different unmeasured figures for it (~2.5 s and ~500 ms);
+      // both are gone rather than replaced with a third number that would go stale the same way.
+      // The measurement behind the histogram's bucket choice is on #2635.
       //
       // TODO(#1936) is the remaining lever on THIS half: a boundary-scheduled refresh that sleeps
       // until the next real transition instant instead of ticking, so the sweep runs at edges
@@ -503,28 +527,42 @@ class PolicyServiceLive(
     // router wire is never gated, the permissive snapshot serves through the existing fields exactly
     // like a household with no policy. `enforcementDisabled` takes precedence for the metric reason
     // (an explicit operator override is the more actionable signal than an incidental lapse).
-    for {
-      // #2635: wall-clock of the whole build, one sample per ACTUAL build. `zio.Clock.nanoTime`,
-      // matching every other duration metric in this codebase (`DbMetrics.timed`, the two ws
-      // registries) — NOT the injected `clock`, which is the POLICY clock and is deliberately frozen
-      // under `Clock.TestClock`, so it would report every build as 0s. The permissive branch is
-      // timed too: it still costs the two status reads. The barrier is deliberately OUTSIDE the
-      // window — it is a test-only parking spot (#1954), and timing it would report a suspended
-      // fiber as a slow build.
-      startedNanos <- zio.Clock.nanoTime
-      status       <- billingStatusOf(household)
-      disabled     <- enforcementDisabledOf(household)
-      snap         <-
-        if (disabled) permissiveBuild("enforcement_disabled")
-        else if (status.contains("lapsed")) permissiveBuild("lapsed")
-        else buildEnforcingSnapshot(household)
-      endedNanos   <- zio.Clock.nanoTime
-      _            <- AppMetrics.recordSnapshotBuildDuration((endedNanos - startedNanos) / 1e9)
+    timedBuild {
+      for {
+        status   <- billingStatusOf(household)
+        disabled <- enforcementDisabledOf(household)
+        snap     <-
+          if (disabled) permissiveBuild("enforcement_disabled")
+          else if (status.contains("lapsed")) permissiveBuild("lapsed")
+          else buildEnforcingSnapshot(household)
+      } yield snap
+    }.zipLeft(
       // #1954: test-only suspension point (no-op in production), run at the END of every build
       // whichever branch produced it and BEFORE the caller installs the result in the cache — see
-      // `buildBarrier`. #2635: carries the household so a test can name which builds ran.
-      _            <- buildBarrier(household)
-    } yield snap
+      // `buildBarrier`. #2635: carries the household so a test can name which builds ran, and it is
+      // deliberately OUTSIDE the timed window: timing a parked fiber would report it as a slow build.
+      buildBarrier(household),
+    )
+
+  /**
+   * #2635: time one build and meter it, on BOTH exits. `onExit` rather than a straight-line
+   * `nanoTime` pair because the outcome this panel exists to catch — a build creeping toward the
+   * tick period — is the one most likely to END in a pool-acquisition timeout, and a success-only
+   * sample would drop exactly those. A failure also records `policy_snapshot_build_total{failed}`,
+   * so a build that threw is never invisible in both series at once.
+   *
+   * `zio.Clock.nanoTime`, matching every other duration metric in this codebase (`DbMetrics.timed`,
+   * the two ws registries).
+   */
+  private def timedBuild(build: Task[PolicySnapshot]): Task[PolicySnapshot] =
+    zio.Clock.nanoTime.flatMap { startedNanos =>
+      build.onExit { exit =>
+        zio.Clock.nanoTime.flatMap { endedNanos =>
+          AppMetrics.recordSnapshotBuildDuration((endedNanos - startedNanos) / 1e9) *>
+            ZIO.when(exit.isFailure)(AppMetrics.recordSnapshotBuild("failed")).unit
+        }
+      }
+    }
 
   // #2137/#2382: build (and meter) the shared permissive snapshot. `reason` ∈
   // {lapsed, enforcement_disabled} labels `policy_permissive_snapshot_total`. Still records the

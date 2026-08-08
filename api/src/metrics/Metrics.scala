@@ -343,7 +343,8 @@ object MetricGuard {
     "router_ws_reassembly_total"                -> Set("result"),
     "spa_ws_reassembly_total"                   -> Set("result"),
     // #1849 — computed-snapshot cache + push-on-change. `policy_snapshot_build_total` splits policy
-    // snapshot accesses into `result` ∈ {computed, cache_hit} (proves the cache works);
+    // snapshot accesses into `result` ∈ {computed, cache_hit, failed} (proves the cache works;
+    // #2635 added `failed`, a build that threw — a fixed 3-value enum);
     // `router_ws_policy_push_total` is the push fan-out, `result` ∈ {ok, channel_closed,
     // unregistered, household_mismatch} — the last two are #2630's REFUSED deliveries, see the
     // counter's own comment below. Both names are bounded, no per-mac / per-host / per-household
@@ -1472,10 +1473,11 @@ object AppMetrics {
     )
 
   // #1849: counts policy-snapshot accesses split by whether they hit the computed-snapshot cache.
-  // `computed` = an actual PolicyService rebuild (the ~500ms #1512 work); `cache_hit` = served from
+  // `computed` = an actual PolicyService rebuild (its wall-clock is `policy_snapshot_build_seconds`,
+  // #2635); `failed` = a build that threw (#2635); `cache_hit` = served from
   // the cache without rebuilding. The ratio proves the cache is working — once the reconcile ticker
   // keeps the cache warm, REST polls and ws fan-outs should be overwhelmingly `cache_hit`, with
-  // `computed` tracking the change/tick rate rather than the poll rate. `result` is a fixed 2-value
+  // `computed` tracking the change/tick rate rather than the poll rate. `result` is a fixed 3-value
   // enum (bounded label, per docs/process/instrumentation.md).
   def recordSnapshotBuild(result: String): UIO[Unit] =
     MetricGuard.counter("policy_snapshot_build_total", Map("result" -> result))

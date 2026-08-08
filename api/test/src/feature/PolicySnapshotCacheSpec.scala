@@ -76,6 +76,7 @@ object PolicySnapshotCacheSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedP
   private def makeCachedSvc(
       startAt: LocalDateTime,
       buildBarrier: HouseholdId => UIO[Unit] = _ => ZIO.unit,
+      reconcileBarrier: UIO[Unit] = ZIO.unit,
       pushTargets: Set[HouseholdId] = Set.empty,
       probeAlsoTry: Set[HouseholdId] = Set.empty,
   ) =
@@ -108,6 +109,7 @@ object PolicySnapshotCacheSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedP
         namedScheduleRepo = nsr,
         cacheEnabled = true,
         buildBarrier = buildBarrier,
+        reconcileBarrier = reconcileBarrier,
       )
       pushed <- Ref.make(List.empty[(HouseholdId, PolicySnapshot)])
       _      <- svc.setPublisher(new ProbePublisher(pushed, pushTargets, probeAlsoTry))
@@ -273,58 +275,72 @@ object PolicySnapshotCacheSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedP
         assertTrue(newPushes.head._1 == HouseholdId.Default) &&
         assertTrue(newPushes.head._2.blockEncryptedDns)
     },
-    test("#2635: a mutation's rebuild touches ONLY the household it named") {
-      // The cost half of #2630. `reevaluate` correctly rebuilds every household with a connected
-      // router, but `invalidate` — which every mutating route calls — forked that same full sweep,
-      // so one household's SPA edit rebuilt a snapshot for every OTHER connected household. This
-      // pins the mutation path's rebuild to the household the mutation named.
+    test("#2635: invalidate rebuilds ONLY the household it named, not the connected fleet") {
+      // The cost half of #2630, asserted on `invalidate` itself — the method every mutating route
+      // calls. It used to fork the full `reevaluate` sweep, so one household's SPA edit rebuilt a
+      // snapshot for every OTHER connected household. Reverting `invalidate`'s body to that sweep
+      // must turn this test red, which is the only thing that makes it a regression pin rather than
+      // a restatement of the implementation.
       //
-      // Asserted on `reevaluate(household)`, the synchronous unit `invalidate` forks: an exact
-      // "this household was NOT rebuilt" claim against a forked daemon is a race, not a test (a
-      // stray build can always land after the await). The following test pins the fork's wiring.
+      // `invalidate` reconciles in a DETACHED daemon, so "household B was not rebuilt" is a claim
+      // about a fiber this test does not own. `reconcileBarrier` — run at the end of that fiber —
+      // is the fence that makes it decidable: awaiting it means the whole reconcile has finished,
+      // so `built` is complete and can be compared exactly. No timeout, no wall-clock wait (#2042),
+      // and no dependence on the order `foreachDiscard` happens to visit a Set in — a sweep is red
+      // whichever household it reaches first.
       for {
-        _      <- cleanDb
-        hRepo  <- ZIO.service[HouseholdRepo]
-        hhB    <- hRepo.create("Other household", "other-household")
-        built  <- Ref.make(List.empty[HouseholdId])
-        triple <- makeCachedSvc(
+        _          <- cleanDb
+        hRepo      <- ZIO.service[HouseholdRepo]
+        hhB        <- hRepo.create("Other household", "other-household")
+        built      <- Ref.make(List.empty[HouseholdId])
+        reconciled <- Promise.make[Nothing, Unit]
+        triple     <- makeCachedSvc(
           TestClock.schoolDayAfternoon,
           buildBarrier = hh => built.update(_ :+ hh),
-          // B has a connected router — the households the sweep targets. That is exactly the set
-          // the mutation path used to rebuild, and exactly what must NOT be rebuilt here.
+          reconcileBarrier = reconciled.succeed(()).unit,
+          // B has a connected router — the set the sweep targets, and so exactly what the mutation
+          // path used to rebuild along with Default.
           pushTargets = Set(hhB),
         )
         (svc, _, pushed) = triple
-        _           <- svc.reevaluate // baseline: the sweep builds Default + B
+        _           <- svc.reevaluate   // baseline: the ticker's sweep builds Default + B
         _           <- built.set(Nil)
         _           <- pushed.set(Nil)
         // A mutation in Default only.
         _           <- setBlockEncryptedDns(true)
-        _           <- svc.reevaluate(HouseholdId.Default)
+        _           <- svc.invalidate(HouseholdId.Default)
+        _           <- reconciled.await // the forked reconcile has fully finished
         afterBuilt  <- built.get
         afterPushed <- pushed.get
       } yield assertTrue(afterBuilt == List(HouseholdId.Default)) &&
         assertTrue(afterPushed.map(_._1) == List(HouseholdId.Default))
     },
-    test("#2635: invalidate(household) reconciles that household") {
-      // The wiring pin for the fork: `invalidate` bumps the named household's version and forks its
-      // rebuild. Positive-only (B's build is awaited, never asserted absent) so there is no race
-      // with the daemon fiber — the "only that household" claim is pinned synchronously above.
+    test("#2635: invalidateMany reconciles every named household in ONE fiber") {
+      // The bulk form `FlipService` uses at the beta→paid window end. A loop over `invalidate`
+      // would leave N builds in flight at once (it returns as soon as it forks), so this pins both
+      // halves of the contract: every named household is reconciled, and the reconcile is a single
+      // fiber whose completion is observable — the same fence as above, which only exists because
+      // there is exactly one fork.
       for {
-        _      <- cleanDb
-        hRepo  <- ZIO.service[HouseholdRepo]
-        hhB    <- hRepo.create("Other household", "other-household")
-        builtB <- Promise.make[Nothing, Unit]
-        triple <- makeCachedSvc(
+        _          <- cleanDb
+        hRepo      <- ZIO.service[HouseholdRepo]
+        hhB        <- hRepo.create("Other household", "other-household")
+        built      <- Ref.make(List.empty[HouseholdId])
+        reconciled <- Promise.make[Nothing, Unit]
+        triple     <- makeCachedSvc(
           TestClock.schoolDayAfternoon,
-          buildBarrier = hh => ZIO.when(hh == hhB)(builtB.succeed(())).unit,
+          buildBarrier = hh => built.update(_ :+ hh),
+          reconcileBarrier = reconciled.succeed(()).unit,
           pushTargets = Set(hhB),
         )
         (svc, _, pushed) = triple
-        _      <- svc.invalidate(hhB)
-        _      <- builtB.await // blocks on the forked rebuild; no wall-clock wait
-        pushes <- pushed.get
-      } yield assertTrue(pushes.map(_._1).contains(hhB))
+        _          <- svc.invalidateMany(List(HouseholdId.Default, hhB))
+        _          <- reconciled.await
+        afterBuilt <- built.get
+        pushes     <- pushed.get
+      } yield assertTrue(afterBuilt.toSet == Set(HouseholdId.Default, hhB)) &&
+        assertTrue(afterBuilt.size == 2) && // each named household built exactly once
+        assertTrue(pushes.map(_._1).toSet == Set(HouseholdId.Default, hhB))
     },
     test("#2635: a mutation in one household does not stale another household's cache") {
       // `mutationVersion` was a single JVM-global counter, so ANY household's `invalidate` marked

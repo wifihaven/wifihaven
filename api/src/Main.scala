@@ -246,8 +246,8 @@ object Main extends ZIOAppDefault {
         // it stays that way — it is the only thing that catches a transition with no DB write
         // behind it (schedule edge, daily-limit exhaustion, unpause). The mutation path no longer
         // rides it: `PolicyService.invalidate` reconciles only the household the mutation touched.
-        // A build measured ~620ms median on a prod-shaped seed (2026-08-07); the live figure is
-        // `policy_snapshot_build_seconds`, which is what to read rather than trusting this comment.
+        // Per-build cost is `policy_snapshot_build_seconds` (#2635) — read the metric, not a
+        // comment; the figure that used to sit here was never measured.
         // TODO(#1936): replace this fixed-interval ticker with a boundary-scheduled refresh — compute
         // the next schedule-edge / daily-reset / limit-exhaustion instant from the data buildSnapshot
         // already loads and sleep until then, so the build runs at real transitions instead of
