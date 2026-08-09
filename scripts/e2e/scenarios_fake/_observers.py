@@ -229,7 +229,7 @@ def wait_eb_set_exists(host: str, *, timeout_s: float = 120) -> None:
     at apply and is absent before it — whereas membership is what the scenario
     is trying to prove and so cannot be waited on up front.
 
-    **This narrows the window; it does not close it (#2662.)** dns-tail learns
+    **This narrows the window; it does not close it** (#2662). dns-tail learns
     which hosts have an `eb_` set by parsing the live ruleset in
     `refresh_nft_sets`, on its own `bio_refresh_seconds` tick — not from the
     snapshot and not from any apply signal (`wifihaven-dns-tail`). This barrier
@@ -245,6 +245,14 @@ def wait_eb_set_exists(host: str, *, timeout_s: float = 120) -> None:
 def wait_bl_set_exists(bl_id: str, *, timeout_s: float = 120) -> None:
     """The `bl_` sibling of `wait_eb_set_exists` — same apply barrier, same
     reason, same residual (#2642 / #2662).
+
+    One difference worth knowing before reusing this: `bl_` sets are declared for
+    every id in `snapshot.blocklists` whether or not a device references it
+    (render.lua, per its own #352 note), whereas `eb_` keys off assigned devices.
+    A caller whose blocklist id is already in the served snapshot before the
+    device assignment lands would therefore get a barrier that clears
+    immediately — a silent no-op. It is sound for G4 because the id and the
+    assignment ride the same snapshot.
 
     There is no eb_/bl_ asymmetry to exploit here, contrary to what an earlier
     revision of this file claimed. Both sets get their periodic re-populator

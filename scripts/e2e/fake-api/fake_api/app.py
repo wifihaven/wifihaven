@@ -260,7 +260,8 @@ async def _prune_dead_ws_channels(
         return 0
     before = {ws: state.pong_count(ws) for ws in channels}
     dead = [ws for ws in channels if not await _ping_or_dead(ws)]
-    pending = [ws for ws in channels if ws not in dead]
+    unreachable = set(dead)
+    pending = [ws for ws in channels if ws not in unreachable]
 
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout_s
@@ -268,6 +269,9 @@ async def _prune_dead_ws_channels(
         await asyncio.sleep(interval_s)
         pending = [ws for ws in pending if state.pong_count(ws) <= before[ws]]
 
+    # The returned count covers BOTH ways a channel fails the probe — the ping we
+    # could not even send and the pong that never came — so `wsDropped` answers
+    # "how many channels did reset find unusable", not "how many timed out".
     dead += pending
     for ws in dead:
         state.deregister_ws(ws)

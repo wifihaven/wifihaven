@@ -205,12 +205,17 @@ def router_nft_set_exists(
     naming that host has reached the enforcement plane. Before the apply the set
     is simply not there.
     """
-    # `check=True`: an ssh/qemu failure must RAISE, not read as "not applied
-    # yet". The probe prints `yes`/`no` itself and `echo` cannot fail, so the
-    # remote command's own exit status is 0 whenever ssh worked — which makes a
-    # non-zero exit unambiguously a transport failure. Collapsing that to False
-    # would leave a caller's wait to expire with no cause, the same opaque
-    # timeout this barrier exists to replace.
+    # `check=True` so an ssh/qemu failure SURFACES ITS CAUSE instead of reading
+    # as "not applied yet". The probe prints `yes`/`no` itself and `echo` cannot
+    # fail, so the remote command's exit status is 0 whenever ssh worked — which
+    # makes a non-zero exit unambiguously a transport failure.
+    #
+    # It does not abort the caller: every caller polls through `wait_until`, which
+    # records a predicate exception and keeps going, then attaches it to the
+    # eventual `TimeoutError` as `last error`. So a transient (a router mid-restore
+    # or mid-dnsmasq-restart) is still retried exactly as it was under
+    # `check=False`, while a persistent failure now names itself rather than
+    # expiring as the same opaque timeout this barrier exists to replace.
     res = router_ssh(
         f"nft list set {family} {table} {set_name} >/dev/null 2>&1 && echo yes || echo no",
         timeout=10,

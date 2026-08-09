@@ -616,8 +616,9 @@ def test_bl_direct_requery_blocked(router, client, fake_api):
     # bl_ path is not structurally safer than its eb_ path. Both rely on the
     # resolve-time populator within a scenario, because their shared periodic
     # re-populator (eb_refresh, over eb_hosts AND bl_pairs) runs on
-    # eb_refresh_interval — 1800s, far outside this test's budget. G4 won this
-    # race on timing while G1 lost it; a barrier is why, not luck.
+    # eb_refresh_interval — 1800s, far outside this test's budget. G4 happened to
+    # win this race while G1 lost it; the barrier is what makes winning it
+    # deterministic rather than luck.
     wait_bl_set_exists(_BL_ID)
 
     # Step 1: resolve the branded host so dns-tail builds the alias map
