@@ -101,8 +101,16 @@ end
 -- entry short, and the deficit does not stay harmless — once the spool reaches
 -- the cap, `written - size` under-shoots by that entry and the drain silently
 -- eats a LATER frame the caller was told had succeeded. Carrying the shortfall
--- into the next successful bump closes it; if the agent dies first the ledger
--- under-counts, which drain()'s lost-sync branch resyncs from.
+-- into the next successful bump closes it.
+--
+-- RESIDUAL, and the lost-sync branch does NOT cover it: if the agent restarts
+-- before that next bump, the carry dies with the process and the ledger stays one
+-- entry short forever. The lost-sync test is `consumed > base + size`, and a
+-- single missing bump lands the cursor at exactly `consumed == base + size` —
+-- missed by the strict comparison by the width of the frame it should rescue, so
+-- one frame is lost silently. Plausible precisely because a full /tmp is what
+-- fails the bump. Closing it needs the accounting inside the spool file so
+-- publish-and-account is one atomic write, which is a redesign, not a guard.
 local pending_bytes = {}
 
 local function bump_ledger(path, bytes, open_fn)
@@ -130,6 +138,20 @@ local function bump_ledger(path, bytes, open_fn)
     return false
   end
   pending_bytes[path] = nil
+  return true
+end
+
+-- rewind(path, content, …) — restore the spool to `content` after a partial
+-- write, published atomically so a reader never observes the torn state. Used
+-- only on the plain-append failure path; a failure here leaves the fragment,
+-- which is no worse than not trying.
+local function rewind(path, content, open_fn, rename_fn, remove_fn)
+  local tmp = path .. ".tmp"
+  local f = open_fn(tmp, "w")
+  if not f then return false end
+  local ok = f:write(content) and f:close()
+  if not ok then remove_fn(tmp); return false end
+  if not rename_fn(tmp, path) then remove_fn(tmp); return false end
   return true
 end
 
@@ -230,12 +252,24 @@ function M.append_bounded(path, line, max_bytes, open_fn, rename_fn, remove_fn)
   local af = open_fn(path, "a")
   if not af then return nil, 0, ledger_ok end
   -- Same write+close check as the eviction writer above, on the path that runs on
-  -- every append BELOW the cap — i.e. most of them. Unchecked, a short write here
-  -- leaves a PARTIAL line that the next append concatenates onto, and the drain
-  -- then ships the splice ("lineline5xxxx") as if it were a frame.
+  -- every append BELOW the cap — i.e. most of them.
+  --
+  -- Detecting the short write is not enough: `write` is buffered, so a failure
+  -- part-way (or a `close` that fails at flush) has ALREADY put a prefix of the
+  -- entry on disk. Returning here and leaving it means the next append
+  -- concatenates onto the fragment and the drain ships the splice
+  -- ("lineline5xxxx") as if it were a frame — plus, once the cap engages, the
+  -- un-written remainder is never accounted, `written - size` under-shoots and a
+  -- later frame is silently skipped. A return value cannot un-write bytes, so
+  -- REPAIR: rewind the spool to exactly what it held before this append. Lua 5.1
+  -- has no ftruncate, so that is a rewrite — but only on this failure path, and
+  -- `existing` is already in hand from the cap check above.
   local wrote = af:write(entry)
   local closed = af:close()
-  if not (wrote and closed) then return nil, 0, ledger_ok end
+  if not (wrote and closed) then
+    rewind(path, existing, open_fn, rename_fn, remove_fn)
+    return nil, 0, ledger_ok
+  end
   ledger_ok = bump_ledger(path, #entry, open_fn)
   if not ledger_ok then return nil, 0, false end
   return true, 0, ledger_ok

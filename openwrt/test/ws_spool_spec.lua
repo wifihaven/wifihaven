@@ -171,7 +171,12 @@ describe("ws_spool.append_bounded + drain", function()
     fs.open = function(path, mode)
       local h = realopen(path, mode)
       if h and broken and path == "/tmp/sp" and (mode or ""):match("a") then
-        h.write = function() return nil end
+        -- A short write, not a no-op write: the failure must leave a PREFIX on
+        -- disk, which is what creates the splice. Stubbing it to write nothing
+        -- makes the case vacuous — it then passes against any implementation
+        -- that merely returns nil.
+        local w = h.write
+        h.write = function(self, str) w(self, str:sub(1, 4)); return nil end
       end
       return h
     end
@@ -202,7 +207,12 @@ describe("ws_spool.append_bounded + drain", function()
     fs.open = function(path, mode)
       local h = realopen(path, mode)
       if h and path:match("%.tmp$") then
-        h.write = function() return nil end     -- ENOSPC part-way through
+        -- A short write, not a no-op write: the failure must leave a PREFIX on
+        -- disk, which is what creates the splice. Stubbing it to write nothing
+        -- makes the case vacuous — it then passes against any implementation
+        -- that merely returns nil.
+        local w = h.write
+        h.write = function(self, str) w(self, str:sub(1, 4)); return nil end     -- ENOSPC part-way through
       end
       return h
     end
