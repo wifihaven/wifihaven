@@ -49,9 +49,20 @@ object PolicySnapshotBlockEncryptedDnsSpec
     } yield ()
 
   def spec = suite("PolicySnapshot — blockEncryptedDns (#1912)")(
-    test("default household setting → snapshot.blockEncryptedDns is false") {
+    test("#2643: a fresh install's default → snapshot.blockEncryptedDns is TRUE") {
+      // #2643 flipped the NEW-household default to ON. The seeded household in the test template is
+      // a fresh install, so it starts ON and the snapshot must carry that through — the wire field
+      // is emitted from the household row, not from any wire-side default.
       for {
         _    <- cleanDb
+        svc  <- makeSvc
+        snap <- svc.snapshot
+      } yield assertTrue(snap.blockEncryptedDns)
+    },
+    test("household setting false → snapshot.blockEncryptedDns is false") {
+      for {
+        _    <- cleanDb
+        _    <- setBlockEncryptedDns(false)
         svc  <- makeSvc
         snap <- svc.snapshot
       } yield assertTrue(!snap.blockEncryptedDns)
@@ -76,6 +87,9 @@ object PolicySnapshotBlockEncryptedDnsSpec
     test("ETag flips when the household toggle changes") {
       for {
         _     <- cleanDb
+        // #2643: the seeded household now starts ON, so the false→true flip this asserts needs an
+        // explicit OFF baseline rather than the seed's value.
+        _     <- setBlockEncryptedDns(false)
         svc   <- makeSvc
         snap1 <- svc.snapshot
         _     <- setBlockEncryptedDns(true)

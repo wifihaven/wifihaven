@@ -170,19 +170,21 @@ object HouseholdSettingsRouteScopeSpec
         hs     <- ZIO.service[HouseholdSettingsRepo]
         rts    <- settingsRoutes
         a      <- tenant("House Patch", "house-patch")
+        // #2643: both rows now start ON, so the observable PATCH is true→false. What this pins is
+        // unchanged — the write lands on the caller's row and nowhere else.
         before <- hs.getForHousehold(a.hh)
-        st     <- send(rts, Method.PATCH, a.token, Some("""{"blockEncryptedDns":true}""")).map(
+        st     <- send(rts, Method.PATCH, a.token, Some("""{"blockEncryptedDns":false}""")).map(
           _.status,
         )
         after  <- hs.getForHousehold(a.hh)
         one    <- hs.getForHousehold(HouseholdId.Default)
       } yield assertTrue(
         st == Status.Ok,
-        !before.blockEncryptedDns,
+        before.blockEncryptedDns,
         // the actual #2533 symptom: 200 from the route, and the row enforcement reads changed
-        after.blockEncryptedDns,
+        !after.blockEncryptedDns,
         // …without collaterally flipping household #1
-        !one.blockEncryptedDns,
+        one.blockEncryptedDns,
       )
     },
     test("PUT is observed by getForHousehold — the read enforcement uses") {
@@ -195,10 +197,11 @@ object HouseholdSettingsRouteScopeSpec
         // model's own JSON is a valid PUT body — no hand-built fixture to drift from the model.
         cur       <- hs.getForHousehold(a.hh)
         // Household #1's OWN pre-write value. Captured rather than compared against `cur` — the two
-        // rows reach their default through independent seed paths (`ensureDefault` for #1,
-        // `HouseholdSeed.insertHousehold`'s column defaults for a fresh household), so equality
-        // between them is a coincidence, not an invariant, and would silently stop being a real pin
-        // if either default moved.
+        // rows reach their defaults through independent seed paths (`ensureDefault` for #1,
+        // `HouseholdSeed.newHouseholdSettingsRow` for a fresh household), so equality between them
+        // is a coincidence, not an invariant, and would silently stop being a real pin if either
+        // path moved. (#2643 replaced "column defaults" here: neither path leaves
+        // `block_encrypted_dns` to the DB default any more.)
         oneBefore <- hs.getForHousehold(HouseholdId.Default)
         body = cur.copy(dailyResetTz = ZoneId.of("America/Denver")).toJson
         st    <- send(rts, Method.PUT, a.token, Some(body)).map(_.status)
@@ -230,12 +233,14 @@ object HouseholdSettingsRouteScopeSpec
             .unique
             .transact(xa)
         base <- hs.getForHousehold(HouseholdId.Default)
-        res  <- hs.update(hid, base.copy(blockEncryptedDns = true)).either
+        // #2643: household #1 now starts ON, so the value that would be visible if this write
+        // wrongly fell through onto its row is `false`.
+        res  <- hs.update(hid, base.copy(blockEncryptedDns = false)).either
         // …and the failed write did NOT fall through onto household #1's row.
         one  <- hs.getForHousehold(HouseholdId.Default)
       } yield assertTrue(
         res.isLeft,
-        !one.blockEncryptedDns,
+        one.blockEncryptedDns,
       )
     },
   ) @@ TestAspect.sequential

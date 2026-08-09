@@ -256,13 +256,16 @@ object HouseholdPatchApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPos
         resp         <- patch(routes, tk, """{"ambientGateEnabled":null}""")
       } yield assertTrue(resp.status == Status.BadRequest)
     },
-    test("#1912 blockEncryptedDns defaults to false") {
+    test("#2643 blockEncryptedDns defaults to TRUE for a fresh install") {
+      // #1912 shipped this off-by-default; #2643 flipped it, because a household that starts with
+      // relay/DoH unblocked is silently inert — every device can tunnel past all filtering and all
+      // hostname attribution, and the only tell is raw IPs where site names should be.
       for {
         _     <- cleanDb
         repo  <- ZIO.service[HouseholdSettingsRepo]
         _     <- repo.ensureDefault(ZoneId.of("UTC"))
         after <- repo.getForHousehold(HouseholdId.Default)
-      } yield assertTrue(!after.blockEncryptedDns)
+      } yield assertTrue(after.blockEncryptedDns)
     },
     test("#1912 PATCH {blockEncryptedDns:true} round-trips and preserves other fields") {
       for {

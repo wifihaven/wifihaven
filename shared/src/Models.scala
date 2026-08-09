@@ -1028,18 +1028,36 @@ case class HouseholdSettings(
     // the curated relay/DoH hostnames (iCloud Private Relay, public DoH) plus
     // nftables drops for hardcoded resolver IPs and DoT/853. Household-level
     // (NOT per-profile): the clean disable signal is NXDOMAIN, which stock
-    // dnsmasq answers network-wide only. Default false (migration V61). The
-    // curated host/IP lists are baked in the agent, never shipped on the wire.
+    // dnsmasq answers network-wide only. The curated host/IP lists are baked in
+    // the agent, never shipped on the wire.
+    //
+    // #2643: the value a NEW household starts with is
+    // [[HouseholdSettings.DefaultBlockEncryptedDns]] (true) — written explicitly
+    // by every creation path, NOT taken from V61's column default. This field
+    // default stays `false` because it is a JSON-DECODING default: it only
+    // applies when a peer sends a `HouseholdSettings` JSON object without the
+    // key, and a decode fallback that turned enforcement on would be the wrong
+    // failure direction. It is not, and never was, the product default — see
+    // the scaladoc on `DefaultBlockEncryptedDns`.
     blockEncryptedDns: Boolean = false,
     // #2077: the engagement-anchor gate over the isolation-learned ambient-host
     // baseline (docs/design/idle-traffic-discrimination.md). `ambientGateEnabled`
-    // is the master switch (default off — the learner runs regardless so the
-    // operator can inspect the would-be ambient set via
-    // GET /api/presence/ambient-hosts before enabling). The three thresholds
-    // mirror migration V63: a device span with <= `ambientIsolationMaxHosts`
-    // distinct hosts and no app-attributed row is "isolated" for learning; a
-    // host isolated on >= `ambientMinIsolatedDays` distinct days within the
-    // trailing `ambientLearningWindowDays` becomes ambient.
+    // is the master switch. The three thresholds mirror migration V63: a device
+    // span with <= `ambientIsolationMaxHosts` distinct hosts and no app-attributed
+    // row is "isolated" for learning; a host isolated on >= `ambientMinIsolatedDays`
+    // distinct days within the trailing `ambientLearningWindowDays` becomes ambient.
+    // Default off — the learner runs regardless, so the operator can inspect the
+    // would-be ambient set via GET /api/presence/ambient-hosts before enabling.
+    //
+    // #2643 proposed defaulting this ON for new households alongside
+    // `blockEncryptedDns` and did NOT ship it, for a reason worth keeping here:
+    // `ambient_host_days` has no `household_id` (V63) and `AmbientHostsRepo
+    // .ambientHosts` reads it unscoped, so a new household on a multi-tenant
+    // install would inherit the FULL baseline learned from other households'
+    // devices on its first request — not the empty one the safety argument
+    // assumed. That inverts the risk from under-filtering to cross-tenant
+    // over-suppression of a household's screen time. Scoping the table (#2583)
+    // is the prerequisite; the flip is tracked separately.
     ambientGateEnabled: Boolean = false,
     ambientIsolationMaxHosts: Int = HouseholdSettings.DefaultAmbientIsolationMaxHosts,
     ambientMinIsolatedDays: Int = HouseholdSettings.DefaultAmbientMinIsolatedDays,
@@ -1053,6 +1071,40 @@ case class HouseholdSettings(
 ) derives JsonCodec
 
 object HouseholdSettings {
+
+  /**
+   * #2643: the value "Block encrypted DNS & relays" takes for a NEWLY created household — the ONE
+   * place the new-household default lives (AGENTS.md §single-source-of-truth). Every creation path
+   * names `household_settings.block_encrypted_dns` explicitly from this constant:
+   * `HouseholdSeed.insertHousehold` (provisioned households) and
+   * `HouseholdSettingsRepoLive.ensureDefault` (the singleton household of a fresh self-hosted
+   * install).
+   *
+   * ON, because a device that tunnels around the LAN resolver — iCloud Private Relay, public
+   * DoH/DoT — bypasses ALL hostname attribution and everything that depends on it: site and
+   * category blocking, and per-app limits. (NOT daily time limits, which resolve to a whole-MAC
+   * `blocked = true` forward-drop that never consults DNS and still bite.) And it does so silently:
+   * the dashboard still renders, it just shows raw IPs, and configured blocks quietly stop biting.
+   * A parental-control product whose out-of-the-box posture permits that is inert until an operator
+   * happens to find the toggle. Hit live on a fresh prod household during #2527.
+   *
+   * Deliberately NOT the same knob as three other `false`s nearby, which are different concerns:
+   *   - V61's `block_encrypted_dns BOOLEAN NOT NULL DEFAULT FALSE` column default — the value a row
+   *     gets when written by code that does not name the column — since #2643 that is the
+   *     back-compat contract for image-(N-1) and nothing else.
+   *     `HouseholdSeed.backfillMissingSettings`, which repairs PRE-EXISTING households (#2386),
+   *     used to rely on it and now stamps FALSE explicitly. Those are live networks whose DNS
+   *     behaviour is the operator's call to change, per household, so they must keep OFF — which is
+   *     exactly why the new-household default moved into code instead of into the column default,
+   *     and why the backfill no longer depends on the column default's value at all.
+   *   - `HouseholdSettings.blockEncryptedDns` / `UpdateHouseholdSettingsRequest.blockEncryptedDns`
+   *     field defaults — JSON-decoding fallbacks for a peer that omits the key.
+   *   - `PolicySnapshot.blockEncryptedDns` — a wire-decoding default for an agent that never
+   *     received the additive field (AGENTS.md back-compat); changing it would be a wire-contract
+   *     violation.
+   */
+  val DefaultBlockEncryptedDns: Boolean = true
+
   val DefaultPresenceContinuationSeconds: Int = 120
   // #2077: defaults mirror migration V63 (causally validated on prod — see
   // docs/design/idle-traffic-discrimination.md).
@@ -1070,6 +1122,19 @@ case class UpdateHouseholdSettingsRequest(
     // #1912: additive — an older SPA build that PUTs without this field decodes
     // to the default (false), so a full-replace PUT never silently clears it for
     // a peer that doesn't know about it yet.
+    // #2643 left this `false` on purpose. It is a decoding default for an
+    // inbound full-replace PUT, not the new-household default (that is
+    // `HouseholdSettings.DefaultBlockEncryptedDns`). Flipping it here would mean
+    // an older SPA's PUT silently TURNS ON relay/DoH blocking for an existing
+    // household that never asked for it — the "never flip a live network behind
+    // the operator's back" rule #2643 is scoped by.
+    // The hazard does cut both ways, and the other direction is now live: a
+    // full-replace PUT that omits the key silently turns a NEW household's ON
+    // default back OFF. Nothing exercises it today — the SPA client exposes only
+    // GET and PATCH for this resource (`web/src/api/client.ts`), and PATCH
+    // preserves absent fields — so `false` remains the right decode default.
+    // `Option[Boolean]` with preserve-on-absence is what removes the asymmetry
+    // for good, and it is the shape to reach for if a PUT caller ever appears.
     blockEncryptedDns: Boolean = false,
     // #2077: additive for the same reason. NOTE the ambient THRESHOLDS default to
     // the V63 values (not "preserve stored") on a full-replace PUT, matching the

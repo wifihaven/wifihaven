@@ -56,7 +56,7 @@ The `blockIpOnly` flag (see §0.2) is what closes the DoH / hard-coded-IP
 hole: forwarded traffic to an IP we did not resolve for this MAC is
 dropped.
 
-#### The one sanctioned exception: `blockEncryptedDns` NODATA signaling (#1911)
+#### The one sanctioned exception: `blockEncryptedDns` NXDOMAIN signaling (#1911)
 
 There is exactly **one** place where the agent returns a negative DNS answer,
 and it is a deliberate, narrow exception — not a softening of the rule above.
@@ -66,8 +66,8 @@ epic [#1903](https://github.com/wifihaven/wifihaven/issues/1903)) enables the
 "block encrypted DNS & relays" behaviour. When it is `true` the agent enforces
 **two separable halves**:
 
-1. **NODATA half (dnsmasq).** A *negative* DNS answer (`local=/<host>/` →
-   NODATA) for a small curated list of relay / DoH hostnames baked into the
+1. **NXDOMAIN half (dnsmasq).** A *negative* DNS answer (`local=/<host>/` →
+   **NXDOMAIN**) for a small curated list of relay / DoH hostnames baked into the
    agent (`mask.icloud.com`, `mask-h2.icloud.com`, `cloudflare-dns.com`,
    `dns.google`, `dns.quad9.net`, NextDNS, AdGuard, OpenDNS). This is the
    exception. It exists **only because Apple's documented way to disable iCloud
@@ -93,14 +93,37 @@ epic [#1903](https://github.com/wifihaven/wifihaven/issues/1903)) enables the
    port-scope refinement). DoH pinned to a raw resolver IP (`:443`) is the only
    bypass this leaves open; it is rare and handled per-device if it appears.
 
-Both halves are gated on the single `blockEncryptedDns` flag and are **default
-off** — absent/false renders byte-identically to today, and an un-updated agent
-ignores the unknown field entirely. The curated lists live baked into the agent
+Both halves are gated on the single `blockEncryptedDns` flag. **Absent/false on
+the wire renders byte-identically to a snapshot without the feature, and an
+un-updated agent ignores the unknown field entirely** — that back-compat
+property is why `PolicySnapshot.blockEncryptedDns` decodes to `false` and must
+keep doing so.
+
+Since [#2643](https://github.com/wifihaven/wifihaven/issues/2643) a **NEW**
+household starts with the toggle **ON**: a device that tunnels around the LAN
+resolver bypasses all hostname attribution and everything that depends on it —
+site and category blocking, and per-app limits (though *not* a daily time limit,
+which is a whole-MAC forward-drop that never consults DNS) — and it does so
+silently, since the dashboard still renders and just shows raw IPs. Existing
+households were **not** backfilled (flipping a live network's DNS behaviour can
+break devices that depend on DoH, so it is the operator's call, per household).
+The new-household default lives in exactly one place,
+`HouseholdSettings.DefaultBlockEncryptedDns`, and every creation path
+(`HouseholdSeed.insertHousehold`, `HouseholdSettingsRepoLive.ensureDefault`)
+names the column explicitly from it. V61's `block_encrypted_dns … DEFAULT FALSE`
+column default is unchanged and means something different: the value a row gets
+when written by code that does not name the column, which since #2643 means
+image-(N-1) back-compat and nothing else. The boot backfill that repairs
+pre-existing households used to rely on it too, and now stamps `FALSE`
+explicitly, so a future change to the column default cannot reach an existing
+household.
+
+The curated lists live baked into the agent
 (`openwrt/files/usr/lib/lua/wifihaven/encrypted_dns.lua`), keeping the wire to a
 single boolean. This is the *only* DNS-negative-answer path in the system;
 every other block remains a connection-layer drop.
 
-> **Interaction note.** The NODATA half wins over any allow carve-out for the
+> **Interaction note.** The NXDOMAIN half wins over any allow carve-out for the
 > *same* curated hostname: `local=/<host>/` short-circuits resolution, so if a
 > profile's `extraAllowed` (or `global.extraAllowed`) happens to name one of the
 > curated DoH/relay hosts, its `ea_`/`@global_allow` ipset never populates (no

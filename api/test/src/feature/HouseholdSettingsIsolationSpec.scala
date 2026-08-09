@@ -52,18 +52,21 @@ object HouseholdSettingsIsolationSpec
         _    <- cleanDb
         hr   <- ZIO.service[HouseholdRepo]
         hs   <- ZIO.service[HouseholdSettingsRepo]
-        // Give household #1 a distinctive, non-default value.
+        // Give household #1 a distinctive, non-default value. #2643 flipped the NEW-household
+        // default to ON, so the distinguishing value is now OFF — the direction reversed, the pin
+        // did not: the two rows must still differ.
         base <- hs.getForHousehold(HouseholdId.Default)
-        _    <- hs.update(HouseholdId.Default, base.copy(blockEncryptedDns = true))
+        _    <- hs.update(HouseholdId.Default, base.copy(blockEncryptedDns = false))
         // Provision a fresh household through the ONE creation primitive.
         hh   <- hr.create("Beta Fam", "beta-fam", 1)
         mine <- hs.getForHousehold(hh)
         one  <- hs.getForHousehold(HouseholdId.Default)
       } yield assertTrue(
         // household #1 sees its own mutated value (sees-own)
-        one.blockEncryptedDns,
-        // the new household reads its OWN default, NOT household #1's true (no cross-tenant inherit)
-        !mine.blockEncryptedDns,
+        !one.blockEncryptedDns,
+        // the new household reads its OWN default, NOT household #1's false (no cross-tenant
+        // inherit)
+        mine.blockEncryptedDns,
       )
     },
     test("getForHousehold fails loud for a household with no settings row") {
@@ -90,7 +93,10 @@ object HouseholdSettingsIsolationSpec
         before.isLeft,
         n1 == 1,
         after.isRight,
-        // the backfilled row carries defaults, not household #1's config
+        // the backfilled row carries its own config, not household #1's. #2643: a backfilled
+        // household is a PRE-EXISTING network, so it keeps relay/DoH blocking OFF — the
+        // new-household default deliberately does not reach this path (pinned in
+        // BlockEncryptedDnsDefaultSpec).
         after.exists(!_.blockEncryptedDns),
         n2 == 0,
       )

@@ -228,10 +228,40 @@ describe('AdminPage — unmanaged-MAC policy autosave (#1002)', () => {
 })
 
 describe('AdminPage — block-encrypted-DNS toggle (#1913)', () => {
-  it('renders the toggle reflecting the stored setting (off by default)', async () => {
+  it('renders the toggle reflecting the stored setting', async () => {
     render(<AdminPage />)
     const toggle = await screen.findByTestId('block-encrypted-dns-enabled') as HTMLInputElement
     expect(toggle.checked).toBe(false)
+  })
+
+  // #2643 — new households start with this ON, so the card has to say what state it is in and what
+  // that state costs. The stored fixture here is `false`, which is now the interesting case: the
+  // copy must name the live consequence (devices can bypass filtering) rather than sit silent, the
+  // way the off-by-default surface used to.
+  it('names the consequence while it is off, and says new networks start on', async () => {
+    render(<AdminPage />)
+    const note = await screen.findByTestId('block-encrypted-dns-default-note')
+    expect(note.textContent).toMatch(/bypass site and category blocking/i)
+    expect(note.textContent).toMatch(/new networks start with this on/i)
+    // The copy must NOT claim time limits are bypassable — a daily limit is a whole-device drop
+    // that never consults DNS, so it still bites on DoH. Scoped to the wrong CLAIM rather than the
+    // phrase, so the accurate positive statement ("daily time limits still apply") is allowed.
+    expect(note.textContent).not.toMatch(/bypass[^.]*time limits/i)
+    expect(note.textContent).toMatch(/time limits still apply/i)
+  })
+
+  it('explains why it is on once enabled', async () => {
+    const user = userEvent.setup()
+    render(<AdminPage />)
+    await screen.findByTestId('block-encrypted-dns-enabled')
+
+    await user.click(screen.getByTestId('block-encrypted-dns-enabled'))
+
+    await waitFor(() =>
+      expect(screen.getByTestId('block-encrypted-dns-default-note').textContent).toMatch(
+        /on by default for new networks/i,
+      ),
+    )
   })
 
   it('toggling on fires PATCH {blockEncryptedDns:true}', async () => {

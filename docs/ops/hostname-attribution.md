@@ -149,9 +149,26 @@ When `host.type` is bare-IP and you want to know why:
 
 4. **Does the device send `_dns.resolver.arpa` SVCB queries or have a
    ton of unmapped Cloudflare IPs?** Cause #3 (DoH / Private Relay).
-   Mitigation: turn off encrypted DNS on the device (iOS Settings →
-   iCloud → Private Relay; macOS / Android equivalents), or wait for
-   the DoH-blocking feature.
+   Mitigation: turn on **Block encrypted DNS & relays** in Settings
+   (household-wide; shipped in
+   [#1911](https://github.com/wifihaven/wifihaven/issues/1911) /
+   [#1912](https://github.com/wifihaven/wifihaven/issues/1912)) — the
+   agent emits `local=/<host>/` for the curated relay/DoH hostnames,
+   which dnsmasq answers **NXDOMAIN**, the negative answer Apple's
+   Private-Relay disable requires, and relay setup fails. In the dnsmasq
+   log that reads `config mask-h2.icloud.com is NXDOMAIN` — that line is
+   the feature working, not a resolution failure. It is **not** a
+   `address=/<host>/0.0.0.0` sinkhole — a sinkhole answers with an address, and
+   an address is not a negative answer, so it does not disable Private Relay.
+   (Verified against dnsmasq 2.90 with the agent's exact directive;
+   `encrypted_dns.lua`'s own comment claims NODATA and is wrong —
+   [#2661](https://github.com/wifihaven/wifihaven/issues/2661).)
+   Households created after
+   [#2643](https://github.com/wifihaven/wifihaven/issues/2643) already
+   have it on, so if this is the cause on such a household, check
+   whether the setting was turned off. Failing that, turn off encrypted
+   DNS on the device itself (iOS Settings → iCloud → Private Relay;
+   macOS / Android equivalents).
 
 5. **None of the above?** That's worth investigating — file an issue
    with the MAC, the bare IP, the dnsmasq log for that window, and

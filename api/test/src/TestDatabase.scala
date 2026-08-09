@@ -2,6 +2,7 @@ package wifihaven.testinfra
 
 import doobie.Transactor
 import wifihaven.api.db.*
+import wifihaven.shared.HouseholdSettings
 import wifihaven.shared.types.*
 import io.zonky.test.db.postgres.embedded.EmbeddedPostgres
 import org.flywaydb.core.Flyway
@@ -79,9 +80,21 @@ object TestDatabase {
       val st = conn.createStatement()
       // #334: replicate Main.ensureDefault so PolicyService.snapshot/decide can read
       // household_settings during tests. Use UTC so DST doesn't perturb existing expectations.
+      // #2643: `block_encrypted_dns` is stamped from the ONE new-household default constant,
+      // exactly as `ensureDefault` does — the template household is a FRESH install, so it must
+      // start where a real fresh install starts. Left implicit it would take V61's column default
+      // (FALSE, the pre-existing-row value) and every spec bootstrapped off this template would be
+      // testing a state no new install is ever in.
+      // This seed runs on a bare JDBC Statement before the transactor exists, so it cannot call
+      // `HouseholdSeed.newHouseholdSettingsRow` the way the household-B fixture below does. It must
+      // therefore be kept in step with `HouseholdSettingsRepoLive.ensureDefault` BY HAND — if a
+      // column is added there, add it here. It is already one column looser: `ensureDefault` stamps
+      // `household_id` explicitly (#2130 — never left to V65's `DEFAULT 1`) and this does not.
+      // Identical in effect for the id=1 row, but do not read the omission as evidence that
+      // leaving it implicit is fine on a real path.
       st.execute(
-        "INSERT INTO household_settings (id, daily_reset_time, daily_reset_tz) " +
-          "VALUES (1, '00:00', 'UTC') ON CONFLICT (id) DO NOTHING",
+        "INSERT INTO household_settings (id, daily_reset_time, daily_reset_tz, block_encrypted_dns) " +
+          s"VALUES (1, '00:00', 'UTC', ${HouseholdSettings.DefaultBlockEncryptedDns}) ON CONFLICT (id) DO NOTHING",
       )
       // #1771: replicate Main.scala's startup seed of the global sentinel profile so
       // PolicyService.snapshot can read it during tests. ON CONFLICT DO NOTHING + V59's
@@ -365,13 +378,15 @@ object TestLayers {
           .query[HouseholdId]
           .unique
           .transact(xa)
-      // #2386: seed household B's OWN settings row, mirroring production's atomic creation unit
-      // (HouseholdSeed.insertHousehold). Without it, getForHousehold(hhB) now fails loud (the id=1
-      // fallback that used to leak household #1's settings was removed). All columns default; id
-      // auto-generates (V82).
-      _        <-
-        sql"INSERT INTO household_settings(household_id) VALUES ($hhB) ON CONFLICT (household_id) DO NOTHING".update.run
-          .transact(xa)
+      // #2386: seed household B's OWN settings row. Without it, getForHousehold(hhB) fails loud
+      // (the id=1 fallback that used to leak household #1's settings was removed).
+      // #2643: this used to hand-roll `INSERT INTO household_settings(household_id)` and claim in a
+      // comment that it mirrored production's creation unit. Once a creation-path column stopped
+      // taking its DB default that claim quietly became false, and fixture household B would have
+      // diverged from a production household B in a way no assertion here would have caught. So it
+      // COLLAPSES onto the real primitive instead of restating it — this fixture cannot drift from
+      // production again.
+      _        <- HouseholdSeed.newHouseholdSettingsRow(hhB).transact(xa)
       // profileB is paused so a cross-household leak on the /decision path is observable: if
       // household A's decide ever resolved this row it would BLOCK, but scoped correctly A never
       // finds it and allows.
