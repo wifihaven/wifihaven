@@ -180,6 +180,14 @@ change raises its priority.
   agent, and points it at escalation instead. Nothing legitimate is lost: an agent
   that needed account data to understand a problem can describe the symptom
   without republishing the account.
+  The agent must also tell the CUSTOMER that reason plainly (#2671): that it
+  cannot open a public bug report from a conversation where it can see their
+  account data, that this is deliberate so their household details stay out of a
+  public tracker, and that a fresh conversation without a data grant can have it
+  filed directly. The first prod occurrence instead said the report had gone to a
+  human "since that's the right path for a report like this" — a euphemism that
+  hides a privacy protection worth advertising, and teaches a rule that is not
+  true. `deploy/support-agent/agent.yaml` step 6b is the standing instruction.
 
 ### Deploying #2453 — in-flight links die at the deploy
 
