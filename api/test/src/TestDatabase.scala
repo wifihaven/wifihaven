@@ -2,6 +2,7 @@ package wifihaven.testinfra
 
 import doobie.Transactor
 import wifihaven.api.db.*
+import wifihaven.shared.HouseholdSettings
 import wifihaven.shared.types.*
 import io.zonky.test.db.postgres.embedded.EmbeddedPostgres
 import org.flywaydb.core.Flyway
@@ -79,9 +80,14 @@ object TestDatabase {
       val st = conn.createStatement()
       // #334: replicate Main.ensureDefault so PolicyService.snapshot/decide can read
       // household_settings during tests. Use UTC so DST doesn't perturb existing expectations.
+      // #2643: `block_encrypted_dns` is stamped from the ONE new-household default constant,
+      // exactly as `ensureDefault` does — the template household is a FRESH install, so it must
+      // start where a real fresh install starts. Left implicit it would take V61's column default
+      // (FALSE, the pre-existing-row value) and every spec bootstrapped off this template would be
+      // testing a state no new install is ever in.
       st.execute(
-        "INSERT INTO household_settings (id, daily_reset_time, daily_reset_tz) " +
-          "VALUES (1, '00:00', 'UTC') ON CONFLICT (id) DO NOTHING",
+        "INSERT INTO household_settings (id, daily_reset_time, daily_reset_tz, block_encrypted_dns) " +
+          s"VALUES (1, '00:00', 'UTC', ${HouseholdSettings.DefaultBlockEncryptedDns}) ON CONFLICT (id) DO NOTHING",
       )
       // #1771: replicate Main.scala's startup seed of the global sentinel profile so
       // PolicyService.snapshot can read it during tests. ON CONFLICT DO NOTHING + V59's

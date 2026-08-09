@@ -119,6 +119,10 @@ anyone who reports "blocking doesn't work."
     filterable and (b) drops DoT and DNS-to-public-resolvers at the connection
     layer ([architecture.md](architecture.md) §0.1, the one sanctioned
     DNS-negative-answer exception, [#1911](https://github.com/wifihaven/wifihaven/issues/1911)).
+    Unlike `blockIpOnly` above, this one is **on by default for households
+    created after [#2643](https://github.com/wifihaven/wifihaven/issues/2643)** —
+    without it, a device can tunnel past every expectation on this page. Households
+    that predate #2643 keep whatever they had; nothing was backfilled.
 
 - **Shared CDN / front-end IPs.** When a blocked host and an allowed host share
   the same IP (common on large CDNs), carving the allowed host out of the drop

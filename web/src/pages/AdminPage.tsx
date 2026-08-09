@@ -275,6 +275,18 @@ function BlockEncryptedDnsCard({
         encrypted DNS (DoH/DoT) — without this, a device can tunnel around all filtering and
         time limits. Applies to the whole household, not a single profile.
       </p>
+      {/* #2643: new households start with this ON, so the surface has to say so and say what
+          turning it off costs — a default that changes network behaviour is only an improvement
+          over the old silent-off if the operator can see it. Shown in both states: when on it
+          explains why it is already on, when off it names what is currently unenforced. */}
+      <p
+        data-testid="block-encrypted-dns-default-note"
+        className="text-xs text-brand-text"
+      >
+        {enabled
+          ? 'On by default for new networks. Turn it off only if a device here needs its own encrypted DNS — while it is off, that device can bypass all filtering and time limits, and its traffic shows up as raw IP addresses instead of site names.'
+          : 'This is off. Any device on this network can currently use iCloud Private Relay or its own encrypted DNS to bypass all filtering and time limits, and its traffic will show as raw IP addresses instead of site names. New networks start with this on.'}
+      </p>
       <label className="flex items-center gap-2 text-sm text-brand-ink">
         <input
           type="checkbox"

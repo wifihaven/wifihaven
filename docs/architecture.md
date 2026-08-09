@@ -93,9 +93,25 @@ epic [#1903](https://github.com/wifihaven/wifihaven/issues/1903)) enables the
    port-scope refinement). DoH pinned to a raw resolver IP (`:443`) is the only
    bypass this leaves open; it is rare and handled per-device if it appears.
 
-Both halves are gated on the single `blockEncryptedDns` flag and are **default
-off** — absent/false renders byte-identically to today, and an un-updated agent
-ignores the unknown field entirely. The curated lists live baked into the agent
+Both halves are gated on the single `blockEncryptedDns` flag. **Absent/false on
+the wire renders byte-identically to a snapshot without the feature, and an
+un-updated agent ignores the unknown field entirely** — that back-compat
+property is why `PolicySnapshot.blockEncryptedDns` decodes to `false` and must
+keep doing so.
+
+Since [#2643](https://github.com/wifihaven/wifihaven/issues/2643) a **NEW**
+household starts with the toggle **ON**: a device that tunnels around the LAN
+resolver bypasses all filtering and all hostname attribution, and it does so
+silently — the dashboard still renders, it just shows raw IPs. Existing
+households were **not** backfilled (flipping a live network's DNS behaviour can
+break devices that depend on DoH, so it is the operator's call, per household).
+The new-household default lives in exactly one place,
+`HouseholdSettings.DefaultBlockEncryptedDns`, and every creation path
+(`HouseholdSeed.insertHousehold`, `HouseholdSettingsRepoLive.ensureDefault`)
+names the column explicitly from it. V61's `block_encrypted_dns … DEFAULT FALSE`
+column default is unchanged and means something different: the value a row gets
+when written by code that does not name the column — image-(N-1) back-compat,
+and the boot backfill that repairs pre-existing households. The curated lists live baked into the agent
 (`openwrt/files/usr/lib/lua/wifihaven/encrypted_dns.lua`), keeping the wire to a
 single boolean. This is the *only* DNS-negative-answer path in the system;
 every other block remains a connection-layer drop.

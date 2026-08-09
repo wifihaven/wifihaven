@@ -170,19 +170,21 @@ object HouseholdSettingsRouteScopeSpec
         hs     <- ZIO.service[HouseholdSettingsRepo]
         rts    <- settingsRoutes
         a      <- tenant("House Patch", "house-patch")
+        // #2643: both rows now start ON, so the observable PATCH is true→false. What this pins is
+        // unchanged — the write lands on the caller's row and nowhere else.
         before <- hs.getForHousehold(a.hh)
-        st     <- send(rts, Method.PATCH, a.token, Some("""{"blockEncryptedDns":true}""")).map(
+        st     <- send(rts, Method.PATCH, a.token, Some("""{"blockEncryptedDns":false}""")).map(
           _.status,
         )
         after  <- hs.getForHousehold(a.hh)
         one    <- hs.getForHousehold(HouseholdId.Default)
       } yield assertTrue(
         st == Status.Ok,
-        !before.blockEncryptedDns,
+        before.blockEncryptedDns,
         // the actual #2533 symptom: 200 from the route, and the row enforcement reads changed
-        after.blockEncryptedDns,
+        !after.blockEncryptedDns,
         // …without collaterally flipping household #1
-        !one.blockEncryptedDns,
+        one.blockEncryptedDns,
       )
     },
     test("PUT is observed by getForHousehold — the read enforcement uses") {
@@ -230,12 +232,14 @@ object HouseholdSettingsRouteScopeSpec
             .unique
             .transact(xa)
         base <- hs.getForHousehold(HouseholdId.Default)
-        res  <- hs.update(hid, base.copy(blockEncryptedDns = true)).either
+        // #2643: household #1 now starts ON, so the value that would be visible if this write
+        // wrongly fell through onto its row is `false`.
+        res  <- hs.update(hid, base.copy(blockEncryptedDns = false)).either
         // …and the failed write did NOT fall through onto household #1's row.
         one  <- hs.getForHousehold(HouseholdId.Default)
       } yield assertTrue(
         res.isLeft,
-        !one.blockEncryptedDns,
+        one.blockEncryptedDns,
       )
     },
   ) @@ TestAspect.sequential

@@ -70,11 +70,19 @@ object HouseholdSeed {
       _   <- ProfileSeed.insertGlobalSentinel(hid)
       // #2386: the household's OWN household_settings row is part of the atomic creation unit —
       // households + household_billing + global-sentinel + settings, so no create path can leave a
-      // household reading another tenant's config. All settings columns have DB defaults, so only
-      // household_id is supplied; `id` auto-generates (V82 identity). A fresh household has no
-      // settings row yet, so ON CONFLICT is just belt-and-braces against a retried create.
+      // household reading another tenant's config. `id` auto-generates (V82 identity). A fresh
+      // household has no settings row yet, so ON CONFLICT is just belt-and-braces against a retried
+      // create.
+      // #2643: `block_encrypted_dns` is the one column named explicitly rather than left to its DB
+      // default. V61's column default is FALSE and stays FALSE — it is the value a row gets when
+      // written by code that doesn't name the column, which is the back-compat contract for
+      // image-(N-1) and the shape `backfillMissingSettings` relies on to leave PRE-EXISTING
+      // households alone (#2643 scope decision 1). The NEW-household default is a product decision
+      // and lives in ONE place: HouseholdSettings.DefaultBlockEncryptedDns.
       _   <-
-        sql"INSERT INTO household_settings(household_id) VALUES($hid) ON CONFLICT (household_id) DO NOTHING".update.run
+        sql"""INSERT INTO household_settings(household_id, block_encrypted_dns)
+              VALUES($hid, ${HouseholdSettings.DefaultBlockEncryptedDns})
+              ON CONFLICT (household_id) DO NOTHING""".update.run
     } yield hid
 
   /**
@@ -98,8 +106,14 @@ object HouseholdSeed {
    * tracked under #1608 (see [[wifihaven.api.Main]] boot seed).
    */
   val backfillMissingSettings: ConnectionIO[Int] =
-    sql"""INSERT INTO household_settings(household_id)
-          SELECT h.id
+    // #2643: `block_encrypted_dns` is stamped FALSE explicitly rather than left to V61's column
+    // default. These are PRE-EXISTING households — live networks — and turning relay/DoH blocking
+    // on for one can break devices that depend on DoH, so that is the operator's call, per
+    // household (#2643 scope decision 1: NEW households only, no backfill). Explicit rather than
+    // implicit so this path cannot silently start flipping existing networks if V61's column
+    // default is ever changed.
+    sql"""INSERT INTO household_settings(household_id, block_encrypted_dns)
+          SELECT h.id, FALSE
           FROM households h
           WHERE NOT EXISTS (SELECT 1 FROM household_settings hs WHERE hs.household_id = h.id)""".update.run
 }
@@ -2017,8 +2031,13 @@ class HouseholdSettingsRepoLive(xa: Transactor[Task]) extends HouseholdSettingsR
   def ensureDefault(defaultZone: ZoneId): Task[Unit] =
     // #2130: household_id is stamped explicitly (this seeds the single backfill
     // install's row, so HouseholdId.Default) — never left to V65's DEFAULT 1.
-    sql"""INSERT INTO household_settings (id, daily_reset_time, daily_reset_tz, household_id)
-          VALUES (1, '00:00', ${defaultZone}, ${HouseholdId.Default})
+    // #2643: so is block_encrypted_dns, from the one new-household default
+    // constant. This runs on every boot, but ON CONFLICT (id) DO NOTHING means
+    // it only ever writes on a FRESH install — an existing install keeps
+    // whatever it stored, so upgrading never flips a live network's DNS
+    // behaviour (pinned by BlockEncryptedDnsDefaultSpec).
+    sql"""INSERT INTO household_settings (id, daily_reset_time, daily_reset_tz, household_id, block_encrypted_dns)
+          VALUES (1, '00:00', ${defaultZone}, ${HouseholdId.Default}, ${HouseholdSettings.DefaultBlockEncryptedDns})
           ON CONFLICT (id) DO NOTHING""".update.run.transact(xa).unit
 }
 

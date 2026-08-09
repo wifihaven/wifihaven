@@ -156,12 +156,22 @@ object PolicySnapshotCacheSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedP
       _        <- hsr.update(HouseholdId.Default, existing.copy(blockEncryptedDns = v))
     } yield ()
 
+  /**
+   * #2643: `blockEncryptedDns` is this spec's arbitrary distinguishing value — the tests below care
+   * that a change to it moves the ETag / the cached bytes, not what it means. Since #2643 the
+   * seeded household starts ON, so the false→true flips they assert need an explicit OFF baseline
+   * rather than inheriting the seed's value. Run after `cleanDb` and BEFORE the cached service is
+   * built, so the warm-up snapshot sees the baseline.
+   */
+  private val blockDnsBaselineOff = setBlockEncryptedDns(false)
+
   def spec = suite("PolicySnapshot — computed-snapshot cache + push-on-change (#1849)")(
     test(
       "a second snapshot is served from the cache — a DB change made without invalidate is not yet visible",
     ) {
       for {
         _      <- cleanDb
+        _      <- blockDnsBaselineOff
         triple <- makeCachedSvc(TestClock.schoolDayAfternoon)
         (svc, _, _) = triple
         snap1 <- svc.snapshot
@@ -176,6 +186,7 @@ object PolicySnapshotCacheSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedP
     ) {
       for {
         _      <- cleanDb
+        _      <- blockDnsBaselineOff
         triple <- makeCachedSvc(TestClock.schoolDayAfternoon)
         (svc, _, _) = triple
         snap1 <- svc.snapshot
@@ -192,6 +203,7 @@ object PolicySnapshotCacheSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedP
     ) {
       for {
         _      <- cleanDb
+        _      <- blockDnsBaselineOff
         triple <- makeCachedSvc(TestClock.schoolDayAfternoon)
         (svc, _, pushed) = triple
         _             <- svc.reevaluate // first reevaluate establishes + pushes the baseline
@@ -267,6 +279,7 @@ object PolicySnapshotCacheSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedP
         _      <- cleanDb
         hRepo  <- ZIO.service[HouseholdRepo]
         hhB    <- hRepo.create("Other household", "other-household")
+        _      <- blockDnsBaselineOff
         triple <- makeCachedSvc(TestClock.schoolDayAfternoon, pushTargets = Set(hhB))
         (svc, _, pushed) = triple
         _         <- svc.reevaluate // baseline: one push per household
@@ -299,6 +312,10 @@ object PolicySnapshotCacheSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedP
         _          <- cleanDb
         hRepo      <- ZIO.service[HouseholdRepo]
         hhB        <- hRepo.create("Other household", "other-household")
+        // #2643: without an OFF baseline the mutation below would be a no-op write of the value
+        // Default already holds, the ETag would not move, and the push assertion would pass for the
+        // wrong reason (nothing pushed because nothing changed).
+        _          <- blockDnsBaselineOff
         built      <- Ref.make(List.empty[HouseholdId])
         reconciled <- Promise.make[Nothing, Unit]
         triple     <- makeCachedSvc(
@@ -363,6 +380,7 @@ object PolicySnapshotCacheSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedP
         _      <- cleanDb
         hRepo  <- ZIO.service[HouseholdRepo]
         hhB    <- hRepo.create("Other household", "other-household")
+        _      <- blockDnsBaselineOff
         triple <- makeCachedSvc(TestClock.schoolDayAfternoon)
         (svc, _, _) = triple
         warm  <- svc.snapshot(HouseholdId.Default) // warm Default's cache entry
