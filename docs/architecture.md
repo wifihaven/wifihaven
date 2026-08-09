@@ -110,8 +110,11 @@ The new-household default lives in exactly one place,
 (`HouseholdSeed.insertHousehold`, `HouseholdSettingsRepoLive.ensureDefault`)
 names the column explicitly from it. V61's `block_encrypted_dns … DEFAULT FALSE`
 column default is unchanged and means something different: the value a row gets
-when written by code that does not name the column — image-(N-1) back-compat,
-and the boot backfill that repairs pre-existing households.
+when written by code that does not name the column, which since #2643 means
+image-(N-1) back-compat and nothing else. The boot backfill that repairs
+pre-existing households used to rely on it too, and now stamps `FALSE`
+explicitly, so a future change to the column default cannot reach an existing
+household.
 
 The curated lists live baked into the agent
 (`openwrt/files/usr/lib/lua/wifihaven/encrypted_dns.lua`), keeping the wire to a

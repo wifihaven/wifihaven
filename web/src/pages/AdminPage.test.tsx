@@ -292,7 +292,6 @@ describe('AdminPage — block-encrypted-DNS toggle (#1913)', () => {
 })
 
 describe('AdminPage — ambient anchor-gate toggle (#2077)', () => {
-
   it('renders the toggle reflecting the stored setting (off by default)', async () => {
     render(<AdminPage />)
     const toggle = await screen.findByTestId('ambient-gate-enabled') as HTMLInputElement

@@ -1088,11 +1088,13 @@ object HouseholdSettings {
    *
    * Deliberately NOT the same knob as three other `false`s nearby, which are different concerns:
    *   - V61's `block_encrypted_dns BOOLEAN NOT NULL DEFAULT FALSE` column default — the value a row
-   *     gets when written by code that does not name the column. That is the back-compat contract
-   *     for image-(N-1) and for `HouseholdSeed.backfillMissingSettings`, which repairs PRE-EXISTING
-   *     households (#2386). Those are live networks whose DNS behaviour is the operator's call to
-   *     change, per household, so they must keep OFF — which is exactly why the new-household
-   *     default moved into code instead of into the column default.
+   *     gets when written by code that does not name the column — since #2643 that is the
+   *     back-compat contract for image-(N-1) and nothing else.
+   *     `HouseholdSeed.backfillMissingSettings`, which repairs PRE-EXISTING households (#2386),
+   *     used to rely on it and now stamps FALSE explicitly. Those are live networks whose DNS
+   *     behaviour is the operator's call to change, per household, so they must keep OFF — which is
+   *     exactly why the new-household default moved into code instead of into the column default,
+   *     and why the backfill no longer depends on the column default's value at all.
    *   - `HouseholdSettings.blockEncryptedDns` / `UpdateHouseholdSettingsRequest.blockEncryptedDns`
    *     field defaults — JSON-decoding fallbacks for a peer that omits the key.
    *   - `PolicySnapshot.blockEncryptedDns` — a wire-decoding default for an agent that never

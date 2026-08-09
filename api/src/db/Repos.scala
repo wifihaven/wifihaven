@@ -62,9 +62,10 @@ object HouseholdSeed {
    *
    * `block_encrypted_dns` is named explicitly rather than left to its DB default. V61's column
    * default is FALSE and stays FALSE: it is the value a row gets when written by code that does not
-   * name the column, which is the back-compat contract for image-(N-1) and the shape
-   * [[backfillMissingSettings]] relies on to leave PRE-EXISTING households alone (#2643 scope
-   * decision 1). The NEW-household default is a product decision and lives in one place —
+   * name the column, which since #2643 means image-(N-1) back-compat and nothing else — the boot
+   * backfill used to rely on it too, and now stamps FALSE explicitly so a change to the column
+   * default cannot reach PRE-EXISTING households (#2643 scope decision 1). The NEW-household
+   * default is a product decision and lives in one place —
    * `HouseholdSettings.DefaultBlockEncryptedDns`.
    *
    * NOTE the rolling-deploy consequence, accepted rather than overlooked: while both images are

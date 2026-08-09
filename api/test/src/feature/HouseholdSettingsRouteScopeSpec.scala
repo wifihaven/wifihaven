@@ -201,7 +201,7 @@ object HouseholdSettingsRouteScopeSpec
         // `HouseholdSeed.newHouseholdSettingsRow` for a fresh household), so equality between them
         // is a coincidence, not an invariant, and would silently stop being a real pin if either
         // path moved. (#2643 replaced "column defaults" here: neither path leaves
-        // `block_encrypted_dns` / `ambient_gate_enabled` to the DB default any more.)
+        // `block_encrypted_dns` to the DB default any more.)
         oneBefore <- hs.getForHousehold(HouseholdId.Default)
         body = cur.copy(dailyResetTz = ZoneId.of("America/Denver")).toJson
         st    <- send(rts, Method.PUT, a.token, Some(body)).map(_.status)

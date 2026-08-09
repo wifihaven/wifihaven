@@ -105,16 +105,22 @@ object BlockEncryptedDnsDefaultSpec
         s   <- hs.getForHousehold(hid)
       } yield assertTrue(n == 1, !s.blockEncryptedDns)
     },
-    test("an explicit OFF on a new household survives — the default never overwrites it") {
+    test("an explicit OFF on a new household survives a re-run of the creation seed") {
+      // The seed must be re-run between the write and the read, or this asserts nothing: nothing
+      // that applies a default would otherwise execute in between, and the test would pass on a
+      // `newHouseholdSettingsRow` that had no ON CONFLICT clause at all. Re-running it is what
+      // makes this a pin on the conflict guard rather than a write-then-read tautology.
       for {
         _     <- cleanDb
         hr    <- ZIO.service[HouseholdRepo]
         hs    <- ZIO.service[HouseholdSettingsRepo]
+        xa    <- ZIO.service[Transactor[Task]]
         hh    <- hr.create("Opt Out", "opt-out-2643", 1)
         base  <- hs.getForHousehold(hh)
         _     <- hs.update(hh, base.copy(blockEncryptedDns = false))
+        n     <- HouseholdSeed.newHouseholdSettingsRow(hh).transact(xa)
         after <- hs.getForHousehold(hh)
-      } yield assertTrue(!after.blockEncryptedDns)
+      } yield assertTrue(n == 0, !after.blockEncryptedDns)
     },
   ) @@ TestAspect.sequential
 }
