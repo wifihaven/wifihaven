@@ -44,6 +44,10 @@ object LogContext {
   // unknown_op), mirroring the `spa_ws_frames_total` result label. Both bounded enums.
   val Role      = "role"
   val Result    = "result"
+  // #2653 — the tenant a log line belongs to. Bounded by household count (the same order as
+  // `routerId`, which is already here), and it is what makes a per-household line attributable
+  // without parsing the message body.
+  val Household = "household"
 
   // ── Helpers ──────────────────────────────────────────────────────────────
 
