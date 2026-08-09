@@ -1522,5 +1522,72 @@ object PressResponderSpec
           ),
         )
     },
+    // ── #2677: the RENDERED HTML the journalist actually sees ────────────────────
+    test("#2677: the reply HTML renders the agent's markdown, and renders nothing else") {
+      // The defect this pins was invisible internally: every log, fixture and press_messages row
+      // holds the agent's raw markdown, which reads perfectly — only the rendered HTML part, which
+      // nothing in the pipeline inspected, carried literal `**` to the journalist. So assert on the
+      // HTML that leaves the transport, end to end.
+      for {
+        _                      <- cleanDb
+        pressLog               <- ZIO.service[PressMessageRepo]
+        (routes, stubs, clock) <- makeRoutes(liveCfg)
+        body = payload("reporter@techdaily.example", "How does blocking work?")
+        _          <- postInbound(routes, body, Some(sign(body)))
+        dispatches <- stubs.dispatch.dispatches.get
+        token    = dispatches.head._1.agentToken
+        // Everything the agent plausibly emits, plus everything a prompt-injected agent might be
+        // steered into emitting by a journalist's message.
+        markdown =
+          """**How blocking works:** it enforces at the connection layer, not DNS.
+            |
+            |That is *different* from a DNS filter, and it uses `nftables` under the hood.
+            |
+            |- nothing to install on the device
+            |- no encrypted-DNS bypass
+            |
+            |Docs: [the quickstart](https://wifihaven.net/docs) — or [verify now](javascript:alert(1)).
+            |
+            |<script>alert('xss')</script> <img src=x onerror=alert(1)>""".stripMargin
+        (sReply, _) <- agentReply(routes, s"""{"markdown":${markdown.toJson}}""", Some(token))
+        emails      <- stubs.emails.get
+        rows        <- pressLog.listRecent(50)
+      } yield {
+        val html = emails.head.htmlBody
+        assertTrue(sReply == Status.Ok, emails.size == 1) &&
+        // 1) Markdown becomes real tags — and no literal marker survives into the HTML part.
+        assertTrue(
+          html.contains("<strong>How blocking works:</strong>"),
+          html.contains("<em>different</em>"),
+          html.contains("<code>nftables</code>"),
+          html.contains("<li>nothing to install on the device</li>"),
+          html.contains("<li>no encrypted-DNS bypass</li>"),
+          !html.contains("**"),
+        ) &&
+        // 2) The escape stays load-bearing: agent-authored markup is inert text, not markup. The
+        // renderer runs AFTER the escape, so there is no path by which agent input becomes a tag.
+        assertTrue(
+          !html.contains("<script>"),
+          !html.contains("<img"),
+          html.contains("&lt;script&gt;"),
+          html.contains("&lt;img src=x onerror=alert(1)&gt;"),
+        ) &&
+        // 3) No anchors, ever. A reply is sent FROM a DKIM-signing press address, so a clickable
+        // href whose text and destination differ would be a first-class phishing primitive in the
+        // hands of an injected agent (#2453 / #2667). Safe-scheme links degrade to visible text +
+        // visible URL (what you read is where you go); an unsafe scheme stays wholly literal.
+        assertTrue(
+          !html.contains("<a "),
+          !html.contains("href"),
+          html.contains("the quickstart (https://wifihaven.net/docs)"),
+          html.contains("[verify now](javascript:alert(1))"),
+        ) &&
+        // 4) The audit/plain-text side is UNCHANGED — the correspondence log still holds the raw
+        // markdown the agent wrote, `**` and all. Rendering is a presentation concern only.
+        assertTrue(
+          rows.exists(r => r.direction == "outbound" && r.body == markdown),
+        )
+      }
+    },
   ) @@ TestAspect.sequential
 }
