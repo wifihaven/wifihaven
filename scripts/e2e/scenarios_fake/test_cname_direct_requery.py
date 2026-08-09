@@ -82,6 +82,7 @@ nft set membership is checked as a DIAGNOSTIC secondary assertion, not the prima
 """
 from __future__ import annotations
 
+import logging
 import time
 
 import pytest
@@ -105,8 +106,10 @@ from ._observers import (
 )
 from .snapshot_builder import SnapshotBuilder
 from lib.traffic import dns_query, http_get
-from lib.vm import router_nft_set
+from lib.vm import router_nft_set, router_ssh
 from lib.wait import wait_until
+
+log = logging.getLogger(__name__)
 
 pytestmark = pytest.mark.cname_direct_requery
 
@@ -187,6 +190,69 @@ def _requery_leaf_directly(client, *, attempts: int = 6, interval_s: float = 3) 
         if i < attempts - 1:
             time.sleep(interval_s)
     return last
+
+
+def _flush_router_dns_cache() -> None:
+    """SIGHUP dnsmasq on the router, which clears its answer cache.
+
+    Needed because the populators this suite exercises fire on dnsmasq's REPLY
+    LINES: dns-tail only learns a resolved IP when it sees `reply <name> is <ip>`
+    in the log. A cached answer emits no such line, so once a name is in cache a
+    re-query is invisible to the populator and the suite has no way to re-drive
+    the pipeline. SIGHUP is dnsmasq's documented cache-clear and does not restart
+    the process, so the `local=`/`nftset=` config stays applied.
+
+    `pgrep -f '[d]nsmasq'`, not the plain literal: over ssh the command runs
+    through `sh -c`, and busybox pgrep excludes only its own pid — not its parent
+    — so an unbracketed pattern matches the ssh command string itself and we would
+    SIGHUP the wrong process.
+    """
+    router_ssh(
+        "for p in $(pgrep -f '[d]nsmasq'); do kill -HUP \"$p\" 2>/dev/null; done",
+        check=False, timeout=15,
+    )
+
+
+def _drive_until_set_populated(client, set_name: str, *, timeout_s: float = 150) -> list[str]:
+    """Re-drive chain resolve + direct leaf re-query until `set_name` has members.
+
+    #2662. The apply barrier upstream guarantees the nft set EXISTS, but not that
+    dns-tail knows about it: dns-tail discovers declared sets by parsing the live
+    ruleset on its own `bio_refresh_seconds` tick, so for up to one tick after the
+    apply it ingests reply lines while attributing them to no set at all. A single
+    resolution that lands in that window is lost for good, because dnsmasq then
+    answers from cache and never emits another reply line for the populator to act
+    on — which is exactly how this scenario failed on the Gate-2 ipk arm of run
+    31311056210 even with the barrier in place.
+
+    Re-driving converges where one attempt cannot: each round flushes the cache so
+    the next resolution is genuinely fresh, and after at most one refresh tick
+    dns-tail is holding the set when that fresh reply arrives.
+
+    This cannot mask a populator regression (#1349's failure mode). If dns-tail's
+    ea_/eb_/bl_ populator is broken, no number of fresh resolutions puts anything
+    in the set, the loop times out, and the caller's assertions fail exactly as
+    they would have. It only removes the dependence on WHICH tick a resolution
+    happens to land in.
+    """
+    deadline = time.monotonic() + timeout_s
+    rounds = 0
+    while True:
+        members = router_nft_set(set_name)
+        if members:
+            if rounds:
+                log.info("%s populated after %d extra resolve round(s)",
+                         set_name, rounds)
+            return members
+        if time.monotonic() >= deadline:
+            log.warning("%s still empty after %d round(s) in %.0fs",
+                        set_name, rounds, timeout_s)
+            return []
+        rounds += 1
+        _flush_router_dns_cache()
+        dig_ipv4_answers(client, BRAND_HOST)   # rebuild the alias map, uncached
+        dig_ipv4_answers(client, LEAF_HOST)    # the direct re-query under test
+        time.sleep(3)
 
 
 def _skip_if_egress_degraded(client, what: str) -> None:
@@ -351,6 +417,14 @@ def test_eb_direct_requery_blocked(router, client, fake_api):
     assert LEAF_IP in leaf_ips, (
         f"expected {LEAF_IP} in direct-requery answers for {LEAF_HOST}, got {leaf_ips!r}"
     )
+
+    # #2662: the barrier above proves the set EXISTS; this proves dns-tail has
+    # actually populated it. Re-drives the resolution (cache flushed each round)
+    # so the scenario does not depend on the first resolution landing after
+    # dns-tail's refresh tick — the residual that failed this test on the ipk arm
+    # of run 31311056210 even with the barrier. A broken populator still fails:
+    # nothing ever lands in the set and the assertions below fire as before.
+    _drive_until_set_populated(client, eb_set_name(BRAND_HOST))
 
     # Primary assertion: HTTP/80 to the leaf's branded hostname hits the block page.
     # The DNAT rule fires because the leaf IP should now be in eb_<brand>; the
@@ -651,6 +725,13 @@ def test_bl_direct_requery_blocked(router, client, fake_api):
         f"expected {LEAF_IP} in direct-requery answers for {LEAF_HOST}, "
         f"got {leaf_ips!r}"
     )
+
+    # #2662: same residual as G1, and it applies here for the same reason —
+    # dns-tail reloads paths.bl_member_index on the very same
+    # `bio_refresh_seconds` tick that refreshes its nft-set view, so a resolution
+    # landing before that tick is attributed to no bl_ set and is then lost to the
+    # dnsmasq cache. Converge before probing.
+    _drive_until_set_populated(client, bl_set_name(_BL_ID))
 
     # Primary assertion: HTTP/80 to the leaf hits the block page. The bl_
     # category drop + DNAT fires because the leaf IP is now in bl_<id>;
