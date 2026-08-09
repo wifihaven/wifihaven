@@ -24,8 +24,12 @@ import zio.test.*
  * The pin is deliberately TWO households alternating. A single-household spec passes against the
  * buggy global slot and cannot catch this.
  *
- * Lines are attributed by their `etag` annotation rather than by household: two households with
- * distinct policy have distinct ETags, and the ETag is what the dedupe is actually keyed on.
+ * The first two cases attribute lines by their `etag` annotation: two households with distinct
+ * policy have distinct ETags, and the ETag is what the dedupe is actually keyed on. The third case
+ * cannot — a permissive (lapsed) snapshot hashes an all-empty core, so both households produce the
+ * SAME ETag — so it attributes by `household` instead. That is also the direction of the bug the
+ * ETag-keyed cases cannot see: a shared slot drops the second tenant's line entirely there rather
+ * than doubling both.
  */
 object PolicySnapshotChangedLogSpec
     extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clock & Transactor[Task]] {
