@@ -190,16 +190,23 @@ locals {
     # Fire when a router's intersection is SMALLER than the fleet's current version set
     # — i.e. some version a peer is running right now is one this router has never run.
     # A router that took the upgrade has both in its history and does not fire; a router
-    # that missed it has only the old one and does. Direction falls out for free without
-    # any ordering: the router that moved FIRST also ran the old version earlier in the
-    # window, so a rollout in progress never flags the leader.
+    # that missed it has only the old one and does. That is also what stands in for a
+    # version ordering: a rollout leader is not flagged, because it ran the old version
+    # earlier in the window and so still intersects it. Note precisely what that rests
+    # on — the leader's REMEMBERED history, not any property of the version numbers. A
+    # router with no pre-split history (newly enrolled, or re-enrolled onto a fresh
+    # router_id) has only its current version and WILL be flagged while a laggard is
+    # outstanding; see known limit (3). The rule cannot order versions, and does not
+    # pretend to.
     # The intersection (rather than a plain count-vs-count) matters: a laggard that
     # upgraded once early in the window and then froze has TWO versions in history, and
     # a bare cardinality comparison would miss it.
     #
     # WHY for = 24h — updates run from an hourly jittered cron
-    # (`0 * * * * /usr/sbin/wifihaven-update --jitter`, openwrt/Makefile:175), so normal
-    # rollout skew lasts minutes to an hour. A day of grace is generous and still catches
+    # (`0 * * * * /usr/sbin/wifihaven-update --jitter`, openwrt/Makefile:175) whose jitter
+    # is capped at WIFIHAVEN_UPDATE_JITTER_MAX, default 600s
+    # (openwrt/files/usr/sbin/wifihaven-update:63), so worst-case rollout skew is ~70min.
+    # A day of grace is an order of magnitude past that and still catches
     # "stopped forever", which is the actual condition. A rule that pages during every
     # release trains the operator to ignore the one signal that matters. Verified against
     # prod: the expression went true ~1h after 0.3.27 shipped (2026-08-05T15:07:15Z) and
@@ -212,21 +219,57 @@ locals {
     # allowlists version/router_id/installation_id). Fine at current fleet size; this
     # note exists so whoever reads it at 500 routers knows it was weighed, not missed.
     #
-    # KNOWN LIMITS, both accepted:
+    # NO-DATA IS THE HEALTHY STATE, and that is why no_data_state = OK below is required
+    # rather than merely inherited from the group template. A comparison filter returns
+    # NOTHING when no router is lagging, so the steady state of a healthy fleet is an
+    # empty vector; any other no_data_state would fire continuously. The cost is that
+    # W10 also reads healthy if `agent_version` stops being emitted fleet-wide. The
+    # realistic causes of that are already covered CRITICAL: routers not reporting at all
+    # is C7 (agent_connected_routers < 1, DB-backed from last_seen_at), and a broken
+    # metrics ingest is C4 (router_metrics_batches_total success ratio). What is left
+    # uncovered is the narrow slice where every other batch field keeps flowing and only
+    # this gauge disappears — accepted, and named here rather than left implicit (#2546).
+    #
+    # QUERY COST — this is the one dimension that does not scale, and it is a DIFFERENT
+    # axis from the cardinality note above. The scrape interval is 30s (deploy/alloy/
+    # config.alloy), so a [30d] lookback fetches ~86,400 samples per series per
+    # evaluation, on a 60s group interval; every other rule in this file uses window_s
+    # between 300 and 3600. Fine at today's fleet, ~43M samples/eval at 500 routers, and
+    # a query rejected on a sample limit lands in exec_err_state = "Error" — visible but
+    # NOT notifying, i.e. the detector goes dark exactly when it is most needed. The
+    # lookback is not free to shorten (it is what keeps the leader's memory of the
+    # superseded version alive), so the fix is a recording rule, tracked in #2650.
+    #
+    # KNOWN LIMITS, all three accepted:
     #   - Fleet-relative, so it CANNOT detect a fleet where every router is stuck on the
     #     same old version. Closing that needs a comparison against the published
     #     release (a GitHub-release-derived series), not a peer comparison.
     #   - If a split persists past the 30d lookback, the healthy router's memory of the
     #     old version ages out and it flags too — noisy, but only after a month of an
     #     unfixed W10, and it clears the moment the laggard catches up.
+    #   - A router with NO PRE-SPLIT HISTORY flags while a laggard is outstanding: a
+    #     newly enrolled household, or a box re-enrolled onto a fresh router_id, has only
+    #     its current version in the window, so it cannot intersect the laggard's. It is
+    #     structurally in the same position as a router whose lookback aged out, just
+    #     immediately rather than after 30d. Accepted because it is strictly downstream
+    #     of an already-firing, already-unhandled W10 — the laggard has to have been
+    #     lagging 24h+ for the new router to have anything to miss — and it clears when
+    #     that laggard is fixed. It does mean the FIRST notification after onboarding a
+    #     household during an unresolved lag names the newest box on the fleet, so read
+    #     the router_id against the version-distribution panel before running the
+    #     runbook in the summary.
     w10 = {
       title    = "W10 Router stuck on an old agent version"
       expr     = "count by (router_id) (count by (router_id, version) (last_over_time(agent_version{env=\"prod\"}[30d])) and on (version) count by (version) (agent_version{env=\"prod\"})) < on() group_left() count(count by (version) (agent_version{env=\"prod\"}))"
       window_s = 2592000
-      gt       = 0
-      for      = "24h"
-      paused   = false
-      summary  = "A router has not taken an agent update that the rest of the fleet already has, for a full day — it is running a version no peer is on and has never reported the version they are on. The agent otherwise looks healthy (last_seen_at fresh, policy applied, usage reported), which is why nothing else catches this. It will never receive a security fix until someone intervenes. Check the router-fleet dashboard 'Routers lagging the fleet' panel for the router_id, then on the box: `wifihaven-update` by hand and read the failure. A common cause is a missing /etc/wifihaven/keys/release.pub (signature verification fails closed, #2078) after a pre-#2559 uninstall/reinstall (#2554)."
+      # gt = 0 is a PRESENCE test, not a tunable threshold: the comparison filter returns
+      # the left-hand value, which is a count of intersected versions and is therefore >= 1
+      # whenever the series exists at all (a router always intersects its own live version).
+      # The rule fires on the series existing. There is no knob here to tune — tune `for`.
+      gt      = 0
+      for     = "24h"
+      paused  = false
+      summary = "A router has not taken an agent update that the rest of the fleet already has, for a full day — it is running a version no peer is on and has never reported the version they are on. The agent otherwise looks healthy (last_seen_at fresh, policy applied, usage reported), which is why nothing else catches this. It will never receive a security fix until someone intervenes. FIRST, confirm which router is actually the odd one out on the router-fleet dashboard's version-distribution panel: a household enrolled while another router was already lagging has no pre-split history and gets named here too (known limit 3 on the rule) — the box to fix is the one on the OLDER version. Then on that box, run `wifihaven-update` by hand and read the failure. A common cause is a missing /etc/wifihaven/keys/release.pub (signature verification fails closed, #2078) after a pre-#2559 uninstall/reinstall (#2554)."
     }
   }
 }

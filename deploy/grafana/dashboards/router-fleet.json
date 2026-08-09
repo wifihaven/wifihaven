@@ -861,7 +861,7 @@
     {
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "title": "Fleet agent-version distribution (#2646)",
-      "description": "count by (version) (agent_version) — how many routers are currently on each agent version. This is the rollout view: right after a release it splits, and it should collapse back to a single slice within the hour (updates run from an hourly jittered cron, openwrt/Makefile:175). A slice that persists for days is the W10 condition — a router that stopped self-updating. Instant, so a version a router has moved off drops out after Prometheus staleness (~5m) rather than lingering (#1457).",
+      "description": "count by (version) (agent_version) — the fleet aggregate of the per-router table above: how many routers are currently on each agent version. This is the rollout view. Right after a release it splits and should collapse back to a single slice within ~70 min (hourly cron, openwrt/Makefile:175, plus a 600s jitter cap, wifihaven-update:63). A slice that persists for days is the W10 condition — a router that stopped self-updating. Instant, so a version a router has moved off drops out after Prometheus staleness (~5m) rather than lingering (#1457).",
       "type": "piechart",
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 104 },
       "id": 27,
@@ -892,7 +892,7 @@
     {
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "title": "Routers lagging the fleet (#2646) — expect empty",
-      "description": "The exact expression behind alert W10 (infra/grafana/alerting-rules-warning.tf), so what the operator sees here is what the rule sees. A row means: this router has never reported a version that some peer is running right now, over a 30d lookback — it missed an update rather than being mid-rollout. Empty is healthy; W10 fires only after the same row persists 24h, so a row appearing here during a release is expected and clears itself. Fleet-relative by construction: it cannot flag a fleet where EVERY router is stuck on the same old version.",
+      "description": "The alert W10 expression (infra/grafana/alerting-rules-warning.tf), with $env substituted for the rule's literal env=\"prod\" — otherwise identical, so what the operator sees here is what the rule sees. A row means: this router has never reported a version that some peer is running right now, over a 30d lookback — it missed an update rather than being mid-rollout. Empty is healthy; W10 fires only after the same row persists 24h, so a row appearing here during a release is expected and clears itself. Cross-check every row against the version-distribution panel before acting: a router with no pre-split history (freshly enrolled, or re-enrolled onto a new router_id) is listed here too while a laggard is outstanding, and the box to fix is the one on the OLDER version (known limit 3 on the rule). Fleet-relative by construction: it cannot flag a fleet where EVERY router is stuck on the same old version.",
       "type": "table",
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 104 },
       "id": 28,

@@ -440,19 +440,23 @@ stated alongside.
   in the last 30d intersected with the versions currently live anywhere in the
   fleet; the right-hand term is how many distinct versions are live fleet-wide.
   A router fires when some version a peer is running *right now* is one it has
-  never run. Direction falls out without any ordering: the router that moved
-  first also ran the old version earlier in the window, so a rollout in
-  progress never flags the leader. The intersection (rather than a plain
-  count-vs-count) matters — a laggard that upgraded once early in the window
-  and then froze has two versions in history, and a bare cardinality
-  comparison would miss it.
+  never run. That history is also what stands in for a version ordering: a
+  rollout leader is not flagged because it ran the old version earlier in the
+  window and still intersects it. Note precisely what that rests on — the
+  leader's **remembered history**, not any property of the version numbers. A
+  router with no pre-split history is not protected by it (limit 3 below). The
+  intersection (rather than a plain count-vs-count) matters — a laggard that
+  upgraded once early in the window and then froze has two versions in history,
+  and a bare cardinality comparison would miss it.
 - **`for: 24h`.** Updates run from an hourly jittered cron
-  (`0 * * * * /usr/sbin/wifihaven-update --jitter`, `openwrt/Makefile:175`), so
-  normal rollout skew lasts minutes to an hour. A day of grace is generous and
-  still catches "stopped forever", which is the condition being detected. A
-  rule that pages on every release trains the operator to ignore the one signal
-  that matters. Verified against prod Prometheus: the expression went true
-  ~1h after `0.3.27` shipped (2026-08-05T15:07:15Z) and stayed continuously
+  (`0 * * * * /usr/sbin/wifihaven-update --jitter`, `openwrt/Makefile:175`)
+  whose jitter is capped at `WIFIHAVEN_UPDATE_JITTER_MAX`, default 600s
+  (`openwrt/files/usr/sbin/wifihaven-update:63`), so worst-case rollout skew is
+  ~70 min. A day of grace is an order of magnitude past that and still catches
+  "stopped forever", which is the condition being detected. A rule that pages on
+  every release trains the operator to ignore the one signal that matters.
+  Verified against prod Prometheus: the expression went true ~1h after `0.3.27`
+  shipped (release `createdAt` 2026-08-05T15:07:17Z) and stayed continuously
   true for 3.5 days, for `3498967e` only.
 - **Cardinality.** `agent_version` carries `router_id`, per-router and so
   unbounded in principle. It sits outside the bounded-label-enum rule in
@@ -462,12 +466,45 @@ stated alongside.
   `version`/`router_id`/`installation_id`). Fine at the current fleet size; the
   note exists so it reads as a considered exception at 500 routers, not an
   oversight.
-- **Known limits, both accepted.** (1) Fleet-relative, so it cannot detect a
-  fleet where *every* router is stuck on the same old version — closing that
+- **No-data is the healthy state**, so `no_data_state = OK` is *required* here,
+  not merely inherited from the group template: a comparison filter returns
+  nothing when no router is lagging, and any other setting would fire
+  continuously. The cost is that W10 also reads healthy if `agent_version` stops
+  being emitted fleet-wide. The realistic causes of that are covered
+  **critical** — routers not reporting at all is C7
+  (`agent_connected_routers < 1`, DB-backed from `last_seen_at`), a broken
+  metrics ingest is C4 (`router_metrics_batches_total` success ratio). What
+  remains uncovered is the narrow slice where every other batch field keeps
+  flowing and only this gauge disappears. Accepted, and named rather than left
+  implicit ([#2546](https://github.com/wifihaven/wifihaven/issues/2546)).
+- **Query cost — the one axis that does not scale**, and a different axis from
+  the cardinality note above. The scrape interval is 30s
+  (`deploy/alloy/config.alloy`), so a `[30d]` lookback fetches ~86,400 samples
+  per series per evaluation on a 60s group interval; every other rule in the
+  file uses `window_s` between 300 and 3600. Fine today, ~43M samples per
+  evaluation at 500 routers, and a query rejected on a sample limit lands in
+  `exec_err_state = "Error"` — visible but *not* notifying, so the detector goes
+  dark exactly when it is most needed. The lookback is not free to shorten (it
+  is what keeps the leader's memory of the superseded version alive), so the fix
+  is a recording rule, tracked in
+  [#2650](https://github.com/wifihaven/wifihaven/issues/2650).
+- **Known limits, all three accepted.** (1) Fleet-relative, so it cannot detect
+  a fleet where *every* router is stuck on the same old version — closing that
   needs a comparison against the published release rather than against peers.
   (2) If a split persists past the 30d lookback, the healthy router's memory of
   the old version ages out and it flags too; noisy, but only after a month of
   an unfixed W10, and it clears when the laggard catches up.
+  (3) A router with **no pre-split history** flags while a laggard is
+  outstanding: a newly enrolled household, or a box re-enrolled onto a fresh
+  `router_id`, has only its current version in the window and so cannot
+  intersect the laggard's. Structurally the same position as limit (2), just
+  immediately rather than after 30d. Accepted because it is strictly downstream
+  of an already-firing, already-unhandled W10 — the laggard must have been
+  lagging 24h+ for the new router to have anything to miss — and it clears when
+  that laggard is fixed. It does mean the first notification after onboarding a
+  household during an unresolved lag names the *newest* box on the fleet, so the
+  rule's summary tells the operator to check the version-distribution panel
+  before running the runbook.
 - Paired panels (per
   [`docs/process/instrumentation.md#metrics-need-a-dashboard`](../process/instrumentation.md#metrics-need-a-dashboard)):
   "Fleet agent-version distribution" and "Routers lagging the fleet
