@@ -209,8 +209,10 @@ locals {
     # A day of grace is an order of magnitude past that and still catches
     # "stopped forever", which is the actual condition. A rule that pages during every
     # release trains the operator to ignore the one signal that matters. Verified against
-    # prod: the expression went true ~1h after 0.3.27 shipped (2026-08-05T15:07:15Z) and
-    # stayed continuously true for 3.5 days for 3498967e only.
+    # prod: the expression went true ~1h after 0.3.27 shipped (release createdAt
+    # 2026-08-05T15:07:17Z) and stayed continuously true, no gaps, for 3.5 days for
+    # 3498967e only — until that router finally took 0.3.27 on 2026-08-09, at which point
+    # it went empty again. Both edges of the real incident, which is the validation.
     #
     # CARDINALITY — `agent_version` carries `router_id`, which is per-router and so
     # unbounded in principle. This sits OUTSIDE the bounded-label-enum rule in
@@ -223,12 +225,18 @@ locals {
     # rather than merely inherited from the group template. A comparison filter returns
     # NOTHING when no router is lagging, so the steady state of a healthy fleet is an
     # empty vector; any other no_data_state would fire continuously. The cost is that
-    # W10 also reads healthy if `agent_version` stops being emitted fleet-wide. The
-    # realistic causes of that are already covered CRITICAL: routers not reporting at all
-    # is C7 (agent_connected_routers < 1, DB-backed from last_seen_at), and a broken
-    # metrics ingest is C4 (router_metrics_batches_total success ratio). What is left
-    # uncovered is the narrow slice where every other batch field keeps flowing and only
-    # this gauge disappears — accepted, and named here rather than left implicit (#2546).
+    # W10 also reads healthy if `agent_version` stops being emitted fleet-wide, and that
+    # gap is REAL — do not assume C7/C4 cover it. C7 (agent_connected_routers < 1) is
+    # computed from routers.last_seen_at, which the metrics-batch path never writes:
+    # routerRepo.touch is called from the snapshot poll (RouterRoutes.scala:85), usage/
+    # event ingest (RouterIngestService.scala:92,154) and the ws heartbeat
+    # (RouterWsRoutes.scala:306), not from RouterMetricsRoutes — so an agent that keeps
+    # polling policy while its metrics push dies still reads connected. C4
+    # (router_metrics_batches_total success ratio) is a ratio, so a TOTAL stop is 0/0 →
+    # NaN → no-data → OK; it catches a degraded ingest, not a silent one. Which leaves
+    # "metrics stop while the agent looks alive" uncovered, with W10 itself silently off
+    # — the #2546 shape. Fixing it wants a separate absent(agent_version) liveness rule,
+    # tracked in #2654 rather than folded in here.
     #
     # QUERY COST — this is the one dimension that does not scale, and it is a DIFFERENT
     # axis from the cardinality note above. The scrape interval is 30s (deploy/alloy/

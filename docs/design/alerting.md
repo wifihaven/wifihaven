@@ -457,7 +457,9 @@ stated alongside.
   every release trains the operator to ignore the one signal that matters.
   Verified against prod Prometheus: the expression went true ~1h after `0.3.27`
   shipped (release `createdAt` 2026-08-05T15:07:17Z) and stayed continuously
-  true for 3.5 days, for `3498967e` only.
+  true, with no gaps, for 3.5 days for `3498967e` only — until that router
+  finally took `0.3.27` on 2026-08-09 and it went empty again. Both edges of the
+  real incident, which is the validation.
 - **Cardinality.** `agent_version` carries `router_id`, per-router and so
   unbounded in principle. It sits outside the bounded-label-enum rule in
   [`docs/process/instrumentation.md`](../process/instrumentation.md) because
@@ -470,13 +472,20 @@ stated alongside.
   not merely inherited from the group template: a comparison filter returns
   nothing when no router is lagging, and any other setting would fire
   continuously. The cost is that W10 also reads healthy if `agent_version` stops
-  being emitted fleet-wide. The realistic causes of that are covered
-  **critical** — routers not reporting at all is C7
-  (`agent_connected_routers < 1`, DB-backed from `last_seen_at`), a broken
-  metrics ingest is C4 (`router_metrics_batches_total` success ratio). What
-  remains uncovered is the narrow slice where every other batch field keeps
-  flowing and only this gauge disappears. Accepted, and named rather than left
-  implicit ([#2546](https://github.com/wifihaven/wifihaven/issues/2546)).
+  being emitted fleet-wide, and that gap is real — **C7 and C4 do not cover it.**
+  C7 (`agent_connected_routers < 1`) is computed from `routers.last_seen_at`,
+  which the metrics-batch path never writes: `routerRepo.touch` is called from
+  the snapshot poll (`api/src/routes/RouterRoutes.scala:85`), usage/event ingest
+  (`api/src/routes/RouterIngestService.scala:92,154`) and the ws heartbeat
+  (`api/src/routes/RouterWsRoutes.scala:306`), not from `RouterMetricsRoutes`, so
+  an agent that keeps polling policy while its metrics push dies still reads
+  connected. C4 (`router_metrics_batches_total` success ratio) is a ratio, so a
+  *total* stop is `0/0` → NaN → no-data → OK; it catches a degraded ingest, not
+  a silent one. That leaves "metrics stop while the agent looks alive"
+  uncovered, with W10 itself silently off — the
+  [#2546](https://github.com/wifihaven/wifihaven/issues/2546) shape. Fixing it
+  wants a separate `absent(agent_version)` liveness rule, tracked in
+  [#2654](https://github.com/wifihaven/wifihaven/issues/2654).
 - **Query cost — the one axis that does not scale**, and a different axis from
   the cardinality note above. The scrape interval is 30s
   (`deploy/alloy/config.alloy`), so a `[30d]` lookback fetches ~86,400 samples
