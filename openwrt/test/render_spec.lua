@@ -697,6 +697,202 @@ describe("render.nft nat chain", function()
 
 end)
 
+-- ── #2647: the block-page DNAT path must report the block ─────────────────
+--
+-- Enforcement has two paths and, pre-#2647, only ONE emitted an event.
+-- The filter path (chain wifihaven_block, forward hook) logs
+-- `wh_drop:<mac>:<reason>` and drops; the nflog tail turns that into a
+-- connection_attempt(allowed=false). The NAT path (chain wifihaven_block_nat,
+-- prerouting hook) rewrites TCP 80/443 to the local block-page listener —
+-- and prerouting runs BEFORE forward, so a DNAT'd packet is delivered to
+-- INPUT and never reaches the log/drop rules. No log line, no event, no row.
+--
+-- Because 80 AND 443 are both redirected, essentially all ordinary browser
+-- traffic to a blocked host took the unrecorded path: the blocks a user
+-- actually SEES were exactly the ones missing from Connection Events, and
+-- what remained (QUIC, hardcoded IPs) was a biased sample.
+--
+-- Fix: emit a rate-limited `log prefix "wh_dnat:<mac>:<reason> "` immediately
+-- before each dnat/redirect rule, carrying the SAME <reason> vocabulary the
+-- drop path uses, so one kernel-log channel and one reason vocabulary serve
+-- both paths (docs/process/single-source-of-truth.md).
+
+describe("render.nft #2647 block-page DNAT reporting", function()
+
+  local function nat_chain_body(nft)
+    local start = nft:find("chain wifihaven_block_nat {", 1, true)
+    if not start then return nil end
+    local open  = nft:find("{", start, true)
+    local close = nft:find("\n  }", open, true)
+    return nft:sub(open + 1, close - 1)
+  end
+
+  local function blocked_snap()
+    local s = snap_one()
+    s.profiles["3"].rules.blocked     = true
+    s.profiles["3"].rules.blockReason = "Paused"
+    return s
+  end
+
+  -- The per-flow limiter sets. Mirrors the wh_drop_log4/6 pair (#1915): keyed
+  -- on (mac, dst) so each distinct redirected flow logs on first-seen (event
+  -- synthesis is never starved) while a retry storm to the same flow drains
+  -- only that element's bucket. Separate sets from the drop path so the two
+  -- budgets never suppress each other.
+  it("declares the per-flow wh_dnat_log4/6 limiter sets", function()
+    local nft = render.nft(blocked_snap())
+    assert.truthy(nft:find("set wh_dnat_log4 {", 1, true))
+    assert.truthy(nft:find("set wh_dnat_log6 {", 1, true))
+    assert.truthy(nft:find("type ether_addr . ipv4_addr", 1, true))
+    assert.truthy(nft:find("type ether_addr . ipv6_addr", 1, true))
+  end)
+
+  -- #1826/#1915: redirected traffic is the COMMON case, so an unbounded log
+  -- here would be worse than the drop path. Same 1/minute burst 5 budget,
+  -- lined up with the agent's 60s per-(mac,dst) dedup window.
+  it("rate-limits every wh_dnat log rule at the same budget as the drop path", function()
+    local body = nat_chain_body(render.nft(blocked_snap()))
+    assert.is_not_nil(body)
+    for line in body:gmatch("[^\n]+") do
+      if line:find("wh_dnat:", 1, true) then
+        assert.truthy(line:find("limit rate 1/minute burst 5 packets", 1, true),
+                      "unbounded wh_dnat log rule: " .. line)
+      end
+    end
+  end)
+
+  -- Whole-MAC block. The dnat rule itself stays scoped to @blocked_macs (one
+  -- rule, not N), but the LOG must name the MAC, so it is emitted per-MAC —
+  -- exactly the reason #1122 split the filter chain's @blocked_macs drop.
+  it("logs a whole-MAC block on the v4 DNAT path carrying the MacBlockReason", function()
+    local nft = render.nft(blocked_snap())
+    assert.truthy(nft:find(
+      "ether saddr aa:bb:cc:11:22:33 tcp dport { 80, 443 } update @wh_dnat_log4 " ..
+      "{ ether saddr . ip daddr limit rate 1/minute burst 5 packets } " ..
+      "log prefix \"wh_dnat:aa:bb:cc:11:22:33:Paused \"", 1, true))
+  end)
+
+  -- #1668/#1929: v6 paths get forgotten. The v6 block page is delivered by
+  -- `redirect`, not `dnat` — miss it and v6 blocks stay invisible.
+  it("logs a whole-MAC block on the v6 redirect path (#1668/#1929)", function()
+    local nft = render.nft(blocked_snap())
+    assert.truthy(nft:find(
+      "ether saddr aa:bb:cc:11:22:33 ip6 daddr != ::1 tcp dport { 80, 443 } " ..
+      "update @wh_dnat_log6 { ether saddr . ip6 daddr limit rate 1/minute burst 5 packets } " ..
+      "log prefix \"wh_dnat:aa:bb:cc:11:22:33:Paused \"", 1, true))
+  end)
+
+  it("logs a per-(mac, host) extraBlocked redirect on v4 and v6", function()
+    local nft = render.nft(snap_one())
+    assert.truthy(nft:find(
+      "ether saddr aa:bb:cc:11:22:33 ip daddr @eb_tiktok_com tcp dport { 80, 443 } " ..
+      "update @wh_dnat_log4 { ether saddr . ip daddr limit rate 1/minute burst 5 packets } " ..
+      "log prefix \"wh_dnat:aa:bb:cc:11:22:33:host:tiktok.com \"", 1, true))
+    assert.truthy(nft:find(
+      "ether saddr aa:bb:cc:11:22:33 ip6 daddr @eb6_tiktok_com tcp dport { 80, 443 } " ..
+      "update @wh_dnat_log6 { ether saddr . ip6 daddr limit rate 1/minute burst 5 packets } " ..
+      "log prefix \"wh_dnat:aa:bb:cc:11:22:33:host:tiktok.com \"", 1, true))
+  end)
+
+  it("logs a per-(mac, blocklistId) category redirect on v4 and v6", function()
+    local s = snap_one()
+    s.blocklists = { ads = { version = 1, url = "http://x/ads" } }
+    local nft = render.nft(s)
+    assert.truthy(nft:find(
+      "ether saddr aa:bb:cc:11:22:33 ip daddr @bl_ads tcp dport { 80, 443 } " ..
+      "update @wh_dnat_log4 { ether saddr . ip daddr limit rate 1/minute burst 5 packets } " ..
+      "log prefix \"wh_dnat:aa:bb:cc:11:22:33:category:ads \"", 1, true))
+    assert.truthy(nft:find(
+      "ether saddr aa:bb:cc:11:22:33 ip6 daddr @bl6_ads tcp dport { 80, 443 } " ..
+      "update @wh_dnat_log6 { ether saddr . ip6 daddr limit rate 1/minute burst 5 packets } " ..
+      "log prefix \"wh_dnat:aa:bb:cc:11:22:33:category:ads \"", 1, true))
+  end)
+
+  it("logs a blockIpOnly redirect with the ip_only reason", function()
+    local s = snap_one()
+    s.profiles["3"].rules.blockIpOnly = true
+    local nft = render.nft(s)
+    assert.truthy(nft:find("log prefix \"wh_dnat:aa:bb:cc:11:22:33:ip_only \"", 1, true))
+  end)
+
+  -- SSOT: a host block must read the SAME whether it was redirected or
+  -- dropped. Two spellings of one reason is the drift
+  -- docs/process/single-source-of-truth.md exists to prevent.
+  it("uses a reason vocabulary identical to the drop path", function()
+    local s = snap_one()
+    s.profiles["3"].rules.blocked     = true
+    s.profiles["3"].rules.blockReason = "Schedule"
+    s.profiles["3"].rules.blockIpOnly = true
+    s.blocklists = { ads = { version = 1, url = "http://x/ads" } }
+    local nft = render.nft(s)
+    local dnat_reasons, drop_reasons = {}, {}
+    for reason in nft:gmatch("wh_dnat:%x%x:%x%x:%x%x:%x%x:%x%x:%x%x:([^\"]+) \"") do
+      dnat_reasons[reason] = true
+    end
+    for reason in nft:gmatch("comment \"wh_drop:%x%x:%x%x:%x%x:%x%x:%x%x:%x%x:([^\"]+)\"") do
+      drop_reasons[reason] = true
+    end
+    assert.is_true(next(dnat_reasons) ~= nil)
+    for reason in pairs(dnat_reasons) do
+      assert.is_true(drop_reasons[reason] == true,
+                     "DNAT reason not in the drop path's vocabulary: " .. reason)
+    end
+  end)
+
+  -- Do not double-count. The log rule must carry the SAME tcp dport
+  -- constraint as the dnat/redirect rules it fronts: a rule that logged every
+  -- protocol would claim a redirect for QUIC/UDP and arbitrary-port traffic
+  -- that is in fact DROPPED by the filter chain, producing two events for one
+  -- flow (and mislabelling the enforcement path).
+  it("scopes every wh_dnat log rule to the ports actually redirected", function()
+    local s = blocked_snap()
+    s.profiles["3"].rules.blockIpOnly = true
+    s.blocklists = { ads = { version = 1, url = "http://x/ads" } }
+    local body = nat_chain_body(render.nft(s))
+    assert.is_not_nil(body)
+    for line in body:gmatch("[^\n]+") do
+      if line:find("wh_dnat:", 1, true) then
+        assert.truthy(line:find("tcp dport { 80, 443 }", 1, true),
+                      "wh_dnat log rule is not port-scoped: " .. line)
+      end
+    end
+  end)
+
+  -- The log must fire BEFORE the rewrite, or DST= carries 127.0.0.1 / the
+  -- br-lan address instead of the destination the user actually asked for —
+  -- which is what the agent attributes the hostname from.
+  it("emits the log rule before the dnat/redirect rule it fronts", function()
+    local body = nat_chain_body(render.nft(snap_one()))
+    assert.is_not_nil(body)
+    local log_at  = body:find("log prefix \"wh_dnat:aa:bb:cc:11:22:33:host:tiktok.com \"", 1, true)
+    local dnat_at = body:find(
+      "ether saddr aa:bb:cc:11:22:33 ip daddr @eb_tiktok_com tcp dport 80 dnat ip to 127.0.0.1:8081",
+      1, true)
+    assert.is_not_nil(log_at)
+    assert.is_not_nil(dnat_at)
+    assert.is_true(log_at < dnat_at)
+  end)
+
+  -- The log rule carries no verdict, so evaluation must continue to the
+  -- dnat/redirect rule — enforcement is unchanged by this reporting change.
+  it("leaves the dnat/redirect rules themselves untouched", function()
+    local nft = render.nft(blocked_snap())
+    assert.truthy(nft:find("ether saddr @blocked_macs tcp dport 80 dnat ip to 127.0.0.1:8081", 1, true))
+    assert.truthy(nft:find("ether saddr @blocked_macs tcp dport 443 dnat ip to 127.0.0.1:8443", 1, true))
+    assert.truthy(nft:find("ether saddr @blocked_macs ip6 daddr != ::1 tcp dport 80 redirect to :8081", 1, true))
+    assert.truthy(nft:find("ether saddr @blocked_macs ip6 daddr != ::1 tcp dport 443 redirect to :8443", 1, true))
+  end)
+
+  -- No nat chain → no limiter sets and no log rules to keep alive.
+  it("emits no wh_dnat log rules when nothing is blocked", function()
+    local s = snap_one()
+    s.profiles["3"].rules.extraBlocked = {}
+    local nft = render.nft(s)
+    assert.is_nil(nft:find("wh_dnat:", 1, true))
+  end)
+
+end)
+
 -- ── #1865: the block page must NEVER be dropped, and v6 must deliver ───────
 --
 -- Operator directive: a blocked device must always reach the local block-page

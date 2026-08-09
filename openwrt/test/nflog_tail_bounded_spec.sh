@@ -49,5 +49,16 @@ grep -Eq 'nflog_spool_max_bytes",[[:space:]]*"[1-9][0-9]+"' "$TAIL" \
   && check "default cap is a non-zero positive integer" ok \
   || check "default cap is a non-zero positive integer" "not found / not positive"
 
+# 5. #2647: the sidecar must also spool the block-page DNAT records. The NAT
+#    path (prerouting) redirects TCP 80/443 to the block page and never reaches
+#    the forward hook, so its records carry the `wh_dnat:` prefix rather than
+#    `wh_drop:`. Miss it here and the blocks users actually SEE stay invisible
+#    in Connection Events — the sidecar's substring prefilter is the first gate
+#    the line has to pass. Same spool, same cap: the new lines ride the
+#    truncate-on-cap path checked above (AGENTS.md#bounded-tmp-writes).
+grep -q 'wh_dnat:' "$TAIL" \
+  && check "prefilters block-page DNAT records (wh_dnat:) too (#2647)" ok \
+  || check "prefilters block-page DNAT records (wh_dnat:) too (#2647)" "not found"
+
 printf "\nResults: %d passed, %d failed\n" "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

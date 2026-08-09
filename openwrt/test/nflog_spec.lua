@@ -89,6 +89,106 @@ describe("nflog.parse_line", function()
   end)
 end)
 
+-- ── #2647: block-page DNAT records ────────────────────────────────────────
+--
+-- The NAT path (chain wifihaven_block_nat, prerouting) redirects TCP 80/443
+-- to the local block-page listener. Prerouting runs BEFORE the forward hook
+-- and the rewritten packet is delivered to INPUT, so it never reaches the
+-- filter chain's log/drop rules — pre-#2647 the blocks users actually SAW
+-- produced no event at all. render.lua now emits a rate-limited
+-- `log prefix "wh_dnat:<mac>:<reason> "` ahead of each dnat/redirect rule,
+-- carrying the SAME <reason> vocabulary as the drop path. The tail must
+-- ingest it identically, so one kernel-log channel feeds both paths.
+
+describe("nflog.parse_line #2647 block-page DNAT records", function()
+
+  it("extracts mac, reason, src_ip, dst_ip from a wh_dnat line", function()
+    local line = "[12345.678] wh_dnat:aa:bb:cc:11:22:33:host:neverssl.com IN=br-lan OUT= " ..
+                 "MAC=11:22:33:44:55:66:aa:bb:cc:11:22:33:08:00 " ..
+                 "SRC=192.168.1.42 DST=1.2.3.4 LEN=60 PROTO=TCP SPT=54321 DPT=80"
+    local ev = nflog.parse_line(line)
+    assert.is_not_nil(ev)
+    assert.equal("aa:bb:cc:11:22:33",     ev.mac)
+    assert.equal("host:neverssl.com",     ev.reason)
+    assert.equal("192.168.1.42",          ev.src_ip)
+    assert.equal("1.2.3.4",               ev.dst_ip)
+  end)
+
+  -- Identical vocabulary, not a parallel one: whatever the drop path can say,
+  -- the DNAT path says the same way (docs/process/single-source-of-truth.md).
+  it("parses the whole reason vocabulary on the wh_dnat prefix", function()
+    for _, reason in ipairs({ "Paused", "Schedule", "TimeLimit", "Manual", "Unmanaged",
+                              "DefaultDeny", "blocked", "ip_only", "global_block",
+                              "host:tiktok.com", "category:ads" }) do
+      local line = "wh_dnat:de:ad:be:ef:00:01:" .. reason ..
+                   " SRC=10.0.0.5 DST=8.8.8.8 PROTO=TCP DPT=80"
+      local ev = nflog.parse_line(line)
+      assert.is_not_nil(ev, "expected to parse reason=" .. reason)
+      assert.equal(reason, ev.reason)
+      assert.equal("de:ad:be:ef:00:01", ev.mac)
+    end
+  end)
+
+  it("parses a v6 wh_dnat redirect record", function()
+    local line = "wh_dnat:aa:bb:cc:11:22:33:Schedule " ..
+                 "SRC=2001:db8::42 DST=2606:4700::1111 PROTO=TCP DPT=443"
+    local ev = nflog.parse_line(line)
+    assert.is_not_nil(ev)
+    assert.equal("2606:4700::1111", ev.dst_ip)
+    assert.equal("Schedule",        ev.reason)
+  end)
+
+  it("still returns nil for an unrelated line", function()
+    assert.is_nil(nflog.parse_line("wh_other:aa:bb:cc:11:22:33:Paused SRC=1.1.1.1 DST=2.2.2.2"))
+  end)
+end)
+
+describe("nflog.run #2647 does not double-count a redirected flow", function()
+
+  -- A flow must not produce both a DNAT event and a drop event. The two
+  -- enforcement paths are mutually exclusive per packet (a DNAT'd packet
+  -- never reaches the forward hook), but a device hitting the same host over
+  -- both TCP/443 (redirected) and QUIC/UDP 443 (dropped) can produce one line
+  -- of each — the existing per-(mac, dst_ip, hostname) dedup must collapse
+  -- them into a single connection_attempt, exactly as it already does for two
+  -- drop lines.
+  it("collapses a wh_dnat and a wh_drop line for the same (mac, dst) into one event", function()
+    local lines = {
+      "wh_dnat:aa:bb:cc:11:22:33:host:neverssl.com SRC=192.168.1.42 DST=1.2.3.4 PROTO=TCP DPT=80",
+      "wh_drop:aa:bb:cc:11:22:33:host:neverssl.com SRC=192.168.1.42 DST=1.2.3.4 PROTO=UDP DPT=443",
+    }
+    local i, events = 0, {}
+    nflog.run({
+      read_fn         = function() i = i + 1; return lines[i] end,
+      batcher         = { add = function(ev) events[#events + 1] = ev end },
+      lookup_hostname = function(_) return "neverssl.com" end,
+      ts_fn           = function() return "2026-08-08T00:00:00Z" end,
+      now_fn          = function() return 1000 end,
+      window_seconds  = 60,
+    })
+    assert.equal(1, #events)
+    assert.equal(false, events[1].allowed)
+    assert.equal("host:neverssl.com", events[1].reason)
+  end)
+
+  it("synthesizes a connection_attempt from a wh_dnat line alone", function()
+    local lines = {
+      "wh_dnat:aa:bb:cc:11:22:33:host:neverssl.com SRC=192.168.1.42 DST=1.2.3.4 PROTO=TCP DPT=80",
+    }
+    local i, events = 0, {}
+    nflog.run({
+      read_fn         = function() i = i + 1; return lines[i] end,
+      batcher         = { add = function(ev) events[#events + 1] = ev end },
+      lookup_hostname = function(_) return "neverssl.com" end,
+      ts_fn           = function() return "2026-08-08T00:00:00Z" end,
+      now_fn          = function() return 1000 end,
+    })
+    assert.equal(1, #events)
+    assert.equal("connection_attempt", events[1]["type"])
+    assert.same({ type = "fqdn", value = "neverssl.com" }, events[1].host)
+  end)
+end)
+
 describe("nflog.build_event", function()
   it("builds a connection_attempt with allowed=false and the parsed reason", function()
     local ev = nflog.build_event({
