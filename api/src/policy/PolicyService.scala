@@ -605,9 +605,10 @@ class PolicyServiceLive(
   // #2653: takes the household purely so the snapshot-changed log dedupes per tenant. Every
   // permissive snapshot SHARES ONE ETAG — `permissiveSnapshot` hashes an all-empty `SnapshotCore`
   // and `generatedAt` is not part of the hash — so a shared slot would have let the first lapsed
-  // household's line suppress every other's. The same eviction bug, in the other direction, and
-  // the one path where the ETag alone cannot tell two tenants' lines apart (hence the `household`
-  // annotation on the log line).
+  // household's line suppress every other's. The same eviction bug, in the other direction, and the
+  // one path where two tenants ALWAYS collide on an ETag — `computeEtag` hashes logical content, so
+  // two enforcing households can collide too, just not unconditionally. Hence the `household`
+  // annotation on the log line: the ETag alone cannot always tell two tenants' lines apart.
   private def permissiveBuild(household: HouseholdId, reason: String): Task[PolicySnapshot] =
     clock.instant.flatMap { now =>
       val snap = PolicyService.permissiveSnapshot(now)

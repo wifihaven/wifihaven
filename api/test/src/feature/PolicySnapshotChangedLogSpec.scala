@@ -43,25 +43,11 @@ object PolicySnapshotChangedLogSpec
   private val macB = MacAddress.unsafe("aa:bb:cc:00:00:0b")
 
   // Cache disabled (the constructor default) so every `snapshot` call is a real rebuild — this
-  // spec pins the LOG dedupe, not the cache.
-  private def makePolicyService =
-    for {
-      pr     <- ZIO.service[ProfileRepo]
-      hsr    <- ZIO.service[HouseholdSettingsRepo]
-      tlr    <- ZIO.service[TimeLimitRepo]
-      atlr   <- ZIO.service[AppTimeLimitRepo]
-      dr     <- ZIO.service[DeviceRepo]
-      blr    <- ZIO.service[BlocklistRepo]
-      trRepo <- ZIO.service[TrafficReportRepo]
-      er     <- ZIO.service[TimeExtensionRepo]
-      ar     <- ZIO.service[AppRepo]
-      clock  <- ZIO.service[Clock]
-    } yield PolicyServiceLive(pr, hsr, tlr, atlr, dr, blr, trRepo, er, ar, clock): PolicyService
-
-  // Every household is `lapsed`, so `buildSnapshot` takes the permissive branch for both. This is
-  // the ONE path where two tenants share an ETag, so it is the one the ETag-keyed assertions below
-  // cannot cover — it is checked by household instead.
-  private def makeLapsedPolicyService =
+  // spec pins the LOG dedupe, not the cache. `billingStatus` is a parameter rather than a second
+  // copy of this ten-service construction: passing `lapsed` sends `buildSnapshot` down the
+  // permissive branch, which is the ONE path where two tenants ALWAYS share an ETag and so the one
+  // the ETag-keyed cases below cannot cover.
+  private def makePolicyService(billingStatus: String = "active") =
     for {
       pr     <- ZIO.service[ProfileRepo]
       hsr    <- ZIO.service[HouseholdSettingsRepo]
@@ -84,7 +70,7 @@ object PolicySnapshotChangedLogSpec
       er,
       ar,
       clock,
-      billingStatusOf = _ => ZIO.succeed(Some("lapsed")),
+      billingStatusOf = _ => ZIO.succeed(Some(billingStatus)),
     ): PolicyService
 
   private def changedLines(logs: Chunk[ZTestLogger.LogEntry]): Chunk[ZTestLogger.LogEntry] =
@@ -101,7 +87,7 @@ object PolicySnapshotChangedLogSpec
       (for {
         _     <- cleanDb
         two   <- TestLayers.seedTwoHouseholds(macA, macB)
-        ps    <- makePolicyService
+        ps    <- makePolicyService()
         // Alternate A, B, A, B, A, B. Policy never changes, so each household's ETag is stable and
         // #1641's contract is exactly one line per household. Against the global slot this emits
         // six — each household's ETag evicting the other's on every pass.
@@ -127,7 +113,7 @@ object PolicySnapshotChangedLogSpec
         _      <- cleanDb
         two    <- TestLayers.seedTwoHouseholds(macA, macB)
         pr     <- ZIO.service[ProfileRepo]
-        ps     <- makePolicyService
+        ps     <- makePolicyService()
         etagA  <- ps.snapshot(two.hhA).map(_.etag.value)
         etagB  <- ps.snapshot(two.hhB).map(_.etag.value)
         // Mutate household A only: its ETag moves, B's does not.
@@ -152,7 +138,7 @@ object PolicySnapshotChangedLogSpec
       (for {
         _     <- cleanDb
         two   <- TestLayers.seedTwoHouseholds(macA, macB)
-        ps    <- makeLapsedPolicyService
+        ps    <- makePolicyService("lapsed")
         // The permissive snapshot hashes an all-empty core, so both households produce the SAME
         // etag. That makes this the one path where a shared dedupe slot silently drops a tenant's
         // line entirely rather than doubling it, and the one the etag-keyed cases above cannot
