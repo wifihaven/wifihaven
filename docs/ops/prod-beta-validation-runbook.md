@@ -350,7 +350,16 @@ ever.
      `support_agent_action_total{op="issue",outcome="disabled"}`.
    - **(b) on:** verify it searches before filing (#2458 dedup), that the body is
      scrubbed (#2241 `scrubForIssue`), and that a **data-access** session refuses to
-     file at all (#2454).
+     file at all (#2454). Note the refusal is normally observed in the REPLY, not in
+     a metric: prompt step 6b tells the agent not to attempt the call, so a compliant
+     agent leaves `support_agent_action_total{op="issue",outcome="denied_data_session"}`
+     at zero and escalates instead. What to check is that the reply names the reason —
+     a public bug report cannot be opened from a conversation with account access —
+     and offers the no-grant conversation as the way to get it filed (#2671). A
+     `denied_data_session` sample (paired with
+     `support_consent_total{outcome="issue_refused_data_session"}`) means the server
+     guard caught an agent that ignored 6b; that is the guard working, and worth
+     investigating as prompt drift.
 
    ```bash
    pq 'increase(support_agent_action_total{env="prod",op="issue"}[30m])'
