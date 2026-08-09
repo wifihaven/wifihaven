@@ -289,8 +289,8 @@ function BlockEncryptedDnsCard({
         className="text-xs text-brand-text"
       >
         {enabled
-          ? 'On by default for new networks. Turn it off only if a device here needs its own encrypted DNS — while it is off, any device can bypass site and category blocking, and its traffic shows up as raw IP addresses instead of site names.'
-          : 'This is off. Any device on this network can currently use iCloud Private Relay or its own encrypted DNS to bypass site and category blocking, and its traffic will show as raw IP addresses instead of site names. New networks start with this on.'}
+          ? 'On by default for new networks. Turn it off only if a device here needs its own encrypted DNS — while it is off, any device can bypass site and category blocking and per-app limits, and its traffic shows up as raw IP addresses instead of site names. Daily time limits still apply either way.'
+          : 'This is off. Any device on this network can currently use iCloud Private Relay or its own encrypted DNS to bypass site and category blocking and per-app limits, and its traffic will show as raw IP addresses instead of site names. Daily time limits still apply either way. New networks start with this on.'}
       </p>
       <label className="flex items-center gap-2 text-sm text-brand-ink">
         <input
@@ -401,17 +401,6 @@ function AmbientGateCard({
         time only counts while a device shows real engagement — traffic from an assigned app,
         or a host outside its learned idle baseline. The baseline learns automatically from
         traffic that habitually appears on its own.
-      </p>
-      {/* #2643: new networks start with this on, so say so and say what the first days look like.
-          The learned baseline needs a few days of traffic; until it exists the gate simply
-          discounts less, so early numbers are never wrong, just less filtered. */}
-      <p
-        data-testid="ambient-gate-default-note"
-        className="text-xs text-brand-text"
-      >
-        {enabled
-          ? 'On by default for new networks. The idle baseline needs a few days of traffic to learn — until then this filters less rather than filtering wrongly, so early numbers are safe to trust.'
-          : 'This is off, so background chatter from an idle device can still count as screen time. New networks start with this on.'}
       </p>
       <label className="flex items-center gap-2 text-sm text-brand-ink">
         <input

@@ -244,9 +244,10 @@ describe('AdminPage — block-encrypted-DNS toggle (#1913)', () => {
     expect(note.textContent).toMatch(/bypass site and category blocking/i)
     expect(note.textContent).toMatch(/new networks start with this on/i)
     // The copy must NOT claim time limits are bypassable — a daily limit is a whole-device drop
-    // that never consults DNS, so it still bites on DoH. Asserted so the overstatement cannot
-    // creep back in.
-    expect(note.textContent).not.toMatch(/time limits/i)
+    // that never consults DNS, so it still bites on DoH. Scoped to the wrong CLAIM rather than the
+    // phrase, so the accurate positive statement ("daily time limits still apply") is allowed.
+    expect(note.textContent).not.toMatch(/bypass[^.]*time limits/i)
+    expect(note.textContent).toMatch(/time limits still apply/i)
   })
 
   it('explains why it is on once enabled', async () => {
@@ -291,25 +292,6 @@ describe('AdminPage — block-encrypted-DNS toggle (#1913)', () => {
 })
 
 describe('AdminPage — ambient anchor-gate toggle (#2077)', () => {
-  // #2643 — the ambient/idle-traffic gate is now on for new networks too, and its first days run
-  // over an empty learned baseline. The copy has to say the gate is on AND that early numbers are
-  // under-filtered rather than wrong, which is the distinction the flip was conditional on.
-  it('says new networks start on and what the first days look like', async () => {
-    const user = userEvent.setup()
-    render(<AdminPage />)
-    const toggle = await screen.findByTestId('ambient-gate-enabled')
-    expect(screen.getByTestId('ambient-gate-default-note').textContent).toMatch(
-      /new networks start with this on/i,
-    )
-
-    await user.click(toggle)
-
-    await waitFor(() =>
-      expect(screen.getByTestId('ambient-gate-default-note').textContent).toMatch(
-        /needs a few days of traffic to learn/i,
-      ),
-    )
-  })
 
   it('renders the toggle reflecting the stored setting (off by default)', async () => {
     render(<AdminPage />)

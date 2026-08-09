@@ -1046,17 +1046,18 @@ case class HouseholdSettings(
     // span with <= `ambientIsolationMaxHosts` distinct hosts and no app-attributed
     // row is "isolated" for learning; a host isolated on >= `ambientMinIsolatedDays`
     // distinct days within the trailing `ambientLearningWindowDays` becomes ambient.
+    // Default off — the learner runs regardless, so the operator can inspect the
+    // would-be ambient set via GET /api/presence/ambient-hosts before enabling.
     //
-    // #2643: a NEW household starts with the switch ON
-    // ([[HouseholdSettings.DefaultAmbientGateEnabled]]). #2077 shipped it off so
-    // the operator could inspect the would-be ambient set via
-    // GET /api/presence/ambient-hosts before enabling; in a consumer product
-    // nobody makes that call, and the cost of leaving it off is the #2274
-    // phantom-screen-time shape. Safe to default on because the gate over an
-    // EMPTY learned baseline is a clean no-op — the learned set only ever removes
-    // anchors, so a new household simply discounts less until learning matures
-    // (pinned in AmbientEmptyBaselineSpec). This field default stays `false`: it
-    // is a JSON-decoding fallback, not the product default.
+    // #2643 proposed defaulting this ON for new households alongside
+    // `blockEncryptedDns` and did NOT ship it, for a reason worth keeping here:
+    // `ambient_host_days` has no `household_id` (V63) and `AmbientHostsRepo
+    // .ambientHosts` reads it unscoped, so a new household on a multi-tenant
+    // install would inherit the FULL baseline learned from other households'
+    // devices on its first request — not the empty one the safety argument
+    // assumed. That inverts the risk from under-filtering to cross-tenant
+    // over-suppression of a household's screen time. Scoping the table (#2583)
+    // is the prerequisite; the flip is tracked separately.
     ambientGateEnabled: Boolean = false,
     ambientIsolationMaxHosts: Int = HouseholdSettings.DefaultAmbientIsolationMaxHosts,
     ambientMinIsolatedDays: Int = HouseholdSettings.DefaultAmbientMinIsolatedDays,
@@ -1100,29 +1101,6 @@ object HouseholdSettings {
    */
   val DefaultBlockEncryptedDns: Boolean = true
 
-  /**
-   * #2643 (operator scope extension): the value the ambient/idle-traffic gate takes for a NEWLY
-   * created household. Same mechanism as [[DefaultBlockEncryptedDns]] above — one constant, named
-   * explicitly by every creation path, with V63's `ambient_gate_enabled … DEFAULT FALSE` column
-   * default left alone as the value for rows written by code that does not name the column.
-   *
-   * ON, because leaving it off means an idle device's background chatter (iCloud sync, photo
-   * upload, OS update, widget refresh) reads as screen time — the #2274 phantom-usage shape. #2077
-   * shipped it off so an operator could inspect the would-be ambient set via `GET
-   * /api/presence/ambient-hosts` before enabling; that review step assumes an operator who calls
-   * API endpoints, which is not who this product is for.
-   *
-   * The flip is safe on a household with NO learned baseline, which is the state every new
-   * household is in for its first days (V63 thresholds: 3 isolated days inside a 14-day window).
-   * `Presence.ambientGatedRowsWithDropCount` uses the learned set in exactly one place, a negated
-   * `contains` in `isHostAnchor`, so growing the set can only ever DROP more — an empty set is the
-   * conservative end of the range, not a wrong answer awaiting correction. What stays live on an
-   * empty set is the two repo-authored code-constant tiers that need no learning: the #2177
-   * `InfraHosts.cloudBackground` class and the non-FQDN byte floor. Pinned in
-   * `AmbientEmptyBaselineSpec`; do not flip this back without re-reading that suite.
-   */
-  val DefaultAmbientGateEnabled: Boolean = true
-
   val DefaultPresenceContinuationSeconds: Int = 120
   // #2077: defaults mirror migration V63 (causally validated on prod — see
   // docs/design/idle-traffic-discrimination.md).
@@ -1158,9 +1136,6 @@ case class UpdateHouseholdSettingsRequest(
     // the V63 values (not "preserve stored") on a full-replace PUT, matching the
     // presenceContinuationSeconds precedent above; the SPA autosave path uses
     // PATCH, which preserves absent fields.
-    // #2643 left this `false` for the same reason as `blockEncryptedDns` above,
-    // and with the same known asymmetry — it is the PUT decode default, not the
-    // new-household default (`HouseholdSettings.DefaultAmbientGateEnabled`).
     ambientGateEnabled: Boolean = false,
     ambientIsolationMaxHosts: Int = HouseholdSettings.DefaultAmbientIsolationMaxHosts,
     ambientMinIsolatedDays: Int = HouseholdSettings.DefaultAmbientMinIsolatedDays,

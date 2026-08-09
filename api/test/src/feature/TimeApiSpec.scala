@@ -2512,10 +2512,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           body   <- resp.body.asString
           parsed <- ZIO.fromEither(body.fromJson[AmbientHostsResponse])
         } yield assertTrue(resp.status == Status.Ok) &&
-          // #2643: the seeded household is a fresh install, so the gate now starts ON. What this
-          // test pins is the learned-window projection and the threshold flags, not the switch —
-          // the endpoint reports the switch's real state either way.
-          assertTrue(parsed.gateEnabled) &&
+          assertTrue(!parsed.gateEnabled) &&
           assertTrue(parsed.minIsolatedDays == 3) &&
           assertTrue(parsed.learningWindowDays == 14) &&
           assertTrue(

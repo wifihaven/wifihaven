@@ -80,15 +80,18 @@ object TestDatabase {
       val st = conn.createStatement()
       // #334: replicate Main.ensureDefault so PolicyService.snapshot/decide can read
       // household_settings during tests. Use UTC so DST doesn't perturb existing expectations.
-      // #2643: `block_encrypted_dns` and `ambient_gate_enabled` are stamped from the ONE
-      // new-household default constant each, exactly as `ensureDefault` does — the template
-      // household is a FRESH install, so it must start where a real fresh install starts. Left
-      // implicit they would take V61's / V63's column defaults (FALSE, the pre-existing-row value)
-      // and every spec bootstrapped off this template would be testing a state no new install is
-      // ever in.
+      // #2643: `block_encrypted_dns` is stamped from the ONE new-household default constant,
+      // exactly as `ensureDefault` does — the template household is a FRESH install, so it must
+      // start where a real fresh install starts. Left implicit it would take V61's column default
+      // (FALSE, the pre-existing-row value) and every spec bootstrapped off this template would be
+      // testing a state no new install is ever in.
+      // This seed runs on a bare JDBC Statement before the transactor exists, so it cannot call
+      // `HouseholdSeed.newHouseholdSettingsRow` the way the household-B fixture below does. It must
+      // therefore be kept in step with `HouseholdSettingsRepoLive.ensureDefault` BY HAND — if a
+      // column is added there, add it here.
       st.execute(
-        "INSERT INTO household_settings (id, daily_reset_time, daily_reset_tz, block_encrypted_dns, ambient_gate_enabled) " +
-          s"VALUES (1, '00:00', 'UTC', ${HouseholdSettings.DefaultBlockEncryptedDns}, ${HouseholdSettings.DefaultAmbientGateEnabled}) ON CONFLICT (id) DO NOTHING",
+        "INSERT INTO household_settings (id, daily_reset_time, daily_reset_tz, block_encrypted_dns) " +
+          s"VALUES (1, '00:00', 'UTC', ${HouseholdSettings.DefaultBlockEncryptedDns}) ON CONFLICT (id) DO NOTHING",
       )
       // #1771: replicate Main.scala's startup seed of the global sentinel profile so
       // PolicyService.snapshot can read it during tests. ON CONFLICT DO NOTHING + V59's
