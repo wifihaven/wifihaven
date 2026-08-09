@@ -308,9 +308,11 @@ object BlockedPageLatencySpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPo
     // with both.
     //
     // One deliberate divergence from the production wiring: both services keep the default
-    // `NoopAmbientHostsRepo`, so the #2077 engagement-anchor gate is Off. It filters presence rows
-    // rather than adding a read, it is Off unless the household setting enables it, and on the
-    // `atls == Nil` branch `gateFor` is never reached — so it cannot move anything asserted here.
+    // `NoopAmbientHostsRepo`, so the #2077 engagement-anchor gate is Off. That cannot move anything
+    // asserted here — the gate filters presence rows rather than adding a read, and `gateFor` is a
+    // no-DB-touch `Off` unless the household master switch is on. (`TimeStatusServiceLive` does
+    // reach `ambientGateFor` on the rollup+tail path; it is `AppUsedRollupServiceLive` that skips it
+    // entirely on the `atls == Nil` branch this test takes.)
     test("with the day rolled (the prod shape), /api/blocked performs NO whole-day presence load") {
       for {
         _        <- cleanDb
