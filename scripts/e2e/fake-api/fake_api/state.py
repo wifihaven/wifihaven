@@ -20,16 +20,26 @@ class RegisterRecord:
     headers: dict[str, str]
 
 
+# #2642: `transport` on the two telemetry records mirrors PolicyFetchRecord's —
+# "http" for a POST /api/router/{events,usage}, "ws" for the same body arriving as
+# an inbound frame. Both land in ONE list so a scenario's observable is
+# transport-agnostic, but the marker keeps the distinction READABLE: without it a
+# regression in which the agent's outbound tee (or the HTTP path) silently stops
+# working is invisible to every telemetry scenario, since the other transport
+# quietly covers for it. It also lets a scenario filter out a record that bled in
+# from a neighbouring scenario over a channel that outlived a reset.
 @dataclass
 class EventRecord:
     id: int
     body: dict[str, Any]
+    transport: str = "http"
 
 
 @dataclass
 class UsageRecord:
     id: int
     body: dict[str, Any]
+    transport: str = "http"
 
 
 @dataclass
@@ -75,6 +85,18 @@ class State:
     # over ws (on-connect + on-change). Lets a scenario assert "the server pushed"
     # from the fake side, complementing the router-side receive observables.
     ws_policy_frames_sent: int = 0
+    # #2642: per-channel pong counter, keyed by the aiohttp WebSocketResponse.
+    # The reset-time liveness probe (`_prune_dead_ws_channels`) pings every
+    # channel and keeps only the ones whose count moves. Managed alongside
+    # ws_connections by register_ws/deregister_ws so the two never diverge.
+    ws_pongs: dict = field(default_factory=dict)
+    # #2642: how long `_prune_dead_ws_channels` waits for a pong before treating
+    # a channel as dead. Sized for the sidecar's recv cadence — it answers a
+    # server ping inline in its recv path, which ticks on `ws.poll_interval`
+    # (1s by default, ws_loop.DEFAULT_POLL_INTERVAL) — with room for a loaded
+    # KVM runner. Exposed as a field so the unit suite can shorten it; nothing
+    # in the qemu harness overrides it.
+    ws_probe_timeout_s: float = 8.0
     _next_event_id: int = 1
     _next_usage_id: int = 1
     _next_policy_fetch_id: int = 1
@@ -123,10 +145,10 @@ class State:
     def record_register(self, body: dict[str, Any], headers: dict[str, str]) -> None:
         self.registers.append(RegisterRecord(body=body, headers=headers))
 
-    def record_event_batch(self, body: dict[str, Any]) -> int:
+    def record_event_batch(self, body: dict[str, Any], *, transport: str = "http") -> int:
         rec_id = self._next_event_id
         self._next_event_id += 1
-        self.events.append(EventRecord(id=rec_id, body=body))
+        self.events.append(EventRecord(id=rec_id, body=body, transport=transport))
         return rec_id
 
     def record_policy_fetch(
@@ -171,10 +193,10 @@ class State:
             transport="ws",
         )
 
-    def record_usage(self, body: dict[str, Any]) -> int:
+    def record_usage(self, body: dict[str, Any], *, transport: str = "http") -> int:
         rec_id = self._next_usage_id
         self._next_usage_id += 1
-        self.usage.append(UsageRecord(id=rec_id, body=body))
+        self.usage.append(UsageRecord(id=rec_id, body=body, transport=transport))
         return rec_id
 
     def set_blocklist(self, id: str, content: str) -> None:
@@ -196,10 +218,25 @@ class State:
     def register_ws(self, ws) -> None:
         """Record a freshly-upgraded /api/router/ws channel."""
         self.ws_connections.add(ws)
+        self.ws_pongs.setdefault(ws, 0)
 
     def deregister_ws(self, ws) -> None:
         """Drop a closed/closing /api/router/ws channel (idempotent)."""
         self.ws_connections.discard(ws)
+        self.ws_pongs.pop(ws, None)
+
+    def note_pong(self, ws) -> None:
+        """Count one pong the peer answered on this channel (#2642).
+
+        A pong is the ONE thing a wedged socket cannot produce: it requires the
+        guest's ws client to have parsed our ping frame off a correctly
+        sequenced stream and written a reply back. `_prune_dead_ws_channels`
+        turns that into the liveness test `reset()` needs.
+        """
+        self.ws_pongs[ws] = self.ws_pongs.get(ws, 0) + 1
+
+    def pong_count(self, ws) -> int:
+        return self.ws_pongs.get(ws, 0)
 
     def note_policy_frame_sent(self) -> None:
         """Count one `policy` frame the fake successfully pushed over ws."""
@@ -215,31 +252,28 @@ class State:
         self._next_usage_id = 1
         self._next_policy_fetch_id = 1
         self.clock_base = None
-        # #1939/#2642: re-base the ws PUSH TALLY, but never the connection set.
+        # #1939/#2642: re-base the ws push tally. The CONNECTION SET is not
+        # touched here — see `_prune_dead_ws_channels` in app.py, which the
+        # /test/reset handler runs first.
         #
-        # This used to `ws_connections.clear()`, on the premise that the
+        # This method used to `ws_connections.clear()`, on the premise that the
         # per-function `router` fixture restores the VM to a base snapshot with
-        # ws OFF — so any channel still in the set had to be a dead socket left
-        # by a prior ws-enabled scenario, and dropping it kept the count honest.
-        # #2608 retired that premise: the base snapshot now boots with ws ON, so
-        # at reset time the set holds a channel that is very much LIVE.
+        # ws OFF, so any channel still in the set had to be a dead socket left by
+        # a prior ws-enabled scenario. #2608 retired that premise: the base
+        # snapshot now boots with ws ON, so at reset time the set can hold a
+        # channel the restored sidecar is still using — and a qemu `loadvm` never
+        # touches the HOST end of the socket, so nothing severs it and nothing
+        # prompts the sidecar to reconnect. A channel cleared here therefore
+        # never comes back, the next `POST /test/snapshot` pushed to an empty set,
+        # and with the agent's poll dormant on a healthy link (#2037) no
+        # transport at all delivered the new etag: the Gate-2
+        # `wait_for_etag_served` timeout in #2642.
         #
-        # It is live because a qemu `loadvm` does not disturb the HOST end of the
-        # socket: it reverts guest memory (including the guest's established TCP
-        # state) in place, so the restored sidecar resumes the SAME connection
-        # the fake is already holding. Nothing severs it and nothing prompts a
-        # reconnect — so a channel cleared here never comes back. The next
-        # `POST /test/snapshot` then pushed to an empty set while the agent's
-        # HTTP poll sat dormant on a healthy link (#2037), leaving no transport
-        # at all to deliver the new etag: the Gate-2 `wait_for_etag_served`
-        # timeout in #2642.
-        #
-        # Liveness is not this method's business, and it cannot be — a restore
-        # is invisible from here. It belongs to register_ws/deregister_ws (the ws
-        # handler's `finally`, which fires when the socket really does die) and
-        # to `_push_policy`'s deregister-on-send-failure. A genuinely dead entry
-        # therefore drops itself on the next push; the cost of keeping it one
-        # push too long is a redundant send, while the cost of dropping a live
-        # one is a scenario with no transport.
+        # Clearing unconditionally is wrong, but so is keeping unconditionally:
+        # a restore can also leave the stream desynchronised, and `send_str` into
+        # a wedged socket SUCCEEDS into the buffer — which `_push_policy` would
+        # then record as a delivery the router never saw, turning a loud timeout
+        # into a silent false pass. Neither guess is available from in here, so
+        # the handler measures instead of guessing (ping → pong).
         self.ws_policy_frames_sent = 0
         # Note: blocklists are intentionally NOT cleared here — see set_blocklist.

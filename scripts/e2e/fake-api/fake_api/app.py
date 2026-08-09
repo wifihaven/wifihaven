@@ -8,6 +8,7 @@ Test-control endpoints (`/test/*`) let pytest scenarios drive the fake.
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import json
 from typing import Any
@@ -144,11 +145,14 @@ async def get_blocklist(request: web.Request) -> web.Response:
 #   - inbound: `usage` and `events` frames are demuxed and recorded into the
 #     SAME state the HTTP handlers write (#2642 — see _handle_inbound_frame),
 #     so a scenario's /test/usage + /test/events observables are satisfied by
-#     either transport. `metrics` and the control ops are drained and
-#     discarded. The real server acks data frames; the agent's drain does NOT
-#     gate on an ack (ws_loop.drain_and_send), so the fake omits acks and lets
-#     aiohttp auto-pong the control pings — keeping the policy pushes the only
-#     sender on the socket, so frames never interleave.
+#     either transport. Those are the only two ops the sidecar can send: the
+#     metrics push stays on HTTP always (ws_outbound.lua's tee matches only
+#     /api/router/{usage,events}). Payloads are recorded unvalidated — the
+#     fake is a delivery observable, and ingest-SCHEMA parity remains Gate 3's
+#     job (lib/ws_send.py against the real API). The real server acks data
+#     frames; the agent's drain does NOT gate on an ack
+#     (ws_loop.drain_and_send), so the fake omits acks and lets aiohttp
+#     auto-pong the agent's control pings.
 
 
 def _policy_frame_text(snapshot: dict[str, Any]) -> str:
@@ -192,6 +196,75 @@ async def _push_policy_to_all(state: State) -> int:
     return pushed
 
 
+async def _prune_dead_ws_channels(
+    state: State, *, timeout_s: float | None = None, interval_s: float = 0.1
+) -> int:
+    """Ping every registered channel and drop the ones that don't pong (#2642).
+
+    Run from `POST /test/reset`, i.e. immediately after the `router` fixture's
+    qemu `loadvm`. A restore is invisible from the server side and leaves the
+    channel in one of two states the fake CANNOT tell apart by inspection:
+
+      - usable — `loadvm` reverts guest memory in place without touching the host
+        end of the socket, so the restored sidecar simply carries on using the
+        connection the fake is already holding. Dropping this one strands the
+        scenario: nothing severed the socket, so the sidecar never reconnects,
+        and a later `POST /test/snapshot` pushes to an empty set while the
+        agent's poll sits dormant on a healthy link (#2037). That was the #2642
+        Gate-2 etag timeout.
+      - wedged — the restored guest's TCP sequence numbers rewind to their
+        snapshot values while the host's have moved on, so the stream can no
+        longer be parsed on one or both ends. `send_str` still SUCCEEDS into the
+        local buffer, so keeping this one is worse than dropping it: the push
+        gets recorded as a delivery (`_push_policy` → `record_policy_push`) that
+        the router never saw, turning a loud timeout into a silent false pass.
+
+    So neither guess is safe, and the fake measures instead. A pong is the one
+    thing a wedged channel cannot produce: it requires the guest's ws client to
+    have parsed our ping off a correctly sequenced stream and written a reply
+    back. The sidecar answers a server ping inline in its recv path
+    (`ws_client.lua`, "Transparently answers server ping→pong"), and its recv
+    loop ticks on `ws.poll_interval` — 1s by default
+    (`ws_loop.DEFAULT_POLL_INTERVAL`) — so a live channel answers well inside
+    the budget here. A channel that doesn't answer is CLOSED, not just dropped:
+    closing pushes a FIN the wedged guest's TCP stack still acts on, so its
+    sidecar notices the dead socket and reconnects promptly instead of sitting
+    on a link only the fake knows is gone.
+
+    Returns the number of channels dropped. Costs nothing on the common path
+    (all channels answer, the poll exits early); the full timeout is only paid
+    when a channel really is dead, which is exactly when waiting is worth it.
+    """
+    if timeout_s is None:
+        timeout_s = state.ws_probe_timeout_s
+    channels = list(state.ws_connections)
+    if not channels:
+        return 0
+    before = {ws: state.pong_count(ws) for ws in channels}
+    pending = []
+    for ws in channels:
+        try:
+            await ws.ping()
+        except Exception:  # noqa: BLE001
+            # An already-closed channel raises here — no probe needed, it is dead.
+            state.deregister_ws(ws)
+            continue
+        pending.append(ws)
+
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout_s
+    while pending and loop.time() < deadline:
+        await asyncio.sleep(interval_s)
+        pending = [ws for ws in pending if state.pong_count(ws) <= before[ws]]
+
+    for ws in pending:
+        state.deregister_ws(ws)
+        try:
+            await ws.close()
+        except Exception:  # noqa: BLE001
+            pass
+    return len(pending)
+
 def _handle_inbound_frame(state: State, text: str) -> None:
     """Demux one inbound `{op, payload}` text frame into the fake's state.
 
@@ -204,12 +277,19 @@ def _handle_inbound_frame(state: State, text: str) -> None:
     those observables transport-agnostic, the same way `record_policy_push`
     keeps the policy-delivery observable transport-agnostic.
 
-    Mirrors the real server's demux (`RouterWsRoutes.scala`): the payload of a
-    `usage`/`events` frame is byte-for-byte the body its REST counterpart takes,
-    and both transports funnel into ONE ingest path rather than a second copy.
-    `metrics` is accepted-and-dropped here because the fake has no metrics
-    surface at all (its `POST /api/router/metrics` 404s), and the control ops
-    are aiohttp's business.
+    The payload of a `usage`/`events` frame is byte-for-byte the body its REST
+    counterpart takes (`ws_outbound.make` wraps the very body it would have
+    POSTed), so recording it needs no translation. That is where the parity with
+    the real server ends: `RouterWsRoutes.scala` decodes the payload, runs it
+    through the shared ingest services, and acks `ok`/`reject` on a typed error,
+    while this records any dict unvalidated. Gate 3's `lib/ws_send.py` owns
+    ingest-schema parity against the real API; a green Gate 2 is delivery
+    evidence, not schema evidence.
+
+    `usage` and `events` are the whole inbound vocabulary the sidecar can
+    produce — the metrics push stays on HTTP always (`ws_outbound.lua`: the tee
+    matches only `/api/router/{usage,events}$`), and the fake has no metrics
+    surface anyway (its `POST /api/router/metrics` 404s).
 
     Never raises: a malformed frame or an unrecognized op is dropped, the
     forward-compat rule (design §1.3) and also plain self-defence — an
@@ -227,9 +307,9 @@ def _handle_inbound_frame(state: State, text: str) -> None:
         return
     op = frame.get("op")
     if op == "usage":
-        state.record_usage(payload)
+        state.record_usage(payload, transport="ws")
     elif op == "events":
-        state.record_event_batch(payload)
+        state.record_event_batch(payload, transport="ws")
 
 
 async def get_ws(request: web.Request) -> web.StreamResponse:
@@ -238,7 +318,13 @@ async def get_ws(request: web.Request) -> web.StreamResponse:
     if _bearer_token(request) is None:
         return web.json_response({"error": "Missing router token"}, status=401)
     state: State = request.app[STATE_KEY]
-    ws = web.WebSocketResponse()
+    # autoping=False so the read loop below SEES control frames. aiohttp's
+    # default handles PING/PONG internally and never surfaces them, which would
+    # hide the pong `_prune_dead_ws_channels` needs as its liveness signal
+    # (verified against aiohttp 3.14: with autoping on, a peer's pong is
+    # swallowed). The cost is that the loop must answer the sidecar's own
+    # heartbeat ping itself — see below.
+    ws = web.WebSocketResponse(autoping=False)
     await ws.prepare(request)
     state.register_ws(ws)
     # #1849 first-policy-on-connect push.
@@ -253,6 +339,16 @@ async def get_ws(request: web.Request) -> web.StreamResponse:
             # BINARY is never sent by the agent (ws_loop sends text frames only).
             if msg.type == WSMsgType.TEXT:
                 _handle_inbound_frame(state, msg.data)
+            elif msg.type == WSMsgType.PING:
+                # The sidecar's heartbeat (design §5.5, ws.heartbeat_interval).
+                # With autoping off this is ours to answer, and it must be
+                # answered: the real server does, and the sidecar treats the
+                # pong as its liveness ack (ws_client.lua).
+                await ws.pong(msg.data)
+            elif msg.type == WSMsgType.PONG:
+                # #2642: the reply to `_prune_dead_ws_channels`' liveness ping —
+                # the one thing a wedged channel cannot produce.
+                state.note_pong(ws)
     finally:
         state.deregister_ws(ws)
     return ws
@@ -291,13 +387,20 @@ async def test_get_events(request: web.Request) -> web.Response:
         for ev in b.body.get("events", []) or []:
             ev_copy = copy.deepcopy(ev)
             ev_copy["_batchId"] = b.id
+            # #2642: which transport carried the batch — "http" for a POST,
+            # "ws" for an inbound frame. Underscore-prefixed like _batchId
+            # because it is harness bookkeeping, not part of the event body.
+            ev_copy["_transport"] = b.transport
             flat.append(ev_copy)
     if mac is not None:
         flat = [e for e in flat if e.get("mac") == mac]
 
     return web.json_response(
         {
-            "batches": [{"id": b.id, "body": b.body} for b in batches],
+            "batches": [
+                {"id": b.id, "body": b.body, "transport": b.transport}
+                for b in batches
+            ],
             "events": flat,
         }
     )
@@ -314,7 +417,12 @@ async def test_get_usage(request: web.Request) -> web.Response:
             raise web.HTTPBadRequest(reason="since_id must be an integer")
         reports = [r for r in reports if r.id > cutoff]
     return web.json_response(
-        {"reports": [{"id": r.id, "body": r.body} for r in reports]}
+        {
+            "reports": [
+                {"id": r.id, "body": r.body, "transport": r.transport}
+                for r in reports
+            ]
+        }
     )
 
 
@@ -409,8 +517,15 @@ async def test_get_ws_status(request: web.Request) -> web.Response:
 
 async def test_post_reset(request: web.Request) -> web.Response:
     state: State = request.app[STATE_KEY]
+    # #2642: probe the ws channels BEFORE clearing the record lists, so a pong
+    # arriving mid-probe can't drop a telemetry record into the next scenario's
+    # freshly-cleared lists. The probe is what decides which channels survive a
+    # VM restore; `state.reset()` deliberately does not touch the set.
+    dropped = await _prune_dead_ws_channels(state)
     state.reset()
-    return web.json_response({"ok": True, "etag": state.etag})
+    return web.json_response(
+        {"ok": True, "etag": state.etag, "wsDropped": dropped}
+    )
 
 
 async def test_post_clock(request: web.Request) -> web.Response:

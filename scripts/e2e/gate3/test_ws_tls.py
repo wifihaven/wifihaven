@@ -110,10 +110,17 @@ def _reset_ws_metrics() -> None:
     months only because a default-OFF sidecar left the baseline at 0.
 
     Clearing the file up front removes the need for a baseline at all: any count
-    observed afterwards is new. It also closes the read-the-stale-file window —
-    between the restart and the sidecar's first flush the OLD file is still on
-    disk, so a poll could otherwise see the previous run's counts and pass
-    without a single fresh connect.
+    observed afterwards is new.
+
+    What makes that sound is the sidecar's own startup, not this `rm`: a fresh
+    instance builds an empty tally and flushes it before connecting
+    (`openwrt/files/usr/sbin/wifihaven-ws`, the `ws_metrics.new()` →
+    `set(ws_state, 0)` → `flush` sequence), so the file the poll below reads
+    cannot carry a pre-restart count. The `rm` narrows the window rather than
+    closing it — between the `rm` and the restart the still-running default-on
+    sidecar flushes on every `inc`, so it can briefly re-create the file with its
+    old counts — which is why the assertion is written against the post-restart
+    tally and the restart is what it depends on.
     """
     router_ssh(f"rm -f {WS_METRICS_PATH}", check=False, timeout=10)
 
