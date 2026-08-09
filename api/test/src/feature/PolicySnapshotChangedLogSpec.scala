@@ -54,10 +54,43 @@ object PolicySnapshotChangedLogSpec
       clock  <- ZIO.service[Clock]
     } yield PolicyServiceLive(pr, hsr, tlr, atlr, dr, blr, trRepo, er, ar, clock): PolicyService
 
+  // Every household is `lapsed`, so `buildSnapshot` takes the permissive branch for both. This is
+  // the ONE path where two tenants share an ETag, so it is the one the ETag-keyed assertions below
+  // cannot cover — it is checked by household instead.
+  private def makeLapsedPolicyService =
+    for {
+      pr     <- ZIO.service[ProfileRepo]
+      hsr    <- ZIO.service[HouseholdSettingsRepo]
+      tlr    <- ZIO.service[TimeLimitRepo]
+      atlr   <- ZIO.service[AppTimeLimitRepo]
+      dr     <- ZIO.service[DeviceRepo]
+      blr    <- ZIO.service[BlocklistRepo]
+      trRepo <- ZIO.service[TrafficReportRepo]
+      er     <- ZIO.service[TimeExtensionRepo]
+      ar     <- ZIO.service[AppRepo]
+      clock  <- ZIO.service[Clock]
+    } yield PolicyServiceLive(
+      pr,
+      hsr,
+      tlr,
+      atlr,
+      dr,
+      blr,
+      trRepo,
+      er,
+      ar,
+      clock,
+      billingStatusOf = _ => ZIO.succeed(Some("lapsed")),
+    ): PolicyService
+
+  private def changedLines(logs: Chunk[ZTestLogger.LogEntry]): Chunk[ZTestLogger.LogEntry] =
+    logs.filter(_.annotations.get(LogContext.Op).contains("snapshot_changed"))
+
   private def changedEtags(logs: Chunk[ZTestLogger.LogEntry]): Chunk[String] =
-    logs
-      .filter(_.annotations.get(LogContext.Op).contains("snapshot_changed"))
-      .flatMap(_.annotations.get(LogContext.Etag))
+    changedLines(logs).flatMap(_.annotations.get(LogContext.Etag))
+
+  private def changedHouseholds(logs: Chunk[ZTestLogger.LogEntry]): Chunk[String] =
+    changedLines(logs).flatMap(_.annotations.get(LogContext.Household))
 
   def spec = suite("#2653 snapshot_changed log dedupe is per household")(
     test("two households rebuilt alternately with UNCHANGED policy log one line EACH") {
@@ -106,6 +139,31 @@ object PolicySnapshotChangedLogSpec
         assertTrue(etags.count(_ == etagA2) == 1) &&
         assertTrue(etags.count(_ == etagB) == 1) &&
         assertTrue(etags.size == 3)
+      })
+        .provideSome[TestDatabase.AllRepos & EmbeddedPostgres & Clock & Transactor[Task]](
+          ZTestLogger.default,
+        )
+    },
+    test("two lapsed households each log once even though they share ONE permissive ETag") {
+      (for {
+        _     <- cleanDb
+        two   <- TestLayers.seedTwoHouseholds(macA, macB)
+        ps    <- makeLapsedPolicyService
+        // The permissive snapshot hashes an all-empty core, so both households produce the SAME
+        // etag. That makes this the one path where a shared dedupe slot silently drops a tenant's
+        // line entirely rather than doubling it, and the one the etag-keyed cases above cannot
+        // see. Attribution is by the `household` annotation instead.
+        snapA <- ps.snapshot(two.hhA)
+        snapB <- ps.snapshot(two.hhB)
+        _     <- ps.snapshot(two.hhA) *> ps.snapshot(two.hhB)
+        logs  <- ZTestLogger.logOutput
+      } yield {
+        val hhs = changedHouseholds(logs)
+        assertTrue(snapA.etag == snapB.etag) &&
+        assertTrue(hhs.count(_ == two.hhA.value.toString) == 1) &&
+        assertTrue(hhs.count(_ == two.hhB.value.toString) == 1) &&
+        assertTrue(hhs.size == 2) &&
+        assertTrue(changedEtags(logs).distinct.size == 1)
       })
         .provideSome[TestDatabase.AllRepos & EmbeddedPostgres & Clock & Transactor[Task]](
           ZTestLogger.default,

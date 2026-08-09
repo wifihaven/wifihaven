@@ -229,7 +229,7 @@ class PolicyServiceLive(
 ) extends PolicyService {
 
   // #1849: the cached snapshot. Process-local `AtomicReference` (matching the existing
-  // `lastSnapshotEtag` style in this class) so the `apply` factory stays a pure constructor.
+  // `lastSnapshotEtags` style in this class) so the `apply` factory stays a pure constructor.
   // Refreshed by `reevaluate`.
   //
   // #2107 (multi-tenant, epic #622): the cache is keyed BY HOUSEHOLD so one household can never
@@ -602,9 +602,12 @@ class PolicyServiceLive(
   // {lapsed, enforcement_disabled} labels `policy_permissive_snapshot_total`. Still records the
   // normal `recordSnapshotBuild("computed")` + global-policy gauge so the cache-hit ratio and the
   // global-policy gauge stay coherent (a permissive snapshot has an empty global section).
-  // #2653: takes the household purely so the snapshot-changed log dedupes per tenant. Permissive
-  // snapshots are byte-identical across households, so a shared slot would have let one lapsed
-  // household's line suppress every other's — the same eviction bug, in the other direction.
+  // #2653: takes the household purely so the snapshot-changed log dedupes per tenant. Every
+  // permissive snapshot SHARES ONE ETAG — `permissiveSnapshot` hashes an all-empty `SnapshotCore`
+  // and `generatedAt` is not part of the hash — so a shared slot would have let the first lapsed
+  // household's line suppress every other's. The same eviction bug, in the other direction, and
+  // the one path where the ETag alone cannot tell two tenants' lines apart (hence the `household`
+  // annotation on the log line).
   private def permissiveBuild(household: HouseholdId, reason: String): Task[PolicySnapshot] =
     clock.instant.flatMap { now =>
       val snap = PolicyService.permissiveSnapshot(now)
