@@ -398,6 +398,82 @@ stated alongside.
   Plain" ([#2437](https://github.com/wifihaven/wifihaven/issues/2437)) is a
   different series with a different remediation, and stays panel-only for now.
 
+*(W9, "a household was skipped by a rollup tick"
+([#2553](https://github.com/wifihaven/wifihaven/issues/2553)), ships in
+`infra/grafana/alerting-rules-warning.tf` but has no write-up here yet.)*
+
+**W10. Router stuck on an old agent version**
+([#2646](https://github.com/wifihaven/wifihaven/issues/2646))
+- Query:
+  ```promql
+  count by (router_id) (
+    count by (router_id, version) (last_over_time(agent_version{env="prod"}[30d]))
+      and on (version) count by (version) (agent_version{env="prod"})
+  )
+    < on() group_left()
+  count(count by (version) (agent_version{env="prod"}))
+  ```
+- Fire when the comparison yields any series (`> 0`) **for 24h**.
+- Rationale: a router that stops self-updating looks completely healthy — the
+  agent runs, enforces, reports usage and keeps `last_seen_at` fresh, it just
+  never installs another package. The failure is an *absence*, so nothing
+  surfaced it before this rule. It is not only feature drift: the agent is how
+  security fixes reach the fleet
+  ([#2078](https://github.com/wifihaven/wifihaven/issues/2078)), so a stuck
+  router never receives one. Found live during
+  [#2527](https://github.com/wifihaven/wifihaven/issues/2527)'s prod
+  validation: router `3498967e` sat four days on `0.3.26` while `f04dd490`,
+  same fleet and same release channel, took `0.3.27` within the hour.
+- **Update staleness, not version skew, and no pinned target version.** A
+  hardcoded "current version" in the rule is stale-by-construction — exactly
+  the forgotten-to-bump failure the rule exists to catch. The alternative
+  shape (rank routers by version, alert on anything below the max) needs a
+  semver **ordering**, which Prometheus cannot do on a label string; it would
+  mean emitting a numeric companion gauge
+  (`major*10000 + minor*100 + patch`). Rejected — the signal already exists,
+  and adding a metric purely to encode an ordering the rule does not need is
+  the wrong trade (§2).
+- **How it reads.** `agent_version` is an info gauge (constant `1` carrying the
+  version as a label), so a router that upgrades leaves *both* series in the
+  lookback window: the version it left and the version it took. That history is
+  the whole trick. The inner term is the set of versions this router reported
+  in the last 30d intersected with the versions currently live anywhere in the
+  fleet; the right-hand term is how many distinct versions are live fleet-wide.
+  A router fires when some version a peer is running *right now* is one it has
+  never run. Direction falls out without any ordering: the router that moved
+  first also ran the old version earlier in the window, so a rollout in
+  progress never flags the leader. The intersection (rather than a plain
+  count-vs-count) matters — a laggard that upgraded once early in the window
+  and then froze has two versions in history, and a bare cardinality
+  comparison would miss it.
+- **`for: 24h`.** Updates run from an hourly jittered cron
+  (`0 * * * * /usr/sbin/wifihaven-update --jitter`, `openwrt/Makefile:175`), so
+  normal rollout skew lasts minutes to an hour. A day of grace is generous and
+  still catches "stopped forever", which is the condition being detected. A
+  rule that pages on every release trains the operator to ignore the one signal
+  that matters. Verified against prod Prometheus: the expression went true
+  ~1h after `0.3.27` shipped (2026-08-05T15:07:15Z) and stayed continuously
+  true for 3.5 days, for `3498967e` only.
+- **Cardinality.** `agent_version` carries `router_id`, per-router and so
+  unbounded in principle. It sits outside the bounded-label-enum rule in
+  [`docs/process/instrumentation.md`](../process/instrumentation.md) because
+  the label is agent-pushed rather than server-derived, and the metric predates
+  this rule (`api/src/metrics/Metrics.scala` allowlists
+  `version`/`router_id`/`installation_id`). Fine at the current fleet size; the
+  note exists so it reads as a considered exception at 500 routers, not an
+  oversight.
+- **Known limits, both accepted.** (1) Fleet-relative, so it cannot detect a
+  fleet where *every* router is stuck on the same old version — closing that
+  needs a comparison against the published release rather than against peers.
+  (2) If a split persists past the 30d lookback, the healthy router's memory of
+  the old version ages out and it flags too; noisy, but only after a month of
+  an unfixed W10, and it clears when the laggard catches up.
+- Paired panels (per
+  [`docs/process/instrumentation.md#metrics-need-a-dashboard`](../process/instrumentation.md#metrics-need-a-dashboard)):
+  "Fleet agent-version distribution" and "Routers lagging the fleet
+  (expect empty)", the latter running the rule's own expression, on the
+  router-fleet dashboard.
+
 ## 8. Gaps — metrics not yet emitted
 
 These are alerts worth having whose metric does not (reliably) exist yet. They
@@ -436,8 +512,10 @@ Filed under the **Alerting & Paging** epic, one per coherent chunk:
 4. **[#1404](https://github.com/wifihaven/wifihaven/issues/1404) — First
    warning rule set** ([§7.2](#72-warning--notify-look-today)): W1–W4
    (+ W5 disabled, bound to its readiness issue). Extended by
-   [#2416](https://github.com/wifihaven/wifihaven/issues/2416) with W6–W7, and
-   by [#2488](https://github.com/wifihaven/wifihaven/issues/2488) with W8.
+   [#2416](https://github.com/wifihaven/wifihaven/issues/2416) with W6–W7, by
+   [#2488](https://github.com/wifihaven/wifihaven/issues/2488) with W8, by
+   [#2553](https://github.com/wifihaven/wifihaven/issues/2553) with W9, and by
+   [#2646](https://github.com/wifihaven/wifihaven/issues/2646) with W10.
 5. **[#1405](https://github.com/wifihaven/wifihaven/issues/1405) —
    Deploy-failure signal** ([§8](#8-gaps--metrics-not-yet-emitted)): extend
    `deploy-webhook` to emit `render_deploy_total{lifecycle}` (or adopt native

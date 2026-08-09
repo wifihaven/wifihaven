@@ -104,7 +104,7 @@ too:
   group needs a concrete, non-empty folder, so this one is managed in-repo
   (idempotent now that the HCP backend owns its state).
 - **Warning rule group** ([`alerting-rules-warning.tf`](alerting-rules-warning.tf),
-  #1405, #2416, #2488) — W1–W8 (§7.2). W5 ships **disabled** (`is_paused`)
+  #1405, #2416, #2488, #2553, #2646) — W1–W10 (§7.2). W5 ships **disabled** (`is_paused`)
   because its series is router-pushed and not yet trustworthy in prod (§8,
   #1382). W6–W8 shipped enabled while the support/press responders were still
   flag-off in prod, so they armed themselves when #2537 flipped those flags — no

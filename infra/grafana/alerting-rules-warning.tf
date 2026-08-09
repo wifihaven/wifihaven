@@ -1,6 +1,6 @@
-# Warning (notify, look-today) alert rules — W1–W9
-# (W1–W5: #1405, parent #1381. W6–W7: #2416. W8: #2488. W9: #2553.) Implements
-# docs/design/alerting.md §7.2.
+# Warning (notify, look-today) alert rules — W1–W10
+# (W1–W5: #1405, parent #1381. W6–W7: #2416. W8: #2488. W9: #2553. W10: #2646.)
+# Implements docs/design/alerting.md §7.2.
 #
 # Every expression is grounded in a series emitted today (§2 "alert only on
 # series that exist"; grep api/src) — except W5, which is shipped DISABLED
@@ -26,7 +26,12 @@
 #     They begin covering the moment that webhook is configured, again with no
 #     rule change — which is the point of shipping them unpaused.
 #
-# All nine carry severity=warning + env=prod labels, which the notification
+# W10 (#2646) is a fourth case and the only rule here that is NOT a counter: it
+# is a set comparison over an info gauge, and it alerts on an ABSENCE (a router
+# that stopped updating) rather than on an error being counted. Read its own
+# comment block below before changing it.
+#
+# All ten carry severity=warning + env=prod labels, which the notification
 # policy in alerting.tf routes to the wifihaven-warning (email) contact point.
 # None of these are ratio queries, so unlike the critical set (§7.1) they need
 # no zero-traffic guard — a counter that never increments is simply absent
@@ -38,8 +43,9 @@
 # and the rate/increase window come straight from §7.2.
 
 locals {
-  # Keyed w1..w9 (stable resource addressing). `window_s` bounds the data fetch
-  # and must cover the rate/increase window in `expr`. `paused` ships W5 off.
+  # Keyed w1..w10 (stable resource addressing). `window_s` bounds the data fetch
+  # and must cover the rate/increase window in `expr` (for W10, its
+  # `last_over_time` lookback). `paused` ships W5 off.
   warning_rules = {
     w1 = {
       title    = "W1 Rollup failures"
@@ -156,6 +162,71 @@ locals {
       for      = "15m"
       paused   = false
       summary  = "One tenant's slice of an all-tenant rollup tick was skipped (#2553), so that household's screen time has stopped updating while the run itself still records status=ok — W1 CANNOT catch this. Never self-heals for reason=settings_read, which is almost always a household with no household_settings row (#2386, a provisioning bug): every tick will skip it again. Find the household id in the ERROR log (`... tick skipped household N`) — it is deliberately not a metric label. See the rollup-health dashboard."
+    }
+    # W10 (#2646) — a router that silently STOPPED SELF-UPDATING. The agent keeps
+    # running, enforcing, reporting usage and refreshing last_seen_at; it just never
+    # installs another package. Nothing today surfaces that, because the failure is an
+    # absence. It matters beyond feature drift: the agent is how security fixes reach
+    # the fleet (#2078 package signing), so a stuck router never receives one. Found
+    # live during #2527's prod validation — router 3498967e sat four days on 0.3.26
+    # while f04dd490, same fleet and same release channel, took 0.3.27 within the hour.
+    #
+    # SHAPE — update staleness, not version skew, and deliberately NOT a pinned target
+    # version. A hardcoded "current version" in an alert rule is stale-by-construction:
+    # it is exactly the class of forgotten-to-bump failure this rule exists to catch.
+    # The other candidate (#2646's option (a), rank routers by version and alert on
+    # anything below max) needs a semver ORDERING, which Prometheus cannot do on a
+    # label string — it would require emitting a new numeric companion gauge
+    # (major*10000+minor*100+patch). Rejected: the signal already exists, and adding a
+    # metric to encode an ordering the alert does not actually need is the wrong trade.
+    #
+    # HOW IT READS — `agent_version` is an info gauge (constant 1 carrying the version
+    # as a label), so a router that upgrades leaves BOTH series in the lookback window:
+    # the version it left and the version it took. That history is the whole trick.
+    #   inner  = the set of versions this router reported at any point in the last 30d,
+    #            intersected (`and on (version)`) with the versions CURRENTLY live
+    #            anywhere in the fleet.
+    #   right  = how many distinct versions are currently live fleet-wide.
+    # Fire when a router's intersection is SMALLER than the fleet's current version set
+    # — i.e. some version a peer is running right now is one this router has never run.
+    # A router that took the upgrade has both in its history and does not fire; a router
+    # that missed it has only the old one and does. Direction falls out for free without
+    # any ordering: the router that moved FIRST also ran the old version earlier in the
+    # window, so a rollout in progress never flags the leader.
+    # The intersection (rather than a plain count-vs-count) matters: a laggard that
+    # upgraded once early in the window and then froze has TWO versions in history, and
+    # a bare cardinality comparison would miss it.
+    #
+    # WHY for = 24h — updates run from an hourly jittered cron
+    # (`0 * * * * /usr/sbin/wifihaven-update --jitter`, openwrt/Makefile:175), so normal
+    # rollout skew lasts minutes to an hour. A day of grace is generous and still catches
+    # "stopped forever", which is the actual condition. A rule that pages during every
+    # release trains the operator to ignore the one signal that matters. Verified against
+    # prod: the expression went true ~1h after 0.3.27 shipped (2026-08-05T15:07:15Z) and
+    # stayed continuously true for 3.5 days for 3498967e only.
+    #
+    # CARDINALITY — `agent_version` carries `router_id`, which is per-router and so
+    # unbounded in principle. This sits OUTSIDE the bounded-label-enum rule in
+    # docs/process/instrumentation.md because the label is agent-pushed, not
+    # server-derived, and the metric predates this rule (api/src/metrics/Metrics.scala
+    # allowlists version/router_id/installation_id). Fine at current fleet size; this
+    # note exists so whoever reads it at 500 routers knows it was weighed, not missed.
+    #
+    # KNOWN LIMITS, both accepted:
+    #   - Fleet-relative, so it CANNOT detect a fleet where every router is stuck on the
+    #     same old version. Closing that needs a comparison against the published
+    #     release (a GitHub-release-derived series), not a peer comparison.
+    #   - If a split persists past the 30d lookback, the healthy router's memory of the
+    #     old version ages out and it flags too — noisy, but only after a month of an
+    #     unfixed W10, and it clears the moment the laggard catches up.
+    w10 = {
+      title    = "W10 Router stuck on an old agent version"
+      expr     = "count by (router_id) (count by (router_id, version) (last_over_time(agent_version{env=\"prod\"}[30d])) and on (version) count by (version) (agent_version{env=\"prod\"})) < on() group_left() count(count by (version) (agent_version{env=\"prod\"}))"
+      window_s = 2592000
+      gt       = 0
+      for      = "24h"
+      paused   = false
+      summary  = "A router has not taken an agent update that the rest of the fleet already has, for a full day — it is running a version no peer is on and has never reported the version they are on. The agent otherwise looks healthy (last_seen_at fresh, policy applied, usage reported), which is why nothing else catches this. It will never receive a security fix until someone intervenes. Check the router-fleet dashboard 'Routers lagging the fleet' panel for the router_id, then on the box: `wifihaven-update` by hand and read the failure. A common cause is a missing /etc/wifihaven/keys/release.pub (signature verification fails closed, #2078) after a pre-#2559 uninstall/reinstall (#2554)."
     }
   }
 }
