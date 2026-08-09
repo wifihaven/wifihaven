@@ -33,17 +33,22 @@ object SupportPromptRefusalSpec extends ZIOSpecDefault {
   private val prompt: String =
     new String(Files.readAllBytes(repoRoot.resolve("deploy/support-agent/agent.yaml")))
 
+  /** The step's own label, at the two-space indent every numbered step in the block carries. */
+  private val Anchor = "\n  6b."
+
   /**
-   * The `6b.` step, from its label to the blank line that ends it. Two assumptions, both of which
-   * fail CLOSED rather than silently widening the window: the label is line-initial (step 5's
-   * cross-reference writes it `(6b)`, without the period, so it is not matched — a later edit that
-   * wrote `see 6b.` would retarget this to step 5, whose text satisfies neither assertion below),
-   * and the step is one blank-line-delimited paragraph.
+   * The `6b.` step, from its label to the blank line that ends it. Two assumptions, and both fail
+   * CLOSED — a broken one empties or truncates the window and the assertions below go red, rather
+   * than silently widening it onto neighbouring steps that would satisfy them by accident (step 6
+   * says "our PUBLIC repo", step 2 says "data access"). The assumptions: the step's label sits at
+   * the start of a line indented exactly two spaces, so a mid-line mention like step 5's `(6b)`
+   * cross-reference cannot retarget the window (reindent the `system:` block and this misses); and
+   * the step is one blank-line-delimited paragraph.
    */
   private val stepSixB: String = {
-    val start = prompt.indexOf("\n  6b.") match {
+    val start = prompt.indexOf(Anchor) match {
       case -1 => -1
-      case i  => i + 3
+      case i  => i + Anchor.length - "6b.".length
     }
     if start < 0 then ""
     else {
