@@ -1,7 +1,7 @@
 package wifihaven.api.press
 
 import wifihaven.api.PressOutreachConfig
-import wifihaven.api.notify.{EmailOutcome, EmailSender}
+import wifihaven.api.notify.{EmailMarkdown, EmailOutcome, EmailSender}
 import org.yaml.snakeyaml.LoaderOptions
 import org.yaml.snakeyaml.Yaml
 import org.yaml.snakeyaml.constructor.SafeConstructor
@@ -233,19 +233,14 @@ object PressOutreach {
        |Best,
        |Sameer — WifiHaven""".stripMargin
 
-  /** Escape text for safe inclusion in the HTML email body. */
-  private def esc(s: String): String =
-    s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-
-  /** Wrap a blank-line-separated plain-text block into escaped `<p>`…`</p>` paragraphs. */
-  private def paragraphs(text: String): String =
-    text
-      .split("\r?\n\r?\n")
-      .toList
-      .map(_.trim)
-      .filter(_.nonEmpty)
-      .map(p => s"<p>${esc(p).replace("\n", "<br>")}</p>")
-      .mkString("\n")
+  /**
+   * Render a blank-line-separated plain-text/markdown block into escaped paragraphs.
+   *
+   * #2677: this was a second copy of the responder's `htmlBody` and carried the same defect —
+   * escape and wrap, never render — so the release's markdown would have reached journalists as
+   * literal markers the first time #2233 sent. Both now call the one renderer.
+   */
+  private def paragraphs(text: String): String = EmailMarkdown.render(text)
 
   /**
    * Render one contact's email. `resolvedReleaseBody` is the already-filled release; `to` is the

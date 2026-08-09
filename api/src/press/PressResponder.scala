@@ -6,6 +6,7 @@ import wifihaven.api.auth.RateLimiter
 import wifihaven.api.db.PressMessageRepo
 import wifihaven.api.metrics.AppMetrics
 import wifihaven.api.notify.{
+  EmailMarkdown,
   EmailOutcome,
   EmailSender,
   EscalationChannel,
@@ -520,24 +521,16 @@ object PressResponder {
   }
 
   /**
-   * Wrap the agent's plain-text/markdown reply in minimal, HTML-escaped body so [[EmailSender]]
-   * (which sends `htmlBody`) renders it safely — the reply text is HTML-escaped so nothing the
-   * agent wrote can inject markup into the outgoing email. Newlines become paragraph breaks.
+   * Render the agent's plain-text/markdown reply into the HTML body [[EmailSender]] sends.
+   *
+   * #2677: this used to escape and paragraph-wrap only, so the agent's `**bold**` reached the
+   * journalist as literal asterisks. [[wifihaven.api.notify.EmailMarkdown]] now renders a closed
+   * allowlist of markdown constructs OVER the same escape — the escape still runs first and is
+   * still what keeps agent-authored (and therefore journalist-influenced, #2667) text from becoming
+   * markup in the outgoing email. It is the shared renderer, so the outreach path (#2233) cannot
+   * drift back into the second copy this fix collapsed.
    */
-  def htmlBody(markdown: String): String = {
-    val escaped = markdown
-      .replace("&", "&amp;")
-      .replace("<", "&lt;")
-      .replace(">", "&gt;")
-    val paras   = escaped
-      .split("\r?\n\r?\n")
-      .toList
-      .map(_.trim)
-      .filter(_.nonEmpty)
-      .map(p => s"<p>${p.replace("\n", "<br>")}</p>")
-      .mkString("\n")
-    if paras.isEmpty then "<p></p>" else paras
-  }
+  def htmlBody(markdown: String): String = EmailMarkdown.render(markdown)
 
   /** Bounded outcome enum for the webhook path — the `press_ai_draft_total{outcome}` label set. */
   enum WebhookOutcome   {
