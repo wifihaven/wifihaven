@@ -50,6 +50,7 @@ jobs:
       grafana-tf: ${{ steps.filter.outputs.grafana-tf || steps.force.outputs.all }}
       cloudflare-tf: ${{ steps.filter.outputs.cloudflare-tf || steps.force.outputs.all }}
       agent-prompts: ${{ steps.filter.outputs.agent-prompts || steps.force.outputs.all }}
+      press-worker: ${{ steps.filter.outputs.press-worker || steps.force.outputs.all }}
     steps:
       - name: Force full matrix for CD / manual triggers
         id: force
@@ -184,6 +185,11 @@ jobs:
             cloudflare-tf:
               - '.github/workflows/ci.yml'
               - 'infra/cloudflare/**'
+            # #2442: the press Email Worker carries the auto-reply/DSN loop guard, and
+            # master-press-worker.yml only DEPLOYS it — nothing ran its tests before merge.
+            press-worker:
+              - '.github/workflows/ci.yml'
+              - 'deploy/press-worker/**'
             migrations:
               - '.github/workflows/ci.yml'
               - '.github/scripts/check-migrations.sh'
@@ -875,6 +881,39 @@ jobs:
       - name: Build
         run: npm run build
 
+  # ── Press Email Worker: typecheck + unit tests ───────────────────────────
+  # #2442. master-press-worker.yml only deploys this Worker, so until now nothing
+  # ran against it before merge. The loop guard it now carries decides whether a
+  # press message reaches a journalist at all, which is exactly the kind of logic
+  # that must not ship on a deploy-only pipeline.
+  press-worker:
+    name: Press Worker Tests
+    needs: changes
+    if: needs.changes.outputs.press-worker == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: deploy/press-worker
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Node 22
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: deploy/press-worker/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: TypeScript type check
+        run: npm run typecheck
+
+      - name: Vitest
+        run: npm test
+
   # ── Umbrella gating job ──────────────────────────────────────────────────
   # Branch protection requires this single check. It depends on every
   # downstream job and passes when each one is either successful, skipped
@@ -904,6 +943,7 @@ jobs:
       - cloudflare-terraform
       - actionlint
       - frontend
+      - press-worker
     runs-on: ubuntu-latest
     steps:
       - name: Verify all required jobs succeeded or were skipped

@@ -5,10 +5,11 @@ vendor. Cloudflare Email Routing catches the address and runs [`src/index.ts`](s
 message. The Worker is deliberately thin:
 
 1. parse the inbound email (sender, subject, text),
-2. build a small JSON envelope `{from, subject, text, messageId}`,
-3. HMAC-SHA256-sign the raw body under the secret it **shares** with the API
+2. classify it against the auto-reply/DSN markers ([`src/loop-guard.ts`](src/loop-guard.ts), #2442),
+3. build a small JSON envelope `{from, subject, text, messageId, loopGuard}`,
+4. HMAC-SHA256-sign the raw body under the secret it **shares** with the API
    (`press.webhookSecret`), in the `X-WifiHaven-Signature` header,
-4. `POST` it to `${PRESS_API_URL}/api/press/inbound`.
+5. `POST` it to `${PRESS_API_URL}/api/press/inbound`.
 
 The **API** does everything else: it verifies the signature, dispatches an Anthropic Managed Agents
 **press session** (persona in [`../press-agent/`](../press-agent/)), and — when the agent posts its
@@ -30,6 +31,39 @@ wifihaven-press-worker  ──HMAC-signed POST──▶  POST /api/press/inbound
                                                      ▼
                                             API emails the reply → the original sender (Resend)
 ```
+
+## Auto-reply / DSN loop guard (#2442)
+
+Prod's press **From and Reply-To are both `press@wifihaven.net`** — the address Email Routing binds
+to this Worker — and the prod responder is enabled (#2537). So anything that auto-replies to a reply
+we send comes straight back here: an out-of-office, a newsroom ticketing acknowledgement, a
+bounce/DSN. Answer it and it answers back.
+
+[`src/loop-guard.ts`](src/loop-guard.ts) classifies each inbound message from its headers and the
+SMTP envelope sender, and stamps the verdict on the envelope as `loopGuard`:
+
+| marker | trips on |
+|---|---|
+| `auto_submitted` | `Auto-Submitted:` with any value other than `no` (RFC 3834) |
+| `precedence` | `Precedence: bulk` / `auto_reply` / `junk` |
+| `x_auto_response_suppress` | `X-Auto-Response-Suppress:` present |
+| `list_id` | `List-Id:` present |
+| `null_return_path` | `Return-Path: <>` (or empty), or an empty envelope `MAIL FROM` — the DSN signature |
+
+The **API** enforces it: a non-empty `loopGuard` skips dispatch entirely (`PressResponder`), so no
+agent session is created and no reply is sent. It is read *before* the `from`/`text` requirement,
+because a bounce has neither — pre-#2442 those landed in `outcome=malformed`, indistinguishable from
+a broken Worker.
+
+The skip is **not** silent (#2265/#2266). Every one lands on `press_loop_guard_total{marker}` and on
+`press_ai_draft_total{outcome="skipped_auto_submitted"}`, both on the Press Grafana dashboard, plus a
+`console.warn` here naming the sender (Workers Logs, on since #2673) — the counter deliberately
+carries no address. That log line is how you check whether a rising count is autoresponders or a
+journalist we wrongly ignored.
+
+Deliberately **not** in the skip set: `Precedence: list` / `first-class` / `normal`, `Auto-Submitted:
+no`, and any of these header names carrying an empty value. Wrongly dropping a reporter is the worse
+failure, so the classifier errs toward delivering.
 
 ## Reply identity: From ≠ Reply-To (#2407)
 
@@ -118,3 +152,6 @@ switch (render.yaml PR) — see [`../press-agent/README.md`](../press-agent/READ
   dashboard) — mail is never lost.
 - Local dev: `npx wrangler dev` won't receive real email; test the API leg directly by POSTing a
   signed envelope to `/api/press/inbound` (see `PressResponderSpec` for the exact shape).
+- Tests: `npm test` (vitest) covers the loop-guard classifier; `npm run typecheck` covers both
+  `src/` and `test/`. Both run in CI on any `deploy/press-worker/**` change (the `Press Worker
+  Tests` job in `.github/workflows/ci.yml`) — `master-press-worker.yml` only deploys.

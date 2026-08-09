@@ -732,6 +732,29 @@ object PressResponderSpec
         dispatches <- stubs.dispatch.dispatches.get
       } yield assertTrue(status == Status.Ok, dispatches.isEmpty, after - before == 1.0)
     },
+    test("#2442: a bounce/DSN — flagged, and with the null return path it has no `from` at all") {
+      for {
+        _                  <- cleanDb
+        (routes, stubs, _) <- makeRoutes(liveCfg)
+        // The commonest loop trigger, in its real shape: a DSN is sent with a null return path, so
+        // the Worker has no `message.from` to put on the envelope and no body worth forwarding.
+        // Pre-#2442 that fell into `outcome=malformed` — dropped, but indistinguishably from a
+        // broken Worker. The marker must be read BEFORE the from/text requirement so the drop is
+        // attributable.
+        dsn =
+          """{"from":"","subject":"Undelivered Mail Returned to Sender","text":"","messageId":"<dsn@mx>","loopGuard":"null_return_path"}"""
+        before     <- loopGuardCount("null_return_path")
+        status     <- postInbound(routes, dsn, Some(sign(dsn)))
+        after      <- loopGuardCount("null_return_path")
+        dispatches <- stubs.dispatch.dispatches.get
+        emails     <- stubs.emails.get
+      } yield assertTrue(
+        status == Status.Ok,
+        dispatches.isEmpty,
+        emails.isEmpty,
+        after - before == 1.0,
+      )
+    },
     test("#2442: a real journalist's message (no marker, empty marker) still dispatches") {
       for {
         _                  <- cleanDb

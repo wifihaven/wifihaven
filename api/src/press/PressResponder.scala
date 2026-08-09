@@ -81,11 +81,38 @@ final case class PressResponder(
               PressInbound.VerifyError.BadSignature,
             ) =>
           meter(WebhookOutcome.InvalidSignature)
-        case Left(PressInbound.VerifyError.MalformedPayload) =>
+        case Left(PressInbound.VerifyError.MalformedPayload)    =>
           meter(WebhookOutcome.Malformed)
-        case Right(event)                                    =>
+        // #2442: the Worker classified this delivery as machine-generated — break the loop here,
+        // ahead of every dispatch control.
+        case Right(PressInbound.Verified.AutoSubmitted(marker)) =>
+          loopGuarded(marker).flatMap(meter)
+        case Right(PressInbound.Verified.Message(event))        =>
           dispatchFor(event).flatMap(meter)
       }
+
+  /**
+   * #2442 — the auto-reply / DSN loop breaker. The Cloudflare Worker
+   * (deploy/press-worker/src/loop-guard.ts) classified this delivery as machine-generated: an
+   * out-of-office, a ticketing acknowledgement, a mailing-list post, or a bounce. Dispatching would
+   * email a reply, which draws the next auto-reply — and because prod's press From AND Reply-To are
+   * both `press@wifihaven.net` (#2439), the address Cloudflare Email Routing binds to that same
+   * Worker, the loop closes on itself. The per-sender rate cap below bounds how FAST it runs; only
+   * this breaks it.
+   *
+   * The skip is deliberately NOT silent (#2265/#2266). A journalist whose mail is misclassified is
+   * a real cost, so every skip lands on `press_loop_guard_total{marker}` — a bounded label, never a
+   * per-sender one — and on the `press_ai_draft_total{outcome="skipped_auto_submitted"}`
+   * disposition series, with a WARN log carrying the marker and Message-ID (the Worker's own log
+   * line carries the sender address). Both are on the Press Grafana dashboard.
+   */
+  private def loopGuarded(marker: LoopGuardMarker): UIO[WebhookOutcome] = {
+    val label = LoopGuardMarker.label(marker)
+    ZIO.logWarning(
+      s"press loop guard: inbound skipped as auto-submitted (marker=$label) — no session dispatched",
+    ) *>
+      AppMetrics.pressLoopGuard(label).as(WebhookOutcome.AutoSubmitted)
+  }
 
   /**
    * Dispatch a press cloud-agent session. No household gate (press is public); the only
@@ -489,6 +516,13 @@ object PressResponder {
     case Malformed
     case Disabled
 
+    /**
+     * #2442 — the Worker flagged this delivery auto-submitted (out-of-office / list / bounce), so
+     * no session was dispatched and no reply was sent. Distinct from [[Malformed]]: that is an
+     * envelope we could not read, this is one we read and deliberately declined to answer.
+     */
+    case AutoSubmitted
+
     /** A TRANSIENT cloud-agent dispatch failure (transport / timeout / 5xx) — may self-heal. */
     case Error
 
@@ -507,6 +541,7 @@ object PressResponder {
       case InvalidSignature    => "invalid_signature"
       case Malformed           => "malformed"
       case Disabled            => "disabled"
+      case AutoSubmitted       => "skipped_auto_submitted"
       // #2416: both dispatch-failure cases keep the SAME `outcome` value — the aggregate
       // `outcome=error` series is unchanged; they differ only on `reason` below.
       case Error | ConfigError => "error"
@@ -524,11 +559,13 @@ object PressResponder {
      * dispatch-failure outcome must fail to COMPILE here rather than silently label itself `none`.
      */
     def reason(o: WebhookOutcome): String = o match {
-      case ConfigError                                                        =>
+      case ConfigError                                                                        =>
         wifihaven.api.support.CloudAgentObservability.Reason.Config
-      case Error                                                              =>
+      case Error                                                                              =>
         wifihaven.api.support.CloudAgentObservability.Reason.Transient
-      case Dispatched | RateLimited | InvalidSignature | Malformed | Disabled =>
+      // #2442: a loop-guard skip is not a dispatch FAILURE — the `why` it carries is the marker on
+      // its own `press_loop_guard_total` series, not this dispatch-failure vocabulary.
+      case Dispatched | RateLimited | InvalidSignature | Malformed | Disabled | AutoSubmitted =>
         wifihaven.api.support.CloudAgentObservability.Reason.None
     }
   }
