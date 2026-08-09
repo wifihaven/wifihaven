@@ -91,12 +91,17 @@ class State:
     # ws_connections by register_ws/deregister_ws so the two never diverge.
     ws_pongs: dict = field(default_factory=dict)
     # #2642: how long `_prune_dead_ws_channels` waits for a pong before treating
-    # a channel as dead. Sized for the sidecar's recv cadence — it answers a
-    # server ping inline in its recv path, which ticks on `ws.poll_interval`
-    # (1s by default, ws_loop.DEFAULT_POLL_INTERVAL) — with room for a loaded
-    # KVM runner. Exposed as a field so the unit suite can shorten it; nothing
-    # in the qemu harness overrides it.
-    ws_probe_timeout_s: float = 8.0
+    # a channel as dead. Bounded ABOVE by the caller, not just below: the harness
+    # POSTs /test/reset with a 10s client timeout (lib/fake_client.py), and the
+    # probe plus its per-channel closes have to fit inside that or the harness
+    # sees an opaque timeout instead of the diagnostic `wsDropped` count. Bounded
+    # below by the sidecar's recv cadence: it answers a server ping inline in its
+    # recv path, which ticks on `ws.poll_interval` (1s by default,
+    # ws_loop.DEFAULT_POLL_INTERVAL), so 4s is already several ticks of slack for
+    # a loaded KVM runner while leaving the caller real headroom. Exposed as a
+    # field so the unit suite can shorten it; nothing in the qemu harness
+    # overrides it.
+    ws_probe_timeout_s: float = 4.0
     _next_event_id: int = 1
     _next_usage_id: int = 1
     _next_policy_fetch_id: int = 1
@@ -261,10 +266,11 @@ class State:
         # ws OFF, so any channel still in the set had to be a dead socket left by
         # a prior ws-enabled scenario. #2608 retired that premise: the base
         # snapshot now boots with ws ON, so at reset time the set can hold a
-        # channel the restored sidecar is still using — and a qemu `loadvm` never
-        # touches the HOST end of the socket, so nothing severs it and nothing
-        # prompts the sidecar to reconnect. A channel cleared here therefore
-        # never comes back, the next `POST /test/snapshot` pushed to an empty set,
+        # channel the restored sidecar is still using — the working hypothesis
+        # being that a qemu `loadvm` never touches the HOST end of the socket, so
+        # nothing severs it and nothing prompts the sidecar to reconnect. A
+        # channel cleared here then never comes back, the next
+        # `POST /test/snapshot` pushed to an empty set,
         # and with the agent's poll dormant on a healthy link (#2037) no
         # transport at all delivered the new etag: the Gate-2
         # `wait_for_etag_served` timeout in #2642.

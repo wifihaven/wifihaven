@@ -9,6 +9,7 @@ Test-control endpoints (`/test/*`) let pytest scenarios drive the fake.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import copy
 import json
 from typing import Any
@@ -18,6 +19,10 @@ from aiohttp import WSMsgType, web
 from .state import State
 
 STATE_KEY = web.AppKey("state", State)
+
+# #2642: per-channel ceiling on the best-effort close of a channel that failed
+# the liveness probe. Small on purpose — see _prune_dead_ws_channels.
+_WS_CLOSE_TIMEOUT_S = 1.0
 
 
 def _bearer_token(request: web.Request) -> str | None:
@@ -151,8 +156,10 @@ async def get_blocklist(request: web.Request) -> web.Response:
 #     fake is a delivery observable, and ingest-SCHEMA parity remains Gate 3's
 #     job (lib/ws_send.py against the real API). The real server acks data
 #     frames; the agent's drain does NOT gate on an ack
-#     (ws_loop.drain_and_send), so the fake omits acks and lets aiohttp
-#     auto-pong the agent's control pings.
+#     (ws_loop.drain_and_send), so the fake omits acks entirely.
+#   - control frames: the upgrade sets autoping=False so the read loop can see
+#     the pong the #2642 liveness probe depends on, which makes answering the
+#     sidecar's heartbeat ping the handler's own job (get_ws below).
 
 
 def _policy_frame_text(snapshot: dict[str, Any]) -> str:
@@ -205,9 +212,11 @@ async def _prune_dead_ws_channels(
     qemu `loadvm`. A restore is invisible from the server side and leaves the
     channel in one of two states the fake CANNOT tell apart by inspection:
 
-      - usable — `loadvm` reverts guest memory in place without touching the host
-        end of the socket, so the restored sidecar simply carries on using the
-        connection the fake is already holding. Dropping this one strands the
+      - usable — the hypothesis (not a verified mechanism: nothing here observes
+        what `loadvm` does to a TCP stream) is that reverting guest memory in
+        place leaves the host end of the socket untouched, so the restored
+        sidecar carries on using the connection the fake holds. Dropping this one
+        strands the
         scenario: nothing severed the socket, so the sidecar never reconnects,
         and a later `POST /test/snapshot` pushes to an empty set while the
         agent's poll sits dormant on a healthy link (#2037). That was the #2642
@@ -259,11 +268,17 @@ async def _prune_dead_ws_channels(
 
     for ws in pending:
         state.deregister_ws(ws)
-        try:
-            await ws.close()
-        except Exception:  # noqa: BLE001
-            pass
+        # Bounded: aiohttp's close() awaits a writer drain, which on a wedged
+        # transport is not instantaneous, and the caller POSTs /test/reset with
+        # its own 10s timeout (lib/fake_client.py). An unbounded close would
+        # trade the diagnostic `wsDropped` count for an opaque harness timeout on
+        # exactly the path this probe exists to serve. Best-effort by design —
+        # the channel is already deregistered, so a close that never lands only
+        # costs the peer a slower reconnect.
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(ws.close(), timeout=_WS_CLOSE_TIMEOUT_S)
     return len(pending)
+
 
 def _handle_inbound_frame(state: State, text: str) -> None:
     """Demux one inbound `{op, payload}` text frame into the fake's state.
@@ -321,9 +336,9 @@ async def get_ws(request: web.Request) -> web.StreamResponse:
     # autoping=False so the read loop below SEES control frames. aiohttp's
     # default handles PING/PONG internally and never surfaces them, which would
     # hide the pong `_prune_dead_ws_channels` needs as its liveness signal
-    # (verified against aiohttp 3.14: with autoping on, a peer's pong is
-    # swallowed). The cost is that the loop must answer the sidecar's own
-    # heartbeat ping itself — see below.
+    # (verified empirically; the behaviour holds across the aiohttp>=3.9 floor
+    # this package pins). The cost is that the loop must answer the sidecar's
+    # own heartbeat ping itself — see below.
     ws = web.WebSocketResponse(autoping=False)
     await ws.prepare(request)
     state.register_ws(ws)
@@ -333,17 +348,24 @@ async def get_ws(request: web.Request) -> web.StreamResponse:
         async for msg in ws:
             if msg.type == WSMsgType.ERROR:
                 break
-            # TEXT carries the agent's usage/events/metrics frames; control pings
-            # are auto-ponged by aiohttp. usage/events are recorded into the same
-            # state the REST handlers write (#2642); everything else is dropped.
-            # BINARY is never sent by the agent (ws_loop sends text frames only).
+            # TEXT carries the agent's usage/events frames — those two are its
+            # whole outbound vocabulary — and they are recorded into the same
+            # state the REST handlers write (#2642). BINARY is never sent
+            # (ws_loop sends text frames only), so it falls through and is
+            # dropped, as is any unrecognised type.
             if msg.type == WSMsgType.TEXT:
                 _handle_inbound_frame(state, msg.data)
             elif msg.type == WSMsgType.PING:
-                # The sidecar's heartbeat (design §5.5, ws.heartbeat_interval).
-                # With autoping off this is ours to answer, and it must be
-                # answered: the real server does, and the sidecar treats the
-                # pong as its liveness ack (ws_client.lua).
+                # The sidecar's RFC-6455 heartbeat (ws_loop's `send_ping("hb")`
+                # on ws.heartbeat_interval, design §5.5) — distinct from the
+                # application-level `{op:"ping"}` the real server answers.
+                # With autoping off, answering is ours. Nothing forces it: the
+                # sidecar has no pong deadline (its recv just loops on a pong,
+                # ws_client.lua), which is precisely why autoping=False is safe
+                # here — a heartbeat we answer late, or during a push, cannot
+                # drop the link. We answer anyway so the socket behaves like the
+                # real endpoint rather than like a peer that ignores control
+                # frames.
                 await ws.pong(msg.data)
             elif msg.type == WSMsgType.PONG:
                 # #2642: the reply to `_prune_dead_ws_channels`' liveness ping —
@@ -517,10 +539,14 @@ async def test_get_ws_status(request: web.Request) -> web.Response:
 
 async def test_post_reset(request: web.Request) -> web.Response:
     state: State = request.app[STATE_KEY]
-    # #2642: probe the ws channels BEFORE clearing the record lists, so a pong
-    # arriving mid-probe can't drop a telemetry record into the next scenario's
-    # freshly-cleared lists. The probe is what decides which channels survive a
-    # VM restore; `state.reset()` deliberately does not touch the set.
+    # #2642: probe the ws channels BEFORE clearing the record lists. The probe
+    # awaits, so the read loop runs during it and can drain a usage/events frame
+    # the previous scenario left in flight; doing the clear afterwards is what
+    # keeps that out of this scenario's lists. It does not close the window
+    # entirely — a frame still sitting in the host's receive buffer when reset()
+    # returns lands after the clear, which is what the `transport` marker on the
+    # records is for. The probe is also what decides which channels survive a VM
+    # restore; `state.reset()` deliberately does not touch the set.
     dropped = await _prune_dead_ws_channels(state)
     state.reset()
     return web.json_response(
