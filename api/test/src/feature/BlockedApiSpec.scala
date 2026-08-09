@@ -134,12 +134,7 @@ object BlockedApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         hsr <- ZIO.service[HouseholdSettingsRepo]
         routes = BlockedRoutes.routes(
           ps,
-          dr,
-          pr,
           blr,
-          tss,
-          hsr,
-          clk,
           BlockPageHousehold.defaultOnly,
           RateLimiter.allowAll,
           RateLimiter.allowAll,
@@ -164,12 +159,7 @@ object BlockedApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         hsr <- ZIO.service[HouseholdSettingsRepo]
         routes = BlockedRoutes.routes(
           ps,
-          dr,
-          pr,
           blr,
-          tss,
-          hsr,
-          clk,
           BlockPageHousehold.defaultOnly,
           RateLimiter.allowAll,
           RateLimiter.allowAll,
@@ -194,12 +184,7 @@ object BlockedApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         hsr <- ZIO.service[HouseholdSettingsRepo]
         routes = BlockedRoutes.routes(
           ps,
-          dr,
-          pr,
           blr,
-          tss,
-          hsr,
-          clk,
           BlockPageHousehold.defaultOnly,
           RateLimiter.allowAll,
           RateLimiter.allowAll,
@@ -221,12 +206,7 @@ object BlockedApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         hsr <- ZIO.service[HouseholdSettingsRepo]
         routes = BlockedRoutes.routes(
           ps,
-          dr,
-          pr,
           blr,
-          tss,
-          hsr,
-          clk,
           BlockPageHousehold.defaultOnly,
           RateLimiter.allowAll,
           RateLimiter.allowAll,
@@ -248,12 +228,7 @@ object BlockedApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         hsr <- ZIO.service[HouseholdSettingsRepo]
         routes = BlockedRoutes.routes(
           ps,
-          dr,
-          pr,
           blr,
-          tss,
-          hsr,
-          clk,
           BlockPageHousehold.defaultOnly,
           RateLimiter.allowAll,
           RateLimiter.allowAll,
@@ -274,13 +249,17 @@ object BlockedApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
             id: BlocklistId,
         ): Task[Option[(ETag, String)]] =
           ZIO.dieMessage("renderBlocklist unused in this test")
-        def decide(
+        def decideDetailed(
             household: HouseholdId,
             mac: String,
             hostname: String,
-        ): Task[RouterDecisionResponse] =
+        ): Task[PolicyDecision] =
           ZIO.succeed(
-            RouterDecisionResponse(ConnectionDecision.Block, "future_app:slack", None),
+            PolicyDecision(
+              RouterDecisionResponse(ConnectionDecision.Block, "future_app:slack", None),
+              None,
+              None,
+            ),
           )
         def invalidateMany(households: Iterable[HouseholdId]): UIO[Unit] = ZIO.unit
         def reevaluate: UIO[Unit]                                        = ZIO.unit
@@ -297,12 +276,7 @@ object BlockedApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         clk <- ZIO.service[Clock]
         routes = BlockedRoutes.routes(
           stubPolicy,
-          dr,
-          pr,
           blr,
-          tss,
-          hsr,
-          clk,
           BlockPageHousehold.defaultOnly,
           RateLimiter.allowAll,
           RateLimiter.allowAll,
@@ -328,12 +302,18 @@ object BlockedApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
             id: BlocklistId,
         ): Task[Option[(ETag, String)]] =
           ZIO.dieMessage("renderBlocklist unused in this test")
-        def decide(
+        def decideDetailed(
             household: HouseholdId,
             mac: String,
             hostname: String,
-        ): Task[RouterDecisionResponse] =
-          ZIO.succeed(RouterDecisionResponse(ConnectionDecision.Block, wire, None))
+        ): Task[PolicyDecision] =
+          ZIO.succeed(
+            PolicyDecision(
+              RouterDecisionResponse(ConnectionDecision.Block, wire, None),
+              None,
+              None,
+            ),
+          )
         def invalidateMany(households: Iterable[HouseholdId]): UIO[Unit] = ZIO.unit
         def reevaluate: UIO[Unit]                                        = ZIO.unit
         def setPublisher(publisher: wifihaven.api.policy.PolicySnapshotPublisher): UIO[Unit] =
@@ -370,12 +350,7 @@ object BlockedApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         results <- ZIO.foreach(cases) { case (wire, expected) =>
           val routes = BlockedRoutes.routes(
             stub(wire),
-            dr,
-            pr,
             blr,
-            tss,
-            hsr,
-            clk,
             BlockPageHousehold.defaultOnly,
             RateLimiter.allowAll,
             RateLimiter.allowAll,
@@ -410,12 +385,7 @@ object BlockedApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         hsr <- ZIO.service[HouseholdSettingsRepo]
         routes = BlockedRoutes.routes(
           ps,
-          dr,
-          pr,
           blr,
-          tss,
-          hsr,
-          clk,
           BlockPageHousehold.defaultOnly,
           RateLimiter.allowAll,
           RateLimiter.allowAll,
@@ -440,12 +410,7 @@ object BlockedApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         hsr <- ZIO.service[HouseholdSettingsRepo]
         routes = BlockedRoutes.routes(
           ps,
-          dr,
-          pr,
           blr,
-          tss,
-          hsr,
-          clk,
           BlockPageHousehold.defaultOnly,
           RateLimiter.allowAll,
           RateLimiter.allowAll,

@@ -97,16 +97,6 @@ object BlockPageHouseholdSpec
       namedScheduleRepo = nsr,
     ): PolicyService
 
-  private def makeTimeStatus =
-    for {
-      pr   <- ZIO.service[ProfileRepo]
-      tlr  <- ZIO.service[TimeLimitRepo]
-      atlr <- ZIO.service[AppTimeLimitRepo]
-      dr   <- ZIO.service[DeviceRepo]
-      trr  <- ZIO.service[TrafficReportRepo]
-      er   <- ZIO.service[TimeExtensionRepo]
-    } yield new TimeStatusServiceLive(pr, tlr, atlr, dr, trr, er): TimeStatusService
-
   /** The router-facing routes, which is where a router mints its block-page token. */
   private def makeRouterRoutes =
     for {
@@ -121,21 +111,11 @@ object BlockPageHouseholdSpec
   ) =
     for {
       ps  <- makePolicy
-      dr  <- ZIO.service[DeviceRepo]
-      pr  <- ZIO.service[ProfileRepo]
       blr <- ZIO.service[BlocklistRepo]
-      tss <- makeTimeStatus
-      hsr <- ZIO.service[HouseholdSettingsRepo]
       hhr <- ZIO.service[RouterRepo]
-      clk <- ZIO.service[Clock]
     } yield BlockedRoutes.routes(
       ps,
-      dr,
-      pr,
       blr,
-      tss,
-      hsr,
-      clk,
       BlockPageHouseholdLive(TestLayers.TestBlockPageSecret, hhr),
       perDevice,
       perSource,

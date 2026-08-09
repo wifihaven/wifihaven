@@ -14,8 +14,10 @@ import zio.json.*
  * blocked clients here (DNAT to the SPA), the SPA reads `mac` + `host` from the query string and
  * calls this endpoint to render a kid-friendly reason.
  *
- * Resolution reuses [[PolicyService.decide]] so the reason matches what the router enforced. The
- * response is intentionally narrow per the #952 design doc Q4 decision:
+ * Resolution reuses [[PolicyService.decideDetailed]] so the reason matches what the router enforced
+ * — and, since #2652, so do the profile name and the screen-time numbers, which come off that same
+ * call rather than a second set of reads. The response is intentionally narrow per the #952 design
+ * doc Q4 decision:
  *   - `reasonClass`: one of "paused" | "schedule" | "time_limit" | "app_time_limit" | "category"
  * \| "extra_blocked".
  *   - `categoryName`: only populated for the "category" class (so kids see what kind of site is
@@ -41,12 +43,7 @@ import zio.json.*
 object BlockedRoutes {
   def routes(
       policy: PolicyService,
-      deviceRepo: DeviceRepo,
-      profileRepo: ProfileRepo,
       blocklistRepo: BlocklistRepo,
-      timeStatusService: TimeStatusService,
-      householdSettingsRepo: HouseholdSettingsRepo,
-      clock: Clock,
       // #2569: the household derivation seam, shared with POST /api/access-requests.
       blockPageHousehold: BlockPageHousehold,
       // #2569: TWO buckets over the same RateLimiterLive primitive POST /api/access-requests uses
@@ -109,20 +106,7 @@ object BlockedRoutes {
                       // pre-change behaviour on the fallback path — it resolved every read against
                       // Default unconditionally — so taking `.household` here preserves it exactly.
                       .map(_.household)
-                      .flatMap { household =>
-                        resolve(
-                          policy,
-                          deviceRepo,
-                          profileRepo,
-                          blocklistRepo,
-                          timeStatusService,
-                          householdSettingsRepo,
-                          clock,
-                          household,
-                          mac,
-                          host,
-                        )
-                      }
+                      .flatMap { household => resolve(policy, blocklistRepo, household, mac, host) }
                       .map(r => Response.json(r.toJson))
                       .catchAll(_ => ZIO.succeed(Response.json(notBlocked.toJson)))
                 }
@@ -131,14 +115,30 @@ object BlockedRoutes {
     )
   }
 
+  /**
+   * #2652: ONE call to [[PolicyService.decideDetailed]] answers the whole page.
+   *
+   * This used to call `policy.decide` and then separately re-read the device, its profile, the
+   * household settings row and the profile's day state — every one of which `decide` had already
+   * resolved internally on its way to the verdict. Two of those (the settings read and, above all,
+   * `TimeStatusService.todaysState`) are not cheap: `todaysState` aggregates the profile's presence
+   * rows for the day, so a busy profile paid for a whole-day `traffic_reports` aggregation TWICE
+   * per block-page load. Measured on prod 2026-08-08, that is the entire 12-16s the child-facing
+   * page spent showing a loading placeholder: latency tracked the profile's row count almost
+   * exactly (0 rows → 0.35s; 371 → 0.9s; 136k → 9s; 191k → 15s).
+   *
+   * It is also the §single-source-of-truth fix: `blocked`/`reasonClass` and
+   * `profileName`/`usedMinutes` now come from ONE reading of the policy state instead of two taken
+   * moments apart, so the page can no longer render a reason and a minute count that disagree about
+   * what the policy was.
+   *
+   * The route deliberately no longer holds `deviceRepo` / `profileRepo` / `timeStatusService` /
+   * `householdSettingsRepo` / `Clock` at all — the duplicate reads are removed by construction
+   * (TYPE-ENFORCE, not a comment asking future code not to re-read).
+   */
   private def resolve(
       policy: PolicyService,
-      deviceRepo: DeviceRepo,
-      profileRepo: ProfileRepo,
       blocklistRepo: BlocklistRepo,
-      timeStatusService: TimeStatusService,
-      householdSettingsRepo: HouseholdSettingsRepo,
-      clock: Clock,
       // #2569: derived once by the caller from the redirect's block-page token, then threaded
       // through EVERY read below. One household for the whole answer — a mixed derivation is how
       // household 1's profile name ended up next to household N's decision.
@@ -147,32 +147,18 @@ object BlockedRoutes {
       host: Hostname,
   ): Task[BlockedInfoResponse] =
     for {
-      decision    <- policy.decide(household, mac.value, host.value)
-      // #2312: household-scoped lookup — the same MAC can exist in two households (V74/V75), and the
-      // old global findByMac threw on the 2-row match.
-      device      <- deviceRepo.findByMac(mac, household)
-      profileOpt  <- device.flatMap(_.profileId) match {
-        case Some(pid) => profileRepo.findById(pid)
-        case None      => ZIO.succeed(None)
-      }
-      // #335: today's usage for the device's profile, sourced from the canonical
-      // TimeStatusService — same primitive that drives the snapshot's TimeLimit
-      // decision and the admin /api/time/status UI. None when there's no profile.
-      dayStateOpt <- profileOpt match {
-        case None    => ZIO.succeed(None)
-        case Some(p) =>
-          for {
-            now      <- clock.instant
-            // #2313/#2533/#2569: the settings row and today's state are read for the SAME household
-            // the decision above was made against — the redirect's block-page token, not a default.
-            // A kid's local midnight and their minute counts both come from their own household.
-            settings <- householdSettingsRepo.getForHousehold(household)
-            ds       <- timeStatusService.todaysState(household, now, settings, p.id)
-          } yield ds
-      }
-      reasonPair  <-
-        if decision.decision != ConnectionDecision.Block then ZIO.succeed(None)
-        else mapReason(decision.reason, blocklistRepo).map(Some(_))
+      // #2312/#2313/#2533/#2569: the device resolution, the profile load, the settings row and the
+      // day state all happen INSIDE decideDetailed, against this same `household` — so the scoping
+      // guarantees those issues established are unchanged; there is simply one reader now.
+      decided <- policy.decideDetailed(household, mac.value, host.value)
+      // #335: today's usage for the device's profile, sourced from the canonical TimeStatusService
+      // — same primitive that drives the snapshot's TimeLimit decision and the admin
+      // /api/time/status UI. `None` when there's no profile.
+      dayStateOpt = decided.dayState
+      profileOpt  = decided.profile
+      reasonPair <-
+        if decided.response.decision != ConnectionDecision.Block then ZIO.succeed(None)
+        else mapReason(decided.response.reason, blocklistRepo).map(Some(_))
     } yield BlockedInfoResponse(
       blocked = reasonPair.isDefined,
       reasonClass = reasonPair.map(_._1),

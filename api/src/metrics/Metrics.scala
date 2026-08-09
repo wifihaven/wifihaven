@@ -785,10 +785,22 @@ object AppMetrics {
   // Emitted from HttpMetrics.instrument, which wraps every real route. `route` is
   // the *templated* path (e.g. /api/devices/:mac), never a concrete id — see §4.
 
-  /** §5.2 latency SLO buckets: 5ms → 5s. */
+  /**
+   * §5.2 latency SLO buckets: 5ms → 30s.
+   *
+   * #2652: the top bucket used to be 5s, which made every route slower than that indistinguishable
+   * from every other route slower than that — `histogram_quantile` can only report "somewhere above
+   * the highest finite bucket", so a p50 of 15s and a p50 of 5.1s render identically. That is
+   * literally how a 12-16s p50 on `GET /api/blocked` — the child-facing block page, the most
+   * user-visible endpoint in the product — went unnoticed: on prod at the time of filing, 9 of the
+   * route's 17 observations sat in the `+Inf` overflow bucket, so no quantile over that series
+   * could ever have shown the problem. 10s and 30s make "pathologically slow" a measurable state
+   * rather than an unbounded one. Two extra buckets per (route, method) series; the label set is
+   * unchanged.
+   */
   val HttpDurationBoundaries: MetricKeyType.Histogram.Boundaries =
     MetricKeyType.Histogram.Boundaries.fromChunk(
-      Chunk(0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0),
+      Chunk(0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0),
     )
 
   def recordHttp(route: String, method: String, status: Int, durationSeconds: Double): UIO[Unit] =

@@ -933,6 +933,94 @@
           "refId": "A"
         }
       ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "Block page GET /api/blocked latency (#2652)",
+      "description": "Latency of the child-facing block page. The route is unauthenticated by design (any LAN client can be DNAT'd to it) and it is the only thing the /blocked page renders, so until it answers the kid sees a loading placeholder \u2014 a slow response here reads as a broken network, and a slow handler on an unauthenticated route is a resource-exhaustion surface (the per-(IP, MAC) rate limiters bound request COUNT, not the cost of each). Filed at 12-16s in prod: BlockedRoutes computed the profile's whole-day screen-time aggregation twice per request, once inside policy.decide and once again itself. Expect p99 well under 1s. Sustained p95 above ~1s means something is back on a whole-day traffic_reports scan in the request path \u2014 check 'DB query p95 latency by op' for traffic.listPresenceRows. The histogram tops out at 30s (#2652 raised it from 5s), so a series pinned at the top bucket means 'at least 30s', not exactly 30s.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 72 },
+      "id": 36,
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "unit": "s",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "lineWidth": 1
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "calcs": ["lastNotNull", "max"]
+        },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(http_request_duration_seconds_bucket{route=\"/api/blocked\", env=\"$env\"}[5m])))",
+          "legendFormat": "p50",
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket{route=\"/api/blocked\", env=\"$env\"}[5m])))",
+          "legendFormat": "p95",
+          "refId": "B"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(http_request_duration_seconds_bucket{route=\"/api/blocked\", env=\"$env\"}[5m])))",
+          "legendFormat": "p99",
+          "refId": "C"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "Block page GET /api/blocked \u2014 request rate by status (#2652)",
+      "description": "Request rate for the child-facing block page, split by status, so a latency move on the panel to the left can be read against whether the traffic changed. 429 is the two rate-limiter buckets doing their job (per source IP \u2014 the MAC-enumeration bound \u2014 and per (IP, MAC)); a standing 429 floor means a household is being throttled off its own block page and the budgets need a look.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 72 },
+      "id": 37,
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "unit": "reqps",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 20,
+            "showPoints": "never",
+            "lineWidth": 1
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "calcs": ["lastNotNull", "max"]
+        },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (status) (rate(http_requests_total{route=\"/api/blocked\", env=\"$env\"}[5m]))",
+          "legendFormat": "{{status}}",
+          "refId": "A"
+        }
+      ]
     }
   ],
   "refresh": "30s",

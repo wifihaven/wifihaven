@@ -32,19 +32,20 @@ import java.time.{Instant, LocalDate, LocalDateTime, ZoneOffset}
  * signature of a full-day `traffic_reports` scan on the request path — twice. This spec pins the
  * two structural facts behind that, so neither can come back:
  *
- *   1. '''One''' day-state computation per request. `BlockedRoutes.resolve` used to call
- *      `policy.decide` (which resolves the device, loads the profile, reads the household settings
- *      and computes the profile's `ProfileDayState` internally) and then re-read all four of those
- *      itself — so every block-page load paid for the expensive part twice. The route now consumes
- *      what `decide` already computed ([[PolicyService.decideDetailed]]), and no longer holds the
- *      repos it would need to re-read them. 2. A profile with '''no app assignments''' performs
- *      '''no''' presence read in [[AppUsedRollupServiceLive]]. That service fetches a whole day of
- *      `traffic_reports` to aggregate per-app engaged seconds, and falls back to the WHOLE DAY
- *      (rather than the tail past the rollup watermark) whenever `app_used_daily` has no rows for
- *      the profile — which is exactly the case for a profile with no app assignments, where the
- *      aggregation is provably empty. Prod profiles 2/3/4 (the three slow ones above) have zero
- *      rows in `app_policy_assignments`; they were each scanning 191k / 136k / 8k rows per call to
- *      build an empty map.
+ * PIN ONE — '''one''' day-state computation per request. `BlockedRoutes.resolve` used to call
+ * `policy.decide` (which resolves the device, loads the profile, reads the household settings and
+ * computes the profile's `ProfileDayState` internally) and then re-read all four of those itself,
+ * so every block-page load paid for the expensive part twice. The route now consumes what `decide`
+ * already computed ([[PolicyService.decideDetailed]]) and no longer holds the repos it would need
+ * to re-read them.
+ *
+ * PIN TWO — a profile with '''no app assignments''' performs '''no''' presence read in
+ * [[AppUsedRollupServiceLive]]. That service fetches a whole day of `traffic_reports` to aggregate
+ * per-app engaged seconds, and falls back to the WHOLE DAY (rather than the tail past the rollup
+ * watermark) whenever `app_used_daily` has no rows for the profile — which is exactly the case for
+ * a profile with no app assignments, where the aggregation is provably empty. Prod profiles 2/3/4
+ * (the three slow ones above) have zero rows in `app_policy_assignments`; they were each scanning
+ * 191k / 136k / 8k rows per call to build an empty map.
  */
 object BlockedPageLatencySpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clock] {
 
@@ -203,20 +204,10 @@ object BlockedPageLatencySpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPo
           60,
         )
         psClk    <- makePsAt(TestClock.schoolDayAfternoon, countingTr)
-        (ps, clk) = psClk
-        tlr  <- ZIO.service[TimeLimitRepo]
-        atlr <- ZIO.service[AppTimeLimitRepo]
-        er   <- ZIO.service[TimeExtensionRepo]
-        hsr  <- ZIO.service[HouseholdSettingsRepo]
-        tss    = new TimeStatusServiceLive(pr, tlr, atlr, dr, countingTr, er): TimeStatusService
-        routes = BlockedRoutes.routes(
+        (ps, _) = psClk
+        routes  = BlockedRoutes.routes(
           ps,
-          dr,
-          pr,
           blr,
-          tss,
-          hsr,
-          clk,
           BlockPageHousehold.defaultOnly,
           RateLimiter.allowAll,
           RateLimiter.allowAll,
