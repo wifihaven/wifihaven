@@ -158,7 +158,8 @@ When `host.type` is bare-IP and you want to know why:
    Private-Relay disable requires, and relay setup fails. In the dnsmasq
    log that reads `config mask-h2.icloud.com is NXDOMAIN` — that line is
    the feature working, not a resolution failure. It is **not** a
-   `0.0.0.0` / `address=` sinkhole, which does not disable Private Relay.
+   `address=/<host>/0.0.0.0` sinkhole — a sinkhole answers with an address, and
+   an address is not a negative answer, so it does not disable Private Relay.
    (Verified against dnsmasq 2.90 with the agent's exact directive;
    `encrypted_dns.lua`'s own comment claims NODATA and is wrong —
    [#2661](https://github.com/wifihaven/wifihaven/issues/2661).)

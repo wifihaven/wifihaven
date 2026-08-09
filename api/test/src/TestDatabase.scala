@@ -88,7 +88,10 @@ object TestDatabase {
       // This seed runs on a bare JDBC Statement before the transactor exists, so it cannot call
       // `HouseholdSeed.newHouseholdSettingsRow` the way the household-B fixture below does. It must
       // therefore be kept in step with `HouseholdSettingsRepoLive.ensureDefault` BY HAND — if a
-      // column is added there, add it here.
+      // column is added there, add it here. It is already one column looser: `ensureDefault` stamps
+      // `household_id` explicitly (#2130 — never left to V65's `DEFAULT 1`) and this does not.
+      // Identical in effect for the id=1 row, but do not read the omission as evidence that
+      // leaving it implicit is fine on a real path.
       st.execute(
         "INSERT INTO household_settings (id, daily_reset_time, daily_reset_tz, block_encrypted_dns) " +
           s"VALUES (1, '00:00', 'UTC', ${HouseholdSettings.DefaultBlockEncryptedDns}) ON CONFLICT (id) DO NOTHING",

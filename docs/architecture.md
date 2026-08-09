@@ -56,7 +56,7 @@ The `blockIpOnly` flag (see §0.2) is what closes the DoH / hard-coded-IP
 hole: forwarded traffic to an IP we did not resolve for this MAC is
 dropped.
 
-#### The one sanctioned exception: `blockEncryptedDns` NODATA signaling (#1911)
+#### The one sanctioned exception: `blockEncryptedDns` NXDOMAIN signaling (#1911)
 
 There is exactly **one** place where the agent returns a negative DNS answer,
 and it is a deliberate, narrow exception — not a softening of the rule above.
@@ -66,8 +66,8 @@ epic [#1903](https://github.com/wifihaven/wifihaven/issues/1903)) enables the
 "block encrypted DNS & relays" behaviour. When it is `true` the agent enforces
 **two separable halves**:
 
-1. **NODATA half (dnsmasq).** A *negative* DNS answer (`local=/<host>/` →
-   NODATA) for a small curated list of relay / DoH hostnames baked into the
+1. **NXDOMAIN half (dnsmasq).** A *negative* DNS answer (`local=/<host>/` →
+   **NXDOMAIN**) for a small curated list of relay / DoH hostnames baked into the
    agent (`mask.icloud.com`, `mask-h2.icloud.com`, `cloudflare-dns.com`,
    `dns.google`, `dns.quad9.net`, NextDNS, AdGuard, OpenDNS). This is the
    exception. It exists **only because Apple's documented way to disable iCloud
@@ -123,7 +123,7 @@ The curated lists live baked into the agent
 single boolean. This is the *only* DNS-negative-answer path in the system;
 every other block remains a connection-layer drop.
 
-> **Interaction note.** The NODATA half wins over any allow carve-out for the
+> **Interaction note.** The NXDOMAIN half wins over any allow carve-out for the
 > *same* curated hostname: `local=/<host>/` short-circuits resolution, so if a
 > profile's `extraAllowed` (or `global.extraAllowed`) happens to name one of the
 > curated DoH/relay hosts, its `ea_`/`@global_allow` ipset never populates (no
