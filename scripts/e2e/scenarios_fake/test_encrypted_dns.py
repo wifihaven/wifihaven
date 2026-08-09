@@ -144,12 +144,19 @@ def _assert_resolver_live(client, while_doing: str) -> None:
     )
 
 
-def _absent_while_live(client, host: str, what: str) -> None:
+def _absent_while_live(client, host: str, *, what: str) -> None:
     """Assert `host` has no A answer AND that the resolver was live when asked.
 
-    Absence is sampled BEFORE the liveness check so the two describe the same
-    moment as closely as a pair of digs can, and liveness is asserted FIRST so a
-    dead resolver reports itself instead of masquerading as a passing absence.
+    Sampling absence before checking liveness is NOT what narrows the gap — the
+    reverse order leaves a mirror-image window of the same size. What it buys is
+    the ASSERT order: liveness is asserted first, so a dead resolver reports
+    itself instead of masquerading as a passing absence.
+
+    A residual remains and is small rather than zero: the two digs are ~0.3s
+    apart here (the absence probe hits a `local=/<host>/` name dnsmasq answers
+    without going upstream), so a resolver that were dead for the absence sample
+    and recovered by the liveness dig would still pass. Nothing in the observed
+    failure mode fits in 0.3s — the restart that reddened CD was ~3s of silence.
     """
     absent = not dig_ipv4_answers(client, host)
     _assert_resolver_live(client, f"probing {host}")
@@ -192,18 +199,24 @@ def test_block_encrypted_dns_enforced(router, client, fake_api):
     #
     # The poll requires BOTH halves: the relay host silent AND a normal name
     # still answering. The second clause is a liveness anchor, and every absence
-    # assertion below carries its own — see `_absent_while_live`. One anchor is
+    # assertion below carries its own — the two NODATA probes via
+    # `_absent_while_live`, the :53-drop probe via `_assert_resolver_live`
+    # directly, since its absence sample is not a dig at our resolver. One anchor is
     # not enough, and the run this fixes shows why: on the Gate-2 ipk arm of run
-    # 31301029999 `example.com` resolved in 0.2s on its FIRST attempt at
+    # 31301029999 the `client` fixture's own readiness wait (wait_for_client_dns,
+    # lib/wait.py) resolved `example.com` in 0.2s on its FIRST attempt at
     # 08:44:48.7489 — 1.4ms before the snapshot was served at 08:44:48.7503 — and
     # the phase then failed at 08:44:51.70. So the resolver was alive when the
     # phase began and went silent inside the next ~3s: a dnsmasq restart landing
     # MID-phase, exactly the lag the comment above names. An anchor checked once
-    # at the top would have been satisfied by that run and would have left the
-    # following three seconds of absence assertions passing on a dead resolver.
+    # at the top would very likely have been satisfied by that run (the log does
+    # not pin the resolver's state at poll time, only 1.4ms earlier), leaving the
+    # following seconds of absence assertions to pass on a dead resolver.
     def _relay_negative():
         if dig_ipv4_answers(client, RELAY_HOST):
-            log.info("%s still resolves — toggle not applied yet", RELAY_HOST)
+            # debug: this is the NORMAL propagation path and fires every
+            # iteration until the conf lands, so info would bury the clause below.
+            log.debug("%s still resolves — toggle not applied yet", RELAY_HOST)
             return None
         if not dig_ipv4_answers(client, NORMAL_HOST):
             log.info("%s is silent too — resolver down, nothing proven yet",
@@ -213,8 +226,8 @@ def test_block_encrypted_dns_enforced(router, client, fake_api):
     wait_until(_relay_negative, timeout_s=60, interval_s=3,
                description=(f"{RELAY_HOST} to return a NEGATIVE DNS answer (no IP) "
                             f"while {NORMAL_HOST} still resolves"))
-    _absent_while_live(client, RELAY_HOST, "the relay host must be NODATA")
-    _absent_while_live(client, DOH_HOST, "the DoH host must be NODATA")
+    _absent_while_live(client, RELAY_HOST, what="the relay host must be NODATA")
+    _absent_while_live(client, DOH_HOST, what="the DoH host must be NODATA")
 
     # ── (b) :53-to-resolver-IP drop is enforced when the toggle is on. ────────
     # DNS to 8.8.8.8 is dropped (no answer). This asserts the BLOCKED state only
@@ -224,8 +237,18 @@ def test_block_encrypted_dns_enforced(router, client, fake_api):
     # this spuriously pass.
     blocked = _dig_via(client, NORMAL_HOST, RESOLVER_IP)
     got = _ipv4_answers(blocked.stdout)
-    # Liveness first, for the same reason as the two above: "no answer from
-    # 8.8.8.8" is only evidence of the drop if DNS was working at all just then.
+    # A weaker guard than the two above, and worth being precise about what it
+    # does NOT establish. `dig @8.8.8.8` bypasses dnsmasq entirely, so a dnsmasq
+    # death — the hazard the pairing exists for — cannot be what emptied this
+    # probe. The confound that could is WAN egress, and the check below does not
+    # exercise egress: the poll upstream already warmed `NORMAL_HOST` in the
+    # resolver's cache, so this almost certainly answers from cache. It is kept
+    # because it does establish the client→router DNS path is still up, and
+    # because a bare absence assertion with no liveness context at all is how
+    # this test got into trouble. The docstring at the top of this file is the
+    # honest bound: 8.8.8.8 is not reliably reachable from the nested harness
+    # regardless of the toggle, so this assertion was never a full proof of the
+    # drop — openwrt/test/encrypted_dns_spec.lua pins the rule shape instead.
     _assert_resolver_live(client, "probing the :53 drop to 8.8.8.8")
     assert not got, (
         "DNS (:53) to 8.8.8.8 must be dropped when the toggle is on "
