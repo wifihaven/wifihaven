@@ -227,6 +227,32 @@ object TestLayers {
   def withClock(dt: java.time.LocalDateTime): ULayer[Clock] =
     Clock.TestClock.make(dt)
 
+  /**
+   * The REAL [[wifihaven.api.policy.TimeStatusServiceLive]] over the environment's repos — the same
+   * construction `Main`/`HttpRoutes` wire in production, so a spec that reads screen time reads it
+   * through the canonical primitive rather than a stub that could quietly disagree with the
+   * snapshot's TimeLimit decision (docs/process/single-source-of-truth.md; #2016 / #2068 / #2274
+   * are what that drift costs).
+   *
+   * Every spec runs under `TestDatabase.layer`, which provides all eight repos.
+   */
+  def timeStatusService: ZIO[
+    ProfileRepo & TimeLimitRepo & AppTimeLimitRepo & DeviceRepo & TrafficReportRepo &
+      TimeExtensionRepo & TimeUsedRollupRepo & NamedScheduleRepo,
+    Nothing,
+    wifihaven.api.policy.TimeStatusService,
+  ] =
+    for {
+      pr  <- ZIO.service[ProfileRepo]
+      tlr <- ZIO.service[TimeLimitRepo]
+      atl <- ZIO.service[AppTimeLimitRepo]
+      dr  <- ZIO.service[DeviceRepo]
+      trr <- ZIO.service[TrafficReportRepo]
+      er  <- ZIO.service[TimeExtensionRepo]
+      ru  <- ZIO.service[TimeUsedRollupRepo]
+      nsr <- ZIO.service[NamedScheduleRepo]
+    } yield new wifihaven.api.policy.TimeStatusServiceLive(pr, tlr, atl, dr, trr, er, ru, nsr)
+
   /** Seed helpers */
 
   // The legacy 21:00–07:00 daily "Bedtime" window this fixture has always attached to Kids.
