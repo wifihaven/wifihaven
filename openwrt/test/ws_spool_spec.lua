@@ -118,41 +118,71 @@ describe("ws_spool.append_bounded + drain", function()
                     ws_spool.drain("/tmp/sp", state, fs.open))
   end)
 
-  it("never silently loses a frame to ONE transient ledger-write failure at the cap", function()
-    -- The shape every earlier ledger case missed: a ledger that EXISTS and goes
-    -- STALE for one append, with the spool AT ITS CAP so evictions are running.
-    -- The spool write lands, so the entry is readable but unaccounted, and the
-    -- lost-sync test (`consumed > written`) misses it by exactly one entry. If
-    -- append_bounded reported success here the tee would not fall back and the
-    -- frame would be gone with no signal at all.
+  it("never silently loses a frame to ONE transient ledger-write failure", function()
+    -- SWEEPS the failure point. A single hardcoded one is worth little here: the
+    -- loss only shows when the failure lands while the spool is still BELOW the
+    -- cap, so `written < size` clamps base to 0 and the deficit does not bite
+    -- until the cap is reached. An earlier version of this case pinned fail_on=6,
+    -- which sat in the safe window and passed over a live bug.
+    for fail_on = 1, 10 do
+      local fs = new_fs()
+      local state = {}
+      local realopen = fs.open
+      local n = 0
+      local hooked = function(path, mode)
+        if path:match("%.written$") and (mode or ""):match("w") and n == fail_on then
+          return nil
+        end
+        return realopen(path, mode)
+      end
+      local seen, refused = {}, {}
+      for i = 1, 14 do
+        n = i
+        local ok = ws_spool.append_bounded(
+          "/tmp/sp", "line" .. string.format("%02d", i) .. "xxx", 40, hooked, fs.rename)
+        if not ok then refused[i] = true end
+        for _, l in ipairs(ws_spool.drain("/tmp/sp", state, fs.open)) do seen[l] = true end
+      end
+      assert.is_true(refused[fail_on],
+                     "fail_on=" .. fail_on .. ": a failed ledger bump reported success")
+      -- Anything the caller was TOLD succeeded must actually have been delivered.
+      -- The refused one went out over HTTP instead, so it is exempt.
+      for i = 1, 14 do
+        if not refused[i] then
+          local f = "line" .. string.format("%02d", i) .. "xxx"
+          assert.is_true(seen[f] == true,
+                         "fail_on=" .. fail_on .. ": silently lost " .. f)
+        end
+      end
+    end
+  end)
+
+  it("never splices a partial append into the next frame", function()
+    -- The plain-append writer runs on every append below the cap. A short write
+    -- there leaves a partial line that the NEXT append concatenates onto, and the
+    -- drain ships the splice as a frame.
     local fs = new_fs()
     local state = {}
+    ws_spool.append_bounded("/tmp/sp", "line1xxxx", 1e6, fs.open, fs.rename)
+    ws_spool.drain("/tmp/sp", state, fs.open)
+
     local realopen = fs.open
-    local fail_on = 6
-    local n = 0
-    local hooked = function(path, mode)
-      if path:match("%.written$") and (mode or ""):match("w") and n == fail_on then
-        return nil
+    local broken = true
+    fs.open = function(path, mode)
+      local h = realopen(path, mode)
+      if h and broken and path == "/tmp/sp" and (mode or ""):match("a") then
+        h.write = function() return nil end
       end
-      return realopen(path, mode)
+      return h
     end
-    local seen, refused = {}, {}
-    for i = 1, 12 do
-      n = i
-      local ok = ws_spool.append_bounded("/tmp/sp", "line" .. string.format("%02d", i) .. "xxx",
-                                         40, hooked, fs.rename)
-      if not ok then refused[i] = true end
-      for _, l in ipairs(ws_spool.drain("/tmp/sp", state, fs.open)) do seen[l] = true end
-    end
-    -- Frame 6's ledger bump failed, so the append MUST report failure — that is
-    -- what routes the body to HTTP instead of dropping it.
-    assert.is_true(refused[fail_on], "a failed ledger bump was reported as success")
-    -- Every frame the caller was told succeeded must actually have been delivered.
-    for i = 1, 12 do
-      if not refused[i] then
-        local f = "line" .. string.format("%02d", i) .. "xxx"
-        assert.is_true(seen[f] == true, "silently lost " .. f)
-      end
+    assert.is_nil(ws_spool.append_bounded("/tmp/sp", "line2xxxx", 1e6, fs.open, fs.rename))
+    broken = false
+    fs.open = realopen
+    ws_spool.append_bounded("/tmp/sp", "line5xxxx", 1e6, fs.open, fs.rename)
+
+    for _, l in ipairs(ws_spool.drain("/tmp/sp", state, fs.open)) do
+      assert.is_true(l:match("^line%d+xxxx$") ~= nil,
+                     "spliced frame shipped: " .. string.format("%q", l))
     end
   end)
 

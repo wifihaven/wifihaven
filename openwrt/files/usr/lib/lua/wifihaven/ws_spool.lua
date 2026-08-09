@@ -95,26 +95,42 @@ end
 -- every append — i.e. the fix reverts to the #2634 full-replay bug precisely when
 -- that is most expensive. append_bounded propagates this so the caller can log
 -- and meter it (docs/process/no-dark-by-default.md).
+-- Bytes we appended but could not account for, per spool path. Writer-local and
+-- process-local, which is exactly the right scope: the agent is the single writer
+-- (#2634 review). Without this a failed bump leaves the ledger PERMANENTLY one
+-- entry short, and the deficit does not stay harmless — once the spool reaches
+-- the cap, `written - size` under-shoots by that entry and the drain silently
+-- eats a LATER frame the caller was told had succeeded. Carrying the shortfall
+-- into the next successful bump closes it; if the agent dies first the ledger
+-- under-counts, which drain()'s lost-sync branch resyncs from.
+local pending_bytes = {}
+
 local function bump_ledger(path, bytes, open_fn)
+  bytes = bytes + (pending_bytes[path] or 0)
   if bytes <= 0 then return true end
   local total = read_ledger(path, open_fn)
   if total == nil then
-    -- Seeding: we run AFTER the write, so the file already holds this entry and
-    -- its size IS the total written so far. Adding `bytes` again would push
-    -- `written` past the readable stream, the direction that swallows frames.
+    -- Seeding: we run AFTER the write, so the file already holds this entry AND
+    -- any earlier ones whose bump failed (they were appended successfully; only
+    -- their accounting was lost). Its size IS the total written.
     total = file_size(path, open_fn)
   else
     total = total + bytes
   end
   local f = open_fn(ledger_path(path), "w")
-  if not f then return false end
+  if not f then pending_bytes[path] = bytes; return false end
   -- Check the WRITE and the CLOSE, not just the open. On tmpfs, opening an
   -- existing ledger with "w" truncates and frees its blocks first, so a full /tmp
   -- fails at the write — the very case this guard exists for. An unchecked write
   -- would leave the ledger silently EMPTIED and still report success.
   local wrote = f:write(string.format("%d", total))  -- %d, not tostring: a large
   local closed = f:close()                           -- total must never render
-  return (wrote and closed) and true or false        -- as 1.2e+14 and reparse as 1
+  if not (wrote and closed) then                     -- as 1.2e+14 and reparse as 1
+    pending_bytes[path] = bytes
+    return false
+  end
+  pending_bytes[path] = nil
+  return true
 end
 
 -- append_bounded(path, line, max_bytes, open_fn, rename_fn, remove_fn)
@@ -213,8 +229,13 @@ function M.append_bounded(path, line, max_bytes, open_fn, rename_fn, remove_fn)
 
   local af = open_fn(path, "a")
   if not af then return nil, 0, ledger_ok end
-  af:write(entry)
-  af:close()
+  -- Same write+close check as the eviction writer above, on the path that runs on
+  -- every append BELOW the cap — i.e. most of them. Unchecked, a short write here
+  -- leaves a PARTIAL line that the next append concatenates onto, and the drain
+  -- then ships the splice ("lineline5xxxx") as if it were a frame.
+  local wrote = af:write(entry)
+  local closed = af:close()
+  if not (wrote and closed) then return nil, 0, ledger_ok end
   ledger_ok = bump_ledger(path, #entry, open_fn)
   if not ledger_ok then return nil, 0, false end
   return true, 0, ledger_ok
