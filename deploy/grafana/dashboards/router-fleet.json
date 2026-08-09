@@ -861,7 +861,7 @@
     {
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "title": "Fleet agent-version distribution (#2646)",
-      "description": "count by (version) (agent_version) — the fleet aggregate of the per-router table above: how many routers are currently on each agent version. This is the rollout view. Right after a release it splits and should collapse back to a single slice within ~70 min (hourly cron, openwrt/Makefile:175, plus a 600s jitter cap, wifihaven-update:63). A slice that persists for days is the W10 condition — a router that stopped self-updating. Instant, so a version a router has moved off drops out after Prometheus staleness (~5m) rather than lingering (#1457).",
+      "description": "count by (version) (agent_version) — the fleet aggregate of the 'Agent versions across the fleet' table higher up this dashboard: how many routers are currently on each agent version. This is the rollout view. Right after a release it splits and should collapse back to a single slice within ~70 min (hourly cron, openwrt/Makefile:175, plus a 600s jitter cap, wifihaven-update:63). A slice that persists for days is the W10 condition — a router that stopped self-updating. Instant, so a version a router has moved off drops out after Prometheus staleness (~5m) rather than lingering (#1457).",
       "type": "piechart",
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 104 },
       "id": 27,

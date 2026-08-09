@@ -232,8 +232,9 @@ locals {
     # event ingest (RouterIngestService.scala:92,154) and the ws heartbeat
     # (RouterWsRoutes.scala:306), not from RouterMetricsRoutes — so an agent that keeps
     # polling policy while its metrics push dies still reads connected. C4
-    # (router_metrics_batches_total success ratio) is a ratio, so a TOTAL stop is 0/0 →
-    # NaN → no-data → OK; it catches a degraded ingest, not a silent one. Which leaves
+    # (router_metrics_batches_total success ratio) is a ratio, and a TOTAL stop leaves
+    # nothing to divide — empty or NaN, either way it lands in no-data → OK; it catches a
+    # degraded ingest, not a silent one. Which leaves
     # "metrics stop while the agent looks alive" uncovered, with W10 itself silently off
     # — the #2546 shape. Fixing it wants a separate absent(agent_version) liveness rule,
     # tracked in #2654 rather than folded in here.

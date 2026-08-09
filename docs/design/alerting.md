@@ -479,9 +479,9 @@ stated alongside.
   (`api/src/routes/RouterIngestService.scala:92,154`) and the ws heartbeat
   (`api/src/routes/RouterWsRoutes.scala:306`), not from `RouterMetricsRoutes`, so
   an agent that keeps polling policy while its metrics push dies still reads
-  connected. C4 (`router_metrics_batches_total` success ratio) is a ratio, so a
-  *total* stop is `0/0` → NaN → no-data → OK; it catches a degraded ingest, not
-  a silent one. That leaves "metrics stop while the agent looks alive"
+  connected. C4 (`router_metrics_batches_total` success ratio) is a ratio, and a
+  *total* stop leaves nothing to divide — empty or NaN, either way it lands in
+  no-data → OK; it catches a degraded ingest, not a silent one. That leaves "metrics stop while the agent looks alive"
   uncovered, with W10 itself silently off — the
   [#2546](https://github.com/wifihaven/wifihaven/issues/2546) shape. Fixing it
   wants a separate `absent(agent_version)` liveness rule, tracked in
