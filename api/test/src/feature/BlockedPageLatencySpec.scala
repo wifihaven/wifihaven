@@ -12,6 +12,7 @@ import wifihaven.testinfra.*
 import io.zonky.test.db.postgres.embedded.EmbeddedPostgres
 import zio.{Clock as _, *}
 import zio.http.*
+import zio.json.*
 import zio.test.*
 
 import java.time.{Instant, LocalDate, LocalDateTime, ZoneOffset}
@@ -46,6 +47,14 @@ import java.time.{Instant, LocalDate, LocalDateTime, ZoneOffset}
  * a profile with no app assignments, where the aggregation is provably empty. Prod profiles 2/3/4
  * (the three slow ones above) have zero rows in `app_policy_assignments`; they were each scanning
  * 191k / 136k / 8k rows per call to build an empty map.
+ *
+ * The last two tests exist because the first two, alone, would each pass for a weaker reason than
+ * they claim. PIN TWO's `out.isEmpty` is trivially true over an empty rollup, so the third test
+ * gives it a leftover rolled row to prove the skip drops the READ and not the RESULT. And PIN ONE
+ * runs over `NoopTimeUsedRollupRepo` (`PolicyServiceLive.apply` wires it), which is the all-live
+ * day-state path — but `appCapMinutesByAppId` is reached ONLY from `dayStateFromRollupAndTail`, so
+ * the fourth test wires the real rollup repos and seeds a rolled day to exercise the shape prod is
+ * actually in.
  */
 object BlockedPageLatencySpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clock] {
 
@@ -249,6 +258,125 @@ object BlockedPageLatencySpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPo
         )
         loads <- dayLoads.get
       } yield assertTrue(out.isEmpty) && assertTrue(loads == 0)
+    },
+    // The branch the skip's own comment claims is safe: `rolled` is NOT empty (an assignment was
+    // removed after the last rollup tick, leaving its app_used_daily row behind) while the profile
+    // now has no assignments. Skipping the READ must not skip the RESULT — the rolled seconds still
+    // have to be projected to minutes exactly as the full path would. Without this case the
+    // `out.isEmpty` assertion above passes trivially, since an empty rollup can only ever project
+    // to an empty map.
+    test("no app assignments but a leftover rolled row → rolled minutes still projected, 0 loads") {
+      for {
+        _        <- cleanDb
+        pr       <- ZIO.service[ProfileRepo]
+        dr       <- ZIO.service[DeviceRepo]
+        atlr     <- ZIO.service[AppTimeLimitRepo]
+        ar       <- ZIO.service[AppRepo]
+        realTr   <- ZIO.service[TrafficReportRepo]
+        aur      <- ZIO.service[AppUsedRollupRepo]
+        hsr      <- ZIO.service[HouseholdSettingsRepo]
+        dayLoads <- Ref.make(0)
+        countingTr = new CountingTrafficRepo(realTr, dayLoads)
+        routerId <- seedRouter
+        kid      <- TestLayers.seedKidsProfile(pr)
+        _        <- TestLayers.seedDevice(dr, "aa:bb:cc:11:22:33", "kid-ipad", kid)
+        today = TestClock.schoolDayAfternoon.toLocalDate
+        now   = TestClock.schoolDayAfternoon.toInstant(ZoneOffset.UTC)
+        _        <- seedTraffic(countingTr, routerId, "aa:bb:cc:11:22:33", "example.com", today, 60)
+        // An app row with NO assignment to this profile — so `listForProfile` is empty (the skip
+        // fires) but its rolled row is present.
+        appId    <- ar.create("orphaned", "orphaned", None, None)
+        _        <- aur.upsertDay(kid, appId, today, RolledAppDay(25L * 60L, now))
+        settings <- hsr.getForHousehold(HouseholdId.Default)
+        svc = new AppUsedRollupServiceLive(pr, dr, atlr, countingTr, aur)
+        _     <- dayLoads.set(0)
+        out   <- svc.appCapMinutesByAppId(HouseholdId.Default, now, today, settings, kid)
+        loads <- dayLoads.get
+      } yield assertTrue(out == Map(appId -> 25)) && assertTrue(loads == 0)
+    },
+    // PIN ONE covers the all-live day-state path, because `PolicyServiceLive.apply` wires
+    // `NoopTimeUsedRollupRepo`. Prod is the OTHER path: `time_used_daily` has a row for every
+    // profile on every tick, so `TimeStatusServiceLive.dayState` takes the rollup+tail branch —
+    // and `dayStateFromRollupAndTail` is the ONLY caller of `appCapMinutesByAppId`, i.e. the only
+    // way the whole-day scan this issue is about is reached at all. So this wires the real
+    // `TimeUsedRollupRepo` + `AppUsedRollupServiceLive` and seeds a rolled row, reproducing the
+    // prod shape: the tail read is cheap, and after #2652 there is no whole-day read left.
+    test("with the day rolled (the prod shape), /api/blocked performs NO whole-day presence load") {
+      for {
+        _        <- cleanDb
+        pr       <- ZIO.service[ProfileRepo]
+        hsr      <- ZIO.service[HouseholdSettingsRepo]
+        tlr      <- ZIO.service[TimeLimitRepo]
+        atlr     <- ZIO.service[AppTimeLimitRepo]
+        dr       <- ZIO.service[DeviceRepo]
+        blr      <- ZIO.service[BlocklistRepo]
+        er       <- ZIO.service[TimeExtensionRepo]
+        ar       <- ZIO.service[AppRepo]
+        nsr      <- ZIO.service[NamedScheduleRepo]
+        tur      <- ZIO.service[TimeUsedRollupRepo]
+        aur      <- ZIO.service[AppUsedRollupRepo]
+        realTr   <- ZIO.service[TrafficReportRepo]
+        dayLoads <- Ref.make(0)
+        countingTr = new CountingTrafficRepo(realTr, dayLoads)
+        routerId <- seedRouter
+        kid      <- TestLayers.seedKidsProfile(pr)
+        _        <- pr.setPaused(kid, true)
+        _        <- TestLayers.seedDevice(dr, "aa:bb:cc:11:22:33", "kid-ipad", kid)
+        today = TestClock.schoolDayAfternoon.toLocalDate
+        now   = TestClock.schoolDayAfternoon.toInstant(ZoneOffset.UTC)
+        _   <- seedTraffic(countingTr, routerId, "aa:bb:cc:11:22:33", "example.com", today, 60)
+        _   <- tur.upsertDay(kid, today, RolledDay(30L * 60L, now))
+        ref <- Ref.make(TestClock.schoolDayAfternoon)
+        clk               = new Clock.TestClock(ref)
+        appUsed           = new AppUsedRollupServiceLive(pr, dr, atlr, countingTr, aur)
+        tss               = new TimeStatusServiceLive(
+          pr,
+          tlr,
+          atlr,
+          dr,
+          countingTr,
+          er,
+          tur,
+          nsr,
+          appUsed,
+        )
+        ps: PolicyService = new PolicyServiceLive(
+          pr,
+          hsr,
+          tlr,
+          atlr,
+          dr,
+          blr,
+          countingTr,
+          er,
+          ar,
+          tss,
+          clk,
+          namedScheduleRepo = nsr,
+        )
+        routes            = BlockedRoutes.routes(
+          ps,
+          blr,
+          BlockPageHousehold.defaultOnly,
+          RateLimiter.allowAll,
+          RateLimiter.allowAll,
+        )
+        _    <- dayLoads.set(0)
+        resp <- routes.runZIO(
+          Request.get(
+            URL.decode("/api/blocked?mac=aa:bb:cc:11:22:33&host=example.com").toOption.get,
+          ),
+        )
+        body <- resp.body.asString
+        info <- ZIO.fromEither(body.fromJson[BlockedInfoResponse]).mapError(new RuntimeException(_))
+        loads <- dayLoads.get
+      } yield assertTrue(loads == 0) &&
+        // The answer is still correct, and still carries the profile's screen time — the rolled 30
+        // minutes, not a zero from a skipped read.
+        assertTrue(info.blocked) &&
+        assertTrue(info.reasonClass.contains("paused")) &&
+        assertTrue(info.profileName.contains("Kids")) &&
+        assertTrue(info.usedMinutes.contains(30))
     },
   ) @@ TestAspect.sequential
 }

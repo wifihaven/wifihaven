@@ -658,9 +658,9 @@ object HttpRoutes {
       // the reason + today's usage. Accidentally removed from registration in #1060;
       // re-wired here so the kid-friendly path stops falling back to the legacy
       // router-supplied `reason` query string.
-      // #2652: the route takes ONLY the policy service and the blocklist repo — everything else it
-      // used to hold (device/profile/settings repos, TimeStatusService, Clock) existed solely to
-      // re-read what `policy.decideDetailed` already resolves.
+      // #2652: the route no longer takes the device / profile / household-settings repos, the
+      // TimeStatusService, or the Clock. All five existed solely to re-read what
+      // `policy.decideDetailed` already resolves.
       BlockedRoutes.routes(
         policy,
         blRepo,

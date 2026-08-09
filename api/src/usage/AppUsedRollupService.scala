@@ -182,13 +182,15 @@ class AppUsedRollupServiceLive(
                 // — bounded (self-heals on the next whole-day tick) and only ever removes minutes.
                 ambient <- ambientRepo.gateFor(settings, today)
                 presence = TimeStatusService.gatedPresence(atls, raw, settings, ambient)
-              } yield
-              // #1676: the dropped-session counter is emitted from the
-              // periodic TimeUsedRollupJob tick (one clean cadence), NOT from
-              // this hot read path — re-emitting on every status read would
-              // inflate the series with read frequency instead of reflecting
-              // data state, defeating rate-alerting.
-              minutesFrom(rolled, TimeStatusService.appSecondsByApp(p, atls, presence, settings))
+              } yield {
+                // #1676: the dropped-session counter is emitted from the
+                // periodic TimeUsedRollupJob tick (one clean cadence), NOT from
+                // this hot read path — re-emitting on every status read would
+                // inflate the series with read frequency instead of reflecting
+                // data state, defeating rate-alerting.
+                val liveSecs = TimeStatusService.appSecondsByApp(p, atls, presence, settings)
+                minutesFrom(rolled, liveSecs)
+              }
           }
       }
     }

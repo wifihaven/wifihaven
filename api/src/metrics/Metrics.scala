@@ -795,8 +795,13 @@ object AppMetrics {
    * user-visible endpoint in the product — went unnoticed: on prod at the time of filing, 9 of the
    * route's 17 observations sat in the `+Inf` overflow bucket, so no quantile over that series
    * could ever have shown the problem. 10s and 30s make "pathologically slow" a measurable state
-   * rather than an unbounded one. Two extra buckets per (route, method) series; the label set is
-   * unchanged.
+   * rather than an unbounded one.
+   *
+   * Blast radius: these boundaries have TWO consumers, not one — `http_request_duration_seconds`
+   * below and `router_ws_message_duration_seconds` (#2168), which reuses them deliberately so a ws
+   * op's latency stays directly comparable to the REST endpoint it replaced across the #1023
+   * cutover. Both series gain the two buckets. No label set changes, and both label spaces are
+   * small (`route`×`method`, `op`×`direction`).
    */
   val HttpDurationBoundaries: MetricKeyType.Histogram.Boundaries =
     MetricKeyType.Histogram.Boundaries.fromChunk(

@@ -14,8 +14,9 @@ import java.time.{DayOfWeek, Instant, LocalDate}
 import java.util.concurrent.atomic.AtomicReference
 
 /**
- * #2652: everything [[PolicyService.decideDetailed]] resolved on its way to a per-host verdict, so
- * a caller that needs more than the wire response does not have to read it all a second time.
+ * #2652: carries everything [[PolicyService.decideDetailed]] resolved on its way to a per-host
+ * verdict, so a caller that needs more than the wire response does not have to read it all a second
+ * time.
  *
  * `decide` already resolves the device against the household, loads its profile, reads the
  * household settings and computes the profile's canonical [[ProfileDayState]] — all of which the
@@ -29,8 +30,11 @@ import java.util.concurrent.atomic.AtomicReference
  *   - `profile` — the device's profile row, `None` when the MAC is unknown to this household, has
  *     no profile assignment, or its profile row is missing.
  *   - `dayState` — the profile's canonical day state, from the SAME `TimeStatusService.todaysState`
- *     call the verdict was derived from. `None` whenever `profile` is `None` (there is nothing to
- *     compute a day state for), so the two fields agree by construction.
+ *     call the verdict was derived from. `None` whenever `profile` is `None` — there is nothing to
+ *     compute a day state for. Note this is by convention, not by construction: the profile row and
+ *     the day state are two separate `profileRepo.findById` reads, so a profile deleted between
+ *     them yields `profile = Some, dayState = None`. Harmless for the one consumer (the block page
+ *     just omits the minute counts), but do not code against the pairing as an invariant.
  */
 final case class PolicyDecision(
     response: RouterDecisionResponse,
