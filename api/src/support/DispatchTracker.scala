@@ -44,12 +44,17 @@ import java.time.{Duration, Instant}
  * everything dispatched after it.
  *
  * MEMORY IS BOUNDED BY CONSTRUCTION, not by an eviction policy: dispatch is globally capped at
- * 50/day (`HttpRoutes` `dispatchGlobalLimiter`) and every entry is removed by
+ * 50/day (`HttpRoutes` `dispatchGlobalLimiter`) and [[sweep]] removes every entry by
  * [[DispatchTracker.deadAfterFor]] at the latest, so the live map holds at most one dispatch budget
  * per retention window. At the default 24h TTL that is 50 entries; the bound scales linearly with
  * the operator-tunable `support.agentTokenTtlMinutes` rather than being fixed (a 7-day TTL would
- * make it ~350). Each entry is a threadId plus three small fields, so even a wildly-tuned TTL costs
+ * make it ~350). Each entry is a threadId plus five small fields, so even a wildly-tuned TTL costs
  * kilobytes.
+ *
+ * #2668 changed WHEN an entry leaves, not the bound: [[calledBack]] marks it closed instead of
+ * removing it (so [[turnOwner]] can still recognise the session that owned an answered turn), and
+ * the sweep's `deadAfter` eviction — which always ran — is now the only exit. A thread holds at
+ * most one entry either way.
  *
  * PII FIREWALL (the #2438 discipline): the only things logged are the Plain threadId, the household
  * id, the bounded transport label, and an age in seconds. Never the customer message, the reply,
@@ -112,13 +117,18 @@ final class DispatchTracker private (
         (m.get(threadId), m.updated(threadId, Pending(household, transport, now, sessionId)))
       }
       .flatMap {
-        case None       => ZIO.unit
-        case Some(prev) =>
+        // Only an OUTSTANDING prior entry is a supersede. #2668 keeps CLOSED entries in the map so
+        // `turnOwner` can still recognise the session that owned an answered turn, which makes
+        // `Some(prev)` the ordinary case for any follow-up message — and logging that as
+        // "no longer owes a reply" would be false (it already replied) and would drain the one
+        // line that identified the #2668 race in prod.
+        case Some(prev) if !prev.closed =>
           ZIO.logInfo(
             s"support dispatch superseded thread=$threadId household=${household.value} " +
               s"transport=$transport priorAgeSeconds=${ageSeconds(prev, now)} — the earlier " +
               "session no longer owes a reply on this thread",
           )
+        case _                          => ZIO.unit
       }
 
   /**

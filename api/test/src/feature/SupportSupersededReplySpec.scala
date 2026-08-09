@@ -378,5 +378,36 @@ object SupportSupersededReplySpec
         prompts <- h.plain.threads.get.map(_.count(_.markdown.contains("/support/consent?g=")))
       } yield assertTrue(stale == Status.Ok, current == Status.Ok, prompts == 1)
     },
+    test("the supersede LOG stays a race signal: an ANSWERED turn's follow-up is not one") {
+      // The tracker keeps a closed entry so `turnOwner` can still place an answered turn's
+      // session. That must not turn every ordinary follow-up into "the earlier session no longer
+      // owes a reply" — it already replied, and that line is the one an operator greps to find
+      // this race.
+      {
+        for {
+          _      <- cleanDb
+          hhRepo <- ZIO.service[HouseholdRepo]
+          h      <- makeHarness
+          hh     <- hhRepo.create("Family G", "family-g")
+          // Turn one, answered in full BEFORE the next message arrives.
+          first  <- inbound(h, hh, "th_g", "my iPad is blocked")
+          _      <- reply(h, first, "here is why")
+          _      <- inbound(h, hh, "th_g", "thanks, and what about the Switch?")
+          // Turn two on ANOTHER thread, genuinely raced: nothing answered in between.
+          raced  <- inbound(h, hh, "th_g2", "why is my iPad blocked?")
+          _      <- inbound(h, hh, "th_g2", "hello?")
+          _      <- reply(h, raced, "the superseded answer")
+          logs   <- ZTestLogger.logOutput
+        } yield {
+          val superseded = logs.map(_.message()).filter(_.contains("support dispatch superseded"))
+          assertTrue(
+            superseded.exists(_.contains("thread=th_g2")),
+            !superseded.exists(_.contains("thread=th_g ")),
+          )
+        }
+      }.provideSomeLayer[
+        TestDatabase.AllRepos & EmbeddedPostgres & Clock & Transactor[Task],
+      ](ZTestLogger.default)
+    },
   ) @@ TestAspect.sequential
 }
