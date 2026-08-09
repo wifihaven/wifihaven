@@ -136,9 +136,25 @@ object SupportSupersededReplySpec
       s""""chat":{"text":${text.toJson},"createdBy":{"actorType":"customer"}},""" +
       s""""thread":{"id":"$threadId","customer":{"id":"c_1","externalId":"$tenant"}}}}"""
 
+  /**
+   * The EMAIL twin of [[payload]]. Both channels dispatch through the same path, and the duplicate
+   * costs more here: two real messages land in the customer's inbox. The identified shape
+   * (`customer.externalId` = household) is what the prod email thread `th_01KZM416D…` carried.
+   */
+  private def emailPayload(tenant: Long, threadId: String, text: String): String =
+    s"""{"workspaceId":"w_1","id":"pEv_email","payload":{"eventType":"thread.email_received",""" +
+      s""""email":{"textContent":${text.toJson},"createdBy":{"actorType":"customer"}},""" +
+      s""""thread":{"id":"$threadId","customer":{"id":"c_1","externalId":"$tenant"}}}}"""
+
   /** One inbound customer message; returns the agent token minted for the session it dispatched. */
-  private def inbound(h: Harness, hh: HouseholdId, thread: String, text: String): Task[String] = {
-    val body = payload(hh.value, thread, text)
+  private def inbound(
+      h: Harness,
+      hh: HouseholdId,
+      thread: String,
+      text: String,
+      channel: (Long, String, String) => String = payload,
+  ): Task[String] = {
+    val body = channel(hh.value, thread, text)
     for {
       before <- h.dispatch.dispatches.get.map(_.size)
       _      <- h.agentRoutes.runZIO(
@@ -307,6 +323,42 @@ object SupportSupersededReplySpec
         granted == Status.Ok,
         wStatus == Status.Ok,
         rStatus == Status.Ok,
+        sent == List(ResumeAnswer),
+      )
+    },
+    test("the EMAIL channel gets the same guard — two real messages in an inbox is worse") {
+      // The prod email thread th_01KZM416D28FWVYQZHDNCZB7MF, exactly: the session that asked for
+      // consent kept running and replied 2s after the grant (far too fast to be the resume, whose
+      // healthy latency is 30-110s per #2472), then the resume read the household and replied
+      // again. Two emails to the customer's inbox off one grant.
+      for {
+        _        <- cleanDb
+        hhRepo   <- ZIO.service[HouseholdRepo]
+        h        <- makeHarness
+        hh       <- hhRepo.create("Family M", "family-m")
+        userRepo <- ZIO.service[UserRepo]
+        jwtTok   <- seedAdmin(h, userRepo, hh, "family-m", "admin_family-m")
+        asked    <- inbound(h, hh, "th_m", "how many profiles do I have?", emailPayload)
+        _        <- agentPost(h, "/api/support/agent/request-consent", "", asked)
+        grant    <- grantTokenFromThread(h)
+        prompt   <- h.plain.threads.get.map(_.last.markdown)
+        _        <- h.plain.history.set(
+          List(
+            PlainThreadMessage(ThreadMessageRole.Customer, "how many profiles do I have?"),
+            PlainThreadMessage(ThreadMessageRole.AiAssistant, prompt),
+          ),
+        )
+        before   <- h.dispatch.dispatches.get.map(_.size)
+        granted  <- postConsent(h, jwtTok, grant)
+        rToken   <- resumeToken(h, before)
+        // The asking session, still live on its 24h token, posts its own answer after the resume.
+        stale    <- reply(h, asked, "From the ASKING session: I have asked for permission.")
+        current  <- reply(h, rToken, ResumeAnswer)
+        sent     <- replies(h, "th_m")
+      } yield assertTrue(
+        granted == Status.Ok,
+        stale == Status.Ok,
+        current == Status.Ok,
         sent == List(ResumeAnswer),
       )
     },
