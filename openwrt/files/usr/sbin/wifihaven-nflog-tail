@@ -3,9 +3,11 @@
 -- forward-chain drop records and spools them for the main agent (#1126).
 --
 -- render.lua emits every per-MAC / per-host / per-category / ip-only drop rule
--- with `log prefix "wh_drop:<mac>:<reason> " counter drop`, which writes a
--- packet record to the kernel ring buffer (the LOG backend). This sidecar runs
--- the blocking `logread -f`, keeps only the `wh_drop:` lines, and appends them
+-- with `log prefix "wh_drop:<mac>:<reason> " counter drop`, and (#2647) every
+-- block-page DNAT/redirect rule with a rate-limited
+-- `log prefix "wh_dnat:<mac>:<reason> "`, each of which writes a packet record
+-- to the kernel ring buffer (the LOG backend). This sidecar runs
+-- the blocking `logread -f`, keeps only those lines, and appends them
 -- to a tmpfs spool (paths.nflog_drops). The main agent drains new complete
 -- lines from that spool on its cooperative tick (nflog.drain_file) and
 -- synthesizes connection_attempt(allowed=false) events.
@@ -62,9 +64,15 @@ while true do
     log.warn("nflog-tail: logread pipe closed; exiting (procd will respawn)")
     break
   end
-  -- Cheap plain-substring prefilter — only the wifihaven drop records carry
-  -- the wh_drop: token. Full parsing happens agent-side in nflog.parse_line.
-  if line:find("wh_drop:", 1, true) then
+  -- Cheap plain-substring prefilter — only the wifihaven enforcement records
+  -- carry these tokens. Full parsing happens agent-side in nflog.parse_line.
+  -- #2647: `wh_dnat:` is the block-page DNAT path (prerouting), which never
+  -- reaches the forward hook the `wh_drop:` records come from. Both ride this
+  -- same spool and therefore the same cap + truncate-on-cap path below, so no
+  -- new unbounded /tmp growth path is introduced (AGENTS.md#bounded-tmp-writes);
+  -- the added volume is itself bounded router-side by the per-flow
+  -- wh_dnat_log4/6 limiter (1/minute per (mac, dst), render.lua).
+  if line:find("wh_drop:", 1, true) or line:find("wh_dnat:", 1, true) then
     out:write(line, "\n")
     out:flush()
     matched      = matched + 1

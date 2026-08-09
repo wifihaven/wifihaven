@@ -156,3 +156,52 @@ def test_paused_mac_https_traffic_surfaces_as_nflog_event(router, client, fake_a
         interval_s=2,
         description=f"nflog-synthesized Paused event for {mac}",
     )
+
+
+# ── #2647: the block-page DNAT path reports too ─────────────────────────────
+
+
+def test_blocked_mac_http80_block_page_surfaces_as_event(router, client, fake_api):
+    """Drive plain HTTP (port 80) from a paused MAC and assert a synthesized
+    `connection_attempt(allowed=false, reason=Paused)` arrives at the fake.
+
+    This is the acceptance check from #2647, and the exact inverse of the
+    port-443 test above. Port 80 is DNAT'd to the local block-page listener by
+    `wifihaven_block_nat` (prerouting), and prerouting runs BEFORE the forward
+    hook — the rewritten packet is delivered to INPUT and never reaches the
+    `wh_drop:` log/drop rules. So this flow produced NO event at all: confirmed
+    on prod hardware, where loading a blocked host rendered the block page
+    correctly while the drop rule still read `counter packets 0 bytes 0`.
+
+    Because 80 AND 443 are both redirected, that made the blocks a user
+    actually SEES precisely the ones missing from Connection Events, leaving a
+    sample biased toward what cannot be redirected (QUIC, hardcoded IPs).
+    #2647 emits a rate-limited `wh_dnat:<mac>:<reason>` log ahead of each
+    dnat/redirect rule, carrying the same reason vocabulary, so both paths
+    report identically.
+    """
+    mac = client.mac
+
+    paused = snapshot_with_assigned_device(
+        etag='"sha256:dnat-emit-v1"',
+        mac=mac,
+        paused=True,
+    )
+    fake_api.wait_for_etag_served(
+        etag=fake_api.serve_snapshot(paused), timeout_s=240,
+    )
+
+    # The request is redirected to the block page rather than dropped, so it
+    # may well succeed — we assert on the event, not the HTTP outcome.
+    http_get(client, "http://example.com/", timeout_s=5)
+
+    def _event_landed():
+        evs = fake_api.events_for_mac(mac, allowed=False, reason="Paused")
+        return evs or None
+
+    wait_until(
+        _event_landed,
+        timeout_s=120,
+        interval_s=2,
+        description=f"wh_dnat-synthesized Paused event for {mac} (port 80)",
+    )

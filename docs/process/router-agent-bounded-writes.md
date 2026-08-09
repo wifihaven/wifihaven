@@ -40,6 +40,37 @@ The same reasoning applies to anything else the agent persists under `/tmp`
 (JSON spools, NDJSON event journals, debug dumps). If it can grow, it gets a
 bound — in the same PR.
 
+## Enforcement-record spool (`paths.nflog_drops`) {#nflog-spool}
+
+The `wifihaven-nflog-tail` sidecar runs the blocking `logread -f`, keeps the
+lines carrying a wifihaven enforcement record, and appends them to a tmpfs
+spool the agent drains on its tick (`nflog.drain_file`). Two record prefixes
+share that one spool:
+
+- `wh_drop:<mac>:<reason>` — forward-hook drop (`chain wifihaven_block`).
+- `wh_dnat:<mac>:<reason>` — block-page DNAT/redirect
+  (`chain wifihaven_block_nat`, prerouting), added in
+  [#2647](https://github.com/wifihaven/wifihaven/issues/2647).
+
+**This spool is bounded by the sidecar itself, not by the rotation cron.** The
+writer holds the fd open and is the only writer, so it caps the file at
+`nflog_spool_max_bytes` (default 256 KiB, UCI-overridable) and truncates in
+place by reopening with mode `"w"`; the agent detects the shrink (file shorter
+than its saved offset) and rewinds its cursor. At most the lines written since
+the agent's last drain are lost, which is acceptable for a best-effort,
+agent-deduped visibility stream. `nflog_tail_bounded_spec.sh` pins the cap and
+the truncate path.
+
+**A second record source does not need a second bound**, but it does need the
+volume argument re-made. `wh_dnat:` records are the COMMON case (TCP 80 and 443
+are both redirected), so they are rate-limited router-side before they ever
+reach `logread`: each dnat/redirect rule is fronted by a log rule gated on a
+per-flow limiter set (`wh_dnat_log4` / `wh_dnat_log6`, keyed on `(mac, dst)` at
+`1/minute burst 5`) — the same per-flow shape #1915 gave the drop path, and the
+same reason: a flat per-rule budget starves event synthesis for the next
+distinct flow once a storm drains it. Worst case per flow is therefore
+unchanged in order of magnitude, and both sources land under the one cap above.
+
 ## Per-blocklist dnsmasq conf shards (`/tmp/dnsmasq.d/blocklists/wifihaven-blocklist-<id>.conf`) {#blocklist-shards}
 
 Added in [#1782/#1783](https://github.com/wifihaven/wifihaven/issues/1782).

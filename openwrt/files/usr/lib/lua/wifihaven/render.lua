@@ -1295,6 +1295,15 @@ function M.nft(snapshot, opts)
       blocked_reason_by_mac[mac] = r.blockReason or "blocked"
     end
   end
+  -- #2647: the three reason strings the enforcement plane can attribute a
+  -- block to are now read by BOTH the forward-drop path (wh_drop:) and the
+  -- block-page DNAT path (wh_dnat:). A host block must read the same whether
+  -- it was redirected or dropped, so the spelling lives in exactly one place
+  -- (docs/process/single-source-of-truth.md) rather than being re-inlined at
+  -- each of the eight call sites.
+  local function mac_reason(mac)      return blocked_reason_by_mac[mac] or "blocked" end
+  local function host_reason(host)    return "host:" .. host end
+  local function category_reason(id)  return "category:" .. tostring(id) end
 
   -- #1915: per-flow wh_drop LOG limiter sets (see emit_drop above). Keyed on
   -- (mac, dst) so each distinct blocked flow gets its own token bucket and logs
@@ -1309,6 +1318,33 @@ function M.nft(snapshot, opts)
   ind("}")
   emit("")
   ind("set wh_drop_log6 {")
+  ind2("type ether_addr . ipv6_addr")
+  ind2("flags dynamic,timeout")
+  ind2("timeout 2m")
+  ind("}")
+  emit("")
+  -- #2647: the block-page DNAT path's per-flow LOG limiter sets. Same shape
+  -- and same budget as wh_drop_log4/6 above — redirected traffic is the COMMON
+  -- case (TCP 80 AND 443 are both DNAT'd), so an unbounded log in prerouting
+  -- would flood the kernel ring buffer harder than the drop path ever could
+  -- (#1864's failure mode). Keyed on (mac, dst) so the first packet of every
+  -- distinct redirected flow always logs — event synthesis is never starved
+  -- (#1915) — while a retry storm to the same flow drains only that element's
+  -- bucket. Deliberately SEPARATE from wh_drop_log4/6: sharing one bucket
+  -- would let a redirect suppress the drop-path log for an unrelated flow to
+  -- the same destination (or vice versa), coupling two independent budgets.
+  -- Double-counting is prevented structurally instead: a DNAT'd packet is
+  -- delivered to INPUT and never reaches the forward hook, and the agent's
+  -- per-(mac, dst, hostname) dedup (nflog.new_dedup, 60s) collapses the one
+  -- case where a device reaches the same host over both a redirected port and
+  -- a dropped one.
+  ind("set wh_dnat_log4 {")
+  ind2("type ether_addr . ipv4_addr")
+  ind2("flags dynamic,timeout")
+  ind2("timeout 2m")
+  ind("}")
+  emit("")
+  ind("set wh_dnat_log6 {")
   ind2("type ether_addr . ipv6_addr")
   ind2("flags dynamic,timeout")
   ind2("timeout 2m")
@@ -1347,13 +1383,13 @@ function M.nft(snapshot, opts)
   -- rules carrying the ea exception (same shape as pre-#1122).
   for _, mac in ipairs(blocked_macs_list) do
     emit_drop(string.format("ether saddr %s", mac),
-              mac, blocked_reason_by_mac[mac] or "blocked")
+              mac, mac_reason(mac))
   end
   -- #1319: each per-MAC blocked rule also carries the `!= @global_allow`
   -- carve-out (ga_suffix), so a globally-allowed host stays reachable for a
   -- blocked MAC. ea_suffix (per-MAC allow) comes first, then ga_suffix.
   for _, mac in ipairs(blocked_ea_macs) do
-    local reason = blocked_reason_by_mac[mac] or "blocked"
+    local reason = mac_reason(mac)
     emit_drop(string.format("ether saddr %s%s%s", mac, ea_suffix(mac, "ip"),
                             ga_suffix("ip")), mac, reason, "ip")
     emit_drop(string.format("ether saddr %s%s%s", mac, ea_suffix(mac, "ip6"),
@@ -1379,22 +1415,22 @@ function M.nft(snapshot, opts)
   for _, p in ipairs(eb_pairs) do
     emit_drop(string.format("ether saddr %s ip daddr @%s%s%s",
                             p.mac, eb_set_name(p.host), ea_suffix(p.mac, "ip"),
-                            ga_suffix("ip")), p.mac, "host:" .. p.host, "ip")
+                            ga_suffix("ip")), p.mac, host_reason(p.host), "ip")
   end
   for _, p in ipairs(eb_pairs) do
     emit_drop(string.format("ether saddr %s ip6 daddr @%s%s%s",
                             p.mac, eb6_set_name(p.host), ea_suffix(p.mac, "ip6"),
-                            ga_suffix("ip6")), p.mac, "host:" .. p.host, "ip6")
+                            ga_suffix("ip6")), p.mac, host_reason(p.host), "ip6")
   end
   for _, p in ipairs(bl_pairs) do
     emit_drop(string.format("ether saddr %s ip daddr @%s%s%s",
                             p.mac, bl_set_name(p.id), ea_suffix(p.mac, "ip"),
-                            ga_suffix("ip")), p.mac, "category:" .. tostring(p.id), "ip")
+                            ga_suffix("ip")), p.mac, category_reason(p.id), "ip")
   end
   for _, p in ipairs(bl_pairs) do
     emit_drop(string.format("ether saddr %s ip6 daddr @%s%s%s",
                             p.mac, bl6_set_name(p.id), ea_suffix(p.mac, "ip6"),
-                            ga_suffix("ip6")), p.mac, "category:" .. tostring(p.id), "ip6")
+                            ga_suffix("ip6")), p.mac, category_reason(p.id), "ip6")
   end
   -- #353: blockIpOnly drop. Predicate `ip daddr != @resolved_<mac>` matches
   -- any v4 destination the device did not DNS-resolve via our resolver in
@@ -1466,7 +1502,53 @@ function M.nft(snapshot, opts)
     -- the same block page. The cert warning IS the design — we do NOT install
     -- a CA on managed devices. The pair is emitted via the dnat4 / dnat6
     -- helpers below so the predicate construction is single-source-of-truth.
-    local function dnat4(predicate)
+    -- #2647: report the block on this path too. Prerouting runs BEFORE the
+    -- forward hook and a packet rewritten to a router-local address is
+    -- delivered to INPUT, so a redirected flow never reaches the
+    -- wifihaven_block chain's log/drop rules — pre-#2647 the block-page path
+    -- emitted NO event at all. Since TCP 80 and 443 are both redirected, that
+    -- meant essentially every block a user actually SAW was missing from
+    -- Connection Events, while what remained (QUIC, hardcoded IPs) was a
+    -- biased sample. The fix is symmetric with the drop path: one rate-limited
+    -- `log prefix` rule carrying the SAME `<mac>:<reason>` vocabulary,
+    -- emitted immediately BEFORE the dnat/redirect rules it fronts.
+    --
+    -- Three properties are load-bearing:
+    --   * BEFORE the rewrite — DST= must still be the destination the user
+    --     asked for, since that is what the agent attributes a hostname from.
+    --     After the rewrite it would read 127.0.0.1 / the br-lan address.
+    --   * NO verdict on the log rule — over-budget packets simply fail the
+    --     `update` match and fall through to the unconditional dnat/redirect
+    --     rules, exactly as the #1826 two-rule split guarantees for drops.
+    --     Enforcement is unchanged by this reporting change.
+    --   * PORT-SCOPED to the ports actually redirected. An unscoped log rule
+    --     would claim a redirect for QUIC/UDP and arbitrary-port traffic that
+    --     the filter chain in fact DROPS, mislabelling the enforcement path
+    --     and producing a second event for one flow.
+    -- One log rule covers both ports (the limiter is keyed on (mac, dst), so
+    -- 80 and 443 to the same destination share a bucket and collapse to one
+    -- event per minute regardless).
+    -- The `meta nfproto` guard is not decoration: several dnat predicates are
+    -- family-agnostic (a whole-MAC block is just `ether saddr <mac>`), and the
+    -- limiter set key reads that family's daddr. Same guard `emit_drop` puts on
+    -- its family-"any" log rules, for the same reason.
+    local function dnat_log(family, predicate, mac, reason)
+      local set, key, nfproto
+      if family == "ip6" then
+        set, key, nfproto = "wh_dnat_log6", "ether saddr . ip6 daddr", "ipv6"
+      else
+        set, key, nfproto = "wh_dnat_log4", "ether saddr . ip daddr", "ipv4"
+      end
+      ind2(string.format(
+        "%s meta nfproto %s tcp dport { 80, 443 } update @%s { %s %s } log prefix \"wh_dnat:%s:%s \"",
+        predicate, nfproto, set, key, DROP_LOG_RATE, mac, reason))
+    end
+    -- `mac` / `reason` are optional so a caller whose dnat predicate is
+    -- set-scoped (`ether saddr @blocked_macs`) can emit its per-MAC log rules
+    -- itself and still share the dnat emission — see the blocked_macs_list
+    -- call sites below.
+    local function dnat4(predicate, mac, reason)
+      if mac then dnat_log("ip", predicate, mac, reason) end
       ind2(predicate .. " tcp dport 80 dnat ip to 127.0.0.1:8081")
       ind2(predicate .. " tcp dport 443 dnat ip to 127.0.0.1:8443")
     end
@@ -1481,11 +1563,23 @@ function M.nft(snapshot, opts)
     -- to a br-lan v6 address rather than ::1 — lands on a live listener. (The v4
     -- path keeps DNAT-to-127.0.0.1: route_localnet makes loopback deliverable on
     -- v4, and that path already works on prod — leave it untouched.)
-    local function dnat6(predicate)
+    -- #2647: the v6 sibling reports identically. #1668/#1929 are the standing
+    -- reminder that v6 paths get forgotten here — miss this and v6 blocks stay
+    -- invisible while the reporting bias merely narrows.
+    local function dnat6(predicate, mac, reason)
+      if mac then dnat_log("ip6", predicate, mac, reason) end
       ind2(predicate .. " tcp dport 80 redirect to :8081")
       ind2(predicate .. " tcp dport 443 redirect to :8443")
     end
     if #blocked_macs_list > 0 then
+      -- #2647: the dnat itself stays scoped to @blocked_macs (one rule, not
+      -- N), but a log line must NAME the MAC — exactly why #1122 split the
+      -- filter chain's @blocked_macs drop into per-MAC rules. So the log rules
+      -- are emitted per-MAC over the same list that populates the set, ahead
+      -- of the set-scoped dnat.
+      for _, mac in ipairs(blocked_macs_list) do
+        dnat_log("ip", string.format("ether saddr %s", mac), mac, mac_reason(mac))
+      end
       dnat4("ether saddr @blocked_macs")
     end
     -- #421: blocked + extraAllowed → per-MAC v4 DNAT with ea exception.
@@ -1493,27 +1587,30 @@ function M.nft(snapshot, opts)
     -- never redirected to the block page.
     for _, mac in ipairs(blocked_ea_macs) do
       dnat4(string.format("ether saddr %s%s%s",
-        mac, ea_suffix(mac, "ip"), ga_suffix("ip")))
+        mac, ea_suffix(mac, "ip"), ga_suffix("ip")), mac, mac_reason(mac))
     end
     for _, p in ipairs(eb_pairs) do
       dnat4(string.format("ether saddr %s ip daddr @%s%s%s",
-        p.mac, eb_set_name(p.host), ea_suffix(p.mac, "ip"), ga_suffix("ip")))
+        p.mac, eb_set_name(p.host), ea_suffix(p.mac, "ip"), ga_suffix("ip")),
+        p.mac, host_reason(p.host))
     end
     for _, p in ipairs(bl_pairs) do
       dnat4(string.format("ether saddr %s ip daddr @%s%s%s",
-        p.mac, bl_set_name(p.id), ea_suffix(p.mac, "ip"), ga_suffix("ip")))
+        p.mac, bl_set_name(p.id), ea_suffix(p.mac, "ip"), ga_suffix("ip")),
+        p.mac, category_reason(p.id))
     end
     -- #1319: global block / lockdown v4 DNAT → block page. Carved out only by
     -- @global_allow (per-MAC ea does not save a global block).
     if has_global_block then
       for _, mac in ipairs(managed_macs) do
         dnat4(string.format("ether saddr %s ip daddr @%s%s",
-          mac, GLOBAL_BLOCK4, ga_suffix("ip")))
+          mac, GLOBAL_BLOCK4, ga_suffix("ip")), mac, "global_block")
       end
     end
     if g_blocked then
       for _, mac in ipairs(managed_macs) do
-        dnat4(string.format("ether saddr %s%s", mac, ga_suffix("ip")))
+        dnat4(string.format("ether saddr %s%s", mac, ga_suffix("ip")),
+          mac, g_block_reason)
       end
     end
     -- #353: blockIpOnly v4 DNAT. Same predicate as the forward-chain drop;
@@ -1521,7 +1618,7 @@ function M.nft(snapshot, opts)
     -- device sees the block page instead of a silent timeout.
     for _, mac in ipairs(bio_macs) do
       dnat4(string.format("ether saddr %s ip daddr != @%s",
-        mac, resolved_set_name(mac)))
+        mac, resolved_set_name(mac)), mac, "ip_only")
     end
     -- #411/#1865: v6 siblings, delivered via `redirect` (see dnat6 above).
     -- uhttpd binds [::]:8081 + [::]:8443 so the redirected packet (now destined
@@ -1530,6 +1627,11 @@ function M.nft(snapshot, opts)
     -- addressed to loopback (also avoids any self-redirect if the block page
     -- ever issues an outbound v6 request).
     if #blocked_macs_list > 0 then
+      -- Per-MAC log rules ahead of the set-scoped redirect, same as v4 above.
+      for _, mac in ipairs(blocked_macs_list) do
+        dnat_log("ip6", string.format("ether saddr %s ip6 daddr != ::1", mac),
+          mac, mac_reason(mac))
+      end
       dnat6("ether saddr @blocked_macs ip6 daddr != ::1")
     end
     -- #421: blocked + extraAllowed → per-MAC v6 DNAT with ea6 exception.
@@ -1537,15 +1639,17 @@ function M.nft(snapshot, opts)
     -- v6 line above).
     for _, mac in ipairs(blocked_ea_macs) do
       dnat6(string.format("ether saddr %s ip6 daddr != ::1%s%s",
-        mac, ea_suffix(mac, "ip6"), ga_suffix("ip6")))
+        mac, ea_suffix(mac, "ip6"), ga_suffix("ip6")), mac, mac_reason(mac))
     end
     for _, p in ipairs(eb_pairs) do
       dnat6(string.format("ether saddr %s ip6 daddr @%s%s%s",
-        p.mac, eb6_set_name(p.host), ea_suffix(p.mac, "ip6"), ga_suffix("ip6")))
+        p.mac, eb6_set_name(p.host), ea_suffix(p.mac, "ip6"), ga_suffix("ip6")),
+        p.mac, host_reason(p.host))
     end
     for _, p in ipairs(bl_pairs) do
       dnat6(string.format("ether saddr %s ip6 daddr @%s%s%s",
-        p.mac, bl6_set_name(p.id), ea_suffix(p.mac, "ip6"), ga_suffix("ip6")))
+        p.mac, bl6_set_name(p.id), ea_suffix(p.mac, "ip6"), ga_suffix("ip6")),
+        p.mac, category_reason(p.id))
     end
     -- #1319: global block / lockdown v6 DNAT → block page. The @global_block6
     -- match can't include ::1 (the listener never resolves into a block set),
@@ -1554,13 +1658,13 @@ function M.nft(snapshot, opts)
     if has_global_block then
       for _, mac in ipairs(managed_macs) do
         dnat6(string.format("ether saddr %s ip6 daddr @%s%s",
-          mac, GLOBAL_BLOCK6, ga_suffix("ip6")))
+          mac, GLOBAL_BLOCK6, ga_suffix("ip6")), mac, "global_block")
       end
     end
     if g_blocked then
       for _, mac in ipairs(managed_macs) do
         dnat6(string.format("ether saddr %s ip6 daddr != ::1%s",
-          mac, ga_suffix("ip6")))
+          mac, ga_suffix("ip6")), mac, g_block_reason)
       end
     end
     -- #353 + #411: blockIpOnly v6 DNAT. `ip6 daddr != ::1` guards against
@@ -1568,7 +1672,7 @@ function M.nft(snapshot, opts)
     -- by definition and we must not DNAT its own responses).
     for _, mac in ipairs(bio_macs) do
       dnat6(string.format("ether saddr %s ip6 daddr != ::1 ip6 daddr != @%s",
-        mac, resolved6_set_name(mac)))
+        mac, resolved6_set_name(mac)), mac, "ip_only")
     end
     ind("}")
     emit("")

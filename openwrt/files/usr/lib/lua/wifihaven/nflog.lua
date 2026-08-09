@@ -34,7 +34,8 @@
 -- ----------
 -- The exact line framing varies by nflog consumer (ulogd2, nft monitor,
 -- nflog2syslog), but every variant carries a recognisable
---   wh_drop:<mac>:<reason>
+--   wh_drop:<mac>:<reason>   (forward-hook drop)
+--   wh_dnat:<mac>:<reason>   (prerouting block-page DNAT/redirect, #2647)
 -- token followed by KEY=VALUE pairs that include SRC= and DST=. The parser
 -- below ignores everything outside of these tokens, so it survives reframing
 -- (timestamp prefix, kernel-log decoration, etc.).
@@ -73,13 +74,32 @@ end
 -- (17 chars); the reason runs to the next whitespace and may itself contain
 -- colons (e.g. `category:ads`).
 -- ---------------------------------------------------------------------------
+-- The `<mac>:<reason>` tail shared by both record prefixes. `mac` is exactly
+-- six pairs of hex separated by colons; `reason` is greedy through any
+-- non-space chars so `category:ads` survives as one token.
+local MAC_REASON =
+  "([0-9a-fA-F:][0-9a-fA-F:][0-9a-fA-F:][0-9a-fA-F:][0-9a-fA-F:][0-9a-fA-F:][0-9a-fA-F:][0-9a-fA-F:][0-9a-fA-F:][0-9a-fA-F:][0-9a-fA-F:][0-9a-fA-F:][0-9a-fA-F:][0-9a-fA-F:][0-9a-fA-F:][0-9a-fA-F:][0-9a-fA-F]):(%S+)"
+
+-- #2647: the two enforcement paths that a block can take, in the order they
+-- are tried. `wh_drop:` is the forward-hook drop; `wh_dnat:` is the
+-- prerouting block-page DNAT/redirect, which never reaches the forward hook
+-- (the rewritten packet is delivered to INPUT) and so emitted no record at
+-- all before #2647 — silently hiding the blocks users actually SEE. Both
+-- carry the SAME `<mac>:<reason>` vocabulary and both synthesize the same
+-- connection_attempt(allowed=false): one kernel-log channel, one reason
+-- vocabulary, one event shape. The prefix is a routing detail of the
+-- enforcement plane, not a policy distinction, so it is deliberately NOT
+-- carried onto the wire.
+local RECORD_PREFIXES = { "wh_drop:", "wh_dnat:" }
+
 function M.parse_line(line)
   if not line then return nil end
-  -- Match the wh_drop:<mac>:<reason> token. `mac` is exactly six pairs of
-  -- hex separated by colons. `reason` is greedy through any non-space chars
-  -- so `category:ads` survives as one token. Anchoring on `wh_drop:` lets
-  -- the parser ignore leading kernel-log fluff.
-  local mac, reason = line:match("wh_drop:([0-9a-fA-F:][0-9a-fA-F:][0-9a-fA-F:][0-9a-fA-F:][0-9a-fA-F:][0-9a-fA-F:][0-9a-fA-F:][0-9a-fA-F:][0-9a-fA-F:][0-9a-fA-F:][0-9a-fA-F:][0-9a-fA-F:][0-9a-fA-F:][0-9a-fA-F:][0-9a-fA-F:][0-9a-fA-F:][0-9a-fA-F]):(%S+)")
+  -- Anchoring on the prefix lets the parser ignore leading kernel-log fluff.
+  local mac, reason
+  for _, prefix in ipairs(RECORD_PREFIXES) do
+    mac, reason = line:match(prefix .. MAC_REASON)
+    if mac then break end
+  end
   if not mac then return nil end
   local src_ip = line:match("SRC=(%S+)")
   local dst_ip = line:match("DST=(%S+)")

@@ -767,7 +767,7 @@ describe("render.nft #2647 block-page DNAT reporting", function()
   it("logs a whole-MAC block on the v4 DNAT path carrying the MacBlockReason", function()
     local nft = render.nft(blocked_snap())
     assert.truthy(nft:find(
-      "ether saddr aa:bb:cc:11:22:33 tcp dport { 80, 443 } update @wh_dnat_log4 " ..
+      "ether saddr aa:bb:cc:11:22:33 meta nfproto ipv4 tcp dport { 80, 443 } update @wh_dnat_log4 " ..
       "{ ether saddr . ip daddr limit rate 1/minute burst 5 packets } " ..
       "log prefix \"wh_dnat:aa:bb:cc:11:22:33:Paused \"", 1, true))
   end)
@@ -777,7 +777,7 @@ describe("render.nft #2647 block-page DNAT reporting", function()
   it("logs a whole-MAC block on the v6 redirect path (#1668/#1929)", function()
     local nft = render.nft(blocked_snap())
     assert.truthy(nft:find(
-      "ether saddr aa:bb:cc:11:22:33 ip6 daddr != ::1 tcp dport { 80, 443 } " ..
+      "ether saddr aa:bb:cc:11:22:33 ip6 daddr != ::1 meta nfproto ipv6 tcp dport { 80, 443 } " ..
       "update @wh_dnat_log6 { ether saddr . ip6 daddr limit rate 1/minute burst 5 packets } " ..
       "log prefix \"wh_dnat:aa:bb:cc:11:22:33:Paused \"", 1, true))
   end)
@@ -785,11 +785,11 @@ describe("render.nft #2647 block-page DNAT reporting", function()
   it("logs a per-(mac, host) extraBlocked redirect on v4 and v6", function()
     local nft = render.nft(snap_one())
     assert.truthy(nft:find(
-      "ether saddr aa:bb:cc:11:22:33 ip daddr @eb_tiktok_com tcp dport { 80, 443 } " ..
+      "ether saddr aa:bb:cc:11:22:33 ip daddr @eb_tiktok_com meta nfproto ipv4 tcp dport { 80, 443 } " ..
       "update @wh_dnat_log4 { ether saddr . ip daddr limit rate 1/minute burst 5 packets } " ..
       "log prefix \"wh_dnat:aa:bb:cc:11:22:33:host:tiktok.com \"", 1, true))
     assert.truthy(nft:find(
-      "ether saddr aa:bb:cc:11:22:33 ip6 daddr @eb6_tiktok_com tcp dport { 80, 443 } " ..
+      "ether saddr aa:bb:cc:11:22:33 ip6 daddr @eb6_tiktok_com meta nfproto ipv6 tcp dport { 80, 443 } " ..
       "update @wh_dnat_log6 { ether saddr . ip6 daddr limit rate 1/minute burst 5 packets } " ..
       "log prefix \"wh_dnat:aa:bb:cc:11:22:33:host:tiktok.com \"", 1, true))
   end)
@@ -799,11 +799,11 @@ describe("render.nft #2647 block-page DNAT reporting", function()
     s.blocklists = { ads = { version = 1, url = "http://x/ads" } }
     local nft = render.nft(s)
     assert.truthy(nft:find(
-      "ether saddr aa:bb:cc:11:22:33 ip daddr @bl_ads tcp dport { 80, 443 } " ..
+      "ether saddr aa:bb:cc:11:22:33 ip daddr @bl_ads meta nfproto ipv4 tcp dport { 80, 443 } " ..
       "update @wh_dnat_log4 { ether saddr . ip daddr limit rate 1/minute burst 5 packets } " ..
       "log prefix \"wh_dnat:aa:bb:cc:11:22:33:category:ads \"", 1, true))
     assert.truthy(nft:find(
-      "ether saddr aa:bb:cc:11:22:33 ip6 daddr @bl6_ads tcp dport { 80, 443 } " ..
+      "ether saddr aa:bb:cc:11:22:33 ip6 daddr @bl6_ads meta nfproto ipv6 tcp dport { 80, 443 } " ..
       "update @wh_dnat_log6 { ether saddr . ip6 daddr limit rate 1/minute burst 5 packets } " ..
       "log prefix \"wh_dnat:aa:bb:cc:11:22:33:category:ads \"", 1, true))
   end)
@@ -854,6 +854,26 @@ describe("render.nft #2647 block-page DNAT reporting", function()
       if line:find("wh_dnat:", 1, true) then
         assert.truthy(line:find("tcp dport { 80, 443 }", 1, true),
                       "wh_dnat log rule is not port-scoped: " .. line)
+      end
+    end
+  end)
+
+  -- Several dnat predicates are family-agnostic (a whole-MAC block is just
+  -- `ether saddr <mac>`), while the limiter set key reads that family's daddr.
+  -- The drop path guards the same shape with `meta nfproto` (emit_drop, family
+  -- "any"); the DNAT path must too, or the v4 rule would be reached by a v6
+  -- packet whose family the set key cannot read.
+  it("guards every wh_dnat log rule with the matching meta nfproto", function()
+    local s = blocked_snap()
+    s.profiles["3"].rules.blockIpOnly = true
+    s.blocklists = { ads = { version = 1, url = "http://x/ads" } }
+    local body = nat_chain_body(render.nft(s))
+    assert.is_not_nil(body)
+    for line in body:gmatch("[^\n]+") do
+      if line:find("@wh_dnat_log4", 1, true) then
+        assert.truthy(line:find("meta nfproto ipv4", 1, true), "unguarded v4: " .. line)
+      elseif line:find("@wh_dnat_log6", 1, true) then
+        assert.truthy(line:find("meta nfproto ipv6", 1, true), "unguarded v6: " .. line)
       end
     end
   end)
