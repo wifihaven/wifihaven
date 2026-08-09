@@ -19,10 +19,13 @@ import zio.test.*
  * #2643 — "Block encrypted DNS & relays" must be ON for a NEWLY created household.
  *
  * Why: a device that tunnels around the LAN resolver (iCloud Private Relay, public DoH/DoT)
- * bypasses ALL WifiHaven filtering and ALL hostname attribution, and the failure is silent in the
- * worst direction — the dashboard renders, it just shows raw IPs, and configured blocks do not
- * bite. Off-by-default meant every household started inert until an operator happened to find the
- * toggle. Hit live on a fresh prod household during #2527.
+ * bypasses all hostname attribution and every decision that depends on it — site and category
+ * blocking, and per-app limits. (NOT daily time limits: those resolve to a whole-MAC `blocked =
+ * true` forward-drop that never consults DNS, so they still bite. The distinction is the one
+ * `AdminPage`'s copy makes.) The failure is silent in the worst direction — the dashboard renders,
+ * it just shows raw IPs, and configured blocks do not bite. Off-by-default meant every household
+ * started inert until an operator happened to find the toggle. Hit live on a fresh prod household
+ * during #2527.
  *
  * Where the default lives (the #2643 first-job trace): `HouseholdSeed.insertHousehold` used to
  * INSERT into `household_settings` naming ONLY `household_id`, so the value a new household got

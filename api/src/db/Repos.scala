@@ -113,11 +113,13 @@ object HouseholdSeed {
 
   /**
    * #2386: idempotent boot-time backfill for households minted before the per-household settings
-   * row was seeded on every create path. Gives every rowless household its OWN default settings row
-   * (all columns default; `id` auto-generates via V82), so `getForHousehold` never has to fall back
-   * to household #1's row — the cross-tenant leak this fix closes. The NOT EXISTS guard makes a
-   * re-run a no-op and never touches an existing settings row. One-shot cleanup after it deploys is
-   * tracked under #1608 (see [[wifihaven.api.Main]] boot seed).
+   * row was seeded on every create path. Gives every rowless household its OWN settings row (`id`
+   * auto-generates via V82; every column takes its DB default EXCEPT `block_encrypted_dns`, which
+   * is stamped FALSE explicitly since #2643 — see the comment on the query below), so
+   * `getForHousehold` never has to fall back to household #1's row — the cross-tenant leak this fix
+   * closes. The NOT EXISTS guard makes a re-run a no-op and never touches an existing settings row.
+   * One-shot cleanup after it deploys is tracked under #1608 (see [[wifihaven.api.Main]] boot
+   * seed).
    */
   val backfillMissingSettings: ConnectionIO[Int] =
     // #2643: `block_encrypted_dns` is stamped FALSE explicitly rather than left to V61's column
