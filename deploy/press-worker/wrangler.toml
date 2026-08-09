@@ -26,9 +26,39 @@ workers_dev = false
 [vars]
 PRESS_API_URL = "https://api.wifihaven.net"
 
+# #2673 — Workers Logs ON, declared here rather than left to the dashboard toggle.
+#
+# This Worker's ONLY diagnostic is `console.warn`/`console.error` (src/index.ts:52, :84). With
+# observability off those go nowhere, and the Worker becomes undiagnosable — which is exactly how
+# #2673 stayed invisible: press@ mail was accepted and silently discarded for weeks because
+# PRESS_WEBHOOK_SECRET was unset, the guard logged a warning, and nothing was listening.
+#
+# It is declared in config because the dashboard toggle is EPHEMERAL relative to CD: the next
+# `wrangler deploy` from .github/workflows/master-press-worker.yml overwrites whatever the dashboard
+# holds, so a hand-flipped toggle silently reverts to dark on the next unrelated deploy. Same class
+# of trap as the missing secret it exists to expose.
+#
+# `traces` is left off deliberately — logs are what carry the guard's message; traces are cost with
+# no diagnostic value for a Worker whose whole job is one fetch.
+[observability]
+enabled = true
+
+[observability.logs]
+enabled = true
+invocation_logs = true
+
 [env.staging]
 name = "wifihaven-press-worker-staging"
 workers_dev = false
+
+# Per-env, NOT inherited — same reason as `workers_dev` above (#2346). A named environment that
+# omits this deploys dark even though the top-level block sets it.
+[env.staging.observability]
+enabled = true
+
+[env.staging.observability.logs]
+enabled = true
+invocation_logs = true
 
 [env.staging.vars]
 PRESS_API_URL = "https://api-staging.wifihaven.net"
