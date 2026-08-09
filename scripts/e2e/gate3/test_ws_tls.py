@@ -93,6 +93,38 @@ def _reset_ws_health() -> None:
     router_ssh(f"rm -f {WS_HEALTH_PATH}", check=False, timeout=10)
 
 
+def _reset_ws_metrics() -> None:
+    """Remove the sidecar's tmpfs metric tally so a count read afterwards can
+    only have come from a connect attempt made after this call.
+
+    #2642. Every assertion below is "a fresh attempt happened", and the tally is
+    NOT a monotonic series across restarts: `ws_metrics.new()` starts empty and
+    `ws_metrics.flush` is a truncating write, so the restart these tests use to
+    apply their uci change re-bases every counter to 0 (documented at the top of
+    openwrt/files/usr/lib/lua/wifihaven/ws_metrics.lua — the agent folds it as a
+    counter reset). Reading a pre-restart baseline and asserting the post-restart
+    value EXCEEDS it is therefore wrong, and it broke the moment #2608 made ws
+    default-on: the sidecar was then already connected and already counting
+    before the test ran, so the baseline was >= 1 while the post-restart tally
+    started again from 1 — a deterministic failure of a test that had passed for
+    months only because a default-OFF sidecar left the baseline at 0.
+
+    Clearing the file up front removes the need for a baseline at all: any count
+    observed afterwards is new.
+
+    What makes that sound is the sidecar's own startup, not this `rm`: a fresh
+    instance builds an empty tally and flushes it before connecting
+    (`openwrt/files/usr/sbin/wifihaven-ws`, the `ws_metrics.new()` →
+    `set(ws_state, 0)` → `flush` sequence), so the file the poll below reads
+    cannot carry a pre-restart count. The `rm` narrows the window rather than
+    closing it — between the `rm` and the restart the still-running default-on
+    sidecar flushes on every `inc`, so it can briefly re-create the file with its
+    old counts — which is why the assertion is written against the post-restart
+    tally and the restart is what it depends on.
+    """
+    router_ssh(f"rm -f {WS_METRICS_PATH}", check=False, timeout=10)
+
+
 def _ws_health_present() -> bool:
     res = router_ssh(
         f"[ -s {WS_HEALTH_PATH} ] && echo yes || echo no",
@@ -131,11 +163,12 @@ def test_ws_sidecar_wss_handshake(enrolled_router):
     """Enable the ws sidecar against the real HTTPS staging API and assert a
     verified wss:// connection — the path #2153 silently broke.
     """
-    baseline_ok = _ws_metric("ws_connect_total", "ok")
-
-    # Start from a clean sentinel so the "appeared" assertion below reflects a
-    # genuine new connection, not a leftover from a prior run/boot.
+    # Start from a clean sentinel AND a clean metric tally so both assertions
+    # below reflect a genuine new connection, not a leftover from a prior
+    # run/boot — and, since #2608 made ws default-on, not the connection the
+    # sidecar had already made before this test ran (#2642, _reset_ws_metrics).
     _reset_ws_health()
+    _reset_ws_metrics()
     _enable_ws()
     try:
         # The health sentinel is only touched after ws_loop.lua's connect step
@@ -153,10 +186,10 @@ def test_ws_sidecar_wss_handshake(enrolled_router):
             "or hostname verification broken again)"
         )
         got_ok = _poll_until_or_timeout(
-            lambda: _ws_metric("ws_connect_total", "ok") > baseline_ok,
+            lambda: _ws_metric("ws_connect_total", "ok") >= 1,
             timeout_s=30, interval_s=3,
         )
-        assert got_ok, "ws_connect_total{result=ok} never incremented"
+        assert got_ok, "ws_connect_total{result=ok} never recorded a successful connect"
         log.info("gate3: wss handshake confirmed via sidecar health + connect metric")
     finally:
         _disable_ws()
@@ -184,12 +217,14 @@ def test_ws_sidecar_rejects_wrong_hostname_cert(enrolled_router):
     real_api_url = os.environ.get("WH_API_URL")
     assert real_api_url, "WH_API_URL not set"
 
-    baseline_fail = _ws_metric("ws_connect_total", "upgrade_fail")
     # Critical: clear any sentinel the positive test left behind BEFORE enabling
     # ws against the wrong-host target. Without this the poll below catches that
     # stale file and reports a false "wrongly connected" even though the sidecar
     # correctly rejects wrong.host.badssl.com at starttls (see _reset_ws_health).
+    # Clear the tally for the same reason the positive test does: the restart
+    # below re-bases it, so a pre-restart baseline is not a baseline (#2642).
     _reset_ws_health()
+    _reset_ws_metrics()
     _uci_ws(
         f"uci set wifihaven.wifihaven.api_url=https://{WRONG_HOST_TARGET}",
         "uci set wifihaven.ws.enabled=1",
@@ -205,7 +240,7 @@ def test_ws_sidecar_rejects_wrong_hostname_cert(enrolled_router):
             f"ws sidecar reported a healthy connection to {WRONG_HOST_TARGET} "
             "— hostname verification regressed to chain-only (#2153)"
         )
-        assert _ws_metric("ws_connect_total", "upgrade_fail") > baseline_fail, (
+        assert _ws_metric("ws_connect_total", "upgrade_fail") >= 1, (
             "expected at least one failed connect attempt "
             f"(ws_connect_total{{result=upgrade_fail}}) against the "
             f"wrong-hostname target {WRONG_HOST_TARGET}"

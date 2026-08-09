@@ -82,6 +82,7 @@ nft set membership is checked as a DIAGNOSTIC secondary assertion, not the prima
 """
 from __future__ import annotations
 
+import logging
 import time
 
 import pytest
@@ -94,9 +95,11 @@ from ._observers import (
     ea_set_name,
     eb_set_name,
     mac_in_blocked_set,
+    wait_bl_set_exists,
     wait_bl_set_populated,
     wait_block_page,
     wait_ea_set_populated,
+    wait_eb_set_exists,
     wait_eb_set_populated,
     wait_event_with_host_attribution,
     wait_http_succeeds,
@@ -105,6 +108,8 @@ from .snapshot_builder import SnapshotBuilder
 from lib.traffic import dns_query, http_get
 from lib.vm import router_nft_set
 from lib.wait import wait_until
+
+log = logging.getLogger(__name__)
 
 pytestmark = pytest.mark.cname_direct_requery
 
@@ -185,6 +190,62 @@ def _requery_leaf_directly(client, *, attempts: int = 6, interval_s: float = 3) 
         if i < attempts - 1:
             time.sleep(interval_s)
     return last
+
+
+def _drive_until_set_populated(client, set_name: str, *, timeout_s: float = 90) -> list[str]:
+    """Re-resolve the chain + leaf until `set_name` has members.
+
+    #2662. The apply barrier upstream guarantees the nft set EXISTS; it cannot
+    guarantee dns-tail knows about it. dns-tail discovers declared sets by parsing
+    the live ruleset, and that refresh runs INSIDE its tail loop — after the
+    arriving line's populators have already run, and only once
+    `bio_refresh_seconds` has elapsed (`wifihaven-dns-tail`: `cache.ingest_line`
+    first, then the `last_bio_refresh` guard). So the first resolution after an
+    apply is attributed against the STALE view — no eb_/bl_ set known, nothing
+    added — and can at best trigger the refresh that would have helped it. That is
+    how this scenario failed on the Gate-2 ipk arm of run 31311056210 with the
+    barrier already in place.
+
+    A later resolution is attributed against the refreshed view, which is why
+    simply asking again converges. No cache flush is involved, and none is needed:
+    dns-tail ingests `cached` lines exactly as it ingests `reply` lines
+    (`dns_log.parse_resolved_reply` accepts both verbs), so a re-dig dnsmasq
+    answers from cache still drives the populator. An earlier revision of this
+    helper SIGHUPed dnsmasq on the false premise that cached answers were
+    invisible; that was wrong twice over, because the `pgrep -f` pattern it used
+    also matched dns-tail's own `tail -F /tmp/wifihaven-dnsmasq.log` child and so
+    killed the very sidecar being waited on.
+
+    Cannot mask the #1349 populator regression these scenarios guard: alias
+    recovery (`dns_tail_sets.resolve_head`) is required on every round, so if it is
+    broken nothing lands in the set however many times we ask, the loop times out,
+    and the caller's assertions fail exactly as they would have. What this removes
+    is a dependence on which refresh tick the one resolution happened to land in.
+
+    It does, however, remove the only place a real product gap currently shows up:
+    `eb_`/`bl_` have no apply-time backfill (`ea_` does, via
+    `dns_tail_sets.build_ea_backfill_script`), so a device that resolved a host just
+    before an apply can keep reaching it until the 1800s `eb_refresh` sweep.
+    Filed as #2664 — this loop is a harness convergence aid, not a statement that
+    the window is acceptable.
+    """
+    deadline = time.monotonic() + timeout_s
+    rounds = 0
+    while True:
+        members = router_nft_set(set_name)
+        if members:
+            if rounds:
+                log.info("%s populated after %d extra resolve round(s)",
+                         set_name, rounds)
+            return members
+        if time.monotonic() >= deadline:
+            log.warning("%s still empty after %d round(s) in %.0fs",
+                        set_name, rounds, timeout_s)
+            return []
+        rounds += 1
+        dig_ipv4_answers(client, BRAND_HOST)   # rebuild/refresh the alias map
+        dig_ipv4_answers(client, LEAF_HOST)    # the direct re-query under test
+        time.sleep(3)
 
 
 def _skip_if_egress_degraded(client, what: str) -> None:
@@ -318,6 +379,14 @@ def test_eb_direct_requery_blocked(router, client, fake_api):
     )
     etag = fake_api.serve_snapshot(snap)
     fake_api.wait_for_etag_served(etag=etag, timeout_s=240)
+    # #2642: served is DELIVERED, not APPLIED — over ws the fake records the push
+    # as it sends the frame, seconds before the router renders it. The client
+    # resolution below is what populates eb_, and a lookup ingested before the
+    # apply is attributed to no eb_ host (eb_adds=0). Wait for the apply first.
+    # (Narrows the window rather than closing it — dns-tail's own view of the
+    # declared sets lags by up to one refresh tick, which is what
+    # `_drive_until_set_populated` below converges past. #2662.)
+    wait_eb_set_exists(BRAND_HOST)
 
     # Step 1: resolve the branded host so dns-tail builds the alias map.
     chain_ips = _wait_for_chain_resolution(client)
@@ -342,6 +411,14 @@ def test_eb_direct_requery_blocked(router, client, fake_api):
     assert LEAF_IP in leaf_ips, (
         f"expected {LEAF_IP} in direct-requery answers for {LEAF_HOST}, got {leaf_ips!r}"
     )
+
+    # #2662: the barrier above proves the set EXISTS; this proves dns-tail has
+    # actually populated it. Re-drives the resolution
+    # so the scenario does not depend on the first resolution landing after
+    # dns-tail's refresh tick — the residual that failed this test on the ipk arm
+    # of run 31311056210 even with the barrier. A broken populator still fails:
+    # nothing ever lands in the set and the assertions below fire as before.
+    _drive_until_set_populated(client, eb_set_name(BRAND_HOST))
 
     # Primary assertion: HTTP/80 to the leaf's branded hostname hits the block page.
     # The DNAT rule fires because the leaf IP should now be in eb_<brand>; the
@@ -603,6 +680,14 @@ def test_bl_direct_requery_blocked(router, client, fake_api):
     )
     etag = fake_api.serve_snapshot(snap)
     fake_api.wait_for_etag_served(etag=etag, timeout_s=240)
+    # #2642: the same apply barrier G1 needs, for the same reason — this suite's
+    # bl_ path is not structurally safer than its eb_ path. Both rely on the
+    # resolve-time populator within a scenario, because their shared periodic
+    # re-populator (eb_refresh, over eb_hosts AND bl_pairs) runs on
+    # eb_refresh_interval — 1800s, far outside this test's budget. G4 happened to
+    # win this race while G1 lost it; the barrier is what makes winning it
+    # deterministic rather than luck.
+    wait_bl_set_exists(_BL_ID)
 
     # Step 1: resolve the branded host so dns-tail builds the alias map
     # (edge→brand). Without this first resolution the alias map is empty and
@@ -634,6 +719,14 @@ def test_bl_direct_requery_blocked(router, client, fake_api):
         f"expected {LEAF_IP} in direct-requery answers for {LEAF_HOST}, "
         f"got {leaf_ips!r}"
     )
+
+    # #2662: same residual as G1, and it applies here for the same reason —
+    # dns-tail reloads paths.bl_member_index on the very same
+    # `bio_refresh_seconds` tick that refreshes its nft-set view, so a resolution
+    # landing before that tick is attributed to no bl_ set at all. Converge before
+    # probing — re-asking is enough, since dns-tail ingests a cached answer the
+    # same way it ingests a fresh one.
+    _drive_until_set_populated(client, bl_set_name(_BL_ID))
 
     # Primary assertion: HTTP/80 to the leaf hits the block page. The bl_
     # category drop + DNAT fires because the leaf IP is now in bl_<id>;

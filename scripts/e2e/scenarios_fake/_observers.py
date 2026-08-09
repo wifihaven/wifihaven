@@ -14,7 +14,7 @@ from __future__ import annotations
 import re
 
 from lib.traffic import dns_query, http_get
-from lib.vm import client_exec, router_nft_set, router_ssh
+from lib.vm import client_exec, router_nft_set, router_nft_set_exists, router_ssh
 from lib.wait import wait_until
 from lib.wan_health import CONTROL_APEX_HOSTS
 
@@ -202,6 +202,68 @@ def bl_set_name(bl_id: str) -> str:
     """
     sanitized = re.sub(r"[.\:\-\s]", "_", bl_id)
     return "bl_" + sanitized
+
+
+def _wait_set_exists(name: str, *, what: str, timeout_s: float) -> None:
+    wait_until(
+        lambda: router_nft_set_exists(name),
+        timeout_s=timeout_s, interval_s=2,
+        description=f"nft set {name} to exist (router applied the {what} snapshot)",
+    )
+
+
+def wait_eb_set_exists(host: str, *, timeout_s: float = 120) -> None:
+    """Wait until the router has APPLIED a snapshot that extraBlocks `host`.
+
+    #2642. An apply barrier, needed because `fake_api.wait_for_etag_served` is
+    only a DELIVERY one: since ws became the shipped transport (#2608) the fake
+    records a push the instant it sends the frame, so the helper returns while
+    the router is still seconds away from rendering the snapshot into nftables
+    (measured at ~3s on the Gate-2 VM: `wifihaven-ws: persisted pushed policy
+    snapshot` → `ws apply: applied pushed snapshot`). Any scenario that must
+    generate traffic the NEW policy has to already be live for — not merely
+    assert on router state afterwards — has to wait for the apply in between.
+
+    Set EXISTENCE is the observable rather than membership: render.lua declares
+    `set eb_<host> {}` for each effective extraBlocked host, so the set appears
+    at apply and is absent before it — whereas membership is what the scenario
+    is trying to prove and so cannot be waited on up front.
+
+    **This narrows the window; it does not close it** (#2662). dns-tail learns
+    which hosts have an `eb_` set by parsing the live ruleset in
+    `refresh_nft_sets`, on its own `bio_refresh_seconds` tick — not from the
+    snapshot and not from any apply signal (`wifihaven-dns-tail`). This barrier
+    clears when `nft -f` installs the set, so dns-tail's view can still be one
+    tick stale, and a lookup ingested in that window is attributed to no eb_
+    host at all. Deliberately NOT papered over by sleeping that interval here:
+    it is single-sourced in the agent and copying it into the harness is the
+    verify-and-cite failure mode. #2662 carries the real fix.
+    """
+    _wait_set_exists(eb_set_name(host), what="extraBlocked", timeout_s=timeout_s)
+
+
+def wait_bl_set_exists(bl_id: str, *, timeout_s: float = 120) -> None:
+    """The `bl_` sibling of `wait_eb_set_exists` — same apply barrier, same
+    reason, same residual (#2642 / #2662).
+
+    One difference worth knowing before reusing this: `bl_` sets are declared for
+    every id in `snapshot.blocklists` whether or not a device references it
+    (render.lua:1102-1105, per its own #352 note), whereas `eb_` keys off
+    assigned devices.
+    A caller whose blocklist id is already in the served snapshot before the
+    device assignment lands would therefore get a barrier that clears
+    immediately — a silent no-op. It is sound for G4 because the id and the
+    assignment ride the same snapshot.
+
+    There is no eb_/bl_ asymmetry to exploit here, contrary to what an earlier
+    revision of this file claimed. Both sets get their periodic re-populator
+    from the SAME module — `eb_refresh` walks `eb_hosts` and `bl_pairs` in one
+    pass — on `eb_refresh_interval`, default 1800s, which is far outside any
+    scenario's budget. So `bl_` depends on the resolve-time populator inside a
+    scenario exactly as `eb_` does, and G4 is structurally identical to G1: it
+    passed the same race G1 lost on timing, not on mechanism.
+    """
+    _wait_set_exists(bl_set_name(bl_id), what="blocklist", timeout_s=timeout_s)
 
 
 def wait_eb_set_populated(host: str, *, timeout_s: float = 90) -> list[str]:

@@ -192,6 +192,42 @@ def router_nft_set(set_name: str, *, table: str = "wifihaven", family: str = "in
     return [tok.strip() for tok in inner.split(",") if tok.strip()]
 
 
+def router_nft_set_exists(
+    set_name: str, *, table: str = "wifihaven", family: str = "inet"
+) -> bool:
+    """True iff the nftables set EXISTS, whether or not it holds elements.
+
+    `router_nft_set` deliberately collapses "absent" and "present but empty" to
+    `[]`, which is the right shape for a membership probe but useless as an
+    APPLY barrier — and that is what #2642 needed. render.lua declares
+    `set eb_<host> { … }` for every effective extraBlocked host, so the set
+    coming into existence is a direct, low-level observable that the snapshot
+    naming that host has reached the enforcement plane. Before the apply the set
+    is simply not there.
+    """
+    # `check=True` so an ssh/qemu failure SURFACES ITS CAUSE instead of reading
+    # as "not applied yet". The probe prints `yes`/`no` itself and `echo` cannot
+    # fail, so the remote command's exit status is 0 whenever ssh worked — which
+    # makes a non-zero exit unambiguously a transport failure.
+    #
+    # It does not abort the caller: its only caller today polls through
+    # `wait_until`, which records a predicate exception and keeps going, then
+    # attaches it to the eventual `TimeoutError` as `last error`. So a transient
+    # (a router mid-restore or mid-dnsmasq-restart) is still retried exactly as it
+    # was under `check=False`, while a persistent failure now names itself rather
+    # than expiring as the same opaque timeout this barrier exists to replace.
+    res = router_ssh(
+        f"nft list set {family} {table} {set_name} >/dev/null 2>&1 && echo yes || echo no",
+        timeout=10,
+    )
+    out = (res.stdout or "").strip()
+    if out not in ("yes", "no"):
+        raise RuntimeError(
+            f"router_nft_set_exists({set_name!r}): unexpected probe output {out!r}"
+        )
+    return out == "yes"
+
+
 def router_ssh(cmd: str, *, timeout: float = 30, check: bool = True) -> Result:
     """Run a command on the router via the WAN-side hostfwd SSH port."""
     args = [
