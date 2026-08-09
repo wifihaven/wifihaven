@@ -126,6 +126,36 @@ def _dig_until_answered(client, host: str, *, timeout_s: float) -> list[str]:
         time.sleep(3)
 
 
+def _assert_resolver_live(client, while_doing: str) -> None:
+    """Fail if the LAN resolver is not answering right now.
+
+    Every enforcement assertion in this scenario asserts the ABSENCE of a DNS
+    answer, and absence is only evidence of enforcement if the resolver could
+    have answered. So each one is paired with this, rather than trusting a single
+    check made earlier: the hazard is a dnsmasq restart landing MID-phase (see
+    the `_relay_negative` comment for the run that did exactly that), which a
+    one-time anchor is satisfied by and then blind to.
+    """
+    assert dig_ipv4_answers(client, NORMAL_HOST), (
+        f"the LAN resolver went silent while {while_doing} — every absence "
+        "assertion in this test passes vacuously when nothing resolves, so this "
+        "run proves nothing about enforcement (#2642). Expect a dnsmasq restart "
+        "or an upstream blip (#1935/#2034), not an enforcement regression."
+    )
+
+
+def _absent_while_live(client, host: str, what: str) -> None:
+    """Assert `host` has no A answer AND that the resolver was live when asked.
+
+    Absence is sampled BEFORE the liveness check so the two describe the same
+    moment as closely as a pair of digs can, and liveness is asserted FIRST so a
+    dead resolver reports itself instead of masquerading as a passing absence.
+    """
+    absent = not dig_ipv4_answers(client, host)
+    _assert_resolver_live(client, f"probing {host}")
+    assert absent, f"{what} — {host} returned an IP, not a negative answer"
+
+
 @pytest.mark.smoke
 def test_block_encrypted_dns_enforced(router, client, fake_api):
     """J1: with `blockEncryptedDns=true`, the agent (a) returns a NEGATIVE DNS
@@ -161,31 +191,30 @@ def test_block_encrypted_dns_enforced(router, client, fake_api):
     # dnsmasq restart that picks up the new conf may lag the nft chain load.
     #
     # The poll requires BOTH halves: the relay host silent AND a normal name
-    # still answering. That second clause is a liveness anchor, and without it
-    # this test can pass while proving nothing at all — every assertion from here
-    # to the LAN-fallback probe asserts the ABSENCE of a DNS answer, so a dnsmasq
-    # that is down or mid-restart satisfies all of them vacuously. That is not
-    # hypothetical: on the Gate-2 ipk arm of run 31301029999 the whole enforcement
-    # phase completed in 2.9s (snapshot served 08:44:48.75, failed 08:44:51.70)
-    # because every probe came back empty — the LAN-fallback dig was the only
-    # thing that noticed. Anchoring liveness HERE is what keeps the absence
-    # assertions meaningful, rather than leaving one late probe to catch a run
-    # that was empty from the start.
+    # still answering. The second clause is a liveness anchor, and every absence
+    # assertion below carries its own — see `_absent_while_live`. One anchor is
+    # not enough, and the run this fixes shows why: on the Gate-2 ipk arm of run
+    # 31301029999 `example.com` resolved in 0.2s on its FIRST attempt at
+    # 08:44:48.7489 — 1.4ms before the snapshot was served at 08:44:48.7503 — and
+    # the phase then failed at 08:44:51.70. So the resolver was alive when the
+    # phase began and went silent inside the next ~3s: a dnsmasq restart landing
+    # MID-phase, exactly the lag the comment above names. An anchor checked once
+    # at the top would have been satisfied by that run and would have left the
+    # following three seconds of absence assertions passing on a dead resolver.
     def _relay_negative():
         if dig_ipv4_answers(client, RELAY_HOST):
-            return None  # relay still resolves — toggle hasn't taken effect yet
+            log.info("%s still resolves — toggle not applied yet", RELAY_HOST)
+            return None
         if not dig_ipv4_answers(client, NORMAL_HOST):
-            return None  # resolver isn't answering anything — nothing is proven
+            log.info("%s is silent too — resolver down, nothing proven yet",
+                     NORMAL_HOST)
+            return None
         return True
     wait_until(_relay_negative, timeout_s=60, interval_s=3,
                description=(f"{RELAY_HOST} to return a NEGATIVE DNS answer (no IP) "
                             f"while {NORMAL_HOST} still resolves"))
-    assert not dig_ipv4_answers(client, RELAY_HOST), (
-        f"{RELAY_HOST} must return a negative answer (NODATA), not an IP"
-    )
-    assert not dig_ipv4_answers(client, DOH_HOST), (
-        f"{DOH_HOST} must return a negative answer (NODATA), not an IP"
-    )
+    _absent_while_live(client, RELAY_HOST, "the relay host must be NODATA")
+    _absent_while_live(client, DOH_HOST, "the DoH host must be NODATA")
 
     # ── (b) :53-to-resolver-IP drop is enforced when the toggle is on. ────────
     # DNS to 8.8.8.8 is dropped (no answer). This asserts the BLOCKED state only
@@ -194,9 +223,13 @@ def test_block_encrypted_dns_enforced(router, client, fake_api):
     # #1911 drop is exactly what we want, and nothing in the environment can make
     # this spuriously pass.
     blocked = _dig_via(client, NORMAL_HOST, RESOLVER_IP)
-    assert not _ipv4_answers(blocked.stdout), (
+    got = _ipv4_answers(blocked.stdout)
+    # Liveness first, for the same reason as the two above: "no answer from
+    # 8.8.8.8" is only evidence of the drop if DNS was working at all just then.
+    _assert_resolver_live(client, "probing the :53 drop to 8.8.8.8")
+    assert not got, (
         "DNS (:53) to 8.8.8.8 must be dropped when the toggle is on "
-        f"(unexpectedly got {_ipv4_answers(blocked.stdout)!r})"
+        f"(unexpectedly got {got!r})"
     )
     # …but the SAME name still resolves via the LAN resolver. THE core "did we
     # break the network" assertion — opportunistic DoH/hardcoded-DNS clients
@@ -207,16 +240,12 @@ def test_block_encrypted_dns_enforced(router, client, fake_api):
     # host (#1935/#2034), makes ONE dig come back empty on a network that is fine,
     # and that emptiness reddened Master Router CD.
     #
-    # Polling is safe here for two reasons, and the second is the load-bearing
-    # one. First, "the toggle broke the network" is a STANDING condition: a
-    # genuinely broken LAN resolver stays broken for the whole window, every retry
-    # comes back empty, and the assertion below still fires with its diagnostic.
-    # Second — and this is what makes the poll an improvement rather than a
-    # loosening — the liveness clause added to the (a) poll above means the run
-    # cannot have reached this line without the resolver having answered at least
-    # once WHILE the toggle was on. Before that clause, this dig was the only
-    # thing standing between an all-empty run and a green pass; it no longer
-    # carries that alone, which is why absorbing a transient here costs nothing.
+    # Polling is safe here because "the toggle broke the network" is a STANDING
+    # condition: a genuinely broken LAN resolver stays broken for the whole
+    # window, every retry comes back empty, and the assertion below still fires
+    # with its diagnostic. It is also no longer the test's liveness anchor —
+    # every absence assertion above now carries its own — so absorbing a
+    # transient here cannot make a vacuous run green.
     lan = _dig_until_answered(client, NORMAL_HOST, timeout_s=60)
     assert lan, (
         f"{NORMAL_HOST} must still resolve via the LAN resolver after the toggle "

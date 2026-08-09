@@ -261,7 +261,10 @@ async def _prune_dead_ws_channels(
     before = {ws: state.pong_count(ws) for ws in channels}
     dead, pending = [], []
     for ws in channels:
-        (pending if await _ping_or_dead(ws) else dead).append(ws)
+        if await _ping_or_dead(ws):
+            pending.append(ws)
+        else:
+            dead.append(ws)
 
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout_s

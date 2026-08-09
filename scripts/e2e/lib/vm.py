@@ -212,11 +212,10 @@ def router_nft_set_exists(
     #
     # It does not abort the caller: its only caller today polls through
     # `wait_until`, which records a predicate exception and keeps going, then
-    # attaches it to the
-    # eventual `TimeoutError` as `last error`. So a transient (a router mid-restore
-    # or mid-dnsmasq-restart) is still retried exactly as it was under
-    # `check=False`, while a persistent failure now names itself rather than
-    # expiring as the same opaque timeout this barrier exists to replace.
+    # attaches it to the eventual `TimeoutError` as `last error`. So a transient
+    # (a router mid-restore or mid-dnsmasq-restart) is still retried exactly as it
+    # was under `check=False`, while a persistent failure now names itself rather
+    # than expiring as the same opaque timeout this barrier exists to replace.
     res = router_ssh(
         f"nft list set {family} {table} {set_name} >/dev/null 2>&1 && echo yes || echo no",
         timeout=10,
