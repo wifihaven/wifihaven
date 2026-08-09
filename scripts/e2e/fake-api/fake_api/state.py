@@ -93,8 +93,10 @@ class State:
     # #2642: how long `_prune_dead_ws_channels` waits for a pong before treating
     # a channel as dead. Bounded ABOVE by the caller, not just below: the harness
     # POSTs /test/reset with a 10s client timeout (lib/fake_client.py), and the
-    # probe plus its per-channel closes have to fit inside that or the harness
-    # sees an opaque timeout instead of the diagnostic `wsDropped` count. Bounded
+    # probe's whole ping → wait → close sequence has to fit inside that or the
+    # harness sees an opaque timeout instead of the diagnostic `wsDropped` count
+    # (`_prune_dead_ws_channels` carries the arithmetic; every await on that path
+    # is individually bounded). Bounded
     # below by the sidecar's recv cadence: it answers a server ping inline in its
     # recv path, which ticks on `ws.poll_interval` (1s by default,
     # ws_loop.DEFAULT_POLL_INTERVAL), so 4s is already several ticks of slack for

@@ -20,9 +20,16 @@ from .state import State
 
 STATE_KEY = web.AppKey("state", State)
 
-# #2642: per-channel ceiling on the best-effort close of a channel that failed
-# the liveness probe. Small on purpose — see _prune_dead_ws_channels.
-_WS_CLOSE_TIMEOUT_S = 1.0
+# #2642: per-channel ceiling on each of the probe's two control-frame awaits —
+# the liveness ping and the best-effort close of a channel that failed it. Both
+# reach aiohttp's writer, which awaits a drain when the transport is paused, and
+# a wedged peer is exactly how a transport ends up paused. Deliberately NOT a
+# State field (unlike ws_probe_timeout_s, which the suite shortens): 1s is
+# already short enough to pay in a unit test, so there is nothing to override.
+# Kept small so the whole of /test/reset stays well inside the 10s client
+# timeout the harness POSTs it with (lib/fake_client.py) — see
+# _prune_dead_ws_channels for the arithmetic.
+_WS_CTL_TIMEOUT_S = 1.0
 
 
 def _bearer_token(request: web.Request) -> str | None:
@@ -215,12 +222,11 @@ async def _prune_dead_ws_channels(
       - usable — the hypothesis (not a verified mechanism: nothing here observes
         what `loadvm` does to a TCP stream) is that reverting guest memory in
         place leaves the host end of the socket untouched, so the restored
-        sidecar carries on using the connection the fake holds. Dropping this one
-        strands the
-        scenario: nothing severed the socket, so the sidecar never reconnects,
-        and a later `POST /test/snapshot` pushes to an empty set while the
-        agent's poll sits dormant on a healthy link (#2037). That was the #2642
-        Gate-2 etag timeout.
+        sidecar carries on using the connection the fake holds. Dropping this
+        one strands the scenario: nothing severed the socket, so the sidecar
+        never reconnects, and a later `POST /test/snapshot` pushes to an empty
+        set while the agent's poll sits dormant on a healthy link (#2037). That
+        was the #2642 Gate-2 etag timeout.
       - wedged — the restored guest's TCP sequence numbers rewind to their
         snapshot values while the host's have moved on, so the stream can no
         longer be parsed on one or both ends. `send_str` still SUCCEEDS into the
@@ -240,9 +246,12 @@ async def _prune_dead_ws_channels(
     sidecar notices the dead socket and reconnects promptly instead of sitting
     on a link only the fake knows is gone.
 
-    Returns the number of channels dropped. Costs nothing on the common path
-    (all channels answer, the poll exits early); the full timeout is only paid
-    when a channel really is dead, which is exactly when waiting is worth it.
+    Returns the number of channels dropped. The common path costs one poll tick
+    (the loop sleeps before its first re-check), and the ceiling is
+    `N × _WS_CTL_TIMEOUT_S` for the pings + `timeout_s + interval_s` for the wait
+    + one `_WS_CTL_TIMEOUT_S` for the concurrent closes — comfortably inside the
+    caller's 10s at the N=1 the harness runs. The full wait is only paid when a
+    channel really is dead, which is exactly when waiting is worth it.
     """
     if timeout_s is None:
         timeout_s = state.ws_probe_timeout_s
@@ -250,15 +259,8 @@ async def _prune_dead_ws_channels(
     if not channels:
         return 0
     before = {ws: state.pong_count(ws) for ws in channels}
-    pending = []
-    for ws in channels:
-        try:
-            await ws.ping()
-        except Exception:  # noqa: BLE001
-            # An already-closed channel raises here — no probe needed, it is dead.
-            state.deregister_ws(ws)
-            continue
-        pending.append(ws)
+    dead = [ws for ws in channels if not await _ping_or_dead(ws)]
+    pending = [ws for ws in channels if ws not in dead]
 
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout_s
@@ -266,18 +268,40 @@ async def _prune_dead_ws_channels(
         await asyncio.sleep(interval_s)
         pending = [ws for ws in pending if state.pong_count(ws) <= before[ws]]
 
-    for ws in pending:
+    dead += pending
+    for ws in dead:
         state.deregister_ws(ws)
-        # Bounded: aiohttp's close() awaits a writer drain, which on a wedged
-        # transport is not instantaneous, and the caller POSTs /test/reset with
-        # its own 10s timeout (lib/fake_client.py). An unbounded close would
-        # trade the diagnostic `wsDropped` count for an opaque harness timeout on
-        # exactly the path this probe exists to serve. Best-effort by design —
-        # the channel is already deregistered, so a close that never lands only
-        # costs the peer a slower reconnect.
-        with contextlib.suppress(Exception):
-            await asyncio.wait_for(ws.close(), timeout=_WS_CLOSE_TIMEOUT_S)
-    return len(pending)
+    # Concurrently, so N dead channels cost one bounded close rather than N.
+    await asyncio.gather(*(_close_quietly(ws) for ws in dead))
+    return len(dead)
+
+
+async def _ping_or_dead(ws: web.WebSocketResponse) -> bool:
+    """Send the liveness ping; False if the channel is already unusable.
+
+    Bounded for the same reason the close is: `ping()` reaches aiohttp's writer,
+    which awaits a drain once the transport is paused, and a peer that stopped
+    ACKing is exactly how it gets paused. A ping we cannot even send is the
+    answer the probe wanted anyway, so a timeout here is just an early "dead".
+    """
+    try:
+        await asyncio.wait_for(ws.ping(), timeout=_WS_CTL_TIMEOUT_S)
+    except Exception:  # noqa: BLE001
+        return False
+    return True
+
+
+async def _close_quietly(ws: web.WebSocketResponse) -> None:
+    """Best-effort bounded close of a channel that failed the probe.
+
+    The close is the load-bearing half of dropping a channel: the FIN is what
+    makes a real sidecar notice the socket is gone and reconnect. It is still
+    best-effort — the channel is already deregistered, so a close that never
+    lands costs the peer only a slower reconnect, and aiohttp closes the
+    transport even when the close is cancelled mid-wait.
+    """
+    with contextlib.suppress(Exception):
+        await asyncio.wait_for(ws.close(), timeout=_WS_CTL_TIMEOUT_S)
 
 
 def _handle_inbound_frame(state: State, text: str) -> None:
@@ -336,9 +360,10 @@ async def get_ws(request: web.Request) -> web.StreamResponse:
     # autoping=False so the read loop below SEES control frames. aiohttp's
     # default handles PING/PONG internally and never surfaces them, which would
     # hide the pong `_prune_dead_ws_channels` needs as its liveness signal
-    # (verified empirically; the behaviour holds across the aiohttp>=3.9 floor
-    # this package pins). The cost is that the loop must answer the sidecar's
-    # own heartbeat ping itself — see below.
+    # (aiohttp's web_ws.py `receive()` returns PING/PONG only when autoping is
+    # off — its internal-type handling is guarded on `self._autoping` — and that
+    # has held across the aiohttp>=3.9 floor this package pins). The cost is that
+    # the loop must answer the sidecar's own heartbeat ping itself — see below.
     ws = web.WebSocketResponse(autoping=False)
     await ws.prepare(request)
     state.register_ws(ws)
