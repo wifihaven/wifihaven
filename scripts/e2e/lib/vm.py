@@ -205,11 +205,22 @@ def router_nft_set_exists(
     naming that host has reached the enforcement plane. Before the apply the set
     is simply not there.
     """
+    # `check=True`: an ssh/qemu failure must RAISE, not read as "not applied
+    # yet". The probe prints `yes`/`no` itself and `echo` cannot fail, so the
+    # remote command's own exit status is 0 whenever ssh worked — which makes a
+    # non-zero exit unambiguously a transport failure. Collapsing that to False
+    # would leave a caller's wait to expire with no cause, the same opaque
+    # timeout this barrier exists to replace.
     res = router_ssh(
         f"nft list set {family} {table} {set_name} >/dev/null 2>&1 && echo yes || echo no",
-        check=False, timeout=10,
+        timeout=10,
     )
-    return (res.stdout or "").strip() == "yes"
+    out = (res.stdout or "").strip()
+    if out not in ("yes", "no"):
+        raise RuntimeError(
+            f"router_nft_set_exists({set_name!r}): unexpected probe output {out!r}"
+        )
+    return out == "yes"
 
 
 def router_ssh(cmd: str, *, timeout: float = 30, check: bool = True) -> Result:

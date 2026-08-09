@@ -94,6 +94,7 @@ from ._observers import (
     ea_set_name,
     eb_set_name,
     mac_in_blocked_set,
+    wait_bl_set_exists,
     wait_bl_set_populated,
     wait_block_page,
     wait_ea_set_populated,
@@ -320,12 +321,12 @@ def test_eb_direct_requery_blocked(router, client, fake_api):
     etag = fake_api.serve_snapshot(snap)
     fake_api.wait_for_etag_served(etag=etag, timeout_s=240)
     # #2642: served is DELIVERED, not APPLIED — over ws the fake records the push
-    # as it sends the frame, seconds before the router renders it. That gap is
-    # fatal HERE and nowhere else in this file: the client's resolution below is
-    # what populates eb_, and a lookup ingested before the apply leaves dns-tail
-    # with no knowledge of BRAND_HOST (eb_adds=0), after which dnsmasq answers
-    # from cache and never gives it a second log line. Wait for the apply first.
-    wait_eb_set_exists(BRAND_HOST, timeout_s=120)
+    # as it sends the frame, seconds before the router renders it. The client
+    # resolution below is what populates eb_, and a lookup ingested before the
+    # apply is attributed to no eb_ host (eb_adds=0), after which dnsmasq answers
+    # from cache and never emits a second reply line for dns-tail to act on. Wait
+    # for the apply first. (Narrows the window rather than closing it — #2662.)
+    wait_eb_set_exists(BRAND_HOST)
 
     # Step 1: resolve the branded host so dns-tail builds the alias map.
     chain_ips = _wait_for_chain_resolution(client)
@@ -611,6 +612,13 @@ def test_bl_direct_requery_blocked(router, client, fake_api):
     )
     etag = fake_api.serve_snapshot(snap)
     fake_api.wait_for_etag_served(etag=etag, timeout_s=240)
+    # #2642: the same apply barrier G1 needs, for the same reason — this suite's
+    # bl_ path is not structurally safer than its eb_ path. Both rely on the
+    # resolve-time populator within a scenario, because their shared periodic
+    # re-populator (eb_refresh, over eb_hosts AND bl_pairs) runs on
+    # eb_refresh_interval — 1800s, far outside this test's budget. G4 won this
+    # race on timing while G1 lost it; a barrier is why, not luck.
+    wait_bl_set_exists(_BL_ID)
 
     # Step 1: resolve the branded host so dns-tail builds the alias map
     # (edge→brand). Without this first resolution the alias map is empty and
