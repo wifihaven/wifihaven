@@ -152,11 +152,27 @@ def _absent_while_live(client, host: str, *, what: str) -> None:
     the ASSERT order: liveness is asserted first, so a dead resolver reports
     itself instead of masquerading as a passing absence.
 
-    A residual remains and is small rather than zero: the two digs are ~0.3s
-    apart here (the absence probe hits a `local=/<host>/` name dnsmasq answers
-    without going upstream), so a resolver that were dead for the absence sample
-    and recovered by the liveness dig would still pass. Nothing in the observed
-    failure mode fits in 0.3s — the restart that reddened CD was ~3s of silence.
+    A residual remains, and it is one dig wide rather than zero: a resolver that
+    was dead for the absence sample and had recovered by the liveness dig would
+    still pass. Sizing that window honestly means sizing the UNHEALTHY path, not
+    the healthy one — on the healthy path the absence probe is a fast local
+    NODATA (`local=/<host>/`, answered without going upstream), but in the very
+    case the residual describes the resolver is the thing that is down, so that
+    dig runs to its own timeout instead (`dig +time=2 +tries=1` under a 5s
+    wrapper, lib/traffic.py). Call it sub-second when healthy and up to a couple
+    of seconds when not.
+
+    The qualitative claim is what carries: a dnsmasq restart has to go down AND
+    come back, and it cannot do both inside a single dig. The run that reddened
+    CD is consistent with that — it was alive 1.4ms before the phase began and
+    still silent when the phase died ~3s later, which bounds when the silence
+    STARTED and says nothing about how long it lasted.
+
+    If this ever does flake, retry the PAIR — re-sample absence and re-check
+    liveness together. Retrying the liveness dig alone is the tempting fix and
+    the wrong one: a resolver that recovers on the retry would bless an absence
+    sampled while it was dead, reintroducing exactly the false green this
+    pairing removed.
     """
     absent = not dig_ipv4_answers(client, host)
     _assert_resolver_live(client, f"probing {host}")
@@ -199,9 +215,10 @@ def test_block_encrypted_dns_enforced(router, client, fake_api):
     #
     # The poll requires BOTH halves: the relay host silent AND a normal name
     # still answering. The second clause is a liveness anchor, and every absence
-    # assertion below carries its own — the two NODATA probes via
-    # `_absent_while_live`, the :53-drop probe via `_assert_resolver_live`
-    # directly, since its absence sample is not a dig at our resolver. One anchor is
+    # assertion below carries its own: the two NODATA probes via
+    # `_absent_while_live`, and the :53-drop probe via `_assert_resolver_live`
+    # directly, because its absence sample is not a dig at our resolver at all.
+    # One anchor is
     # not enough, and the run this fixes shows why: on the Gate-2 ipk arm of run
     # 31301029999 the `client` fixture's own readiness wait (wait_for_client_dns,
     # lib/wait.py) resolved `example.com` in 0.2s on its FIRST attempt at
@@ -209,18 +226,25 @@ def test_block_encrypted_dns_enforced(router, client, fake_api):
     # the phase then failed at 08:44:51.70. So the resolver was alive when the
     # phase began and went silent inside the next ~3s: a dnsmasq restart landing
     # MID-phase, exactly the lag the comment above names. An anchor checked once
-    # at the top would very likely have been satisfied by that run (the log does
-    # not pin the resolver's state at poll time, only 1.4ms earlier), leaving the
-    # following seconds of absence assertions to pass on a dead resolver.
+    # at the top would very likely have been satisfied by that run — and note how
+    # far "the top" is from the poll: the 1.4ms pin is on the SNAPSHOT SERVE, and
+    # the poll runs after wait_for_etag_served (240s budget) and the chain-loaded
+    # wait (180s), so seconds to minutes later. That distance is precisely why a
+    # single anchor taken up front is worth so little here.
     def _relay_negative():
         if dig_ipv4_answers(client, RELAY_HOST):
-            # debug: this is the NORMAL propagation path and fires every
-            # iteration until the conf lands, so info would bury the clause below.
-            log.debug("%s still resolves — toggle not applied yet", RELAY_HOST)
+            # info, NOT debug: scripts/e2e/pytest.ini sets log_cli_level = INFO and
+            # nothing overrides it, so a debug line is absent from CD output rather
+            # than merely de-emphasised. This is the clause that fires on the
+            # ordinary propagation path, so silencing it would leave the COMMONER
+            # 60s timeout with nothing in the log saying which half was unmet —
+            # the diagnostic gap this pairing was supposed to close.
+            log.info("waiting: %s still resolves (toggle not applied yet)",
+                     RELAY_HOST)
             return None
         if not dig_ipv4_answers(client, NORMAL_HOST):
-            log.info("%s is silent too — resolver down, nothing proven yet",
-                     NORMAL_HOST)
+            log.warning("waiting: %s is silent too — resolver down, so a "
+                        "negative answer would prove nothing yet", NORMAL_HOST)
             return None
         return True
     wait_until(_relay_negative, timeout_s=60, interval_s=3,
