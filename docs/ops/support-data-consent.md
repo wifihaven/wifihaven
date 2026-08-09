@@ -105,7 +105,33 @@ grant, not a payload flag.
 | Scope | one `(household_id, thread_id)` pair | Both are in the UNIQUE key and in every lookup, so consent on thread A grants nothing on thread B, and household A's row can never widen a household-B token. |
 | Duration | 24 hours from the grant | A support conversation's active window. Long enough for an async back-and-forth, short enough that a forgotten grant lapses on its own. Re-granting is one click. |
 | Revocation | `revoked_at` stamped by the customer's "stop allowing" action | Ahead-of-expiry withdrawal, without waiting out the TTL. A live grant is `revoked_at IS NULL AND expires_at > now`. |
-| Granularity of the data | unchanged — the bounded `HouseholdSummary` (name, plan, counts, profile names + pause state) | Consent widens the token's DATA SCOPE only; it never widens what the endpoint returns, nor the household/thread binding. |
+| Granularity of the data | the bounded `HouseholdSummary` — name, plan, counts, profile names + pause state, TODAY's per-profile screen time (used / daily limit / extension / remaining / blocked-right-now + reason), the household-local date those minutes are for, and each device's name + profile name | Consent widens the token's DATA SCOPE only; it never widens what the endpoint returns, nor the household/thread binding. |
+
+**What the read returns, and why that list is what it is (#2665).** The payload
+was originally name/plan/counts/profile-names. On the first real prod support
+conversation a customer asked how much screen time a device had used that day,
+granted a 24-hour data-access consent, and the agent still could not answer —
+because no amount of consent would have answered it. That is consent theatre: a
+security decision by the customer, a live grant sitting open for a day, and zero
+reads against it (`support_agent_action_total{op="household_read"}` had no series
+at all). Today's usage is now in the payload, sourced from
+`TimeStatusService.dayStateAll` — the SAME primitive the policy snapshot's
+TimeLimit decision and `GET /api/blocked` read, so a support answer cannot
+disagree with the dashboard the customer is looking at.
+
+Devices carry only their NAME and their PROFILE's name. That pairing is load-
+bearing: customers ask by device ("macbook-pro"), minutes are accounted per
+profile, and without the join the agent holds the number and cannot connect it to
+the question.
+
+Still deliberately absent, and it should stay that way: MACs, IPs, hostnames,
+per-host / per-app traffic, query logs, block events, user emails, any history
+before today. Those are what would turn a grounded support answer into an
+exfiltration payload if a session were hijacked, and none of them is needed for
+the questions this desk actually receives. Widen only against a real, recurring
+question — and note that everything here is unscrubbable by regex (profile names
+are typically children's given names), which is exactly why a `dataAccess=true`
+session is structurally refused GitHub issue filing (#2454).
 
 **Revoking consent takes effect immediately (#2476).** `dataAccess` is stamped
 into the token once, at mint — but the household read does not stop there: it

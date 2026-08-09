@@ -135,6 +135,8 @@ object ReplyRedactionSpec
       devRepo     <- ZIO.service[DeviceRepo]
       profRepo    <- ZIO.service[ProfileRepo]
       hsRepo      <- ZIO.service[HouseholdSettingsRepo]
+      timeStatus  <- TestLayers.timeStatusService
+      hsRepo      <- ZIO.service[HouseholdSettingsRepo]
       consentRepo <- ZIO.service[SupportConsentRepo]
       clock       <- ZIO.service[Clock]
       plainRec    <- PlainClient.recorder
@@ -149,6 +151,8 @@ object ReplyRedactionSpec
         billRepo,
         devRepo,
         profRepo,
+        hsRepo,
+        timeStatus,
         consentRepo,
         PlainClient.recording(plainRec),
         GithubIssueClient.recording(ghRec),

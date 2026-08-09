@@ -98,6 +98,8 @@ object SupportConsentSpec
       billRepo    <- ZIO.service[HouseholdBillingRepo]
       devRepo     <- ZIO.service[DeviceRepo]
       profRepo    <- ZIO.service[ProfileRepo]
+      hsRepo      <- ZIO.service[HouseholdSettingsRepo]
+      timeStatus  <- TestLayers.timeStatusService
       consentRepo <- ZIO.service[SupportConsentRepo]
       clock       <- ZIO.service[Clock]
       plainRec    <- PlainClient.recorder
@@ -119,6 +121,8 @@ object SupportConsentSpec
         billRepo,
         devRepo,
         profRepo,
+        hsRepo,
+        timeStatus,
         consentRepo,
         gated(PlainClient.recording(plainRec), historyGate),
         GithubIssueClient.recording(ghRec),

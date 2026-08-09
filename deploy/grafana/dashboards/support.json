@@ -815,6 +815,42 @@
           "refId": "A"
         }
       ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "CONSENT THEATRE: grants with no read behind them (24h) — expect <= 0 (#2665)",
+      "description": "sum(increase(support_consent_total{env=\"$env\",outcome=\"granted\"}[24h])) - sum(increase(support_agent_action_total{env=\"$env\",op=\"household_read\",outcome=\"ok\"}[24h])) — data-access grants in the window MINUS successful consented reads in the same window. This is the #2665 signal: a customer made a security decision, a 24h grant went live, and the agent then read nothing against it — the grant bought them nothing, and the session was ALSO degraded for its whole life (a dataAccess=true session is structurally refused issue filing, #2454). That is exactly what happened on the first real prod support conversation: the customer asked for today's screen time, granted access, and the agent could not answer because HouseholdSummary carried no usage at all. Reading it: > 0 means grants are outrunning reads — either the agent is requesting consent for questions the read cannot answer (widen the payload, or teach it not to ask), or it is granted and then never calls the endpoint. <= 0 is healthy: a granted session legitimately reads more than once. This is a COARSE difference of two independent counters, not a per-grant join — a grant late in the window whose read lands after it shows transiently, so read the trend, not one sample.",
+      "type": "stat",
+      "gridPos": { "h": 8, "w": 6, "x": 0, "y": 128 },
+      "id": 36,
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "unit": "short", "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] } } },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "colorMode": "background", "graphMode": "none", "textMode": "auto" },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum(increase(support_consent_total{env=\"$env\",outcome=\"granted\"}[24h])) - sum(increase(support_agent_action_total{env=\"$env\",op=\"household_read\",outcome=\"ok\"}[24h]))",
+          "legendFormat": "grants minus successful reads (24h)",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "Consented household reads that SUCCEEDED (24h) — the grant being USED (#2665)",
+      "description": "sum(increase(support_agent_action_total{env=\"$env\",op=\"household_read\",outcome=\"ok\"}[24h])) — consented account reads that SUCCEEDED. Its absence is the thing to notice: before #2665 this series did not exist in prod at all, and \"the agent never read\" was indistinguishable from \"the metric is mis-wired\". Since #2665 the read carries today's per-profile screen time (used / limit / remaining / blocked-right-now) plus the device→profile map, so a granted session answering a usage question WILL land here. Zero over a window in which support_consent_total{outcome=\"granted\"} is non-zero is the consent-theatre panel's input.",
+      "type": "stat",
+      "gridPos": { "h": 8, "w": 6, "x": 6, "y": 128 },
+      "id": 37,
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "unit": "short", "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] } } },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "colorMode": "background", "graphMode": "none", "textMode": "auto" },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum(increase(support_agent_action_total{env=\"$env\",op=\"household_read\",outcome=\"ok\"}[24h]))",
+          "legendFormat": "successful reads (24h)",
+          "refId": "A"
+        }
+      ]
     }
   ],
   "refresh": "30s",

@@ -303,13 +303,15 @@ object SupportUsageReadSpec
         sA    <- readSummary(h, tokA)
         sB    <- readSummary(h, tokB)
       } yield assertTrue(
-        // A sees only A: its own profile, its own device, its own minutes.
-        sA.profiles.map(_.name) == List("A-Kids"),
+        // A sees only A: its own device, its own minutes. (Household A is the default install, so
+        // it also carries the template's seeded `Kids`/`Adults` profiles — hence a containment
+        // assertion on names rather than an equality one.)
         sA.devices.map(_.name) == List("devA"),
         profileNamed(sA, "A-Kids").exists(_.usedMinutes == 20),
-        // B's 90 minutes are unreachable from A — not under B's name, not summed into A's.
+        // B's 90 minutes are unreachable from A — not under B's name, and not summed into ANY of
+        // A's profiles. The total pins that: 20 is all the minutes A can see, anywhere.
         profileNamed(sA, "B-Kids").isEmpty,
-        sA.profiles.forall(_.usedMinutes == 20),
+        sA.profiles.map(_.usedMinutes).sum == 20,
         // …and symmetrically. Non-vacuous: B's own read really does carry its 90 minutes, so the
         // isolation above is scoping and not an empty read on both sides.
         sB.profiles.map(_.name) == List("B-Kids"),

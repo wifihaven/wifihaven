@@ -127,6 +127,8 @@ object EscalationSpec
       devRepo     <- ZIO.service[DeviceRepo]
       profRepo    <- ZIO.service[ProfileRepo]
       hsRepo      <- ZIO.service[HouseholdSettingsRepo]
+      timeStatus  <- TestLayers.timeStatusService
+      hsRepo      <- ZIO.service[HouseholdSettingsRepo]
       consentRepo <- ZIO.service[SupportConsentRepo]
       clock       <- ZIO.service[Clock]
       emailRef    <- Ref.make(List.empty[EmailSender.Sent])
@@ -145,6 +147,8 @@ object EscalationSpec
         billRepo,
         devRepo,
         profRepo,
+        hsRepo,
+        timeStatus,
         consentRepo,
         PlainClient.recording(plainRec),
         GithubIssueClient.noop,

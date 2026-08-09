@@ -152,6 +152,8 @@ object CloudAgentDispatchFailLoudSpec
       billRepo    <- ZIO.service[HouseholdBillingRepo]
       devRepo     <- ZIO.service[DeviceRepo]
       profRepo    <- ZIO.service[ProfileRepo]
+      hsRepo      <- ZIO.service[HouseholdSettingsRepo]
+      timeStatus  <- TestLayers.timeStatusService
       consentRepo <- ZIO.service[SupportConsentRepo]
       clock       <- ZIO.service[Clock]
       tracker     <- DispatchTracker.make(DispatchTracker.deadAfterFor(cfg))
@@ -167,6 +169,8 @@ object CloudAgentDispatchFailLoudSpec
       billRepo,
       devRepo,
       profRepo,
+      hsRepo,
+      timeStatus,
       consentRepo,
       PlainClient.noop,
       GithubIssueClient.noop,

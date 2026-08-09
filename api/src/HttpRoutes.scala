@@ -161,6 +161,11 @@ object HttpRoutes {
         billingRepo,
         deviceRepo,
         profileRepo,
+        // #2665: the consented read now answers "how much screen time today?" — it needs the
+        // household's daily-reset settings and the canonical day-state service. Both already in
+        // the environment; nothing new is constructed here.
+        hsRepo,
+        timeStatus,
         supportConsentRepo,
         plainClient,
         githubIssues,

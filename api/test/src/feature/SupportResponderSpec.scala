@@ -163,6 +163,8 @@ object SupportResponderSpec
       billRepo    <- ZIO.service[HouseholdBillingRepo]
       devRepo     <- ZIO.service[DeviceRepo]
       profRepo    <- ZIO.service[ProfileRepo]
+      hsRepo      <- ZIO.service[HouseholdSettingsRepo]
+      timeStatus  <- TestLayers.timeStatusService
       clock       <- ZIO.service[Clock]
       // #2419: the consent record is a REAL repo (no mocks) — with no grant rows every token this
       // suite mints stays data-scope-less, exactly as before consent existed.
@@ -179,6 +181,8 @@ object SupportResponderSpec
         billRepo,
         devRepo,
         profRepo,
+        hsRepo,
+        timeStatus,
         consentRepo,
         PlainClient.recording(plainRec),
         githubOverride.getOrElse(GithubIssueClient.recording(ghRec)),
@@ -254,6 +258,8 @@ object SupportResponderSpec
       billRepo    <- ZIO.service[HouseholdBillingRepo]
       devRepo     <- ZIO.service[DeviceRepo]
       profRepo    <- ZIO.service[ProfileRepo]
+      hsRepo      <- ZIO.service[HouseholdSettingsRepo]
+      timeStatus  <- TestLayers.timeStatusService
       clock       <- ZIO.service[Clock]
       consentRepo <- ZIO.service[SupportConsentRepo]
       tracker     <- DispatchTracker.make(DispatchTracker.deadAfterFor(cfg))
@@ -265,6 +271,8 @@ object SupportResponderSpec
         billRepo,
         devRepo,
         profRepo,
+        hsRepo,
+        timeStatus,
         consentRepo,
         new PlainClient.Live(liveCfg),
         GithubIssueClient.noop,
