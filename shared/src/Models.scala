@@ -1081,9 +1081,11 @@ object HouseholdSettings {
    * install).
    *
    * ON, because a device that tunnels around the LAN resolver — iCloud Private Relay, public
-   * DoH/DoT — bypasses ALL filtering and ALL hostname attribution, and does so silently: the
-   * dashboard still renders, it just shows raw IPs, and configured blocks quietly stop biting. A
-   * parental-control product whose out-of-the-box posture permits that is inert until an operator
+   * DoH/DoT — bypasses ALL hostname attribution and everything that depends on it: site and
+   * category blocking, and per-app limits. (NOT daily time limits, which resolve to a whole-MAC
+   * `blocked = true` forward-drop that never consults DNS and still bite.) And it does so silently:
+   * the dashboard still renders, it just shows raw IPs, and configured blocks quietly stop biting.
+   * A parental-control product whose out-of-the-box posture permits that is inert until an operator
    * happens to find the toggle. Hit live on a fresh prod household during #2527.
    *
    * Deliberately NOT the same knob as three other `false`s nearby, which are different concerns:

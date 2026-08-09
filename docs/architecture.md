@@ -101,8 +101,10 @@ keep doing so.
 
 Since [#2643](https://github.com/wifihaven/wifihaven/issues/2643) a **NEW**
 household starts with the toggle **ON**: a device that tunnels around the LAN
-resolver bypasses all filtering and all hostname attribution, and it does so
-silently — the dashboard still renders, it just shows raw IPs. Existing
+resolver bypasses all hostname attribution and everything that depends on it —
+site and category blocking, and per-app limits (though *not* a daily time limit,
+which is a whole-MAC forward-drop that never consults DNS) — and it does so
+silently, since the dashboard still renders and just shows raw IPs. Existing
 households were **not** backfilled (flipping a live network's DNS behaviour can
 break devices that depend on DoH, so it is the operator's call, per household).
 The new-household default lives in exactly one place,

@@ -153,19 +153,21 @@ When `host.type` is bare-IP and you want to know why:
    (household-wide; shipped in
    [#1911](https://github.com/wifihaven/wifihaven/issues/1911) /
    [#1912](https://github.com/wifihaven/wifihaven/issues/1912)) — the
-   router then answers the relay/DoH hostnames authoritatively-empty
-   (`local=/<host>/` → **NODATA**, per
-   [`encrypted_dns.lua`](../../openwrt/files/usr/lib/lua/wifihaven/encrypted_dns.lua)),
-   which is the negative answer Apple's Private-Relay disable requires,
-   and relay setup fails. Expect NOERROR-with-no-answer in the dnsmasq
-   log, **not** NXDOMAIN and not a `0.0.0.0` sinkhole — the lookup still
-   succeeds, which is the usual reason this looks like it "didn't work".
+   agent emits `local=/<host>/` for the curated relay/DoH hostnames,
+   which dnsmasq answers **NXDOMAIN**, the negative answer Apple's
+   Private-Relay disable requires, and relay setup fails. In the dnsmasq
+   log that reads `config mask-h2.icloud.com is NXDOMAIN` — that line is
+   the feature working, not a resolution failure. It is **not** a
+   `0.0.0.0` / `address=` sinkhole, which does not disable Private Relay.
+   (Verified against dnsmasq 2.90 with the agent's exact directive;
+   `encrypted_dns.lua`'s own comment claims NODATA and is wrong —
+   [#2661](https://github.com/wifihaven/wifihaven/issues/2661).)
    Households created after
    [#2643](https://github.com/wifihaven/wifihaven/issues/2643) already
    have it on, so if this is the cause on such a household, check
    whether the setting was turned off. Failing that, turn off encrypted
    DNS on the device itself (iOS Settings → iCloud → Private Relay;
-   macOS / Android equivalents). Several other docs and comments still say NXDOMAIN for this feature — tracked in #2661.
+   macOS / Android equivalents).
 
 5. **None of the above?** That's worth investigating — file an issue
    with the MAC, the bare IP, the dnsmasq log for that window, and
