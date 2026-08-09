@@ -224,7 +224,7 @@ def _drive_until_set_populated(client, set_name: str, *, timeout_s: float = 90) 
 
     It does, however, remove the only place a real product gap currently shows up:
     `eb_`/`bl_` have no apply-time backfill (`ea_` does, via
-    `render.build_ea_backfill_script`), so a device that resolved a host just
+    `dns_tail_sets.build_ea_backfill_script`), so a device that resolved a host just
     before an apply can keep reaching it until the 1800s `eb_refresh` sweep.
     Filed as #2664 — this loop is a harness convergence aid, not a statement that
     the window is acceptable.
@@ -413,7 +413,7 @@ def test_eb_direct_requery_blocked(router, client, fake_api):
     )
 
     # #2662: the barrier above proves the set EXISTS; this proves dns-tail has
-    # actually populated it. Re-drives the resolution (cache flushed each round)
+    # actually populated it. Re-drives the resolution
     # so the scenario does not depend on the first resolution landing after
     # dns-tail's refresh tick — the residual that failed this test on the ipk arm
     # of run 31311056210 even with the barrier. A broken populator still fails:
@@ -723,8 +723,9 @@ def test_bl_direct_requery_blocked(router, client, fake_api):
     # #2662: same residual as G1, and it applies here for the same reason —
     # dns-tail reloads paths.bl_member_index on the very same
     # `bio_refresh_seconds` tick that refreshes its nft-set view, so a resolution
-    # landing before that tick is attributed to no bl_ set and is then lost to the
-    # dnsmasq cache. Converge before probing.
+    # landing before that tick is attributed to no bl_ set at all. Converge before
+    # probing — re-asking is enough, since dns-tail ingests a cached answer the
+    # same way it ingests a fresh one.
     _drive_until_set_populated(client, bl_set_name(_BL_ID))
 
     # Primary assertion: HTTP/80 to the leaf hits the block page. The bl_
