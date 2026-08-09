@@ -160,7 +160,7 @@ object BlockedPageLatencySpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPo
   private def makePsAt(
       dt: LocalDateTime,
       trafficRepo: TrafficReportRepo,
-  ): ZIO[TestDatabase.AllRepos, Throwable, (PolicyService, Clock)] =
+  ): ZIO[TestDatabase.AllRepos, Throwable, PolicyService] =
     for {
       pr   <- ZIO.service[ProfileRepo]
       hsr  <- ZIO.service[HouseholdSettingsRepo]
@@ -173,22 +173,19 @@ object BlockedPageLatencySpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPo
       nsr  <- ZIO.service[NamedScheduleRepo]
       ref  <- Ref.make(dt)
       clk = new Clock.TestClock(ref)
-    } yield (
-      PolicyServiceLive(
-        pr,
-        hsr,
-        tlr,
-        atlr,
-        dr,
-        blr,
-        trafficRepo,
-        er,
-        ar,
-        clk,
-        namedScheduleRepo = nsr,
-      ): PolicyService,
-      clk: Clock,
-    )
+    } yield PolicyServiceLive(
+      pr,
+      hsr,
+      tlr,
+      atlr,
+      dr,
+      blr,
+      trafficRepo,
+      er,
+      ar,
+      clk,
+      namedScheduleRepo = nsr,
+    ): PolicyService
 
   def spec = suite("#2652 block-page latency")(
     test("GET /api/blocked performs exactly ONE whole-day presence load") {
@@ -212,9 +209,8 @@ object BlockedPageLatencySpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPo
           TestClock.schoolDayAfternoon.toLocalDate,
           60,
         )
-        psClk    <- makePsAt(TestClock.schoolDayAfternoon, countingTr)
-        (ps, _) = psClk
-        routes  = BlockedRoutes.routes(
+        ps       <- makePsAt(TestClock.schoolDayAfternoon, countingTr)
+        routes = BlockedRoutes.routes(
           ps,
           blr,
           BlockPageHousehold.defaultOnly,
@@ -262,9 +258,15 @@ object BlockedPageLatencySpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPo
     // The branch the skip's own comment claims is safe: `rolled` is NOT empty (an assignment was
     // removed after the last rollup tick, leaving its app_used_daily row behind) while the profile
     // now has no assignments. Skipping the READ must not skip the RESULT — the rolled seconds still
-    // have to be projected to minutes exactly as the full path would. Without this case the
-    // `out.isEmpty` assertion above passes trivially, since an empty rollup can only ever project
-    // to an empty map.
+    // have to be projected to minutes exactly as the full path would.
+    //
+    // What this case pins is that output identity, NOT the skip: it is green on both sides of
+    // #2652. Pre-fix this input took the `Some(watermark) => listPresenceRowsSince` branch, which
+    // `CountingTrafficRepo` does not count, and projected the same 25 minutes. It is here because
+    // the real hazard the new `case Nil` branch introduces is a future "no assignments, so just
+    // return Map.empty" simplification, which this catches and nothing else does. The skip itself
+    // is demonstrated by the case above (empty rollup, whole-day fallback) and by the rolled-shape
+    // route test below.
     test("no app assignments but a leftover rolled row → rolled minutes still projected, 0 loads") {
       for {
         _        <- cleanDb
@@ -300,7 +302,15 @@ object BlockedPageLatencySpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPo
     // and `dayStateFromRollupAndTail` is the ONLY caller of `appCapMinutesByAppId`, i.e. the only
     // way the whole-day scan this issue is about is reached at all. So this wires the real
     // `TimeUsedRollupRepo` + `AppUsedRollupServiceLive` and seeds a rolled row, reproducing the
-    // prod shape: the tail read is cheap, and after #2652 there is no whole-day read left.
+    // prod shape: the tail read is cheap, and after #2652 there is no whole-day read left. It
+    // discriminates both fixes independently — pre-#2652 `loads` is 2 (one whole-day fallback per
+    // `todaysState`, and `todaysState` ran twice), 1 with only the `decideDetailed` collapse, 0
+    // with both.
+    //
+    // One deliberate divergence from the production wiring: both services keep the default
+    // `NoopAmbientHostsRepo`, so the #2077 engagement-anchor gate is Off. It filters presence rows
+    // rather than adding a read, it is Off unless the household setting enables it, and on the
+    // `atls == Nil` branch `gateFor` is never reached — so it cannot move anything asserted here.
     test("with the day rolled (the prod shape), /api/blocked performs NO whole-day presence load") {
       for {
         _        <- cleanDb
