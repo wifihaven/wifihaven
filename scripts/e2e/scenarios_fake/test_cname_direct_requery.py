@@ -106,7 +106,7 @@ from ._observers import (
 )
 from .snapshot_builder import SnapshotBuilder
 from lib.traffic import dns_query, http_get
-from lib.vm import router_nft_set, router_ssh
+from lib.vm import router_nft_set
 from lib.wait import wait_until
 
 log = logging.getLogger(__name__)
@@ -192,48 +192,42 @@ def _requery_leaf_directly(client, *, attempts: int = 6, interval_s: float = 3) 
     return last
 
 
-def _flush_router_dns_cache() -> None:
-    """SIGHUP dnsmasq on the router, which clears its answer cache.
+def _drive_until_set_populated(client, set_name: str, *, timeout_s: float = 90) -> list[str]:
+    """Re-resolve the chain + leaf until `set_name` has members.
 
-    Needed because the populators this suite exercises fire on dnsmasq's REPLY
-    LINES: dns-tail only learns a resolved IP when it sees `reply <name> is <ip>`
-    in the log. A cached answer emits no such line, so once a name is in cache a
-    re-query is invisible to the populator and the suite has no way to re-drive
-    the pipeline. SIGHUP is dnsmasq's documented cache-clear and does not restart
-    the process, so the `local=`/`nftset=` config stays applied.
+    #2662. The apply barrier upstream guarantees the nft set EXISTS; it cannot
+    guarantee dns-tail knows about it. dns-tail discovers declared sets by parsing
+    the live ruleset, and that refresh runs INSIDE its tail loop — after the
+    arriving line's populators have already run, and only once
+    `bio_refresh_seconds` has elapsed (`wifihaven-dns-tail`: `cache.ingest_line`
+    first, then the `last_bio_refresh` guard). So the first resolution after an
+    apply is attributed against the STALE view — no eb_/bl_ set known, nothing
+    added — and can at best trigger the refresh that would have helped it. That is
+    how this scenario failed on the Gate-2 ipk arm of run 31311056210 with the
+    barrier already in place.
 
-    `pgrep -f '[d]nsmasq'`, not the plain literal: over ssh the command runs
-    through `sh -c`, and busybox pgrep excludes only its own pid — not its parent
-    — so an unbracketed pattern matches the ssh command string itself and we would
-    SIGHUP the wrong process.
-    """
-    router_ssh(
-        "for p in $(pgrep -f '[d]nsmasq'); do kill -HUP \"$p\" 2>/dev/null; done",
-        check=False, timeout=15,
-    )
+    A later resolution is attributed against the refreshed view, which is why
+    simply asking again converges. No cache flush is involved, and none is needed:
+    dns-tail ingests `cached` lines exactly as it ingests `reply` lines
+    (`dns_log.parse_resolved_reply` accepts both verbs), so a re-dig dnsmasq
+    answers from cache still drives the populator. An earlier revision of this
+    helper SIGHUPed dnsmasq on the false premise that cached answers were
+    invisible; that was wrong twice over, because the `pgrep -f` pattern it used
+    also matched dns-tail's own `tail -F /tmp/wifihaven-dnsmasq.log` child and so
+    killed the very sidecar being waited on.
 
+    Cannot mask the #1349 populator regression these scenarios guard: alias
+    recovery (`dns_tail_sets.resolve_head`) is required on every round, so if it is
+    broken nothing lands in the set however many times we ask, the loop times out,
+    and the caller's assertions fail exactly as they would have. What this removes
+    is a dependence on which refresh tick the one resolution happened to land in.
 
-def _drive_until_set_populated(client, set_name: str, *, timeout_s: float = 150) -> list[str]:
-    """Re-drive chain resolve + direct leaf re-query until `set_name` has members.
-
-    #2662. The apply barrier upstream guarantees the nft set EXISTS, but not that
-    dns-tail knows about it: dns-tail discovers declared sets by parsing the live
-    ruleset on its own `bio_refresh_seconds` tick, so for up to one tick after the
-    apply it ingests reply lines while attributing them to no set at all. A single
-    resolution that lands in that window is lost for good, because dnsmasq then
-    answers from cache and never emits another reply line for the populator to act
-    on — which is exactly how this scenario failed on the Gate-2 ipk arm of run
-    31311056210 even with the barrier in place.
-
-    Re-driving converges where one attempt cannot: each round flushes the cache so
-    the next resolution is genuinely fresh, and after at most one refresh tick
-    dns-tail is holding the set when that fresh reply arrives.
-
-    This cannot mask a populator regression (#1349's failure mode). If dns-tail's
-    ea_/eb_/bl_ populator is broken, no number of fresh resolutions puts anything
-    in the set, the loop times out, and the caller's assertions fail exactly as
-    they would have. It only removes the dependence on WHICH tick a resolution
-    happens to land in.
+    It does, however, remove the only place a real product gap currently shows up:
+    `eb_`/`bl_` have no apply-time backfill (`ea_` does, via
+    `render.build_ea_backfill_script`), so a device that resolved a host just
+    before an apply can keep reaching it until the 1800s `eb_refresh` sweep.
+    Filed as #2664 — this loop is a harness convergence aid, not a statement that
+    the window is acceptable.
     """
     deadline = time.monotonic() + timeout_s
     rounds = 0
@@ -249,8 +243,7 @@ def _drive_until_set_populated(client, set_name: str, *, timeout_s: float = 150)
                         set_name, rounds, timeout_s)
             return []
         rounds += 1
-        _flush_router_dns_cache()
-        dig_ipv4_answers(client, BRAND_HOST)   # rebuild the alias map, uncached
+        dig_ipv4_answers(client, BRAND_HOST)   # rebuild/refresh the alias map
         dig_ipv4_answers(client, LEAF_HOST)    # the direct re-query under test
         time.sleep(3)
 
@@ -389,9 +382,10 @@ def test_eb_direct_requery_blocked(router, client, fake_api):
     # #2642: served is DELIVERED, not APPLIED — over ws the fake records the push
     # as it sends the frame, seconds before the router renders it. The client
     # resolution below is what populates eb_, and a lookup ingested before the
-    # apply is attributed to no eb_ host (eb_adds=0), after which dnsmasq answers
-    # from cache and never emits a second reply line for dns-tail to act on. Wait
-    # for the apply first. (Narrows the window rather than closing it — #2662.)
+    # apply is attributed to no eb_ host (eb_adds=0). Wait for the apply first.
+    # (Narrows the window rather than closing it — dns-tail's own view of the
+    # declared sets lags by up to one refresh tick, which is what
+    # `_drive_until_set_populated` below converges past. #2662.)
     wait_eb_set_exists(BRAND_HOST)
 
     # Step 1: resolve the branded host so dns-tail builds the alias map.
