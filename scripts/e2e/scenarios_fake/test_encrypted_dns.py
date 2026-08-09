@@ -39,6 +39,8 @@ allowed". See docs/architecture.md §0.1 and the AGENTS.md anti-pattern callout.
 """
 from __future__ import annotations
 
+import time
+
 import pytest
 
 from lib.vm import client_exec, router_ssh
@@ -91,6 +93,24 @@ def _ipv4_answers(stdout: str | None) -> list[str]:
     pat = re.compile(r"^\d+\.\d+\.\d+\.\d+$")
     return [l.strip() for l in (stdout or "").splitlines()
             if l.strip() and pat.match(l.strip())]
+
+
+def _dig_until_answered(client, host: str, *, timeout_s: float) -> list[str]:
+    """`dig +short <host>` until it answers; [] if it never does.
+
+    Returns [] on timeout rather than raising, so the caller's own assertion
+    fires with its diagnostic instead of a bare TimeoutError — the message is
+    what tells the next reader whether the network was broken or the probe was
+    early.
+    """
+    deadline = time.monotonic() + timeout_s
+    while True:
+        answers = dig_ipv4_answers(client, host)
+        if answers:
+            return answers
+        if time.monotonic() >= deadline:
+            return []
+        time.sleep(3)
 
 
 @pytest.mark.smoke
@@ -151,7 +171,20 @@ def test_block_encrypted_dns_enforced(router, client, fake_api):
     # …but the SAME name still resolves via the LAN resolver. THE core "did we
     # break the network" assertion — opportunistic DoH/hardcoded-DNS clients
     # fall back to the router's resolver and stay online.
-    lan = dig_ipv4_answers(client, NORMAL_HOST)
+    # Polled, not single-shot. This was the last one-shot probe in a test whose
+    # every other step already waits — and the sibling poll above says why: "the
+    # dnsmasq restart that picks up the new conf may lag the nft chain load". A
+    # restart gap, or a cold cache meeting a momentary upstream blip on the shared
+    # CD host (#1935), makes ONE dig come back empty on a network that is fine;
+    # that emptiness reddened Master Router CD on runs where every enforcement
+    # assertion passed.
+    #
+    # Polling cannot mask the regression this assertion exists to catch. "The
+    # toggle broke the network" is a STANDING condition — if the LAN resolver is
+    # genuinely broken, it is broken for the whole window and every retry comes
+    # back empty, so the assertion below still fires with its diagnostic. Only a
+    # transient is absorbed, which is exactly what a transient deserves.
+    lan = _dig_until_answered(client, NORMAL_HOST, timeout_s=60)
     assert lan, (
         f"{NORMAL_HOST} must still resolve via the LAN resolver after the toggle "
         "is on (opportunistic fallback — network must NOT be broken)"
