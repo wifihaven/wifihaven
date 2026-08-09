@@ -305,19 +305,29 @@ class PolicyServiceLive(
   private val lastPublishedEtag: AtomicReference[Map[HouseholdId, ETag]] =
     new AtomicReference(Map.empty[HouseholdId, ETag])
 
-  // Swap in `etag` for `household` and return what was there before — the per-household equivalent
-  // of the old `getAndSet`, as a CAS loop so two households reevaluating concurrently cannot lose
-  // each other's write (`installSnapshot` uses the same shape).
-  private def swapPublishedEtag(household: HouseholdId, etag: ETag): Option[ETag] = {
+  // Swap in `etag` for `household` in a per-household ETag map and return what was there before —
+  // the per-household equivalent of the old `getAndSet`, as a CAS loop so two households
+  // reevaluating concurrently cannot lose each other's write (`installSnapshot` uses the same
+  // shape). #2653: shared by both per-household ETag slots (`lastPublishedEtag`, the push-dedupe,
+  // and `lastSnapshotEtags`, the log-dedupe) rather than copied — one swap primitive, one place to
+  // get the CAS right.
+  private def swapEtag(
+      slots: AtomicReference[Map[HouseholdId, ETag]],
+      household: HouseholdId,
+      etag: ETag,
+  ): Option[ETag] = {
     var prev: Option[ETag] = None
     var swapped            = false
     while (!swapped) {
-      val cur = lastPublishedEtag.get
+      val cur = slots.get
       prev = cur.get(household)
-      swapped = lastPublishedEtag.compareAndSet(cur, cur.updated(household, etag))
+      swapped = slots.compareAndSet(cur, cur.updated(household, etag))
     }
     prev
   }
+
+  private def swapPublishedEtag(household: HouseholdId, etag: ETag): Option[ETag] =
+    swapEtag(lastPublishedEtag, household, etag)
 
   // #1318: the WifiHaven UI / block-page hosts are fleet-wide always-reachable
   // hosts, so they live in `global.extraAllowed` (carving out every block at the
@@ -336,8 +346,16 @@ class PolicyServiceLive(
   // Render retains stdout for ~7 days, giving roughly a week of snapshot history for free —
   // long enough to investigate most incidents (the #1640 motivation). Not a metric (cardinality
   // fence; snapshot JSON is not metric data).
-  private val lastSnapshotEtag: AtomicReference[Option[ETag]] =
-    new AtomicReference(Option.empty[ETag])
+  //
+  // #2653: keyed BY HOUSEHOLD, for exactly the reason `lastPublishedEtag` (#2630) and
+  // `snapshotCache` (#2107) are. A single slot was correct only while `reevaluate` rebuilt ONE
+  // household per tick; #2633 made it rebuild per household, and two households then alternate
+  // through the shared slot, each evicting the other's etag, so `changed` is true on EVERY
+  // rebuild. That falsified the guarantee in this comment — prod measured 120 lines in 20
+  // minutes across two distinct etags, each dumping that household's full device inventory
+  // (names + MAC addresses) into Loki. Per household, the #1641 bound holds again.
+  private val lastSnapshotEtags: AtomicReference[Map[HouseholdId, ETag]] =
+    new AtomicReference(Map.empty[HouseholdId, ETag])
 
   // #1069/#1482: per-host /decision fallback must see the same schedule downtime as the snapshot —
   // the windows of every block-mode named schedule attached to the profile (as synthetic
@@ -525,8 +543,8 @@ class PolicyServiceLive(
         status   <- billingStatusOf(household)
         disabled <- enforcementDisabledOf(household)
         snap     <-
-          if (disabled) permissiveBuild("enforcement_disabled")
-          else if (status.contains("lapsed")) permissiveBuild("lapsed")
+          if (disabled) permissiveBuild(household, "enforcement_disabled")
+          else if (status.contains("lapsed")) permissiveBuild(household, "lapsed")
           else buildEnforcingSnapshot(household)
       } yield snap
     }.zipLeft(
@@ -584,12 +602,15 @@ class PolicyServiceLive(
   // {lapsed, enforcement_disabled} labels `policy_permissive_snapshot_total`. Still records the
   // normal `recordSnapshotBuild("computed")` + global-policy gauge so the cache-hit ratio and the
   // global-policy gauge stay coherent (a permissive snapshot has an empty global section).
-  private def permissiveBuild(reason: String): Task[PolicySnapshot] =
+  // #2653: takes the household purely so the snapshot-changed log dedupes per tenant. Permissive
+  // snapshots are byte-identical across households, so a shared slot would have let one lapsed
+  // household's line suppress every other's — the same eviction bug, in the other direction.
+  private def permissiveBuild(household: HouseholdId, reason: String): Task[PolicySnapshot] =
     clock.instant.flatMap { now =>
       val snap = PolicyService.permissiveSnapshot(now)
       AppMetrics
         .setGlobalPolicy(snap.global.extraAllowed.size, 0)
-        .zipRight(logSnapshotChanged(snap))
+        .zipRight(logSnapshotChanged(household, snap))
         .zipRight(AppMetrics.recordSnapshotBuild("computed"))
         .zipRight(AppMetrics.recordPermissiveSnapshot(reason))
         .as(snap)
@@ -811,37 +832,43 @@ class PolicyServiceLive(
       // the cache is doing its job (cache_hit should dominate once the ticker keeps it warm).
       AppMetrics
         .setGlobalPolicy(snap.global.extraAllowed.size, defaultDenyProfiles)
-        .zipRight(logSnapshotChanged(snap))
+        .zipRight(logSnapshotChanged(household, snap))
         .zipRight(AppMetrics.recordSnapshotBuild("computed"))
         .as(snap)
     }
 
   /**
    * #1641: emit an INFO log line carrying the full snapshot JSON the first time we see a given ETag
-   * in this process. Atomic compare-and-set against `lastSnapshotEtag` — only the caller who
-   * swapped a new etag in logs, so concurrent pollers cannot duplicate the line. One line per ETag
-   * transition (not per poll), bounded by how often policy actually changes.
+   * FOR THIS HOUSEHOLD in this process. The swap is the same per-household CAS loop the push-dedupe
+   * uses (`swapEtag`) — only the caller whose swap displaced a different etag logs, so concurrent
+   * pollers cannot duplicate the line. One line per ETag transition per household (not per poll),
+   * bounded by how often that household's policy actually changes.
+   *
+   * #2653: `household` is threaded in because the dedupe slot is per household — a shared slot let
+   * two tenants alternate through it and log on every single rebuild.
    */
-  private def logSnapshotChanged(snap: PolicySnapshot): UIO[Unit] = ZIO.suspendSucceed {
-    val prev    = lastSnapshotEtag.get()
-    val changed = !prev.contains(snap.etag) && lastSnapshotEtag.compareAndSet(prev, Some(snap.etag))
-    if (!changed) ZIO.unit
-    else {
-      val json = snap.toJson
-      // #602: structured context — etag/op as annotations so ops can filter the
-      // snapshot_changed stream without parsing the message.
-      LogContext.annotateAll(
-        LogContext.Op   -> "snapshot_changed",
-        LogContext.Etag -> snap.etag.value,
-      ) {
-        ZIO.logInfo(
-          s"event=snapshot_changed etag=${snap.etag.value} " +
-            s"prevEtag=${prev.map(_.value).getOrElse("none")} " +
-            s"bytes=${json.length} snapshot=$json",
-        )
+  private def logSnapshotChanged(household: HouseholdId, snap: PolicySnapshot): UIO[Unit] =
+    ZIO.suspendSucceed {
+      val prev = swapEtag(lastSnapshotEtags, household, snap.etag)
+      if (prev.contains(snap.etag)) ZIO.unit
+      else {
+        val json = snap.toJson
+        // #602: structured context — etag/op as annotations so ops can filter the
+        // snapshot_changed stream without parsing the message. #2653: `household` too, so a line
+        // is attributable to its tenant without parsing the JSON body.
+        LogContext.annotateAll(
+          LogContext.Op        -> "snapshot_changed",
+          LogContext.Etag      -> snap.etag.value,
+          LogContext.Household -> household.value.toString,
+        ) {
+          ZIO.logInfo(
+            s"event=snapshot_changed household=${household.value} etag=${snap.etag.value} " +
+              s"prevEtag=${prev.map(_.value).getOrElse("none")} " +
+              s"bytes=${json.length} snapshot=$json",
+          )
+        }
       }
     }
-  }
 
   // #2107: the household *authorizes* access to a shared category list — the list CONTENT is a
   // global, non-tenant resource (`blocklist_domains` has no `household_id`; the same curated ad/
