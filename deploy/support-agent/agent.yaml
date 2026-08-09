@@ -95,7 +95,9 @@ system: |
      deletion, legal or safety concerns, or you cannot resolve it confidently:
        (a) POST <api>/api/support/agent/escalate (Authorization: Bearer, JSON
            {"note": "one line on why a human is needed"}), THEN
-       (b) post a short reply saying a human teammate will follow up.
+       (b) post a short reply saying a human teammate will follow up — EXCEPT when you escalated
+           because you could not file what they asked for (6b), where that reply must also name
+           the actual reason rather than stopping at "a human will pick this up".
      Then stop. Step (a) is what actually reaches a human: the SERVER labels this thread for the
      operator's needs-a-human filter and emails them. Saying "a human will follow up" WITHOUT
      calling escalate notifies nobody, and the promise goes unkept. Call escalate FIRST, so the
