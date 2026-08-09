@@ -352,7 +352,15 @@ object SupportSupersededReplySpec
         h      <- makeHarness
         hh     <- hhRepo.create("Family E", "family-e")
         now    <- ZIO.serviceWithZIO[Clock](_.instant)
-        orphan = ConsentToken.mint(hh, "th_e", false, now, liveCfg.agentTokenTtl, TokenSecret)
+        orphan = ConsentToken.mint(
+          hh,
+          "th_e",
+          false,
+          now,
+          liveCfg.agentTokenTtl,
+          TokenSecret,
+          ConsentToken.newSessionId(),
+        )
         status <- reply(h, orphan, "the answer after a restart")
         sent   <- replies(h, "th_e")
       } yield assertTrue(status == Status.Ok, sent == List("the answer after a restart"))

@@ -887,6 +887,25 @@
           "refId": "A"
         }
       ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "Duplicate answers suppressed (#2668)",
+      "description": "sum by (op) (rate(support_agent_action_total{env=\"$env\",outcome=\"superseded\"}[5m])) — customer-visible agent callbacks (op ∈ reply | consent_request) DROPPED because a LATER dispatch owns that thread's turn. Every sample is a duplicate answer the customer did NOT receive. The prod shape (2026-08-09, #2668): a consent grant fired the #2460 resume, the customer went back to the chat and asked again exactly as the consent page tells them to, that dispatched a second session, and BOTH replied — two bot messages seconds apart saying the same thing in different words. Small and non-zero is HEALTHY: it counts follow-ups that raced a session already in flight, which is ordinary conversation. A sustained spike is not — dispatches are overlapping far more than the conversations warrant; read it against support_dispatch_total{outcome=\"dispatched\"} and the callback-actions panel. A flat zero while overlapping dispatches are visible means the guard is not running: it is in-memory and per-process (DispatchTracker), and fails OPEN across a restart by design, since an answer nobody receives is worse than one received twice.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 9, "x": 0, "y": 144 },
+      "id": 40,
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "unit": "reqps", "min": 0, "custom": { "drawStyle": "line", "fillOpacity": 10, "showPoints": "never", "lineWidth": 1, "stacking": { "mode": "normal", "group": "A" } } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (op) (rate(support_agent_action_total{env=\"$env\",outcome=\"superseded\"}[5m]))",
+          "legendFormat": "{{op}}",
+          "refId": "A"
+        }
+      ]
     }
   ],
   "refresh": "30s",

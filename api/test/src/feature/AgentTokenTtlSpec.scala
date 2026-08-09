@@ -185,6 +185,7 @@ object AgentTokenTtlSpec
         _,
         supportCfg.agentTokenTtl,
         SupportTokenSecret,
+        ConsentToken.newSessionId(),
       ),
     )
 

@@ -79,7 +79,14 @@ object SupportDispatchCompletionSpec
 
   private val Transport = CloudAgentObservability.ClaudeCodeCloud
 
-  private final case class Rig(routes: Routes[Any, Response], tracker: DispatchTracker)
+  private final case class Rig(
+      routes: Routes[Any, Response],
+      tracker: DispatchTracker,
+      // #2668: the agent token a dispatch minted is now SESSION-SCOPED, so a callback has to
+      // present the token of the session it belongs to. Reading it back off the recorder is also
+      // more faithful than minting a lookalike — it is exactly what the cloud run is handed.
+      dispatches: CloudAgentDispatcher.Recorder,
+  )
 
   private def makeRig =
     for {
@@ -123,7 +130,7 @@ object SupportDispatchCompletionSpec
         RateLimiter.allowAll,
         tracker,
       )
-    } yield Rig(SupportAgentRoutes.routes(responder), tracker)
+    } yield Rig(SupportAgentRoutes.routes(responder), tracker, dispRec)
 
   private def payload(tenant: Long, threadId: String, text: String): String =
     s"""{"workspaceId":"w_1","id":"pEv_chat","payload":{"eventType":"thread.chat_received",""" +
@@ -141,6 +148,14 @@ object SupportDispatchCompletionSpec
       )
     rig.routes.runZIO(req).map(_.status)
   }
+
+  /** The token of the session the LAST dispatch started — what its callbacks must present. */
+  private def sessionToken(rig: Rig): Task[String] =
+    rig.dispatches.dispatches.get.flatMap(all =>
+      ZIO
+        .fromOption(all.lastOption.map(_._1.agentToken))
+        .orElseFail(new RuntimeException("nothing dispatched")),
+    )
 
   private def agentPost(
       rig: Rig,
@@ -166,7 +181,15 @@ object SupportDispatchCompletionSpec
     ZIO.serviceWithZIO[Clock](_.instant).map { now =>
       // The rig's TTL comes from the SAME config the tracker's dead threshold does, so retuning
       // `agentTokenTtlMinutes` can never put `PastDead` beyond the test tokens' own expiry.
-      ConsentToken.mint(hh, threadId, dataAccess, now, liveCfg.agentTokenTtl, TokenSecret)
+      ConsentToken.mint(
+        hh,
+        threadId,
+        dataAccess,
+        now,
+        liveCfg.agentTokenTtl,
+        TokenSecret,
+        ConsentToken.newSessionId(),
+      )
     }
 
   private def counter(outcome: String): UIO[Double] =
@@ -203,7 +226,7 @@ object SupportDispatchCompletionSpec
         (hh, rig)  <- seeded("closed")
         before     <- counter(DispatchTracker.Outcome.Completed)
         status     <- dispatchOne(rig, hh, "th_closed")
-        token      <- mintToken(hh, "th_closed")
+        token      <- sessionToken(rig)
         replied    <- agentPost(
           rig,
           "/api/support/agent/reply",
@@ -286,7 +309,7 @@ object SupportDispatchCompletionSpec
       for {
         (hh, rig)  <- seeded("esc")
         _          <- dispatchOne(rig, hh, "th_esc")
-        token      <- mintToken(hh, "th_esc")
+        token      <- sessionToken(rig)
         before     <- counter(DispatchTracker.Outcome.Completed)
         status     <- agentPost(
           rig,
@@ -309,7 +332,7 @@ object SupportDispatchCompletionSpec
       for {
         (hh, rig) <- seeded("cons")
         _         <- dispatchOne(rig, hh, "th_cons")
-        token     <- mintToken(hh, "th_cons")
+        token     <- sessionToken(rig)
         before    <- counter(DispatchTracker.Outcome.Completed)
         status    <- agentPost(rig, "/api/support/agent/request-consent", "", Some(token))
         after     <- counter(DispatchTracker.Outcome.Completed)

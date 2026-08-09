@@ -1131,6 +1131,11 @@ object AppMetrics {
       Map("outcome" -> outcome, "reason" -> reason),
     )
 
+  // #2668 adds ONE `outcome` value, `superseded`: a customer-visible callback (`op` ∈ reply |
+  // consent_request) dropped because a LATER dispatch owns that thread's turn. Small and non-zero
+  // is healthy — it counts customer follow-ups that raced a session already in flight, and every
+  // sample is a duplicate answer the customer did NOT receive. A spike means dispatches are
+  // overlapping more than the conversations warrant. Still bounded (op, outcome), never per-thread.
   def supportAgentAction(action: String, outcome: String): UIO[Unit] =
     MetricGuard.counter("support_agent_action_total", Map("op" -> action, "outcome" -> outcome))
 

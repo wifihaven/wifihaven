@@ -476,6 +476,7 @@ object EscalationSpec
           now,
           java.time.Duration.ofMinutes(30),
           SupportTokenSecret,
+          ConsentToken.newSessionId(),
         )
         status  <- post(
           h.routes,
@@ -526,6 +527,7 @@ object EscalationSpec
           now,
           java.time.Duration.ofMinutes(30),
           SupportTokenSecret,
+          ConsentToken.newSessionId(),
         )
         body  = """{"note":"looping"}"""
         _      <- post(h.routes, "/api/support/agent/escalate", body, bearer = Some(token))
@@ -587,6 +589,7 @@ object EscalationSpec
           now,
           java.time.Duration.ofMinutes(30),
           SupportTokenSecret,
+          ConsentToken.newSessionId(),
         )
         status  <- post(
           h.routes,
@@ -669,6 +672,7 @@ object EscalationSpec
           now,
           java.time.Duration.ofMinutes(30),
           SupportTokenSecret,
+          ConsentToken.newSessionId(),
         )
         sNone     <- post(h.routes, "/api/support/agent/escalate", """{"note":"x"}""")
         sDark     <- post(
@@ -704,6 +708,7 @@ object EscalationSpec
           now,
           java.time.Duration.ofMinutes(30),
           SupportTokenSecret,
+          ConsentToken.newSessionId(),
         )
         status <- post(
           h.routes,
