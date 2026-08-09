@@ -192,6 +192,26 @@ def router_nft_set(set_name: str, *, table: str = "wifihaven", family: str = "in
     return [tok.strip() for tok in inner.split(",") if tok.strip()]
 
 
+def router_nft_set_exists(
+    set_name: str, *, table: str = "wifihaven", family: str = "inet"
+) -> bool:
+    """True iff the nftables set EXISTS, whether or not it holds elements.
+
+    `router_nft_set` deliberately collapses "absent" and "present but empty" to
+    `[]`, which is the right shape for a membership probe but useless as an
+    APPLY barrier — and that is what #2642 needed. render.lua declares
+    `set eb_<host> { … }` for every effective extraBlocked host, so the set
+    coming into existence is a direct, low-level observable that the snapshot
+    naming that host has reached the enforcement plane. Before the apply the set
+    is simply not there.
+    """
+    res = router_ssh(
+        f"nft list set {family} {table} {set_name} >/dev/null 2>&1 && echo yes || echo no",
+        check=False, timeout=10,
+    )
+    return (res.stdout or "").strip() == "yes"
+
+
 def router_ssh(cmd: str, *, timeout: float = 30, check: bool = True) -> Result:
     """Run a command on the router via the WAN-side hostfwd SSH port."""
     args = [

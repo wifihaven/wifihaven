@@ -14,7 +14,7 @@ from __future__ import annotations
 import re
 
 from lib.traffic import dns_query, http_get
-from lib.vm import client_exec, router_nft_set, router_ssh
+from lib.vm import client_exec, router_nft_set, router_nft_set_exists, router_ssh
 from lib.wait import wait_until
 from lib.wan_health import CONTROL_APEX_HOSTS
 
@@ -202,6 +202,38 @@ def bl_set_name(bl_id: str) -> str:
     """
     sanitized = re.sub(r"[.\:\-\s]", "_", bl_id)
     return "bl_" + sanitized
+
+
+def wait_eb_set_exists(host: str, *, timeout_s: float = 120) -> None:
+    """Wait until the router has APPLIED a snapshot that extraBlocks `host`.
+
+    #2642. This is an apply barrier, and it exists because
+    `fake_api.wait_for_etag_served` is only a DELIVERY one: since ws became the
+    shipped transport (#2608) the fake records a push the instant it sends the
+    frame, so the helper returns while the router is still seconds away from
+    rendering the snapshot into nftables. Any scenario that must generate
+    traffic which the NEW policy has to be live for — not merely assert on
+    router state afterwards — has to wait for the apply in between.
+
+    eb_ is the sharp case, because its only populator is dns-tail at resolve
+    time: a client DNS lookup issued before the apply is ingested while the
+    populator still knows nothing about `host` (`eb_adds=0`), and dnsmasq then
+    serves the same answer from cache, so no second log line ever gives dns-tail
+    another chance. The set stays empty, no DNAT fires, and the block page never
+    arrives. (bl_ survives the same race only because blocklists.lua
+    re-populates it on its own periodic cadence.)
+
+    Set EXISTENCE is the observable rather than membership: render.lua declares
+    `set eb_<host> {}` for each effective extraBlocked host, so the set appears
+    at apply and is absent before it — whereas membership is what the scenario
+    is trying to prove and cannot be waited on up front.
+    """
+    name = eb_set_name(host)
+    wait_until(
+        lambda: router_nft_set_exists(name) or None,
+        timeout_s=timeout_s, interval_s=2,
+        description=f"nft set {name} to exist (router applied the extraBlocked snapshot)",
+    )
 
 
 def wait_eb_set_populated(host: str, *, timeout_s: float = 90) -> list[str]:
