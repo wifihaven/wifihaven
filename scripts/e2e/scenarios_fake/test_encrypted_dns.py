@@ -39,6 +39,7 @@ allowed". See docs/architecture.md §0.1 and the AGENTS.md anti-pattern callout.
 """
 from __future__ import annotations
 
+import logging
 import time
 
 import pytest
@@ -48,6 +49,8 @@ from lib.wait import wait_until
 
 from ._observers import dig_ipv4_answers
 from .snapshot_builder import SnapshotBuilder
+
+log = logging.getLogger(__name__)
 
 pytestmark = pytest.mark.encrypted_dns
 
@@ -103,12 +106,22 @@ def _dig_until_answered(client, host: str, *, timeout_s: float) -> list[str]:
     what tells the next reader whether the network was broken or the probe was
     early.
     """
-    deadline = time.monotonic() + timeout_s
+    started = time.monotonic()
+    deadline = started + timeout_s
+    attempts = 0
     while True:
+        attempts += 1
         answers = dig_ipv4_answers(client, host)
         if answers:
+            # Log elapsed/attempts: a run that answered on the first try and one
+            # that consumed most of the budget are otherwise indistinguishable in
+            # the log, and the budget being eaten is the signal worth seeing.
+            log.info("%s resolved after %.1fs (%d attempt(s), answer=%s)",
+                     host, time.monotonic() - started, attempts, answers[0])
             return answers
         if time.monotonic() >= deadline:
+            log.warning("%s never resolved in %.0fs (%d attempt(s))",
+                        host, timeout_s, attempts)
             return []
         time.sleep(3)
 
@@ -146,10 +159,27 @@ def test_block_encrypted_dns_enforced(router, client, fake_api):
     # dnsmasq answers `local=/<host>/` with NODATA, so `dig +short` is empty —
     # an IP would mean Private Relay stays enabled (the #1891 hang). Poll: the
     # dnsmasq restart that picks up the new conf may lag the nft chain load.
+    #
+    # The poll requires BOTH halves: the relay host silent AND a normal name
+    # still answering. That second clause is a liveness anchor, and without it
+    # this test can pass while proving nothing at all — every assertion from here
+    # to the LAN-fallback probe asserts the ABSENCE of a DNS answer, so a dnsmasq
+    # that is down or mid-restart satisfies all of them vacuously. That is not
+    # hypothetical: on the Gate-2 ipk arm of run 31301029999 the whole enforcement
+    # phase completed in 2.9s (snapshot served 08:44:48.75, failed 08:44:51.70)
+    # because every probe came back empty — the LAN-fallback dig was the only
+    # thing that noticed. Anchoring liveness HERE is what keeps the absence
+    # assertions meaningful, rather than leaving one late probe to catch a run
+    # that was empty from the start.
     def _relay_negative():
-        return True if not dig_ipv4_answers(client, RELAY_HOST) else None
+        if dig_ipv4_answers(client, RELAY_HOST):
+            return None  # relay still resolves — toggle hasn't taken effect yet
+        if not dig_ipv4_answers(client, NORMAL_HOST):
+            return None  # resolver isn't answering anything — nothing is proven
+        return True
     wait_until(_relay_negative, timeout_s=60, interval_s=3,
-               description=f"{RELAY_HOST} returns a NEGATIVE DNS answer (no IP)")
+               description=(f"{RELAY_HOST} to return a NEGATIVE DNS answer (no IP) "
+                            f"while {NORMAL_HOST} still resolves"))
     assert not dig_ipv4_answers(client, RELAY_HOST), (
         f"{RELAY_HOST} must return a negative answer (NODATA), not an IP"
     )
@@ -171,19 +201,22 @@ def test_block_encrypted_dns_enforced(router, client, fake_api):
     # …but the SAME name still resolves via the LAN resolver. THE core "did we
     # break the network" assertion — opportunistic DoH/hardcoded-DNS clients
     # fall back to the router's resolver and stay online.
-    # Polled, not single-shot. This was the last one-shot probe in a test whose
-    # every other step already waits — and the sibling poll above says why: "the
-    # dnsmasq restart that picks up the new conf may lag the nft chain load". A
-    # restart gap, or a cold cache meeting a momentary upstream blip on the shared
-    # CD host (#1935), makes ONE dig come back empty on a network that is fine;
-    # that emptiness reddened Master Router CD on runs where every enforcement
-    # assertion passed.
+    # Polled, not single-shot — the sibling poll above says why: "the dnsmasq
+    # restart that picks up the new conf may lag the nft chain load". A restart
+    # gap, or a cold cache meeting a momentary upstream blip on the shared CD
+    # host (#1935/#2034), makes ONE dig come back empty on a network that is fine,
+    # and that emptiness reddened Master Router CD.
     #
-    # Polling cannot mask the regression this assertion exists to catch. "The
-    # toggle broke the network" is a STANDING condition — if the LAN resolver is
-    # genuinely broken, it is broken for the whole window and every retry comes
-    # back empty, so the assertion below still fires with its diagnostic. Only a
-    # transient is absorbed, which is exactly what a transient deserves.
+    # Polling is safe here for two reasons, and the second is the load-bearing
+    # one. First, "the toggle broke the network" is a STANDING condition: a
+    # genuinely broken LAN resolver stays broken for the whole window, every retry
+    # comes back empty, and the assertion below still fires with its diagnostic.
+    # Second — and this is what makes the poll an improvement rather than a
+    # loosening — the liveness clause added to the (a) poll above means the run
+    # cannot have reached this line without the resolver having answered at least
+    # once WHILE the toggle was on. Before that clause, this dig was the only
+    # thing standing between an all-empty run and a green pass; it no longer
+    # carries that alone, which is why absorbing a transient here costs nothing.
     lan = _dig_until_answered(client, NORMAL_HOST, timeout_s=60)
     assert lan, (
         f"{NORMAL_HOST} must still resolve via the LAN resolver after the toggle "

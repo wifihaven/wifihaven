@@ -210,8 +210,9 @@ def router_nft_set_exists(
     # fail, so the remote command's exit status is 0 whenever ssh worked — which
     # makes a non-zero exit unambiguously a transport failure.
     #
-    # It does not abort the caller: every caller polls through `wait_until`, which
-    # records a predicate exception and keeps going, then attaches it to the
+    # It does not abort the caller: its only caller today polls through
+    # `wait_until`, which records a predicate exception and keeps going, then
+    # attaches it to the
     # eventual `TimeoutError` as `last error`. So a transient (a router mid-restore
     # or mid-dnsmasq-restart) is still retried exactly as it was under
     # `check=False`, while a persistent failure now names itself rather than

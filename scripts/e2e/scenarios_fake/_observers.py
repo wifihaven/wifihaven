@@ -248,7 +248,8 @@ def wait_bl_set_exists(bl_id: str, *, timeout_s: float = 120) -> None:
 
     One difference worth knowing before reusing this: `bl_` sets are declared for
     every id in `snapshot.blocklists` whether or not a device references it
-    (render.lua, per its own #352 note), whereas `eb_` keys off assigned devices.
+    (render.lua:1102-1105, per its own #352 note), whereas `eb_` keys off
+    assigned devices.
     A caller whose blocklist id is already in the served snapshot before the
     device assignment lands would therefore get a barrier that clears
     immediately — a silent no-op. It is sound for G4 because the id and the
