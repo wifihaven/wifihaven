@@ -17,7 +17,7 @@ import wifihaven.api.db.{
 import wifihaven.api.metrics.AppMetrics
 import wifihaven.api.notify.{EscalationChannel, EscalationKind, EscalationNotice, Notifier}
 import wifihaven.api.observability.AgentTokenRejection
-import wifihaven.api.policy.{HouseholdScoped, PolicyService, ProfileDayState, TimeStatusService}
+import wifihaven.api.policy.{PolicyService, ProfileDayState, TimeStatusService}
 import wifihaven.shared.{Clock, MacBlockReason, UserRole}
 import wifihaven.shared.types.HouseholdId
 import zio.*
@@ -887,51 +887,48 @@ final case class SupportResponder(
         settings  <- hsRepo.getForHousehold(hh)
         now       <- clock.instant
         today = PolicyService.householdLocalDate(now, settings)
-        // Every read above is `hh`-parameterised — including this one (#2257/#2264), whose inner
-        // reads are household-scoped too. The join below then keys day-states by THIS household's
-        // own profile ids, so a foreign row is unreachable even if one were ever returned.
+        // Every read here is `hh`-parameterised — including this one, whose INNER reads were
+        // scoped by #2257/#2264 — and `hh` is the verified token's household, the only one in
+        // reach. The join below then keys day-states by THIS household's own profile ids, so a
+        // foreign row is unreachable even if one were ever returned.
+        //
+        // Deliberately NOT wrapped in `HouseholdScoped` (#2630). That type exists to make a
+        // FAN-OUT safe: it stops a loop over many recipients handing household A's value to
+        // household B, because the payload cannot be read without naming the recipient. Here there
+        // is exactly one household in scope and it is the recipient — wrapping and immediately
+        // unwrapping with the same `claims.householdId` is a tautology, and it buys an unreachable
+        // failure branch that would meter `household_read{outcome="error"}` (the #2462 "a repo
+        // query threw" signal) for a state that cannot occur. It becomes the right tool the moment
+        // this read serves a household it did not derive from the token.
         states <- timeStatus.dayStateAll(hh, now, today, settings)
-      } yield HouseholdScoped(
-        hh,
-        HouseholdSummary(
-          name = household.map(_.name).getOrElse(""),
-          plan = billing.map(_.status),
-          founding = billing.map(_.founding),
-          deviceCount = devices.size,
-          profileCount = profiles.size,
-          profiles = profiles.map(p => profileSummary(p.name, p.paused, states.get(p.id))),
-          devices = devices.map(d => DeviceSummary(d.name, d.profileName)),
-          date = Some(today.toString),
-        ),
-        // The summary is built FROM one household's rows, so it is scoped to that household at the
-        // point it is built and unwrapped only by naming the recipient — the token's household. A
-        // future caller that reads on behalf of some other session cannot pick this up by accident:
-        // there is no accessor that does not take a recipient (#2630, `HouseholdScoped`).
-      ).forHousehold(claims.householdId))
-        .someOrFail(
-          new IllegalStateException(
-            "consented read: summary scope did not match the token's household",
-          ),
-        )
-        .foldZIO(
-          e =>
-            ZIO.logError(
-              s"support: agent household read FAILED household=${hh.value} " +
-                s"thread=${claims.threadId}: ${e.getMessage}",
-            ) *>
-              // `error` on THIS op means exactly one thing — the account read did not complete —
-              // because no other producer of `support_agent_action_total{op=household_read}` can
-              // mint it. The route maps it to a 5xx, so the agent is TOLD it has no data rather than
-              // handed a plausible-looking empty one. What it then SAYS to the customer currently
-              // rests on the prompt's general "never claim account data you did not read from the
-              // endpoint" rule — `agent.yaml` has no 5xx-specific instruction yet (#2524).
-              doneE(AgentAction.HouseholdRead, AgentActionResult.Error),
-          summary =>
-            // Audit every consented read (#2241) — household + thread, never the data.
-            ZIO.logInfo(
-              s"support: agent household read household=${hh.value} thread=${claims.threadId}",
-            ) *> AppMetrics.supportAgentAction(AgentAction.HouseholdRead, "ok").as(Right(summary)),
-        )
+      } yield HouseholdSummary(
+        name = household.map(_.name).getOrElse(""),
+        plan = billing.map(_.status),
+        founding = billing.map(_.founding),
+        deviceCount = devices.size,
+        profileCount = profiles.size,
+        profiles = profiles.map(p => profileSummary(p.name, p.paused, states.get(p.id))),
+        devices = devices.map(d => DeviceSummary(d.name, d.profileName)),
+        date = Some(today.toString),
+      )).foldZIO(
+        e =>
+          ZIO.logError(
+            s"support: agent household read FAILED household=${hh.value} " +
+              s"thread=${claims.threadId}: ${e.getMessage}",
+          ) *>
+            // `error` on THIS op means exactly one thing — the account read did not complete —
+            // because no other producer of `support_agent_action_total{op=household_read}` can
+            // mint it. The route maps it to a 5xx, so the agent is TOLD it has no data rather than
+            // handed a plausible-looking empty one. What it then SAYS to the customer currently
+            // rests on the prompt's general "never claim account data you did not read from the
+            // endpoint" rule — `agent.yaml` has no 5xx-specific instruction yet (#2524).
+            doneE(AgentAction.HouseholdRead, AgentActionResult.Error),
+        summary =>
+          // Audit every consented read (#2241) — household + thread, never the data.
+          ZIO.logInfo(
+            s"support: agent household read household=${hh.value} thread=${claims.threadId}",
+          ) *> AppMetrics.supportAgentAction(AgentAction.HouseholdRead, "ok").as(Right(summary)),
+      )
     }
 
   /**
@@ -957,8 +954,11 @@ final case class SupportResponder(
         extensionMinutes = st.extensionMinutes,
         remainingMinutes = st.remainingMinutes,
         blockedNow = st.blocked,
-        // `MacBlockReason.asString` is the ONE rendering of this vocabulary — the same strings the
-        // router's drop events and the block page use, not a support-only synonym set.
+        // `MacBlockReason.asString` — the enum's canonical name, the same string the
+        // `block_reason` DB column stores (`TypeMeta.scala`). NOT a support-only synonym set, and
+        // NOT the router wire either: `MacBlockReason` also carries `wireKind` (`time_limit`,
+        // `unmanaged_mac`) for the agent-facing wire and `jsonKind` for SPA JSON, so do not read
+        // this field as matching a drop event's reason string.
         blockReason = st.blockReason.map(MacBlockReason.asString),
       ),
     )
@@ -1934,8 +1934,9 @@ object SupportResponder {
    *   - per PROFILE: the authored `paused` flag plus TODAY's screen-time state (`usedMinutes`,
    *     `dailyLimitMinutes`, `extensionMinutes`, `remainingMinutes`) and whether anything is
    *     blocking it right now (`blockedNow` + `blockReason`). #2665: "how much screen time did X
-   *     use today?" is the most common question this desk gets, and before this the consented read
-   *     could not answer it at all — the customer granted 24h of account access for nothing;
+   *     use today?" is what the FIRST real prod support conversation asked (#2527 §B), and the
+   *     consented read could not answer it at all — the customer granted 24h of account access for
+   *     nothing;
    *   - per DEVICE: the device's NAME and the name of the profile it belongs to. Customers ask by
    *     DEVICE ("macbook-pro") and minutes are accounted per PROFILE, so without this join the
    *     agent holds the number and cannot connect it to what was asked.
@@ -1945,7 +1946,7 @@ object SupportResponder {
    * fields that would turn this from "grounds a support answer" into an exfiltration payload if a
    * session were ever hijacked, and none of them is needed for the questions this desk actually
    * receives. Widen only against a real, recurring question — and remember a `dataAccess=true`
-   * session is refused issue filing precisely because everything here is unscrubable by regex
+   * session is refused issue filing precisely because everything here is unscrubbable by regex
    * (#2454).
    */
   final case class ProfileSummary(
@@ -1965,7 +1966,9 @@ object SupportResponder {
       // blocked by schedule or by an exhausted daily limit while `paused` is false.
       blockedNow: Boolean = false,
       // Why, when `blockedNow` — `Paused` | `Schedule` | `TimeLimit` | `Manual` | `Unmanaged` |
-      // `DefaultDeny`, rendered through `MacBlockReason.asString` rather than a second vocabulary.
+      // `DefaultDeny`: `MacBlockReason.asString`, the enum's canonical name, rather than a
+      // support-only synonym set. `agent.yaml` names exactly these six, so the prompt and this
+      // field cannot drift apart into two vocabularies.
       blockReason: Option[String] = None,
   )
 
@@ -1984,8 +1987,10 @@ object SupportResponder {
       profileCount: Int,
       profiles: List[ProfileSummary],
       devices: List[DeviceSummary] = Nil,
-      // #2665 — the household-LOCAL date the minutes above are for (`daily_reset_tz`), so the agent
-      // states which day it is quoting instead of assuming the customer's "today" is UTC's.
+      // #2665 — the household-LOCAL date the minutes above are for (`daily_reset_tz`), so the
+      // agent states which day it is quoting instead of assuming the customer's "today" is UTC's.
+      // Always `Some` on a successful read; `Option` with a `None` default is the additive-wire
+      // shape (docs/process/wire-contract.md), not a state this endpoint produces.
       date: Option[String] = None,
   )
   object ProfileSummary   {
