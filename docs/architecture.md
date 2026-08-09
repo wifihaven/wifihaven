@@ -111,7 +111,9 @@ The new-household default lives in exactly one place,
 names the column explicitly from it. V61's `block_encrypted_dns … DEFAULT FALSE`
 column default is unchanged and means something different: the value a row gets
 when written by code that does not name the column — image-(N-1) back-compat,
-and the boot backfill that repairs pre-existing households. The curated lists live baked into the agent
+and the boot backfill that repairs pre-existing households.
+
+The curated lists live baked into the agent
 (`openwrt/files/usr/lib/lua/wifihaven/encrypted_dns.lua`), keeping the wire to a
 single boolean. This is the *only* DNS-negative-answer path in the system;
 every other block remains a connection-layer drop.

@@ -80,14 +80,15 @@ object TestDatabase {
       val st = conn.createStatement()
       // #334: replicate Main.ensureDefault so PolicyService.snapshot/decide can read
       // household_settings during tests. Use UTC so DST doesn't perturb existing expectations.
-      // #2643: `block_encrypted_dns` is stamped from the ONE new-household default constant,
-      // exactly as `ensureDefault` does — the template household is a FRESH install, so it must
-      // start where a real fresh install starts. Left implicit it would take V61's column default
-      // (FALSE, the pre-existing-row value) and every spec bootstrapped off this template would be
-      // testing a state no new install is ever in.
+      // #2643: `block_encrypted_dns` and `ambient_gate_enabled` are stamped from the ONE
+      // new-household default constant each, exactly as `ensureDefault` does — the template
+      // household is a FRESH install, so it must start where a real fresh install starts. Left
+      // implicit they would take V61's / V63's column defaults (FALSE, the pre-existing-row value)
+      // and every spec bootstrapped off this template would be testing a state no new install is
+      // ever in.
       st.execute(
-        "INSERT INTO household_settings (id, daily_reset_time, daily_reset_tz, block_encrypted_dns) " +
-          s"VALUES (1, '00:00', 'UTC', ${HouseholdSettings.DefaultBlockEncryptedDns}) ON CONFLICT (id) DO NOTHING",
+        "INSERT INTO household_settings (id, daily_reset_time, daily_reset_tz, block_encrypted_dns, ambient_gate_enabled) " +
+          s"VALUES (1, '00:00', 'UTC', ${HouseholdSettings.DefaultBlockEncryptedDns}, ${HouseholdSettings.DefaultAmbientGateEnabled}) ON CONFLICT (id) DO NOTHING",
       )
       // #1771: replicate Main.scala's startup seed of the global sentinel profile so
       // PolicyService.snapshot can read it during tests. ON CONFLICT DO NOTHING + V59's
@@ -371,13 +372,15 @@ object TestLayers {
           .query[HouseholdId]
           .unique
           .transact(xa)
-      // #2386: seed household B's OWN settings row, mirroring production's atomic creation unit
-      // (HouseholdSeed.insertHousehold). Without it, getForHousehold(hhB) now fails loud (the id=1
-      // fallback that used to leak household #1's settings was removed). All columns default; id
-      // auto-generates (V82).
-      _        <-
-        sql"INSERT INTO household_settings(household_id) VALUES ($hhB) ON CONFLICT (household_id) DO NOTHING".update.run
-          .transact(xa)
+      // #2386: seed household B's OWN settings row. Without it, getForHousehold(hhB) fails loud
+      // (the id=1 fallback that used to leak household #1's settings was removed).
+      // #2643: this used to hand-roll `INSERT INTO household_settings(household_id)` and claim in a
+      // comment that it mirrored production's creation unit. Once a creation-path column stopped
+      // taking its DB default that claim quietly became false, and fixture household B would have
+      // diverged from a production household B in a way no assertion here would have caught. So it
+      // COLLAPSES onto the real primitive instead of restating it — this fixture cannot drift from
+      // production again.
+      _        <- HouseholdSeed.newHouseholdSettingsRow(hhB).transact(xa)
       // profileB is paused so a cross-household leak on the /decision path is observable: if
       // household A's decide ever resolved this row it would BLOCK, but scoped correctly A never
       // finds it and allows.

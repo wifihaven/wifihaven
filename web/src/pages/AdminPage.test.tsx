@@ -241,8 +241,12 @@ describe('AdminPage — block-encrypted-DNS toggle (#1913)', () => {
   it('names the consequence while it is off, and says new networks start on', async () => {
     render(<AdminPage />)
     const note = await screen.findByTestId('block-encrypted-dns-default-note')
-    expect(note.textContent).toMatch(/bypass all filtering/i)
+    expect(note.textContent).toMatch(/bypass site and category blocking/i)
     expect(note.textContent).toMatch(/new networks start with this on/i)
+    // The copy must NOT claim time limits are bypassable — a daily limit is a whole-device drop
+    // that never consults DNS, so it still bites on DoH. Asserted so the overstatement cannot
+    // creep back in.
+    expect(note.textContent).not.toMatch(/time limits/i)
   })
 
   it('explains why it is on once enabled', async () => {
@@ -287,6 +291,26 @@ describe('AdminPage — block-encrypted-DNS toggle (#1913)', () => {
 })
 
 describe('AdminPage — ambient anchor-gate toggle (#2077)', () => {
+  // #2643 — the ambient/idle-traffic gate is now on for new networks too, and its first days run
+  // over an empty learned baseline. The copy has to say the gate is on AND that early numbers are
+  // under-filtered rather than wrong, which is the distinction the flip was conditional on.
+  it('says new networks start on and what the first days look like', async () => {
+    const user = userEvent.setup()
+    render(<AdminPage />)
+    const toggle = await screen.findByTestId('ambient-gate-enabled')
+    expect(screen.getByTestId('ambient-gate-default-note').textContent).toMatch(
+      /new networks start with this on/i,
+    )
+
+    await user.click(toggle)
+
+    await waitFor(() =>
+      expect(screen.getByTestId('ambient-gate-default-note').textContent).toMatch(
+        /needs a few days of traffic to learn/i,
+      ),
+    )
+  })
+
   it('renders the toggle reflecting the stored setting (off by default)', async () => {
     render(<AdminPage />)
     const toggle = await screen.findByTestId('ambient-gate-enabled') as HTMLInputElement

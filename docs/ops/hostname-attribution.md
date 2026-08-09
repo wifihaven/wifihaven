@@ -149,9 +149,17 @@ When `host.type` is bare-IP and you want to know why:
 
 4. **Does the device send `_dns.resolver.arpa` SVCB queries or have a
    ton of unmapped Cloudflare IPs?** Cause #3 (DoH / Private Relay).
-   Mitigation: turn off encrypted DNS on the device (iOS Settings →
-   iCloud → Private Relay; macOS / Android equivalents), or wait for
-   the DoH-blocking feature.
+   Mitigation: turn on **Block encrypted DNS & relays** in Settings
+   (household-wide; shipped in
+   [#1911](https://github.com/wifihaven/wifihaven/issues/1911) /
+   [#1912](https://github.com/wifihaven/wifihaven/issues/1912)) — the
+   router then answers NXDOMAIN for the relay/DoH hostnames and relay
+   setup fails. Households created after
+   [#2643](https://github.com/wifihaven/wifihaven/issues/2643) already
+   have it on, so if this is the cause on such a household, check
+   whether the setting was turned off. Failing that, turn off encrypted
+   DNS on the device itself (iOS Settings → iCloud → Private Relay;
+   macOS / Android equivalents).
 
 5. **None of the above?** That's worth investigating — file an issue
    with the MAC, the bare IP, the dnsmasq log for that window, and

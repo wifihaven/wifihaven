@@ -202,7 +202,10 @@ object AmbientBaselineSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostg
         _   <- hsr.update(
           HouseholdId.Default,
           s0.copy(
-            ambientGateEnabled = true,
+            // #2643: a fresh install now starts with the gate ON, so the round-trip this pins is
+            // ON→OFF. The direction reversed; what it asserts (the knob persists, and the V63
+            // THRESHOLDS are untouched by #2643) did not.
+            ambientGateEnabled = false,
             ambientIsolationMaxHosts = 3,
             ambientMinIsolatedDays = 4,
             ambientLearningWindowDays = 21,
@@ -210,11 +213,11 @@ object AmbientBaselineSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostg
         )
         s1  <- hsr.getForHousehold(HouseholdId.Default)
       } yield assertTrue(
-        !s0.ambientGateEnabled,
+        s0.ambientGateEnabled,
         s0.ambientIsolationMaxHosts == 2,
         s0.ambientMinIsolatedDays == 3,
         s0.ambientLearningWindowDays == 14,
-        s1.ambientGateEnabled,
+        !s1.ambientGateEnabled,
         s1.ambientIsolationMaxHosts == 3,
         s1.ambientMinIsolatedDays == 4,
         s1.ambientLearningWindowDays == 21,
@@ -232,7 +235,14 @@ object AmbientBaselineSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostg
         atl <- ZIO.service[AppTimeLimitRepo]
         trr <- ZIO.service[TrafficReportRepo]
         s0  <- hsr.getForHousehold(HouseholdId.Default)
-        _   <- hsr.update(HouseholdId.Default, s0.copy(dailyResetTz = ZoneOffset.UTC))
+        // #2643: the gate is stamped OFF explicitly rather than inherited from the seed, which now
+        // starts ON. Without this the planted learned entries below WOULD take effect and the test
+        // would stop being about the gate-off status quo at all — it would pass or fail for an
+        // unrelated reason.
+        _   <- hsr.update(
+          HouseholdId.Default,
+          s0.copy(dailyResetTz = ZoneOffset.UTC, ambientGateEnabled = false),
+        )
         kid <- TestLayers.seedKidsProfile(pr)
         _   <- TestLayers.seedDevice(dr, kidMac, "kid-ipad", kid)
         rid <- seedRouterRow

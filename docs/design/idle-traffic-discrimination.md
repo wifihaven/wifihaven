@@ -225,7 +225,7 @@ API (additive request fields, defaults preserve current behavior):
 
 | column | default | meaning |
 |---|---|---|
-| `ambient_gate_enabled` | `false` | master switch for the anchor gate (learning always runs so the operator can inspect what *would* be ambient before enabling) |
+| `ambient_gate_enabled` | `false` column default; **`true` for a new household** since [#2643](https://github.com/wifihaven/wifihaven/issues/2643) | master switch for the anchor gate (learning always runs regardless). See *New-household default* below — the two values are not a contradiction, they answer different questions |
 | `ambient_isolation_max_hosts` | `2` | span diversity ≤ this ⇒ "isolated" for learning |
 | `ambient_min_isolated_days` | `3` | distinct isolated days before a host becomes ambient |
 | `ambient_learning_window_days` | `14` | trailing window for day counts |
@@ -284,6 +284,39 @@ alone in a window is alone regardless of span width). The gate composes with
    Clock, no repo mocks.
 3. Operator inspects `GET /api/presence/ambient-hosts` on prod after ~3 days
    of learning, then flips `ambient_gate_enabled`.
+
+### New-household default (#2643) {#new-household-default}
+
+Step 3 above describes the *rollout* for the household that already existed
+when this shipped. It is not what a household created after
+[#2643](https://github.com/wifihaven/wifihaven/issues/2643) does: those start
+with `ambient_gate_enabled = true`, because the inspect-then-enable step
+assumes an operator who calls API endpoints, and leaving the gate off in the
+meantime means an idle device's background chatter reads as screen time — the
+[#2274](https://github.com/wifihaven/wifihaven/issues/2274) phantom-usage shape.
+Existing households were **not** backfilled: their screen-time figures are
+numbers an operator has been reading, so changing them stays their call.
+
+V63's `DEFAULT FALSE` column default is unchanged and answers a different
+question — what a row gets when written by code that does not name the column
+(image-(N-1) back-compat, and the boot backfill that repairs pre-existing
+households). The new-household default lives in one place,
+`HouseholdSettings.DefaultAmbientGateEnabled`, named explicitly by
+`HouseholdSeed.newHouseholdSettingsRow` and
+`HouseholdSettingsRepoLive.ensureDefault`.
+
+**Why default-on is safe with no learned baseline**, which is the state every
+new household is in for its first days (3 isolated days inside a 14-day
+window): the learned set appears in `ambientGatedRowsWithDropCount` exactly
+once, as the negated `contains` in `isHostAnchor`, so growing it can only ever
+drop *more*. An empty set is therefore the conservative end of the range, not a
+wrong answer that learning later corrects — the gate discounts less and
+self-activates as days accrue. What stays live on an empty set is the two
+code-constant tiers that need no learning at all: the [#2177](#2177-residual)
+`InfraHosts.cloudBackground` class and the non-FQDN byte floor. So a new
+household gets wakeup-burst suppression immediately and the learned tier later,
+without a wrong interval in between. Pinned in `AmbientEmptyBaselineSpec` —
+that suite is the reason this default is what it is.
 
 ## #2177 — residual phantom after rollout: the co-occurring-burst gap {#2177-residual}
 
