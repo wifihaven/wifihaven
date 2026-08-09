@@ -954,11 +954,12 @@ final case class SupportResponder(
         extensionMinutes = st.extensionMinutes,
         remainingMinutes = st.remainingMinutes,
         blockedNow = st.blocked,
-        // `MacBlockReason.asString` — the enum's canonical name, the same string the
-        // `block_reason` DB column stores (`TypeMeta.scala`). NOT a support-only synonym set, and
-        // NOT the router wire either: `MacBlockReason` also carries `wireKind` (`time_limit`,
-        // `unmanaged_mac`) for the agent-facing wire and `jsonKind` for SPA JSON, so do not read
-        // this field as matching a drop event's reason string.
+        // `MacBlockReason.asString` — the enum's own case name (`TimeLimit`), which is exactly
+        // what `agent.yaml` tells the agent to expect, so the prompt and this field cannot drift
+        // into two vocabularies. It is NOT either wire tag: `MacBlockReason` separately carries
+        // `jsonKind` (`timeLimit` — the snapshot's JSON kind tag) and `wireKind` (`time_limit`,
+        // `unmanaged_mac` — `asWire`/`fromWire`, and the block page's `reasonClass` in
+        // `BlockedRoutes`). Do not read this field as matching either of those.
         blockReason = st.blockReason.map(MacBlockReason.asString),
       ),
     )
@@ -1966,9 +1967,9 @@ object SupportResponder {
       // blocked by schedule or by an exhausted daily limit while `paused` is false.
       blockedNow: Boolean = false,
       // Why, when `blockedNow` — `Paused` | `Schedule` | `TimeLimit` | `Manual` | `Unmanaged` |
-      // `DefaultDeny`: `MacBlockReason.asString`, the enum's canonical name, rather than a
-      // support-only synonym set. `agent.yaml` names exactly these six, so the prompt and this
-      // field cannot drift apart into two vocabularies.
+      // `DefaultDeny` — `MacBlockReason.asString`, the enum's own case names. `agent.yaml` names
+      // exactly these six, so the prompt and this field stay one vocabulary. Distinct from the two
+      // wire tags (`jsonKind` / `wireKind`); see the note at the `blockReason` assignment.
       blockReason: Option[String] = None,
   )
 
