@@ -13,6 +13,35 @@ import java.security.MessageDigest
 import java.time.{DayOfWeek, Instant, LocalDate}
 import java.util.concurrent.atomic.AtomicReference
 
+/**
+ * #2652: carries everything [[PolicyService.decideDetailed]] resolved on its way to a per-host
+ * verdict, so a caller that needs more than the wire response does not have to read it all a second
+ * time.
+ *
+ * `decide` already resolves the device against the household, loads its profile, reads the
+ * household settings and computes the profile's canonical [[ProfileDayState]] — all of which the
+ * block page ([[wifihaven.api.routes.BlockedRoutes]]) also wants. It used to re-read every one of
+ * them after calling `decide`, which is both a §single-source-of-truth violation (two readers of
+ * the same quantity, free to disagree) and the reason `GET /api/blocked` took 12-16s in prod: the
+ * day-state computation is the expensive part and it ran twice per block-page load.
+ *
+ *   - `response` — the unchanged per-host verdict. `decide` is exactly
+ *     `decideDetailed(…).response`.
+ *   - `profile` — the device's profile row, `None` when the MAC is unknown to this household, has
+ *     no profile assignment, or its profile row is missing.
+ *   - `dayState` — the profile's canonical day state, from the SAME `TimeStatusService.todaysState`
+ *     call the verdict was derived from. `None` whenever `profile` is `None` — there is nothing to
+ *     compute a day state for. Note this is by convention, not by construction: the profile row and
+ *     the day state are two separate `profileRepo.findById` reads, so a profile deleted between
+ *     them yields `profile = Some, dayState = None`. Harmless for the one consumer (the block page
+ *     just omits the minute counts), but do not code against the pairing as an invariant.
+ */
+final case class PolicyDecision(
+    response: RouterDecisionResponse,
+    profile: Option[Profile],
+    dayState: Option[ProfileDayState],
+)
+
 trait PolicyService {
 
   /**
@@ -31,7 +60,23 @@ trait PolicyService {
   // rows drive the snapshot, not the shared category content.
   def snapshot(household: HouseholdId): Task[PolicySnapshot]
   def renderBlocklist(household: HouseholdId, id: BlocklistId): Task[Option[(ETag, String)]]
-  def decide(household: HouseholdId, mac: String, hostname: String): Task[RouterDecisionResponse]
+
+  /**
+   * #2652: the per-host verdict PLUS what was resolved to reach it — see [[PolicyDecision]]. This
+   * is the primitive; [[decide]] is a projection of it. A caller that wants the profile or the day
+   * state alongside the verdict MUST take them from here rather than re-reading them, or the two
+   * readings can disagree (and the second reading is not cheap: it is a whole-day presence
+   * aggregation).
+   */
+  def decideDetailed(household: HouseholdId, mac: String, hostname: String): Task[PolicyDecision]
+
+  /** The wire verdict alone — the router-facing projection of [[decideDetailed]]. */
+  final def decide(
+      household: HouseholdId,
+      mac: String,
+      hostname: String,
+  ): Task[RouterDecisionResponse] =
+    decideDetailed(household, mac, hostname).map(_.response)
 
   // #2107: convenience overloads defaulting to `HouseholdId.Default` (the single backfill
   // household). These are for the paths with no router token / no household context yet — the
@@ -914,11 +959,11 @@ class PolicyServiceLive(
    * would be reported (and, on agents that consult this endpoint, enforced) as blocked while
    * paused.
    */
-  def decide(
+  def decideDetailed(
       household: HouseholdId,
       mac: String,
       hostname: String,
-  ): Task[RouterDecisionResponse] =
+  ): Task[PolicyDecision] =
     for {
       // #2107: scope the settings + device lookup to the router's household. The device's
       // `profileId` (resolved below) is therefore already this household's profile, so the
@@ -933,10 +978,16 @@ class PolicyServiceLive(
         .map(_.find(_.mac.value.equalsIgnoreCase(mac)))
       result <- device.flatMap(_.profileId) match {
         case None      =>
+          // #2652: no profile assignment ⇒ nothing to carry. `dayState` is `None` rather than an
+          // empty state so a consumer can tell "no profile" from "profile with zero minutes".
           ZIO.succeed(
-            RouterDecisionResponse(
-              ConnectionDecision.Allow,
-              BlockReason.asWire(BlockReason.NoProfile),
+            PolicyDecision(
+              RouterDecisionResponse(
+                ConnectionDecision.Allow,
+                BlockReason.asWire(BlockReason.NoProfile),
+                None,
+              ),
+              None,
               None,
             ),
           )
@@ -1095,7 +1146,12 @@ class PolicyServiceLive(
                         }
                   }
             }
-          } yield res
+            // #2652: hand back the profile row and the day state this verdict was derived from, so
+            // the block page renders `profileName` / `usedMinutes` off the SAME reading rather than
+            // recomputing them (a second whole-day presence aggregation, and a second chance to
+            // disagree). `state` is `TimeStatusService.todaysState`'s own Option — `None` for a
+            // profile row that vanished mid-decision, which is also when `pOpt` is `None`.
+          } yield PolicyDecision(res, pOpt, state)
       }
     } yield result
 

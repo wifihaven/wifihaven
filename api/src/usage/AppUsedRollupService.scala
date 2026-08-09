@@ -151,38 +151,65 @@ class AppUsedRollupServiceLive(
       profileRepo.findById(profileId).flatMap {
         case None    => ZIO.succeed(Map.empty[AppId, Int])
         case Some(p) =>
-          for {
-            atls    <- appTimeLimitRepo.listForProfile(profileId)
-            devices <- deviceRepo.listForProfile(profileId)
-            macs = devices.map(_.mac)
-            raw     <- rolled.values.iterator.map(_.rolledThrough).minOption match {
-              case Some(watermark) =>
-                trafficRepo.listPresenceRowsSince(household, macs, date, watermark)
-              case None            => trafficRepo.listPresenceRows(household, macs, date)
-            }
-            // #2077: gate the live slice the same way the rollup write path gates its input, so
-            // rolled + tail compose over one active-minute definition. Gating only the slice can
-            // transiently drop an ambient-only tail of a session whose anchor is already rolled —
-            // bounded (self-heals on the next whole-day tick) and only ever removes minutes.
-            ambient <- ambientRepo.gateFor(settings, today)
-            presence = TimeStatusService.gatedPresence(atls, raw, settings, ambient)
-          } yield {
-            // #1676: the dropped-session counter is emitted from the
-            // periodic TimeUsedRollupJob tick (one clean cadence), NOT from
-            // this hot read path — re-emitting on every status read would
-            // inflate the series with read frequency instead of reflecting
-            // data state, defeating rate-alerting.
-            val liveSecs = TimeStatusService.appSecondsByApp(p, atls, presence, settings)
-            (rolled.keySet ++ liveSecs.keySet).iterator.flatMap { id =>
-              val secs =
-                rolled.get(id).map(_.engagedSeconds).getOrElse(0L) + liveSecs.getOrElse(id, 0L)
-              val mins = (secs / 60L).toInt
-              if mins != 0 then Some(id -> mins) else None
-            }.toMap
+          appTimeLimitRepo.listForProfile(profileId).flatMap {
+            // #2652: a profile with NO app assignments has no per-app minutes to compute — the live
+            // aggregation below is empty by construction (`ProfileAppDispositions.from(Nil)` yields
+            // no cap groups, so `appSecondsByApp` returns an empty map whatever presence rows it is
+            // handed). Skipping the presence read is therefore output-identical, and it is the
+            // difference between a whole-day `traffic_reports` scan and no DB touch at all: on the
+            // `rolled.isEmpty` branch below the fallback is `listPresenceRows` for the ENTIRE day,
+            // and `app_used_daily` is empty for exactly these profiles (no assignments ⇒ nothing to
+            // roll). Prod 2026-08-08: three of the household's profiles have zero rows in
+            // `app_policy_assignments` and were scanning 191k / 136k / 8k rows per read to build an
+            // empty map — the dominant cost of `GET /api/blocked` (#2652).
+            //
+            // `rolled` can still be non-empty here (an assignment removed after the last rollup
+            // tick), so it is projected exactly as the full path would — this is a skipped READ, not
+            // a skipped result.
+            case Nil  => ZIO.succeed(minutesFrom(rolled, Map.empty))
+            case atls =>
+              for {
+                devices <- deviceRepo.listForProfile(profileId)
+                macs = devices.map(_.mac)
+                raw     <- rolled.values.iterator.map(_.rolledThrough).minOption match {
+                  case Some(watermark) =>
+                    trafficRepo.listPresenceRowsSince(household, macs, date, watermark)
+                  case None            => trafficRepo.listPresenceRows(household, macs, date)
+                }
+                // #2077: gate the live slice the same way the rollup write path gates its input, so
+                // rolled + tail compose over one active-minute definition. Gating only the slice can
+                // transiently drop an ambient-only tail of a session whose anchor is already rolled
+                // — bounded (self-heals on the next whole-day tick) and only ever removes minutes.
+                ambient <- ambientRepo.gateFor(settings, today)
+                presence = TimeStatusService.gatedPresence(atls, raw, settings, ambient)
+              } yield {
+                // #1676: the dropped-session counter is emitted from the
+                // periodic TimeUsedRollupJob tick (one clean cadence), NOT from
+                // this hot read path — re-emitting on every status read would
+                // inflate the series with read frequency instead of reflecting
+                // data state, defeating rate-alerting.
+                val liveSecs = TimeStatusService.appSecondsByApp(p, atls, presence, settings)
+                minutesFrom(rolled, liveSecs)
+              }
           }
       }
     }
   }
+
+  /**
+   * #2652: the single `rolled + live ⇒ whole minutes` projection, so the skip-the-read branch above
+   * and the full path cannot shape their result differently. Floor-to-minutes happens once, on the
+   * sum, exactly as before; a zero-minute app is omitted.
+   */
+  private def minutesFrom(
+      rolled: Map[AppId, RolledAppDay],
+      liveSecs: Map[AppId, Long],
+  ): Map[AppId, Int] =
+    (rolled.keySet ++ liveSecs.keySet).iterator.flatMap { id =>
+      val secs = rolled.get(id).map(_.engagedSeconds).getOrElse(0L) + liveSecs.getOrElse(id, 0L)
+      val mins = (secs / 60L).toInt
+      if mins != 0 then Some(id -> mins) else None
+    }.toMap
 }
 
 object AppUsedRollupService {

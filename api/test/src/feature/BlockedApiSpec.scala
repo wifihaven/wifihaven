@@ -42,32 +42,19 @@ object BlockedApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
       nsr    <- ZIO.service[NamedScheduleRepo]
       ref    <- Ref.make(dt)
       clk = new Clock.TestClock(ref)
-    } yield (
-      PolicyServiceLive(
-        pr,
-        hsr,
-        tlr,
-        atlr,
-        dr,
-        blr,
-        trRepo,
-        er,
-        ar,
-        clk,
-        namedScheduleRepo = nsr,
-      ): PolicyService,
-      clk: Clock,
-    )
-
-  private def makeTimeStatus =
-    for {
-      pr   <- ZIO.service[ProfileRepo]
-      tlr  <- ZIO.service[TimeLimitRepo]
-      atlr <- ZIO.service[AppTimeLimitRepo]
-      dr   <- ZIO.service[DeviceRepo]
-      trr  <- ZIO.service[TrafficReportRepo]
-      er   <- ZIO.service[TimeExtensionRepo]
-    } yield new TimeStatusServiceLive(pr, tlr, atlr, dr, trr, er): TimeStatusService
+    } yield PolicyServiceLive(
+      pr,
+      hsr,
+      tlr,
+      atlr,
+      dr,
+      blr,
+      trRepo,
+      er,
+      ar,
+      clk,
+      namedScheduleRepo = nsr,
+    ): PolicyService
 
   private def seedRouter: ZIO[RouterRepo, Throwable, RouterId] =
     ZIO.serviceWithZIO[RouterRepo] { rr =>
@@ -124,22 +111,14 @@ object BlockedApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
   def spec = suite("GET /api/blocked")(
     test("unknown MAC → blocked:false (no enrollment leak)") {
       for {
-        _     <- cleanDb
-        pr    <- ZIO.service[ProfileRepo]
-        dr    <- ZIO.service[DeviceRepo]
-        blr   <- ZIO.service[BlocklistRepo]
-        psClk <- makePsAt(TestClock.schoolDayAfternoon)
-        (ps, clk) = psClk
-        tss <- makeTimeStatus
-        hsr <- ZIO.service[HouseholdSettingsRepo]
+        _   <- cleanDb
+        pr  <- ZIO.service[ProfileRepo]
+        dr  <- ZIO.service[DeviceRepo]
+        blr <- ZIO.service[BlocklistRepo]
+        ps  <- makePsAt(TestClock.schoolDayAfternoon)
         routes = BlockedRoutes.routes(
           ps,
-          dr,
-          pr,
           blr,
-          tss,
-          hsr,
-          clk,
           BlockPageHousehold.defaultOnly,
           RateLimiter.allowAll,
           RateLimiter.allowAll,
@@ -151,25 +130,17 @@ object BlockedApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
     },
     test("paused profile → blocked:true, reasonClass=paused, profileName populated") {
       for {
-        _     <- cleanDb
-        pr    <- ZIO.service[ProfileRepo]
-        dr    <- ZIO.service[DeviceRepo]
-        blr   <- ZIO.service[BlocklistRepo]
-        kid   <- TestLayers.seedKidsProfile(pr)
-        _     <- pr.setPaused(kid, true)
-        _     <- TestLayers.seedDevice(dr, "aa:bb:cc:11:22:33", "kid-ipad", kid)
-        psClk <- makePsAt(TestClock.schoolDayAfternoon)
-        (ps, clk) = psClk
-        tss <- makeTimeStatus
-        hsr <- ZIO.service[HouseholdSettingsRepo]
+        _   <- cleanDb
+        pr  <- ZIO.service[ProfileRepo]
+        dr  <- ZIO.service[DeviceRepo]
+        blr <- ZIO.service[BlocklistRepo]
+        kid <- TestLayers.seedKidsProfile(pr)
+        _   <- pr.setPaused(kid, true)
+        _   <- TestLayers.seedDevice(dr, "aa:bb:cc:11:22:33", "kid-ipad", kid)
+        ps  <- makePsAt(TestClock.schoolDayAfternoon)
         routes = BlockedRoutes.routes(
           ps,
-          dr,
-          pr,
           blr,
-          tss,
-          hsr,
-          clk,
           BlockPageHousehold.defaultOnly,
           RateLimiter.allowAll,
           RateLimiter.allowAll,
@@ -182,24 +153,16 @@ object BlockedApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
     },
     test("active schedule → reasonClass=schedule, NO expiresAt/end-time leak") {
       for {
-        _     <- cleanDb
-        pr    <- ZIO.service[ProfileRepo]
-        dr    <- ZIO.service[DeviceRepo]
-        blr   <- ZIO.service[BlocklistRepo]
-        kid   <- TestLayers.seedKidsProfile(pr)
-        _     <- TestLayers.seedDevice(dr, "aa:bb:cc:11:22:33", "kid-ipad", kid)
-        psClk <- makePsAt(TestClock.bedtime)
-        (ps, clk) = psClk
-        tss <- makeTimeStatus
-        hsr <- ZIO.service[HouseholdSettingsRepo]
+        _   <- cleanDb
+        pr  <- ZIO.service[ProfileRepo]
+        dr  <- ZIO.service[DeviceRepo]
+        blr <- ZIO.service[BlocklistRepo]
+        kid <- TestLayers.seedKidsProfile(pr)
+        _   <- TestLayers.seedDevice(dr, "aa:bb:cc:11:22:33", "kid-ipad", kid)
+        ps  <- makePsAt(TestClock.bedtime)
         routes = BlockedRoutes.routes(
           ps,
-          dr,
-          pr,
           blr,
-          tss,
-          hsr,
-          clk,
           BlockPageHousehold.defaultOnly,
           RateLimiter.allowAll,
           RateLimiter.allowAll,
@@ -211,22 +174,14 @@ object BlockedApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
     },
     test("malformed mac → blocked:false (no error leakage)") {
       for {
-        _     <- cleanDb
-        pr    <- ZIO.service[ProfileRepo]
-        dr    <- ZIO.service[DeviceRepo]
-        blr   <- ZIO.service[BlocklistRepo]
-        psClk <- makePsAt(TestClock.schoolDayAfternoon)
-        (ps, clk) = psClk
-        tss <- makeTimeStatus
-        hsr <- ZIO.service[HouseholdSettingsRepo]
+        _   <- cleanDb
+        pr  <- ZIO.service[ProfileRepo]
+        dr  <- ZIO.service[DeviceRepo]
+        blr <- ZIO.service[BlocklistRepo]
+        ps  <- makePsAt(TestClock.schoolDayAfternoon)
         routes = BlockedRoutes.routes(
           ps,
-          dr,
-          pr,
           blr,
-          tss,
-          hsr,
-          clk,
           BlockPageHousehold.defaultOnly,
           RateLimiter.allowAll,
           RateLimiter.allowAll,
@@ -242,18 +197,10 @@ object BlockedApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         blr    <- ZIO.service[BlocklistRepo]
         adults <- TestLayers.seedAdultsProfile(pr)
         _      <- TestLayers.seedDevice(dr, "aa:bb:cc:11:22:55", "ipad", adults)
-        psClk  <- makePsAt(TestClock.schoolDayAfternoon)
-        (ps, clk) = psClk
-        tss <- makeTimeStatus
-        hsr <- ZIO.service[HouseholdSettingsRepo]
+        ps     <- makePsAt(TestClock.schoolDayAfternoon)
         routes = BlockedRoutes.routes(
           ps,
-          dr,
-          pr,
           blr,
-          tss,
-          hsr,
-          clk,
           BlockPageHousehold.defaultOnly,
           RateLimiter.allowAll,
           RateLimiter.allowAll,
@@ -274,13 +221,17 @@ object BlockedApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
             id: BlocklistId,
         ): Task[Option[(ETag, String)]] =
           ZIO.dieMessage("renderBlocklist unused in this test")
-        def decide(
+        def decideDetailed(
             household: HouseholdId,
             mac: String,
             hostname: String,
-        ): Task[RouterDecisionResponse] =
+        ): Task[PolicyDecision] =
           ZIO.succeed(
-            RouterDecisionResponse(ConnectionDecision.Block, "future_app:slack", None),
+            PolicyDecision(
+              RouterDecisionResponse(ConnectionDecision.Block, "future_app:slack", None),
+              None,
+              None,
+            ),
           )
         def invalidateMany(households: Iterable[HouseholdId]): UIO[Unit] = ZIO.unit
         def reevaluate: UIO[Unit]                                        = ZIO.unit
@@ -292,17 +243,9 @@ object BlockedApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         pr  <- ZIO.service[ProfileRepo]
         dr  <- ZIO.service[DeviceRepo]
         blr <- ZIO.service[BlocklistRepo]
-        tss <- makeTimeStatus
-        hsr <- ZIO.service[HouseholdSettingsRepo]
-        clk <- ZIO.service[Clock]
         routes = BlockedRoutes.routes(
           stubPolicy,
-          dr,
-          pr,
           blr,
-          tss,
-          hsr,
-          clk,
           BlockPageHousehold.defaultOnly,
           RateLimiter.allowAll,
           RateLimiter.allowAll,
@@ -328,12 +271,18 @@ object BlockedApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
             id: BlocklistId,
         ): Task[Option[(ETag, String)]] =
           ZIO.dieMessage("renderBlocklist unused in this test")
-        def decide(
+        def decideDetailed(
             household: HouseholdId,
             mac: String,
             hostname: String,
-        ): Task[RouterDecisionResponse] =
-          ZIO.succeed(RouterDecisionResponse(ConnectionDecision.Block, wire, None))
+        ): Task[PolicyDecision] =
+          ZIO.succeed(
+            PolicyDecision(
+              RouterDecisionResponse(ConnectionDecision.Block, wire, None),
+              None,
+              None,
+            ),
+          )
         def invalidateMany(households: Iterable[HouseholdId]): UIO[Unit] = ZIO.unit
         def reevaluate: UIO[Unit]                                        = ZIO.unit
         def setPublisher(publisher: wifihaven.api.policy.PolicySnapshotPublisher): UIO[Unit] =
@@ -364,18 +313,10 @@ object BlockedApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         pr      <- ZIO.service[ProfileRepo]
         dr      <- ZIO.service[DeviceRepo]
         blr     <- ZIO.service[BlocklistRepo]
-        tss     <- makeTimeStatus
-        hsr     <- ZIO.service[HouseholdSettingsRepo]
-        clk     <- ZIO.service[Clock]
         results <- ZIO.foreach(cases) { case (wire, expected) =>
           val routes = BlockedRoutes.routes(
             stub(wire),
-            dr,
-            pr,
             blr,
-            tss,
-            hsr,
-            clk,
             BlockPageHousehold.defaultOnly,
             RateLimiter.allowAll,
             RateLimiter.allowAll,
@@ -403,19 +344,11 @@ object BlockedApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         _   <- TestLayers.seedDevice(dr, "aa:bb:cc:11:22:44", "kid-ipad", kid)
         rid <- seedRouter
         today = TestClock.bedtime.toLocalDate
-        _     <- seedTraffic(rid, "aa:bb:cc:11:22:44", "minecraft.net", today, 45)
-        psClk <- makePsAt(TestClock.bedtime)
-        (ps, clk) = psClk
-        tss <- makeTimeStatus
-        hsr <- ZIO.service[HouseholdSettingsRepo]
+        _  <- seedTraffic(rid, "aa:bb:cc:11:22:44", "minecraft.net", today, 45)
+        ps <- makePsAt(TestClock.bedtime)
         routes = BlockedRoutes.routes(
           ps,
-          dr,
-          pr,
           blr,
-          tss,
-          hsr,
-          clk,
           BlockPageHousehold.defaultOnly,
           RateLimiter.allowAll,
           RateLimiter.allowAll,
@@ -430,22 +363,14 @@ object BlockedApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
     },
     test("unknown MAC → usage fields are None (no enrollment leak)") {
       for {
-        _     <- cleanDb
-        pr    <- ZIO.service[ProfileRepo]
-        dr    <- ZIO.service[DeviceRepo]
-        blr   <- ZIO.service[BlocklistRepo]
-        psClk <- makePsAt(TestClock.schoolDayAfternoon)
-        (ps, clk) = psClk
-        tss <- makeTimeStatus
-        hsr <- ZIO.service[HouseholdSettingsRepo]
+        _   <- cleanDb
+        pr  <- ZIO.service[ProfileRepo]
+        dr  <- ZIO.service[DeviceRepo]
+        blr <- ZIO.service[BlocklistRepo]
+        ps  <- makePsAt(TestClock.schoolDayAfternoon)
         routes = BlockedRoutes.routes(
           ps,
-          dr,
-          pr,
           blr,
-          tss,
-          hsr,
-          clk,
           BlockPageHousehold.defaultOnly,
           RateLimiter.allowAll,
           RateLimiter.allowAll,
