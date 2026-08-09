@@ -121,6 +121,11 @@ object PressResponderSpec
   ): String =
     s"""{"from":${from.toJson},"subject":${subject.toJson},"text":${text.toJson},"messageId":"<abc@mail>"}"""
 
+  // #2442: the same envelope plus the Worker's loop-guard verdict. Additive field — a pre-#2442
+  // Worker simply omits it (see the "no marker" case below).
+  private def loopBody(from: String, text: String, marker: String): String =
+    s"""{"from":${from.toJson},"subject":"Automatic reply","text":${text.toJson},"messageId":"<abc@mail>","loopGuard":${marker.toJson}}"""
+
   // The Worker signs the RAW body with HMAC-SHA256 hex — reuse the shared primitive.
   private def sign(body: String): String = SupportService.hmacSha256Hex(WebhookSecret, body)
 
@@ -143,6 +148,17 @@ object PressResponderSpec
       .counter("agent_prompt_version_total")
       .tagged("channel", "press")
       .tagged("state", state)
+      .value
+      .map(_.count)
+
+  /**
+   * #2442 — the loop-guard series, read as a DELTA for the same reason as above (JVM-global
+   * counter).
+   */
+  private def loopGuardCount(marker: String): UIO[Double] =
+    zio.metrics.Metric
+      .counter("press_loop_guard_total")
+      .tagged("marker", marker)
       .value
       .map(_.count)
 
@@ -653,6 +669,81 @@ object PressResponderSpec
         status     <- postInbound(routes, noFrom, Some(sign(noFrom)))
         dispatches <- stubs.dispatch.dispatches.get
       } yield assertTrue(status == Status.Ok, dispatches.isEmpty)
+    },
+    test("#2442: an envelope the Worker flagged auto-submitted dispatches NOTHING and is metered") {
+      for {
+        _                  <- cleanDb
+        (routes, stubs, _) <- makeRoutes(liveCfg)
+        // The loop shape: our own reply to press@ triggers a newsroom out-of-office, which the
+        // Cloudflare Worker classifies (deploy/press-worker/src/loop-guard.ts) and stamps onto the
+        // envelope. The responder must not open a session — a dispatched session emails another
+        // reply, which draws another out-of-office.
+        body = loopBody("ooo@example-paper.test", "I am out of the office", "auto_submitted")
+        before     <- loopGuardCount("auto_submitted")
+        status     <- postInbound(routes, body, Some(sign(body)))
+        after      <- loopGuardCount("auto_submitted")
+        dispatches <- stubs.dispatch.dispatches.get
+        emails     <- stubs.emails.get
+      } yield assertTrue(
+        // Still 200 — the Worker must never retry-storm a message we deliberately dropped.
+        status == Status.Ok,
+        dispatches.isEmpty,
+        emails.isEmpty,
+        // #2265: the skip is NOT silent. A journalist misclassified as an autoresponder shows up
+        // here, on a bounded marker label (never per-sender).
+        after - before == 1.0,
+      )
+    },
+    test("#2442: every marker the Worker can send is skipped and metered under its own label") {
+      ZIO
+        .foreach(
+          List(
+            "auto_submitted",
+            "precedence",
+            "x_auto_response_suppress",
+            "list_id",
+            "null_return_path",
+          ),
+        ) { marker =>
+          for {
+            _                  <- cleanDb
+            (routes, stubs, _) <- makeRoutes(liveCfg)
+            body = loopBody("bounce@example-paper.test", "delivery failed", marker)
+            before     <- loopGuardCount(marker)
+            status     <- postInbound(routes, body, Some(sign(body)))
+            after      <- loopGuardCount(marker)
+            dispatches <- stubs.dispatch.dispatches.get
+          } yield assertTrue(status == Status.Ok, dispatches.isEmpty, after - before == 1.0)
+        }
+        .map(_.reduce(_ && _))
+    },
+    test(
+      "#2442: an unrecognized marker value still skips, metered as `unknown` (never unbounded)",
+    ) {
+      for {
+        _                  <- cleanDb
+        (routes, stubs, _) <- makeRoutes(liveCfg)
+        // A newer Worker sending a marker this build doesn't know must still fail CLOSED (skip),
+        // and the label must collapse to the bounded `unknown` — the Worker cannot mint new series.
+        body = loopBody("weird@example-paper.test", "hello", "some_future_marker")
+        before     <- loopGuardCount("unknown")
+        status     <- postInbound(routes, body, Some(sign(body)))
+        after      <- loopGuardCount("unknown")
+        dispatches <- stubs.dispatch.dispatches.get
+      } yield assertTrue(status == Status.Ok, dispatches.isEmpty, after - before == 1.0)
+    },
+    test("#2442: a real journalist's message (no marker, empty marker) still dispatches") {
+      for {
+        _                  <- cleanDb
+        (routes, stubs, _) <- makeRoutes(liveCfg)
+        // No field at all — the pre-#2442 Worker's envelope, and every human message.
+        plain = payload("reporter@example-paper.test", "Can I get a comment?")
+        // An explicitly EMPTY marker (a Worker that classified and found nothing) is not a skip.
+        empty = loopBody("reporter2@example-paper.test", "Second question", "")
+        s1         <- postInbound(routes, plain, Some(sign(plain)))
+        s2         <- postInbound(routes, empty, Some(sign(empty)))
+        dispatches <- stubs.dispatch.dispatches.get
+      } yield assertTrue(s1 == Status.Ok, s2 == Status.Ok, dispatches.size == 2)
     },
     test("a failed outbound email surfaces as 500, not a false 200") {
       for {
