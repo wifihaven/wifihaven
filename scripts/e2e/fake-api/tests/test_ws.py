@@ -158,16 +158,17 @@ async def test_reset_keeps_a_live_ws_channel(client, auth_headers):
     `reset()` used to clear `ws_connections` outright, on the premise that the
     per-function `router` fixture restores the VM to a **ws-OFF** base snapshot,
     so anything left in the set had to be a dead socket. #2608 made ws the
-    shipped default, which retired that premise: the restored VM brings its
-    sidecar up on its own, and whether its connect lands before or after the
-    fixture's reset is a race. Losing that race dropped a LIVE channel from the
-    set, so the next `POST /test/snapshot` pushed to nobody — and with the
-    agent's HTTP poll dormant on a healthy link (#2037) nothing delivered the
-    etag, which is the Gate-2 `wait_for_etag_served` timeout in #2642.
+    shipped default, which retired that premise: a qemu `loadvm` leaves the HOST
+    end of the socket untouched, so the restored sidecar resumes the very
+    connection the fake is holding. Clearing dropped that LIVE channel, and
+    nothing prompted a reconnect — so the next `POST /test/snapshot` pushed to
+    nobody, and with the agent's HTTP poll dormant on a healthy link (#2037)
+    nothing delivered the etag. That is the Gate-2 `wait_for_etag_served`
+    timeout in #2642.
 
     Liveness is owned by register_ws/deregister_ws (the handler's `finally`) and
     by `_push_policy`'s deregister-on-send-failure, not by the test-control
-    reset.
+    reset — which cannot even see that a restore happened.
     """
     ws = await client.ws_connect("/api/router/ws", headers=auth_headers)
     try:

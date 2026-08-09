@@ -141,12 +141,14 @@ async def get_blocklist(request: web.Request) -> web.Response:
 #     (the #1849 first-policy-on-connect push),
 #   - on change: POST /test/snapshot fans a fresh `policy` frame to every
 #     connected channel (the #1849 push-on-change),
-#   - inbound: the agent's outbound usage/events/metrics frames and control
-#     pings are drained and discarded. The real server acks data frames; the
-#     agent's drain does NOT gate on an ack (ws_loop.drain_and_send), so the
-#     fake omits acks and lets aiohttp auto-pong the control pings. Keeping the
-#     fake a read-and-discard sink avoids a second concurrent sender on the
-#     socket (only the policy pushes send), so frames never interleave.
+#   - inbound: `usage` and `events` frames are demuxed and recorded into the
+#     SAME state the HTTP handlers write (#2642 — see _handle_inbound_frame),
+#     so a scenario's /test/usage + /test/events observables are satisfied by
+#     either transport. `metrics` and the control ops are drained and
+#     discarded. The real server acks data frames; the agent's drain does NOT
+#     gate on an ack (ws_loop.drain_and_send), so the fake omits acks and lets
+#     aiohttp auto-pong the control pings — keeping the policy pushes the only
+#     sender on the socket, so frames never interleave.
 
 
 def _policy_frame_text(snapshot: dict[str, Any]) -> str:
@@ -190,6 +192,46 @@ async def _push_policy_to_all(state: State) -> int:
     return pushed
 
 
+def _handle_inbound_frame(state: State, text: str) -> None:
+    """Demux one inbound `{op, payload}` text frame into the fake's state.
+
+    #2642. With ws the shipped router default (#2608) and the link healthy, the
+    agent's outbound tee (`ws_outbound.make`) hands usage/events bodies to the
+    sidecar as frames INSTEAD of POSTing them — so `POST /api/router/usage` and
+    `POST /api/router/events` stop being exercised, and every Gate-2 scenario
+    that waits on a `/test/usage` or `/test/events` record hangs. Recording the
+    frame payload into the same lists the HTTP handlers write is what keeps
+    those observables transport-agnostic, the same way `record_policy_push`
+    keeps the policy-delivery observable transport-agnostic.
+
+    Mirrors the real server's demux (`RouterWsRoutes.scala`): the payload of a
+    `usage`/`events` frame is byte-for-byte the body its REST counterpart takes,
+    and both transports funnel into ONE ingest path rather than a second copy.
+    `metrics` is accepted-and-dropped here because the fake has no metrics
+    surface at all (its `POST /api/router/metrics` 404s), and the control ops
+    are aiohttp's business.
+
+    Never raises: a malformed frame or an unrecognized op is dropped, the
+    forward-compat rule (design §1.3) and also plain self-defence — an
+    exception in the read loop would tear down the channel the whole scenario
+    depends on.
+    """
+    try:
+        frame = json.loads(text)
+    except Exception:  # noqa: BLE001
+        return
+    if not isinstance(frame, dict):
+        return
+    payload = frame.get("payload")
+    if not isinstance(payload, dict):
+        return
+    op = frame.get("op")
+    if op == "usage":
+        state.record_usage(payload)
+    elif op == "events":
+        state.record_event_batch(payload)
+
+
 async def get_ws(request: web.Request) -> web.StreamResponse:
     # Auth at upgrade time. Reject a missing/empty bearer with the SAME 401 the
     # REST routes produce (no 101) before preparing the websocket.
@@ -205,10 +247,12 @@ async def get_ws(request: web.Request) -> web.StreamResponse:
         async for msg in ws:
             if msg.type == WSMsgType.ERROR:
                 break
-            # TEXT/BINARY (agent usage/events/metrics) are drained + discarded;
-            # control pings are auto-ponged by aiohttp. The fake never needs the
-            # inbound payloads — the Gate-2 ingest-parity coverage is Gate 3
-            # (ws_send.py against the real API).
+            # TEXT carries the agent's usage/events/metrics frames; control pings
+            # are auto-ponged by aiohttp. usage/events are recorded into the same
+            # state the REST handlers write (#2642); everything else is dropped.
+            # BINARY is never sent by the agent (ws_loop sends text frames only).
+            if msg.type == WSMsgType.TEXT:
+                _handle_inbound_frame(state, msg.data)
     finally:
         state.deregister_ws(ws)
     return ws

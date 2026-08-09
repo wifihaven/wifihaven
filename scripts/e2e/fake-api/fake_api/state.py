@@ -215,12 +215,31 @@ class State:
         self._next_usage_id = 1
         self._next_policy_fetch_id = 1
         self.clock_base = None
-        # #1939: drop ws bookkeeping. The per-function `router` fixture restores
-        # the VM to the base (ws-OFF) snapshot before each scenario, so any
-        # channels left here are dead sockets from a prior ws-enabled scenario;
-        # clearing keeps the connection count + push tally honest for the next
-        # test. We do NOT close them — the restore already severed the socket and
-        # the handler's finally deregisters on its own.
-        self.ws_connections.clear()
+        # #1939/#2642: re-base the ws PUSH TALLY, but never the connection set.
+        #
+        # This used to `ws_connections.clear()`, on the premise that the
+        # per-function `router` fixture restores the VM to a base snapshot with
+        # ws OFF — so any channel still in the set had to be a dead socket left
+        # by a prior ws-enabled scenario, and dropping it kept the count honest.
+        # #2608 retired that premise: the base snapshot now boots with ws ON, so
+        # at reset time the set holds a channel that is very much LIVE.
+        #
+        # It is live because a qemu `loadvm` does not disturb the HOST end of the
+        # socket: it reverts guest memory (including the guest's established TCP
+        # state) in place, so the restored sidecar resumes the SAME connection
+        # the fake is already holding. Nothing severs it and nothing prompts a
+        # reconnect — so a channel cleared here never comes back. The next
+        # `POST /test/snapshot` then pushed to an empty set while the agent's
+        # HTTP poll sat dormant on a healthy link (#2037), leaving no transport
+        # at all to deliver the new etag: the Gate-2 `wait_for_etag_served`
+        # timeout in #2642.
+        #
+        # Liveness is not this method's business, and it cannot be — a restore
+        # is invisible from here. It belongs to register_ws/deregister_ws (the ws
+        # handler's `finally`, which fires when the socket really does die) and
+        # to `_push_policy`'s deregister-on-send-failure. A genuinely dead entry
+        # therefore drops itself on the next push; the cost of keeping it one
+        # push too long is a redundant send, while the cost of dropping a live
+        # one is a scenario with no transport.
         self.ws_policy_frames_sent = 0
         # Note: blocklists are intentionally NOT cleared here — see set_blocklist.
