@@ -296,11 +296,19 @@ end
 -- drain(path, state, open_fn) → { line, … }
 --
 -- Returns the complete lines appended since the last drain, advancing
--- state.consumed past them (a STREAM offset, not a file offset — #2634). A partial trailing line (no newline yet) is left in
--- place for the next call. Detects a copytruncate/rotation (file shorter than
--- our cursor) and resets the offset. Mirrors nflog.drain_file — the proven
--- offset-cursor pattern — but is its own spool (a distinct concern), so it stays
--- self-contained rather than coupling ws to the nflog module.
+-- state.consumed past them — a STREAM offset, not a file offset (#2634). A
+-- partial trailing line is left for the next drain, though the next APPEND
+-- strips it rather than splicing onto it.
+--
+-- There is no "file shorter than our cursor → restart" branch any more: a shrink
+-- is precisely what the ledger exists to explain, so an eviction and a
+-- copytruncate are both followed through `written - size`, and the drain resyncs
+-- only when the cursor outruns what the ledger can account for
+-- (`consumed > base + size`) or lands off a line boundary.
+--
+-- Still mirrors nflog.drain_file — the proven offset-cursor pattern — but is its
+-- own spool (a distinct concern), so it stays self-contained rather than
+-- coupling ws to the nflog module.
 function M.drain(path, state, open_fn)
   open_fn = open_fn or io.open
   state = state or {}
