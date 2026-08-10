@@ -227,26 +227,42 @@ object EmailMarkdownSpec extends ZIOSpecDefault {
       // #2684 caught flaking red at 5.9 s against a 5 s budget. The first pass is the warm-up and is
       // not timed; the budget applies to the second, where the quadratic version would still be
       // tens of seconds.
-      val size    = 64 * 1024
-      val inputs  = List(
-        "[" * size,           // unmatched brackets — the measured 44s case
-        "[a](b" * (size / 5), // unmatched parens
-        "**a " * (size / 4),  // unmatched bold opens
-        "*" * size,
-        "_" * size,
-        "`" * size,
-        ("a" * 100 + "**") * (size / 102),
-        // Many SHORT lines, not one long one — the block splitter's accumulator is the cost here,
-        // not a regex, and every other case above is single-line so it would miss a quadratic
-        // append (that is exactly how one shipped into review of #2684).
-        "a\n" * (size / 2),
-        "- a\n" * (size / 4),
+      // The two axes get SEPARATE budgets, because one number cannot guard both: a re-introduced
+      // regex quadratic costs tens of seconds, while a re-introduced quadratic list append costs
+      // ~2s — which a budget sized for the regexes swallows whole. Review of #2684 measured exactly
+      // that: the pre-fix accumulator ran the whole set in 3.2s, comfortably under 10s.
+      val size = 64 * 1024
+
+      def timed(inputs: List[String]): (Long, List[String]) = {
+        inputs.foreach(render) // warm-up, untimed: the FIRST pass measures cold-JIT, which flaked
+        val started = java.lang.System.nanoTime()
+        val out     = inputs.map(render)
+        ((java.lang.System.nanoTime() - started) / 1000000L, out)
+      }
+
+      // Axis 1 — one long line, the regex axis. Unbounded, these measured 8–45 s each.
+      val (regexMs, regexOut) = timed(
+        List(
+          "[" * size,           // unmatched brackets — the measured 44s case
+          "[a](b" * (size / 5), // unmatched parens
+          "**a " * (size / 4),  // unmatched bold opens
+          "*" * size,
+          "_" * size,
+          "`" * size,
+          ("a" * 100 + "**") * (size / 102),
+        ),
       )
-      inputs.foreach(render)
-      val started = java.lang.System.nanoTime()
-      val outputs = inputs.map(render)
-      val elapsed = (java.lang.System.nanoTime() - started) / 1000000L
-      assertTrue(outputs.forall(_.nonEmpty), elapsed < 10000L)
+      // Axis 2 — many short lines, the block-splitter axis. Every case above is single-line, which
+      // is precisely how a quadratic `:+` shipped into review of #2684 unnoticed. Measured ~1.9 s
+      // quadratic against ~70 ms linear, so the budget sits between the two rather than past both.
+      val (linesMs, linesOut) = timed(List("a\n" * (size / 2), "- a\n" * (size / 4)))
+
+      assertTrue(
+        regexOut.forall(_.nonEmpty),
+        linesOut.forall(_.nonEmpty),
+        regexMs < 10000L,
+        linesMs < 1000L,
+      )
     },
   )
 }

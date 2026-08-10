@@ -122,11 +122,18 @@ object EmailMarkdown {
 
   /**
    * A fence line is backticks plus an optional LANGUAGE TAG and nothing else. Both halves of that
-   * are load-bearing, because an info string is the one part of a fence that gets dropped, and this
-   * renderer must never delete a line of a reply — that is the #2677 failure mode, one notch worse.
-   * Requiring no further backticks keeps `` ```code``` `` (inline code the writer put on its own
-   * line) from reading as an opener whose content is swallowed; requiring the tag to look like a
-   * language token does the same for `` ```note: see the paragraph below ``.
+   * are load-bearing, because an info string is the one part of a fence that gets DROPPED, and a
+   * renderer that drops a line of a reply is the #2677 failure mode one notch worse. Requiring no
+   * further backticks keeps `` ```code``` `` (inline code the writer put on its own line) from
+   * reading as an opener whose text is swallowed; requiring the tag to look like a language token
+   * does the same for `` ```note: see the paragraph below ``.
+   *
+   * The guarantee this buys is scoped, not absolute: no line that reads as PROSE is dropped. Fences
+   * still pair off in order, so a reply carrying an ODD number of fence lines pairs them shifted —
+   * text between the second and third reads as code, and the line that becomes the closer is
+   * dropped as before. That is a pre-existing property of pairing rather than something the tighter
+   * opener introduced, and it needs an agent to write both a non-language info string and a second
+   * fenced block in one reply, so it is left as-is rather than papered over.
    */
   private val FenceLine = """^`{3,}[A-Za-z0-9_+#.-]*$""".r
 
