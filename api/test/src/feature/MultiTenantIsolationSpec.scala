@@ -579,9 +579,11 @@ object MultiTenantIsolationSpec
     },
     // #2609: `byDev` filters `d.id` and `byPid` filters `d.profile_id` against the SAME joined `d`,
     // so before the fix a caller could probe with ANOTHER household's deviceId/profileId and have it
-    // match. Post-fix `d` is only joined when it belongs to the event's household, so a foreign id
-    // leaves `d.id` / `d.profile_id` NULL, `IN (…)` evaluates to NULL, and the row is excluded —
-    // fail-closed. This property is structural given the join; the pin makes it regression-proof.
+    // match — an identifier oracle on top of the label leak. Post-fix `d` can only be household A's
+    // row, so B's id compares unequal and the row drops. (When the caller's household owns NO device
+    // for the MAC the join yields no `d` at all and the `IN` is NULL rather than FALSE; either way
+    // the row is excluded, so both shapes fail closed. This fixture exercises the FALSE shape —
+    // household A does own a device row for `macM`.)
     test("pin 1b (#2609) — a FOREIGN deviceId/profileId filter on /api/logs matches nothing") {
       for {
         _      <- cleanDb
@@ -590,7 +592,7 @@ object MultiTenantIsolationSpec
         dr     <- ZIO.service[DeviceRepo]
         up     <- ZIO.service[UserProfileRepo]
         xa     <- ZIO.service[Transactor[Task]]
-        _      <- dr.upsert(macM, "sharedA", Some(two.profileA), "192.168.1.20", two.hhA)
+        devIdA <- dr.upsert(macM, "sharedA", Some(two.profileA), "192.168.1.20", two.hhA)
         // Household B's device row for the SAME MAC — capture its id so A can try to filter by it.
         devIdB <-
           sql"INSERT INTO devices(mac,name,profile_id,household_id) VALUES ($macM,'sharedB',${two.profileB},${two.hhB}) RETURNING id"
@@ -629,10 +631,9 @@ object MultiTenantIsolationSpec
         pagePid <- ZIO.fromEither(bodyPid.fromJson[QueryLogPage]).mapError(new RuntimeException(_))
         // Liveness anchor: A's OWN device id still matches the same event, so "empty" above is the
         // scope working and not a dead route that returns nothing for every filter.
-        ownDev  <- dr.findByMacInHousehold(macM, two.hhA)
         (sOwn, bodyOwn) <- getJson(
           routes,
-          s"/api/logs?hours=1000000&deviceId=${ownDev.get.id.value}",
+          s"/api/logs?hours=1000000&deviceId=${devIdA.value}",
           tokenA,
         )
         pageOwn <- ZIO.fromEither(bodyOwn.fromJson[QueryLogPage]).mapError(new RuntimeException(_))

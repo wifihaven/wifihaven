@@ -181,9 +181,12 @@ case class LogFilter(
     includeMulticast: Boolean = false,
     // #2108 (multi-tenant sub-issue E): when set, scope the read to this household via the
     // connection_events.router_id → routers.household_id join (connection_events are router_id-keyed,
-    // so household is transitive — design §0.1). `None` (default) reads unscoped, preserving the
-    // single-household back-compat for every existing caller. Set by `GET /api/logs` and (#2314)
-    // `GET /api/connection-events/series`.
+    // so household is transitive — design §0.1). `None` (default) reads UNSCOPED across every
+    // household; it survives as a back-compat default only. Every live constructor sets it:
+    // `GET /api/logs`, (#2314) `GET /api/connection-events/series`, and (#2636)
+    // `SpaPush.pushConnectionEvents`, which re-reads the head once per subscribed household.
+    // #2609: this scopes the ROW SET only — the device/profile LABELS on those rows are scoped
+    // separately, by `SqlFragments.deviceLabelJoin`, which does not read this field.
     household: Option[HouseholdId] = None,
 )
 
