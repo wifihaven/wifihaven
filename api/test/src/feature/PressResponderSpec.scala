@@ -780,10 +780,12 @@ object PressResponderSpec
       )
     },
     test("#2442: a bounce with no Message-ID logs `none`, not an empty or broken field") {
-      // The commonest loop trigger is a DSN, and a DSN often carries no Message-ID at all — so this
-      // is the branch the guard actually walks most, not an edge case. `none` has to be explicit:
-      // a bare `message-id=` trailing a log line reads as a truncated log, and an operator chasing
-      // a misclassification would not know whether the id was absent or the logging was broken.
+      // A DSN can carry no Message-ID at all, so this branch is reachable by ordinary bounce
+      // traffic rather than only by a malformed sender. (How OFTEN is not something this repo
+      // measures — press has never recorded a message in prod, #2673 — so no rate is claimed.)
+      // `none` has to be explicit: a bare `message-id=` trailing a log line reads as a truncated
+      // log, and an operator chasing a misclassification could not tell an absent id from broken
+      // logging.
       (for {
         _              <- cleanDb
         (routes, _, _) <- makeRoutes(liveCfg)
