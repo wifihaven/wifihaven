@@ -110,10 +110,12 @@ final case class PressResponder(
    */
   private def loopGuarded(marker: LoopGuardMarker, messageId: String): UIO[WebhookOutcome] = {
     val label  = LoopGuardMarker.label(marker)
-    // The id is attacker-supplied, so it is control-stripped at parse and bounded here — an
-    // unbounded one would let a hostile sender flood the log with a single message.
+    // The id is attacker-supplied, so it is control-stripped at parse (no CR/LF can reach the log
+    // line) and bounded here — an unbounded one would let a hostile sender flood the log with a
+    // single message. Same cap the token path uses, via the existing alias rather than a second
+    // number: an id past it could never thread anyway, so nothing downstream would want the tail.
     val idPart =
-      if messageId.isEmpty then "none" else messageId.take(EmailSender.MaxThreadingIdChars)
+      if messageId.isEmpty then "none" else messageId.take(MaxMessageIdChars)
     ZIO.logWarning(
       s"press loop guard: inbound skipped as auto-submitted " +
         s"(marker=$label, message-id=$idPart) — no session dispatched",

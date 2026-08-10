@@ -779,6 +779,53 @@ object PressResponderSpec
         ZTestLogger.default,
       )
     },
+    test("#2442: a bounce with no Message-ID logs `none`, not an empty or broken field") {
+      // The commonest loop trigger is a DSN, and a DSN often carries no Message-ID at all — so this
+      // is the branch the guard actually walks most, not an edge case. `none` has to be explicit:
+      // a bare `message-id=` trailing a log line reads as a truncated log, and an operator chasing
+      // a misclassification would not know whether the id was absent or the logging was broken.
+      (for {
+        _              <- cleanDb
+        (routes, _, _) <- makeRoutes(liveCfg)
+        dsn =
+          """{"from":"","subject":"Undelivered Mail","text":"","messageId":"","loopGuard":"null_return_path"}"""
+        _    <- postInbound(routes, dsn, Some(sign(dsn)))
+        logs <- ZTestLogger.logOutput
+      } yield assertTrue(
+        logs.exists(e =>
+          e.logLevel == LogLevel.Warning &&
+            e.message().contains("press loop guard") &&
+            e.message().contains("message-id=none"),
+        ),
+      )).provideSome[TestDatabase.AllRepos & EmbeddedPostgres & Clock & Transactor[Task]](
+        ZTestLogger.default,
+      )
+    },
+    test("#2442: an over-long Message-ID is truncated in the log, at the shared cap") {
+      // The security comment on `loopGuarded` leans on this bound: the id is attacker-supplied, so
+      // an unbounded one would let one hostile message flood the log. Asserted against the CONSTANT
+      // (PressResponder.MaxMessageIdChars, itself EmailSender.MaxThreadingIdChars) rather than a
+      // copied number, so re-deriving the cap elsewhere cannot silently diverge from this pin.
+      val overLong = "<" + ("a" * (PressResponder.MaxMessageIdChars + 50)) + "@mail>"
+      (for {
+        _              <- cleanDb
+        (routes, _, _) <- makeRoutes(liveCfg)
+        body =
+          s"""{"from":"ooo@example-paper.test","subject":"Automatic reply","text":"away","messageId":${overLong.toJson},"loopGuard":"auto_submitted"}"""
+        _    <- postInbound(routes, body, Some(sign(body)))
+        logs <- ZTestLogger.logOutput
+      } yield {
+        val line = logs.find(e => e.message().contains("press loop guard")).map(_.message())
+        assertTrue(
+          // The truncated prefix is logged...
+          line.exists(_.contains("message-id=" + overLong.take(PressResponder.MaxMessageIdChars))),
+          // ...and the full attacker-supplied value is NOT, so the cap actually bit.
+          line.exists(!_.contains(overLong)),
+        )
+      }).provideSome[TestDatabase.AllRepos & EmbeddedPostgres & Clock & Transactor[Task]](
+        ZTestLogger.default,
+      )
+    },
     test("#2442: a real journalist's message (no marker, empty marker) still dispatches") {
       for {
         _                  <- cleanDb
