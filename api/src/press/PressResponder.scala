@@ -589,15 +589,26 @@ object PressResponder {
   /**
    * #2517 — does this callback outcome CLOSE the dispatch it belongs to?
    *
-   * Everything the agent actually did closes it, including a send the transport then refused
-   * (`Error`) and a send our own install has switched off (`Disabled`): in all of those the session
-   * came back and acted, which is the only thing the tracker claims to measure.
+   * A send the transport REFUSED (`Error`) closes it: the reply was authored and attempted, and the
+   * failure is already loud on `press_agent_action_total{op="reply",outcome="error"}`.
+   *
+   * `Disabled` — outbound email switched off — also closes, but NOT on the "it came back and acted"
+   * argument, which is the one `RateLimited` is carved out against. It closes because the arm is
+   * unreachable in a live install: #2265 (no-dark-by-default) refuses to boot an ENABLED press
+   * responder whose outbound-email chain is missing, so a dark-email install is one where nothing
+   * dispatched either.
    *
    * `RateLimited` does not (#2691 review). It is the one outcome where the terminal action was
    * REFUSED before doing anything — the #2437 3/hour-per-sender escalation cap — so no human was
    * paged and no journalist was answered. `Denied` and the pre-token `Disabled` never reach here
    * (they short-circuit ahead of `f`), but the match is total so a new `AgentActionResult` case
    * cannot be silently absorbed into "served".
+   *
+   * The cost of deciding this AFTER the action rather than at verify time: a defect or an interrupt
+   * inside the callback skips the close entirely, so a reply that did go out could still be swept
+   * as `no_callback`. `f` is a `UIO`, so that needs a defect or an interrupt — and the error is in
+   * the safe direction, a loud false positive rather than a silently-served journalist, which is
+   * the whole point of the tracker.
    */
   def closesDispatch(result: AgentActionResult): Boolean = result match {
     case AgentActionResult.Ok | AgentActionResult.Error | AgentActionResult.Disabled => true

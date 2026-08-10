@@ -174,16 +174,26 @@ final class DispatchTracker private (
    * actions only ([[AgentAction.Terminal]]) — a household READ or an issue filing proves the
    * session is alive but produces nothing the customer sees, so it must not mark the turn served.
    *
-   * This measures "did the session come back", NOT "did the reply land": it fires at token-verify
-   * time, before the Plain write. A reply the agent posted and Plain then refused is already loud
-   * on `support_agent_action_total{op="reply",outcome="error"}` — duplicating that judgement here
-   * would be a second place computing the same thing (docs/process/single-source-of-truth.md).
+   * This measures "did the session come back", NOT "did the reply land". A reply the agent posted
+   * and the transport then refused is already loud on
+   * `{support,press}_agent_action_total{op="reply",outcome="error"}` — duplicating that judgement
+   * here would be a second place computing the same thing (docs/process/single-source-of-truth.md).
    *
-   * An UNTRACKED or already-closed thread is a no-op, not a warning: a second callback on the same
-   * thread (reply after escalate is the instructed #2437 sequence), a dispatch outstanding across a
+   * WHEN it fires relative to the action is the CHANNEL'S call, and the two differ today. Support
+   * closes at token-verify time, before the Plain write. Press closes AFTER the action and only for
+   * outcomes that did something (`PressResponder.closesDispatch`), so a callback the #2437
+   * escalation cap REFUSED is not counted served — nothing reached the journalist, and the entry
+   * has to stay in the sweep. Support still carries the pre-#2517 shape and so still counts a
+   * rate-limited `escalate` / `request-consent` as completed; that is tracked as
+   * https://github.com/wifihaven/wifihaven/issues/2694, deliberately not changed here because it is
+   * a behaviour change to a shipped path and wants its own red test.
+   *
+   * An UNTRACKED or already-closed key is a no-op, not a warning: a second callback on the same key
+   * (reply after escalate is the instructed #2437 sequence), a dispatch outstanding across a
    * restart, or a callback arriving after the [[deadAfter]] entry was already reported all land
    * here legitimately — and each closes at most one dispatch, so `completed` still pairs 1:1 with
-   * `dispatched`.
+   * `dispatched`. So does a callback on the OTHER channel's key — each channel holds its own
+   * instance, so one can never close the other's dispatch.
    *
    * #2668: the entry is MARKED closed rather than removed, so [[turnOwner]] can still tell a
    * superseded session from an unknown one after the turn has been answered. [[sweep]] evicts it on
