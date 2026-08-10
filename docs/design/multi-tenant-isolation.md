@@ -369,8 +369,11 @@ join to another's rows.
 
 - **`router_id`-keyed tables** (`traffic_reports`, `connection_events`) need
   **no new column**: `router_id` → `routers.household_id` scopes them
-  transitively, and reads already filter by router or join through a
-  household-scoped `devices` row. Writes are constructively scoped because the
+  transitively, and reads already filter by router. Where such a read ALSO
+  resolves a device or profile label from the row's MAC, that join must name the
+  household too — filtering by router scopes the row set but not the labels, and
+  the two are separate predicates (#2609; see the clause-(1) note below). Writes
+  are constructively scoped because the
   `router_id` comes from the authed token, never the payload
   ([`RouterIngestService.scala:59`](../../api/src/routes/RouterIngestService.scala)).
 - **Bare-MAC-keyed tables** (`time_usage` — `UNIQUE(device_mac, domain, date)`;
@@ -391,6 +394,20 @@ narrow denormalization: `household_id` goes only onto tables whose *unique key*
 is a bare MAC, not onto every leaf (`docs/process/single-source-of-truth.md`).
 The `time_usage` backfill must be estimated against prod row counts per
 `docs/process/migrations.md#migrations-prod-data-volume`.
+
+> **Clause (1) is a claim about the JOIN PREDICATE, not about the `devices`
+> table.** "A foreign MAC has no row to join" only holds if the join names the
+> household — `ON d.mac = <mac> AND d.household_id = <this row's household>`. A
+> join written `ON d.mac = <mac>` alone was safe under V1's global
+> `devices_mac_key` and became semantically undefined the moment V74 (#2277)
+> dropped it: with the same MAC in two households there is no single correct row
+> to resolve to, so the join both mislabels and *fans out* (one input row → one
+> output row per matching device). This has now been found twice — `alerts`
+> (#2283) and all three `connection_events` reads behind `/api/logs` +
+> `/api/connection-events/series` (#2609, `SqlFragments.deviceLabelJoin`). Any
+> NEW read that resolves a device or profile label from a MAC must qualify the
+> join the same way; an unqualified `d.mac = …` is the bug, not a missing
+> filter.
 
 ---
 

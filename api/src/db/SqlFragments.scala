@@ -44,12 +44,47 @@ object SqlFragments {
   // #2314 (same-MAC-across-households, epic #622): the optional, AND-composed household predicate
   // for connection_events reads. connection_events are `router_id`-keyed, so household scope is
   // transitive through the already-joined `routers` table — callers pass `column = "r.household_id"`.
-  // Returns an empty fragment when the caller omits `household` (single-household back-compat: an
-  // unscoped read still sees its own rows). Both `querySeries` and `querySeriesRollup` compose this
-  // so the tenancy predicate lives in exactly one place (SSOT) rather than being hand-copied. Same
-  // `column`-is-trusted-literal / `hh`-is-parameterized contract as `householdEq`.
+  // Returns an empty fragment when the caller omits `household` — an UNSCOPED read across every
+  // household, which survives as a back-compat default and has no live caller (see `LogFilter`).
+  // Both `querySeries` and `querySeriesRollup` compose this so the tenancy predicate lives in
+  // exactly one place (SSOT) rather than being hand-copied. Same `column`-is-trusted-literal /
+  // `hh`-is-parameterized contract as `householdEq`. #2609: this scopes the ROW SET; the LABELS on
+  // those rows are a separate predicate, [[deviceLabelJoin]] below.
   def householdFilter(household: Option[HouseholdId], column: String): Fragment =
     household.fold(Fragment.empty)(hh => fr"AND" ++ householdEq(hh, column))
+
+  // #2609 (same-MAC-across-households, epic #622): the device+profile LABEL join for the
+  // `connection_events` read paths. Every one of them used to join `LEFT JOIN devices d ON d.mac =
+  // <mac>` with no household predicate, which was only ever safe because V1's global
+  // `devices_mac_key` made `devices.mac` unique. V74 (#2277) dropped that, so post-V74 a bare-MAC
+  // join is not "missing a filter" — it is SEMANTICALLY UNDEFINED: two households can each own a
+  // device row for the same (randomized) MAC and there is no single correct row to resolve to
+  // without naming the household. The unqualified join leaked household B's `d.name` / `p.name`
+  // into household A's rows AND fanned one event into one output row per matching device.
+  //
+  // The predicate is `d.household_id = <routerAlias>.household_id`, NOT `= $callerHousehold`:
+  //   - it derives tenancy from the EVENT's OWN row (`connection_events.router_id` V42 and
+  //     `connection_events_{hourly,daily}.router_id` V47 are all `NOT NULL` with an FK to `routers`,
+  //     and `routers.household_id` is `NOT NULL` V65/V66, so the joined `r` always exists and always
+  //     carries a household). It therefore does not depend on `LogFilter.household` being set. All
+  //     three live constructors DO set it (`Routes.scala` /api/logs + /series from `claims.hh`,
+  //     `SpaPush.pushConnectionEvents` per subscribed household since #2636) — the `None` default
+  //     has no live caller today, and this form is what keeps the LABELS scoped if one reappears,
+  //     since a caller-derived predicate would simply be absent there;
+  //   - it never accepts a household from the client: the value is a column of a row the query
+  //     already reached through `router_id`, which is itself pinned to the authenticated router.
+  // It composes with, and does not replace, [[householdFilter]] — that scopes the ROW SET, this
+  // scopes the LABELS. Index-backed by V65's `uq_devices_household_mac` UNIQUE(household_id, mac),
+  // whose leading column is exactly this predicate, so the join stays a single index lookup.
+  //
+  // `macColumn` and `routerAlias` are spliced verbatim via `Fragment.const` — trusted compile-time
+  // literals, NEVER user input, exactly like [[householdEq]]'s `column`. The emitted fragment
+  // requires `routerAlias` to be joined BEFORE `devices` in the FROM clause: Postgres only resolves
+  // an ON clause against tables already introduced to its left.
+  def deviceLabelJoin(macColumn: String, routerAlias: String = "r"): Fragment =
+    fr"LEFT JOIN devices d ON d.mac =" ++ Fragment.const(macColumn) ++
+      fr"AND d.household_id =" ++ Fragment.const(s"$routerAlias.household_id") ++
+      fr"LEFT JOIN profiles p ON p.id = d.profile_id"
 
   // Promotes ipv4/ipv6-typed `traffic_reports` rows to their resolved fqdn by
   // looking up the most recent `connection_events` row for the same

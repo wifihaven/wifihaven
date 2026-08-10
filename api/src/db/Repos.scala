@@ -181,9 +181,12 @@ case class LogFilter(
     includeMulticast: Boolean = false,
     // #2108 (multi-tenant sub-issue E): when set, scope the read to this household via the
     // connection_events.router_id → routers.household_id join (connection_events are router_id-keyed,
-    // so household is transitive — design §0.1). `None` (default) reads unscoped, preserving the
-    // single-household back-compat for every existing caller. Set by `GET /api/logs` and (#2314)
-    // `GET /api/connection-events/series`.
+    // so household is transitive — design §0.1). `None` (default) reads UNSCOPED across every
+    // household; it survives as a back-compat default only. Every live constructor sets it:
+    // `GET /api/logs`, (#2314) `GET /api/connection-events/series`, and (#2636)
+    // `SpaPush.pushConnectionEvents`, which re-reads the head once per subscribed household.
+    // #2609: this scopes the ROW SET only — the device/profile LABELS on those rows are scoped
+    // separately, by `SqlFragments.deviceLabelJoin`, which does not read this field.
     household: Option[HouseholdId] = None,
 )
 
@@ -3605,10 +3608,12 @@ class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo 
                   1, NOT ce.allowed, ce.reason, r.name,
                   to_char(ce.ts AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')
            FROM connection_events ce
-           LEFT JOIN devices d  ON d.mac    = ce.mac
-           LEFT JOIN profiles p ON p.id     = d.profile_id
-           LEFT JOIN routers r  ON r.id     = ce.router_id
-           WHERE 1=1"""
+           LEFT JOIN routers r  ON r.id     = ce.router_id """ ++
+        // #2609: `routers r` now leads so the device join can qualify on `r.household_id` (an ON
+        // clause only resolves against tables to its left). The label join is household-scoped —
+        // see SqlFragments.deviceLabelJoin for why bare `d.mac = ce.mac` is wrong post-V74.
+        SqlFragments.deviceLabelJoin("ce.mac") ++
+        fr"""WHERE 1=1"""
     // #862: window anchor moves from "now" to `until` (defaults to NOW()).
     val anchor = f.until.fold(fr"NOW()")(u => fr"$u::TIMESTAMPTZ")
     val window =
@@ -3678,10 +3683,10 @@ class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo 
     // Raw path bins on the per-event timestamp.
     val tsBin      = fr"ce.ts"
 
+    // #2609: `routers r` leads so the device/profile label join can qualify on `r.household_id`.
     val fromJoins = fr"""FROM connection_events ce
-           LEFT JOIN devices d  ON d.mac = ce.mac
-           LEFT JOIN profiles p ON p.id  = d.profile_id
-           LEFT JOIN routers r  ON r.id  = ce.router_id"""
+           LEFT JOIN routers r  ON r.id  = ce.router_id """ ++
+      SqlFragments.deviceLabelJoin("ce.mac")
     // #862: window anchor moves from "now" to `until` (defaults to NOW()).
     val anchor    = f.until.fold(fr"NOW()")(u => fr"$u::TIMESTAMPTZ")
     val window    =
@@ -3756,10 +3761,12 @@ class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo 
     // COALESCE matches the raw path's `COALESCE(d.name, ce.mac::TEXT)`.
     val deviceExpr = fr"COALESCE(d.name, NULLIF(cer.mac, ''))"
 
+    // #2609: same household-scoped label join as the raw path; `routers r` leads so the ON clause
+    // can reference `r.household_id`. The rollup's `router_id` is NOT NULL (V47) like the raw
+    // table's, so `r` is always present and always carries the row's household.
     val fromJoins = fr"FROM " ++ table ++ fr"""
-           LEFT JOIN devices d  ON d.mac = cer.mac
-           LEFT JOIN profiles p ON p.id  = d.profile_id
-           LEFT JOIN routers r  ON r.id  = cer.router_id"""
+           LEFT JOIN routers r  ON r.id  = cer.router_id """ ++
+      SqlFragments.deviceLabelJoin("cer.mac")
     val anchor    = f.until.fold(fr"NOW()")(u => fr"$u::TIMESTAMPTZ")
     val window    =
       fr"AND " ++ tsBin ++ fr"> " ++ anchor ++ fr"- make_interval(hours => ${f.hours}) AND " ++
