@@ -1194,6 +1194,12 @@ object AppMetrics {
   // cloud session accepted the trigger and died, so the customer got NO answer; should be flat
   // zero). They ride THIS series rather than a new one precisely so `dispatched` can be read
   // against `completed`: before #2472 a dispatched-then-dead session counted only as a success.
+  def supportDispatch(outcome: String, transport: Option[String]): UIO[Unit] =
+    MetricGuard.counter(
+      "support_dispatch_total",
+      Map("outcome" -> outcome) ++ transport.map("transport" -> _),
+    )
+
   // #2477 — the dispatch WATCHDOG, emitted from `DispatchTracker.sweep` on EVERY tick (see the
   // allowlist entries above for the pair's rationale, and `DispatchTracker.sweep` for how the gauge
   // is counted). Names are single-sourced on `DispatchTracker.UnrepliedGauge` / `.SweepsCounter`,
@@ -1209,12 +1215,6 @@ object AppMetrics {
     MetricGuard.counter(
       DispatchTracker.SweepsCounter,
       Map("channel" -> channel),
-    )
-
-  def supportDispatch(outcome: String, transport: Option[String]): UIO[Unit] =
-    MetricGuard.counter(
-      "support_dispatch_total",
-      Map("outcome" -> outcome) ++ transport.map("transport" -> _),
     )
 
   // ── #2419: in-conversation data-access consent ────────────────────────────────
