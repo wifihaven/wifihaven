@@ -133,7 +133,91 @@ object EmailMarkdownSpec extends ZIOSpecDefault {
       // restructure the paragraph.
       assertTrue(
         render("Intro line\n- a\n- b") == "<p>Intro line<br>- a<br>- b</p>",
+        // `*` is not a bullet marker: a paragraph of one-phrase italic lines is not a list.
+        render("*one*\n*two*") == "<p><em>one</em><br><em>two</em></p>",
       )
+    },
+    test("overlapping emphasis never emits interleaved tags") {
+      // Three sequential passes over each other's output would cross spans and produce
+      // <strong><em>x</strong></em>. `***x***` is ordinary model output, so it gets its own pass,
+      // and every span excludes `<`/`>` so no later pass can reach across a tag an earlier one
+      // wrote. Malformed input may keep literal markers; it must never produce malformed HTML.
+      val cases = List(
+        "***bold italic***" -> "<p><strong><em>bold italic</em></strong></p>",
+        "***a*** and **b**" -> "<p><strong><em>a</em></strong> and <strong>b</strong></p>",
+        "__bold__"          -> "<p><strong>bold</strong></p>",
+        // Crossed markers are malformed input. Bold binds first and italic cannot reach across the
+        // tag it wrote, so the leftover marker stays literal — never an interleaved tag pair.
+        "**a *b** c*"       -> "<p><strong>a *b</strong> c*</p>",
+        "*a **b* c**"       -> "<p>*a <strong>b* c</strong></p>",
+      )
+      assertTrue(cases.forall((in, want) => render(in) == want))
+    },
+    test("emphasis spans a code span instead of breaking around it") {
+      // The carve-out used to split the line, so `**a `b` c**` lost its bold and shipped literal
+      // `**` — the exact defect #2677 is about, in the shape the reported reply had (bold headers
+      // alongside backticked technical terms).
+      assertTrue(
+        render("**it uses `nftables` here**") ==
+          "<p><strong>it uses <code>nftables</code> here</strong></p>",
+        !render("**it uses `nftables` here**").contains("**"),
+      )
+    },
+    test("a fenced block renders verbatim, escaped, with no markdown applied inside") {
+      assertTrue(
+        render("```\nnft add rule **x**\n```") ==
+          "<pre><code>nft add rule **x**</code></pre>",
+        // A language tag on the fence line is dropped, and blank lines inside survive.
+        render("```lua\na\n\nb\n```") == "<pre><code>a\n\nb</code></pre>",
+        // Markup inside a fence is still escaped, like everywhere else.
+        render("```\n<script>x</script>\n```") ==
+          "<pre><code>&lt;script&gt;x&lt;/script&gt;</code></pre>",
+        // Prose either side stays prose.
+        render("intro\n\n```\ncode\n```\n\noutro") ==
+          "<p>intro</p>\n<pre><code>code</code></pre>\n<p>outro</p>",
+      )
+    },
+    test("what is deliberately left literal stays literal") {
+      // Pinned so the omission is a decision, not a gap. Each of these is safe as text; supporting
+      // any of them is a separate, deliberate change.
+      assertTrue(
+        render("~~strike~~") == "<p>~~strike~~</p>",
+        render("> quoted") == "<p>&gt; quoted</p>",
+        render("| a | b |") == "<p>| a | b |</p>",
+        // Emphasis does not span a soft line break inside a paragraph.
+        render("**multi\nline**") == "<p>**multi<br>line**</p>",
+      )
+    },
+    test("a NUL in the input cannot forge a code-span placeholder") {
+      // Code spans are masked with a NUL-delimited token while emphasis runs. NUL is stripped from
+      // the input first, so agent text cannot inject a token that would index into the span list.
+      val nul     = 0.toChar
+      val hostile = s"before ${nul}7$nul after `real`"
+      assertTrue(
+        render(hostile) == "<p>before 7 after <code>real</code></p>",
+        !render(hostile).contains(nul),
+      )
+    },
+    test("adversarial input stays linear — the regexes are bounded") {
+      // Unbounded, `MdLink` and the bold body backtrack quadratically: at the route's own 64 KiB
+      // body cap (PressAgentRoutes.MaxAgentBodyBytes) these inputs measured 8–45 s of single-fiber
+      // CPU during review of #2677. Bounded + possessive they are milliseconds. The budget is
+      // deliberately loose — it is a regression trip-wire for a quadratic pattern, not a
+      // performance assertion, so ordinary CI jitter cannot flake it.
+      val size    = 64 * 1024
+      val inputs  = List(
+        "[" * size,           // unmatched brackets — the measured 44s case
+        "[a](b" * (size / 5), // unmatched parens
+        "**a " * (size / 4),  // unmatched bold opens
+        "*" * size,
+        "_" * size,
+        "`" * size,
+        ("a" * 100 + "**") * (size / 102),
+      )
+      val started = java.lang.System.nanoTime()
+      val outputs = inputs.map(render)
+      val elapsed = (java.lang.System.nanoTime() - started) / 1000000L
+      assertTrue(outputs.forall(_.nonEmpty), elapsed < 5000L)
     },
   )
 }
