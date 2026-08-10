@@ -105,6 +105,13 @@ M.ws_outbound = "/tmp/wifihaven-ws-outbound.jsonl"
 -- no second copy of the suffix to drift. Fixed-size (one integer rewritten in
 -- place), so unlike the spool it needs no rotation.
 
+-- The spool also stages its cap-eviction rebuilds next to itself as
+-- `<spool>.tmp`, published over the original with an atomic rename so a reader
+-- never observes a torn spool. Bounded: rewritten with "w" on each eviction, so
+-- it peaks at ws_spool_max_bytes and needs no rotation. Named by
+-- `ws_spool.tmp_path(spool)`, alongside `ws_spool.ledger_path` — deliberately
+-- not duplicated here.
+
 -- ws-health sentinel: the sidecar touches this file's mtime on every successful
 -- send/recv while the socket is up, and removes it on disconnect. The main agent
 -- stats it on its tick: a FRESH sentinel (mtime within ws_fallback_after) means

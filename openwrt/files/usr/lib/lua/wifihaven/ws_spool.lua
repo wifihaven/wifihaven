@@ -59,6 +59,9 @@ end
 -- The SINGLE definition of the ledger's name (`<spool>.written`). paths.lua deliberately does not
 -- carry a second copy (#2634 review).
 function M.ledger_path(path) return path .. ".written" end
+
+-- Likewise the single definition of the rebuild staging name.
+function M.tmp_path(path) return path .. ".tmp" end
 local ledger_path = M.ledger_path
 
 -- The ledger holds the TOTAL BYTES EVER APPENDED to the spool, not the bytes
@@ -193,8 +196,8 @@ function M.append_bounded(path, line, max_bytes, open_fn, rename_fn, remove_fn)
   -- datum is delivered; the spooled copy may be re-read later, and a duplicate is
   -- what the server dedups. RESIDUAL: a crash between the publish and the bump
   -- has no such report and loses that one frame. Closing that needs the accounting
-  -- to live INSIDE the spool file so publish and account are one atomic write —
-  -- tracked separately rather than bolted on here.
+  -- to live INSIDE the spool file so publish and account are one atomic write.
+  -- TODO(#2685).
   local ledger_ok = true
 
   if torn or #existing + #entry > max_bytes then
@@ -225,7 +228,7 @@ function M.append_bounded(path, line, max_bytes, open_fn, rename_fn, remove_fn)
     -- than the replay the pre-#2634 code paid for the same interleaving. rename
     -- is atomic, so the reader (which re-opens the path on every drain) gets the
     -- whole old file or the whole new one, never an empty one.
-    local tmp = path .. ".tmp"
+    local tmp = M.tmp_path(path)
     local wf = open_fn(tmp, "w")
     if not wf then return nil, 0, ledger_ok end
     -- Check the write AND the close, not just the open: a short write here would

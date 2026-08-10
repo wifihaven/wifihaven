@@ -20,7 +20,10 @@
 #                                 (#2634) and so follows this truncation the same
 #                                 way it follows a cap eviction. That ledger is a
 #                                 single integer rewritten in place — fixed-size,
-#                                 so it is deliberately NOT rotated here.
+#                                 so it is deliberately NOT rotated here. Same
+#                                 for <spool>.tmp, the eviction rebuild's staging
+#                                 file: rewritten per eviction, capped at
+#                                 ws_spool_max_bytes.
 #
 # Truncating the original (rather than renaming it) is the "copytruncate"
 # pattern. dnsmasq / sni-tail hold the log fd open for the lifetime of the
