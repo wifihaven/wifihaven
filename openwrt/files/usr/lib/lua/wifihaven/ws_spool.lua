@@ -275,8 +275,15 @@ function M.append_bounded(path, line, max_bytes, open_fn, rename_fn, remove_fn)
     -- exactly the deficit pending_bytes exists for, so record it and let the next
     -- successful bump catch up. A torn tail needs no carry: it is unconsumable and
     -- the next append strips it.
-    local after = slurp(path, open_fn) or ""
-    if after:sub(-1) == "\n" and #after == #existing + #entry then
+    -- file_size, NOT a slurp: reading the whole spool here would allocate a
+    -- second copy of up to ws_spool_max_bytes at the exact moment tmpfs refused a
+    -- write, which is the cost the torn-tail design above exists to avoid. The
+    -- length test alone is sufficient — `append` can never write MORE than
+    -- #entry, so equality implies the entry landed whole, and `entry` ends in a
+    -- newline by construction. That implication rests on this file having a
+    -- single writer: the sidecar only reads it and the rotate cron only
+    -- truncates, so nothing else can inflate the size to fake completeness.
+    if file_size(path, open_fn) == #existing + #entry then
       pending_bytes[path] = (pending_bytes[path] or 0) + #entry
     end
     return nil, 0, ledger_ok

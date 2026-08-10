@@ -575,14 +575,19 @@ local function ws_spool_append(line)
                "/tmp full?", ws_spool.ledger_path(paths.ws_outbound))
     end
   elseif not ok then
-    -- Every OTHER failure return: the staging open, a short write on the rebuild,
-    -- the rename, or a short write on the plain append. Each means the spool could not be published, and each used to
-    -- be silent — the tee just switched to HTTP with nothing said. A failed
-    -- publish of the whole spool is the loudest thing this module can do, so it
-    -- should not also be its quietest (docs/process/no-dark-by-default.md).
+    -- Every OTHER failure return from append_bounded: the staging open, a short
+    -- write on the rebuild, the rename, the plain-append open, or a short write
+    -- on the plain append. Each used to be silent -- the tee just switched to
+    -- HTTP with nothing said (docs/process/no-dark-by-default.md).
+    --
+    -- Deliberately vague about what reached the spool, because it varies: the
+    -- rebuild cases publish nothing, a short plain append leaves a fragment the
+    -- NEXT append strips, and a close that fails after a full flush leaves a
+    -- complete line that will be delivered. What is uniform, and what the
+    -- operator needs, is that this body is going out over HTTP instead.
     if (now - ws_spool_warn_at) >= 60 then
       ws_spool_warn_at = now
-      log.warn("ws spool: could not publish %q — this body goes out over HTTP " ..
+      log.warn("ws spool: append to %q failed — this body goes out over HTTP " ..
                "instead (#2634). /tmp full?", paths.ws_outbound)
     end
   end
