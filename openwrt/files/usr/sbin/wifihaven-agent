@@ -556,9 +556,45 @@ local function read_uptime_seconds()
   f:close()
   return up
 end
+-- #2634: a failed spool-ledger write is NOT a silent degrade. Its likeliest
+-- cause is /tmp (tmpfs) being full, which is precisely when the spool is at its
+-- cap and evicting on every append — i.e. when falling back to the pre-#2634
+-- full-replay behaviour costs the most. Log it loudly, rate-limited to once a
+-- minute so a wedged /tmp cannot itself flood the ring buffer we log into.
+local ws_ledger_warn_at = 0
+local ws_spool_warn_at = 0
 local function ws_spool_append(line)
-  return ws_spool.append_bounded(paths.ws_outbound, line, ws_spool_max, io.open)
+  local ok, dropped, ledger_ok =
+    ws_spool.append_bounded(paths.ws_outbound, line, ws_spool_max, io.open)
+  local now = clock.monotonic_seconds()
+  if ledger_ok == false then
+    if (now - ws_ledger_warn_at) >= 60 then
+      ws_ledger_warn_at = now
+      log.warn("ws spool: could not write the spool ledger %q — the append was " ..
+               "reported failed so this body goes out over HTTP instead (#2634). " ..
+               "/tmp full?", ws_spool.ledger_path(paths.ws_outbound))
+    end
+  elseif not ok then
+    -- Every OTHER failure return from append_bounded: the staging open, a short
+    -- write on the rebuild, the rename, the plain-append open, or a short write
+    -- on the plain append. Each used to be silent — the tee just switched to
+    -- HTTP with nothing said (docs/process/no-dark-by-default.md).
+    --
+    -- Deliberately vague about what reached the spool, because it varies: the
+    -- rebuild cases and a failed plain-append open publish nothing, a short plain
+    -- append leaves a fragment the NEXT append strips, and a close that fails
+    -- after a full flush leaves a complete line that will be delivered. What is
+    -- uniform, and what the operator needs, is that this body is going out over
+    -- HTTP instead.
+    if (now - ws_spool_warn_at) >= 60 then
+      ws_spool_warn_at = now
+      log.warn("ws spool: append to %q failed — this body goes out over HTTP " ..
+               "instead (#2634). /tmp full?", paths.ws_outbound)
+    end
+  end
+  return ok, dropped
 end
+
 local usage_events_post = ws_outbound.make({
   enabled        = (ws_enabled == "1"),
   http_post      = http_post,

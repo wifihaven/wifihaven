@@ -95,6 +95,23 @@ M.nflog_drops = "/tmp/wifihaven-nflog.log"
 -- first drop) plus a copytruncate rotation belt.
 M.ws_outbound = "/tmp/wifihaven-ws-outbound.jsonl"
 
+-- #2634: the spool has a companion ledger file alongside it (`<spool>.written`)
+-- holding the total bytes ever appended. The reader keeps its cursor in stream
+-- coordinates and derives the file's first surviving byte as `written - size`,
+-- which is correct whether the missing prefix was EVICTED by the cap or emptied
+-- by the copytruncate cron — an evicted-bytes counter only describes the first,
+-- and the two can mask each other. Deliberately NOT a constant here:
+-- `ws_spool.ledger_path(spool)` is the single definition of the name, so there is
+-- no second copy of the suffix to drift. Fixed-size (one integer rewritten in
+-- place), so unlike the spool it needs no rotation.
+
+-- The spool also stages its cap-eviction rebuilds next to itself as
+-- `<spool>.tmp`, published over the original with an atomic rename so a reader
+-- never observes a torn spool. Bounded: rewritten with "w" on each eviction, so
+-- it peaks at ws_spool_max_bytes and needs no rotation. Named by
+-- `ws_spool.tmp_path(spool)`, alongside `ws_spool.ledger_path` — deliberately
+-- not duplicated here.
+
 -- ws-health sentinel: the sidecar touches this file's mtime on every successful
 -- send/recv while the socket is up, and removes it on disconnect. The main agent
 -- stats it on its tick: a FRESH sentinel (mtime within ws_fallback_after) means
