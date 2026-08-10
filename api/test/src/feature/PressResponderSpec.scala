@@ -755,6 +755,79 @@ object PressResponderSpec
         after - before == 1.0,
       )
     },
+    test("#2442: the skip WARN carries the Message-ID — the join key to the Worker's log line") {
+      // The API log names the marker but deliberately NOT the sender; the Worker's log names the
+      // sender. The Message-ID is what joins them, and that join IS the recovery path for a
+      // journalist misclassified as an autoresponder. Pinned because a docstring claiming the id is
+      // logged, over code that never carried it, is exactly the #2018 class of unsourced assertion.
+      (for {
+        _              <- cleanDb
+        (routes, _, _) <- makeRoutes(liveCfg)
+        body = loopBody("ooo@example-paper.test", "I am out of the office", "auto_submitted")
+        _    <- postInbound(routes, body, Some(sign(body)))
+        logs <- ZTestLogger.logOutput
+      } yield assertTrue(
+        logs.exists(e =>
+          e.logLevel == LogLevel.Warning &&
+            e.message().contains("press loop guard") &&
+            e.message().contains("marker=auto_submitted") &&
+            // The id `loopBody` puts on the envelope — present verbatim, so an operator can grep
+            // the Worker's log for the same string and recover the sender.
+            e.message().contains("message-id=<abc@mail>"),
+        ),
+      )).provideSome[TestDatabase.AllRepos & EmbeddedPostgres & Clock & Transactor[Task]](
+        ZTestLogger.default,
+      )
+    },
+    test("#2442: a bounce with no Message-ID logs `none`, not an empty or broken field") {
+      // A DSN can carry no Message-ID at all, so this branch is reachable by ordinary bounce
+      // traffic rather than only by a malformed sender. (How OFTEN is not something this repo
+      // measures — press has never recorded a message in prod, #2673 — so no rate is claimed.)
+      // `none` has to be explicit: a bare `message-id=` trailing a log line reads as a truncated
+      // log, and an operator chasing a misclassification could not tell an absent id from broken
+      // logging.
+      (for {
+        _              <- cleanDb
+        (routes, _, _) <- makeRoutes(liveCfg)
+        dsn =
+          """{"from":"","subject":"Undelivered Mail","text":"","messageId":"","loopGuard":"null_return_path"}"""
+        _    <- postInbound(routes, dsn, Some(sign(dsn)))
+        logs <- ZTestLogger.logOutput
+      } yield assertTrue(
+        logs.exists(e =>
+          e.logLevel == LogLevel.Warning &&
+            e.message().contains("press loop guard") &&
+            e.message().contains("message-id=none"),
+        ),
+      )).provideSome[TestDatabase.AllRepos & EmbeddedPostgres & Clock & Transactor[Task]](
+        ZTestLogger.default,
+      )
+    },
+    test("#2442: an over-long Message-ID is truncated in the log, at the shared cap") {
+      // The security comment on `loopGuarded` leans on this bound: the id is attacker-supplied, so
+      // an unbounded one would let one hostile message flood the log. Asserted against the CONSTANT
+      // (PressResponder.MaxMessageIdChars, itself EmailSender.MaxThreadingIdChars) rather than a
+      // copied number, so re-deriving the cap elsewhere cannot silently diverge from this pin.
+      val overLong = "<" + ("a" * (PressResponder.MaxMessageIdChars + 50)) + "@mail>"
+      (for {
+        _              <- cleanDb
+        (routes, _, _) <- makeRoutes(liveCfg)
+        body =
+          s"""{"from":"ooo@example-paper.test","subject":"Automatic reply","text":"away","messageId":${overLong.toJson},"loopGuard":"auto_submitted"}"""
+        _    <- postInbound(routes, body, Some(sign(body)))
+        logs <- ZTestLogger.logOutput
+      } yield {
+        val line = logs.find(e => e.message().contains("press loop guard")).map(_.message())
+        assertTrue(
+          // The truncated prefix is logged...
+          line.exists(_.contains("message-id=" + overLong.take(PressResponder.MaxMessageIdChars))),
+          // ...and the full attacker-supplied value is NOT, so the cap actually bit.
+          line.exists(!_.contains(overLong)),
+        )
+      }).provideSome[TestDatabase.AllRepos & EmbeddedPostgres & Clock & Transactor[Task]](
+        ZTestLogger.default,
+      )
+    },
     test("#2442: a real journalist's message (no marker, empty marker) still dispatches") {
       for {
         _                  <- cleanDb
