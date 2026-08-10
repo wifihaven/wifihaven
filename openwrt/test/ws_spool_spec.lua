@@ -157,14 +157,18 @@ describe("ws_spool.append_bounded + drain", function()
     end
   end)
 
-  it("never splices a partial append into the next frame", function()
+  it("never splices a partial append into the next frame, and loses nothing to it", function()
     -- The plain-append writer runs on every append below the cap. A short write
-    -- there leaves a partial line that the NEXT append concatenates onto, and the
-    -- drain ships the splice as a frame.
+    -- there leaves a partial line on disk; the next append must not concatenate
+    -- onto it, and must not lose the frame it is carrying either.
     local fs = new_fs()
     local state = {}
-    ws_spool.append_bounded("/tmp/sp", "line1xxxx", 1e6, fs.open, fs.rename)
-    ws_spool.drain("/tmp/sp", state, fs.open)
+    local seen = {}
+    local function drain()
+      for _, l in ipairs(ws_spool.drain("/tmp/sp", state, fs.open)) do seen[l] = true end
+    end
+    ws_spool.append_bounded("/tmp/sp", "line1xxxx", 1e6, fs.open, fs.rename, fs.remove)
+    drain()
 
     local realopen = fs.open
     local broken = true
@@ -180,15 +184,60 @@ describe("ws_spool.append_bounded + drain", function()
       end
       return h
     end
-    assert.is_nil(ws_spool.append_bounded("/tmp/sp", "line2xxxx", 1e6, fs.open, fs.rename))
+    assert.is_nil(ws_spool.append_bounded("/tmp/sp", "line2xxxx", 1e6, fs.open, fs.rename, fs.remove))
     broken = false
     fs.open = realopen
-    ws_spool.append_bounded("/tmp/sp", "line5xxxx", 1e6, fs.open, fs.rename)
+    drain()
 
-    for _, l in ipairs(ws_spool.drain("/tmp/sp", state, fs.open)) do
+    ws_spool.append_bounded("/tmp/sp", "line5xxxx", 1e6, fs.open, fs.rename, fs.remove)
+    drain()
+
+    for l in pairs(seen) do
       assert.is_true(l:match("^line%d+xxxx$") ~= nil,
                      "spliced frame shipped: " .. string.format("%q", l))
     end
+    -- The frames the caller was TOLD succeeded must both be delivered. line2 was
+    -- refused, so it went out over HTTP and is exempt.
+    assert.is_true(seen["line1xxxx"], "line1xxxx was lost")
+    assert.is_true(seen["line5xxxx"], "line5xxxx was lost")
+    assert.is_nil(fs.data["/tmp/sp.tmp"], "a .tmp was left in tmpfs")
+  end)
+
+  it("does not lose a frame a drain already consumed before a short append", function()
+    -- The shape that made the previous repair worse than doing nothing: the drain
+    -- lands between a complete-but-unaccounted write and the failure, so it has
+    -- already shipped bytes. Nothing may remove them afterwards, or the reader's
+    -- cursor sits past content the file no longer holds and the NEXT frame is
+    -- skipped in silence.
+    local fs = new_fs()
+    local state = {}
+    local seen = {}
+    local function drain()
+      for _, l in ipairs(ws_spool.drain("/tmp/sp", state, fs.open)) do seen[l] = true end
+    end
+    ws_spool.append_bounded("/tmp/sp", "line1xxxx", 1e6, fs.open, fs.rename, fs.remove)
+    drain()
+
+    -- close() fails AFTER the whole entry flushed: a complete line the ledger
+    -- never counted, which a drain in the window will consume.
+    local realopen = fs.open
+    local broken = true
+    fs.open = function(path, mode)
+      local h = realopen(path, mode)
+      if h and broken and path == "/tmp/sp" and (mode or ""):match("a") then
+        h.close = function() drain(); return nil end
+      end
+      return h
+    end
+    assert.is_nil(ws_spool.append_bounded("/tmp/sp", "line2xxxx", 1e6, fs.open, fs.rename, fs.remove))
+    broken = false
+    fs.open = realopen
+
+    ws_spool.append_bounded("/tmp/sp", "line3xxxx", 1e6, fs.open, fs.rename, fs.remove)
+    ws_spool.append_bounded("/tmp/sp", "line4xxxx", 1e6, fs.open, fs.rename, fs.remove)
+    drain()
+    assert.is_true(seen["line3xxxx"], "line3xxxx silently lost after the drain window")
+    assert.is_true(seen["line4xxxx"], "line4xxxx silently lost after the drain window")
   end)
 
   it("keeps the spool intact when the rebuilt copy cannot be written", function()

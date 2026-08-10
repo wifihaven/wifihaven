@@ -141,20 +141,6 @@ local function bump_ledger(path, bytes, open_fn)
   return true
 end
 
--- rewind(path, content, …) — restore the spool to `content` after a partial
--- write, published atomically so a reader never observes the torn state. Used
--- only on the plain-append failure path; a failure here leaves the fragment,
--- which is no worse than not trying.
-local function rewind(path, content, open_fn, rename_fn, remove_fn)
-  local tmp = path .. ".tmp"
-  local f = open_fn(tmp, "w")
-  if not f then return false end
-  local ok = f:write(content) and f:close()
-  if not ok then remove_fn(tmp); return false end
-  if not rename_fn(tmp, path) then remove_fn(tmp); return false end
-  return true
-end
-
 -- append_bounded(path, line, max_bytes, open_fn, rename_fn, remove_fn)
 --   → ok, dropped, ledger_ok
 --
@@ -170,6 +156,20 @@ function M.append_bounded(path, line, max_bytes, open_fn, rename_fn, remove_fn)
   local entry = line .. "\n"
   local existing = slurp(path, open_fn) or ""
   local dropped = 0
+
+  -- #2634: a partial tail — content not ending in a newline — can only be the
+  -- prefix of an append we already reported as FAILED. drain() only ever consumes
+  -- complete lines, so those bytes are by construction unconsumable: dropping them
+  -- removes nothing any reader can have seen, and it is the one repair that is
+  -- safe against a cursor we cannot see. Doing it here rather than at the failure
+  -- also means no second copy of the spool is allocated at the moment tmpfs just
+  -- reported ENOSPC.
+  --
+  -- It has to go through the rebuild+rename branch below, which publishes the
+  -- stripped content and this entry as one atomic write. Appending would splice
+  -- onto the fragment, which is the whole bug.
+  local torn = #existing > 0 and existing:sub(-1) ~= "\n"
+  if torn then existing = existing:match("^.*\n") or "" end
   -- #2634: the ledger is bumped only once the entry is READABLE — after the
   -- append, or after the rename that publishes the rewritten spool.
   --
@@ -197,7 +197,7 @@ function M.append_bounded(path, line, max_bytes, open_fn, rename_fn, remove_fn)
   -- tracked separately rather than bolted on here.
   local ledger_ok = true
 
-  if #existing + #entry > max_bytes then
+  if torn or #existing + #entry > max_bytes then
     -- Collect existing whole lines (drop any partial tail) and evict from the
     -- front until existing + entry fits the cap.
     local lines = {}
@@ -254,22 +254,16 @@ function M.append_bounded(path, line, max_bytes, open_fn, rename_fn, remove_fn)
   -- Same write+close check as the eviction writer above, on the path that runs on
   -- every append BELOW the cap — i.e. most of them.
   --
-  -- Detecting the short write is not enough: `write` is buffered, so a failure
-  -- part-way (or a `close` that fails at flush) has ALREADY put a prefix of the
-  -- entry on disk. Returning here and leaving it means the next append
-  -- concatenates onto the fragment and the drain ships the splice
-  -- ("lineline5xxxx") as if it were a frame — plus, once the cap engages, the
-  -- un-written remainder is never accounted, `written - size` under-shoots and a
-  -- later frame is silently skipped. A return value cannot un-write bytes, so
-  -- REPAIR: rewind the spool to exactly what it held before this append. Lua 5.1
-  -- has no ftruncate, so that is a rewrite — but only on this failure path, and
-  -- `existing` is already in hand from the cap check above.
+  -- Detecting the short write is not enough on its own: `write` is buffered, so a
+  -- failure part-way has ALREADY put a prefix of the entry on disk, and the next
+  -- append would concatenate onto that fragment. The repair is at the TOP of the
+  -- next append (see `torn`), not here — undoing it here would mean rewriting the
+  -- spool SHORTER, and a shrink is the one file operation the stream-offset
+  -- ledger cannot express, so a reader that had already consumed those bytes
+  -- would skip the following frame.
   local wrote = af:write(entry)
   local closed = af:close()
-  if not (wrote and closed) then
-    rewind(path, existing, open_fn, rename_fn, remove_fn)
-    return nil, 0, ledger_ok
-  end
+  if not (wrote and closed) then return nil, 0, ledger_ok end
   ledger_ok = bump_ledger(path, #entry, open_fn)
   if not ledger_ok then return nil, 0, false end
   return true, 0, ledger_ok
