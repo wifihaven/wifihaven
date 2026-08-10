@@ -94,7 +94,10 @@ object SupportDispatchCompletionSpec
       clock       <- ZIO.service[Clock]
       plainRec    <- PlainClient.recorder
       dispRec     <- CloudAgentDispatcher.recorder
-      tracker     <- DispatchTracker.make(DispatchTracker.deadAfterFor(liveCfg))
+      tracker     <- DispatchTracker.make(
+        DispatchTracker.deadAfterFor(liveCfg),
+        wifihaven.api.observability.AgentTokenRejection.Channel.Support,
+      )
       responder = SupportResponder(
         liveCfg,
         hhRepo,

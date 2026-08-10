@@ -156,7 +156,10 @@ object CloudAgentDispatchFailLoudSpec
       timeStatus  <- TestLayers.timeStatusService
       consentRepo <- ZIO.service[SupportConsentRepo]
       clock       <- ZIO.service[Clock]
-      tracker     <- DispatchTracker.make(DispatchTracker.deadAfterFor(cfg))
+      tracker     <- DispatchTracker.make(
+        DispatchTracker.deadAfterFor(cfg),
+        wifihaven.api.observability.AgentTokenRejection.Channel.Support,
+      )
       dispatcher = CloudAgentDispatcher.transportFor(cfg) match {
         case CloudAgentDispatcher.Transport.ClaudeCodeCloud =>
           new CloudAgentDispatcher.ClaudeCodeCloudLive(cfg)

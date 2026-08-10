@@ -2,6 +2,7 @@ package wifihaven.api.metrics
 
 import com.zaxxer.hikari.HikariDataSource
 import wifihaven.api.db.RouterRepo
+import wifihaven.api.support.DispatchTracker
 import zio.*
 import zio.metrics.*
 import zio.metrics.connectors
@@ -722,6 +723,37 @@ object MetricGuard {
     // small), matching the sibling `agent_token_rejected_total`. Expected flat ZERO: a sample means
     // an agent put a credential in text we were about to send to a customer or a journalist.
     "agent_reply_redacted_total"                    -> Set("channel", "op", "reason"),
+    // #2477 — the dispatch WATCHDOG pair, support AND press on one name (`channel`, the same
+    // code-bounded support|press enum the three series above use). Unlike everything around them
+    // these are emitted UNCONDITIONALLY, once per `DispatchTracker.sweep` tick:
+    //   agent_dispatch_unreplied   a GAUGE — dispatches outstanding past DispatchTracker.SlowAfter
+    //                              right now. The healthy value is an explicit 0, which is the
+    //                              whole point: the failure counters on *_dispatch_total move only
+    //                              when something is wrong, so before this a healthy queue, a
+    //                              disabled responder and a dead sweep fiber were the same
+    //                              (absent) picture. A sustained non-zero is a customer waiting.
+    //   agent_dispatch_sweeps_total  the sweep's own heartbeat, and the reason the zero above can
+    //                              be believed: a gauge keeps exporting its last value for the
+    //                              life of the process, so a stopped sweep would publish a stale
+    //                              reassuring 0 indefinitely. Flat counter ⇒ nothing is looking.
+    // No per-thread / per-household / per-transport label on either — `channel` is the whole space.
+    //
+    // KEYED OFF THE CONSTANTS, not re-typed as literals like every entry around them. That is a
+    // deliberate exception, because these two are the entries the #1849 static guard cannot see:
+    // `MetricCardinalityGuardSpec`'s `GuardEmit` regex only matches an emit site that spells its
+    // series name as an inline string literal, and both of these pass the constant instead. (Do not
+    // write an example of that call shape anywhere in api/src, including in a comment: the regex
+    // scans source text and reads the example as a real emitter of a series named after the
+    // placeholder.) A renamed constant would fall through `check` to `reject("unknown_name")` and
+    // emit NOTHING — with no compile error, no test failure, and (for the gauge, which no alert
+    // watches) a permanently empty panel an operator reads as "no customer is waiting" — exactly
+    // the #2546 absence-reads-as-health outcome this pair exists to prevent. So the name is
+    // single-sourced rather than kept in sync by hand
+    // (docs/process/single-source-of-truth.md: COLLAPSE over "keep in sync"). Safe for object
+    // initialisation: `DispatchTracker`'s object body touches `AppMetrics` only inside method
+    // bodies, so there is no init cycle.
+    DispatchTracker.UnrepliedGauge                  -> Set("channel"),
+    DispatchTracker.SweepsCounter                   -> Set("channel"),
     // #2438 — the press dispatcher-level dispatch outcome, the press twin of
     // `support_dispatch_total` (same shared CloudAgentObservability envelope, separate series so the
     // public-press audience graphs + alerts independently). Same bounded {outcome,transport} space.
@@ -1166,6 +1198,23 @@ object AppMetrics {
     MetricGuard.counter(
       "support_dispatch_total",
       Map("outcome" -> outcome) ++ transport.map("transport" -> _),
+    )
+
+  // #2477 — the dispatch WATCHDOG, emitted from `DispatchTracker.sweep` on EVERY tick (see the
+  // allowlist entries above for the pair's rationale, and `DispatchTracker.sweep` for how the gauge
+  // is counted). Names are single-sourced on `DispatchTracker.UnrepliedGauge` / `.SweepsCounter`,
+  // which the dashboards and alert rules also quote. `channel` is the ONLY label.
+  def agentDispatchUnreplied(channel: String, outstanding: Int): UIO[Unit] =
+    MetricGuard.gauge(
+      DispatchTracker.UnrepliedGauge,
+      Map("channel" -> channel),
+      outstanding.toDouble,
+    )
+
+  def agentDispatchSweep(channel: String): UIO[Unit] =
+    MetricGuard.counter(
+      DispatchTracker.SweepsCounter,
+      Map("channel" -> channel),
     )
 
   // ── #2419: in-conversation data-access consent ────────────────────────────────

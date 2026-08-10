@@ -1,5 +1,6 @@
-# Warning (notify, look-today) alert rules — W1–W10
-# (W1–W5: #1405, parent #1381. W6–W7: #2416. W8: #2488. W9: #2553. W10: #2646.)
+# Warning (notify, look-today) alert rules — W1–W12
+# (W1–W5: #1405, parent #1381. W6–W7: #2416. W8: #2488. W9: #2553. W10: #2646.
+#  W11–W12: #2477.)
 # Implements docs/design/alerting.md §7.2.
 #
 # Every expression is grounded in a series emitted today (§2 "alert only on
@@ -31,11 +32,15 @@
 # that stopped updating) rather than on an error being counted. Read its own
 # comment block below before changing it.
 #
-# All ten carry severity=warning + env=prod labels, which the notification
+# All twelve carry severity=warning + env=prod labels, which the notification
 # policy in alerting.tf routes to the wifihaven-warning (email) contact point.
 # None of these are ratio queries, so unlike the critical set (§7.1) they need
 # no zero-traffic guard — a counter that never increments is simply absent
-# (no_data_state = OK), which must not fire.
+# (no_data_state = OK), which must not fire. W12 (#2477) is the ONE deliberate
+# inversion of that reading: it is a detector-liveness rule, so for it absence is
+# the FAILURE, and it therefore turns absence into a value inside its own
+# expression (`absent(...)`) rather than relying on a no_data verdict the group
+# template does not — and for W10's sake must not — provide.
 #
 # Threshold model: each rule is a two-node Grafana managed condition — an
 # instant Prometheus query (ref A) feeding a threshold expression (ref C, the
@@ -43,7 +48,7 @@
 # and the rate/increase window come straight from §7.2.
 
 locals {
-  # Keyed w1..w10 (stable resource addressing). `window_s` bounds the data fetch
+  # Keyed w1..w12 (stable resource addressing). `window_s` bounds the data fetch
   # and must cover the rate/increase window in `expr` (for W10, its
   # `last_over_time` lookback). `paused` ships W5 off.
   warning_rules = {
@@ -279,6 +284,91 @@ locals {
       for     = "24h"
       paused  = false
       summary = "A router has not taken an agent update that the rest of the fleet already has, for a full day — it is running a version no peer is on and has never reported the version they are on. The agent otherwise looks healthy (last_seen_at fresh, policy applied, usage reported), which is why nothing else catches this. It will never receive a security fix until someone intervenes. FIRST, confirm which router is actually the odd one out on the router-fleet dashboard's version-distribution panel: a household enrolled while another router was already lagging has no pre-split history and gets named here too (known limit 3 on the rule) — the box to fix is the one on the OLDER version. Then on that box, run `wifihaven-update` by hand and read the failure. A common cause is a missing /etc/wifihaven/keys/release.pub (signature verification fails closed, #2078) after a pre-#2559 uninstall/reinstall (#2554)."
+    }
+    # W11/W12 (#2477) — the dispatch WATCHDOG, the pair that makes "a customer wrote to
+    # support and got nothing back" an alertable state rather than something noticed when
+    # they complain again. Read the two together: W11 is the failure, W12 is the proof that
+    # W11 could have fired at all.
+    #
+    # W11 — a cloud-agent session that accepted the trigger and DIED. The threshold is not
+    # a tuned number: `outcome="no_callback"` is emitted by DispatchTracker.sweep only past
+    # the agent-token TTL (`support.agentTokenTtlMinutes`, 24h by default via
+    # AgentTokenTtl.DefaultMinutes), which is the first instant at which silence is
+    # unambiguous. BEFORE it, a claude-code-cloud run suspended on subscription usage limits
+    # can still resume and answer — #2473 observed a resumed run posting 2.5h after mint, and
+    # AgentTokenTtl records that an evening pause resumes the next morning. AFTER it that
+    # resumed run's callback 401s, so the answer can never reach the customer. So every
+    # sample is a customer who got NOTHING, gt=0 is right, and the summary can safely tell
+    # the operator to reply by hand: past the TTL a late agent reply cannot land, so a hand
+    # reply cannot produce the duplicate that made #2472 decline auto-retry.
+    # `for = 15m` matches W6-W8 and only debounces a scrape blip — the underlying condition
+    # already waited 24h.
+    # SUPPORT ONLY, deliberately. The press twin `press_dispatch_total{outcome="no_callback"}`
+    # is not emitted yet: press dispatch is not paired with its callback until #2517, whose
+    # token binds a reply-target email address rather than a Plain thread id. Authoring a
+    # press rule now would violate this file's own §2 "alert only on series that exist" and
+    # would sit permanently in no-data. NOTHING ALERTS ON A MISSING PRESS WATCHDOG UNTIL
+    # #2517 — not W11, and not W12 below either (its `absent` arm names channel="support",
+    # and its first arm cannot produce a press instance while no press sweep exists). Said
+    # plainly rather than left implied: an unwatched gap that reads as a watched one is the
+    # failure this whole pair exists to prevent.
+    w11 = {
+      title    = "W11 A support customer got NO answer (dispatch died)"
+      expr     = "sum(increase(support_dispatch_total{env=\"prod\",outcome=\"no_callback\"}[1h]))"
+      window_s = 3600
+      gt       = 0
+      for      = "15m"
+      paused   = false
+      summary  = "A cloud-agent session accepted the support trigger and then died — no /api/support/agent/{reply,escalate,request-consent} call ever arrived within the agent-token TTL (24h). THE CUSTOMER GOT NOTHING, and nothing retries: auto-retry was declined in #2472 (a second billed session plus a duplicate-reply risk the #2403 loop guard cannot suppress). ACTION FOR A HUMAN: find the thread in the API log line `support dispatch NEVER CALLED BACK`, which names the thread, household and transport, then read it in Plain and reply by hand. That is safe at this threshold and only at this threshold — the dead session's token is expired, so it cannot come back and answer on top of you. Cross-check the Support dashboard's unreplied-dispatch panel for whether more are queued behind it."
+    }
+    # W12 — the DETECTOR-LIVENESS rule, and the reason this pair is two rules rather than
+    # one. `agent_dispatch_unreplied` is a gauge: a gauge keeps exporting its last written
+    # value for as long as the process lives, so a sweep fiber that died would publish a
+    # stale, reassuring 0 forever and W11's counter would simply stop moving. Absence and
+    # health would again be the same picture — the #2546 shape, where #2469's prompt-drift
+    # detector has never emitted a sample in ANY environment and its silence has read as
+    # health since the day it shipped. This rule exists so #2477 does not become the third.
+    #
+    # THE EXPRESSION HAS TWO ARMS, because two different failures both mean "nothing is
+    # looking" and neither is caught by the group's no_data_state = OK:
+    #   1. `min by (channel)` of the increase `== bool 0` — the sweep counter is still being
+    #      SCRAPED but has stopped advancing (a dead fiber inside a live process). `bool` is
+    #      load-bearing: a bare `== 0` returns the value 0, which gt=0 would read as healthy;
+    #      `== bool` turns the comparison itself into the 1 that fires. `min` and not `sum`:
+    #      the API runs at numInstances: 1 today (render.yaml), where the two are identical,
+    #      but under a scale-out one live instance's increases would carry a `sum` above zero
+    #      and hide a dead fiber on its sibling — the exact silence this rule exists to catch.
+    #      Grouped `by (channel)` so each responder gets its own alert instance and a stalled
+    #      press sweep cannot be masked by a healthy support one.
+    #   2. `absent(...)` — the series is gone entirely (the process is down, the responder
+    #      was never enabled, or the metric was renamed/dropped in a refactor). no_data_state
+    #      is OK for the whole group and must stay that way for W10, so absence has to be
+    #      turned into a VALUE here rather than into a no-data verdict.
+    # The absent arm names `channel="support"` explicitly: it asserts which channels are
+    # EXPECTED to be sweeping, which is a claim only the code can make and Prometheus cannot
+    # infer from an empty result. #2517 adds a press arm here when it wires a press-channel
+    # DispatchTracker; until then press has no sweep, arm 1 produces no press instance, and
+    # the press dashboard's watchdog panels correctly read no-data.
+    # `for = 30m` is 30 sweep intervals (DispatchTracker.SweepInterval = 60s) — long enough
+    # that a deploy, a restart or a scrape gap cannot fire it, short enough that a dead
+    # watchdog is caught the same hour rather than the next time someone opens the dashboard.
+    #
+    # EXPECT ONE FIRING AT ROLLOUT, and do not "fix" it. master-grafana.yml and
+    # master-api-ui.yml are independent pipelines, so this rule applies before the API build
+    # that first emits `agent_dispatch_sweeps_total` reaches prod. Until it does, the absent
+    # arm is TRUE — correctly: nothing is sweeping yet. Verified against the live stack while
+    # authoring (2026-08-09): the expression parses and returns 1 for
+    # {channel="support",env="prod"}, which is both arms doing their job. It resolves on its
+    # own once the API deploy lands, with no rule change. `for = 30m` keeps the gap quiet
+    # unless the API deploy is genuinely stuck.
+    w12 = {
+      title    = "W12 The dispatch watchdog stopped reporting"
+      expr     = "(min by (channel) (increase(agent_dispatch_sweeps_total{env=\"prod\"}[15m])) == bool 0) or absent(agent_dispatch_sweeps_total{env=\"prod\",channel=\"support\"})"
+      window_s = 900
+      gt       = 0
+      for      = "30m"
+      paused   = false
+      summary  = "The #2477 dispatch watchdog has stopped ticking, so NOTHING is watching for a customer left unanswered by a dead cloud-agent session — and because the unreplied count is a gauge, its dashboard panel is still showing you the last value it ever wrote, which is probably a reassuring 0. Treat W11 as unable to fire until this clears. Rule out the benign causes first: the support responder is flag-off in this environment (Main.scala forks the sweep only when support.responderEnabled is true), or the API is down (C5 would also be firing). Otherwise the sweep fiber died inside a live process — grep the API log for a failure in the DispatchTracker loop and redeploy. NOTE this rule covers SUPPORT only, because support is the only channel with a sweep: press dispatch is not paired with its callback until #2517, so a missing press watchdog alerts nowhere today and #2517 is what adds the arm."
     }
   }
 }

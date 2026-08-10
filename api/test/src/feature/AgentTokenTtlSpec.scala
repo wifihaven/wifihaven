@@ -116,7 +116,10 @@ object AgentTokenTtlSpec
       plainRec           <- PlainClient.recorder
       ghRec              <- GithubIssueClient.recorder
       dispRec            <- CloudAgentDispatcher.recorder
-      tracker            <- DispatchTracker.make(DispatchTracker.deadAfterFor(supportCfg))
+      tracker            <- DispatchTracker.make(
+        DispatchTracker.deadAfterFor(supportCfg),
+        wifihaven.api.observability.AgentTokenRejection.Channel.Support,
+      )
       responder = SupportResponder(
         supportCfg,
         hhRepo,

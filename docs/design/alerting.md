@@ -520,6 +520,84 @@ stated alongside.
   (expect empty)", the latter running the rule's own expression, on the
   router-fleet dashboard.
 
+**W11/W12. The dispatch watchdog**
+([#2477](https://github.com/wifihaven/wifihaven/issues/2477))
+
+Two rules, and they only make sense as a pair: W11 is the failure, W12 is the
+proof that W11 was in a position to fire.
+
+- **W11 — a support customer got no answer.**
+  ```promql
+  sum(increase(support_dispatch_total{env="prod",outcome="no_callback"}[1h]))
+  ```
+  `gt = 0`, `for = 15m`. Every sample is a cloud-agent session that accepted the
+  trigger and died, so the customer got nothing and nothing retries
+  ([#2472](https://github.com/wifihaven/wifihaven/issues/2472) declined
+  auto-retry: a second billed session plus a duplicate-reply risk the
+  [#2403](https://github.com/wifihaven/wifihaven/issues/2403) loop guard cannot
+  suppress).
+  **The threshold is not tuned, it is inherited.** `no_callback` is emitted only
+  past the agent-token TTL (`support.agentTokenTtlMinutes`, 24h via
+  `AgentTokenTtl.DefaultMinutes`), which is the first instant at which silence is
+  unambiguous — before it, a `claude-code-cloud` run suspended on subscription
+  usage limits can still resume and answer
+  ([#2473](https://github.com/wifihaven/wifihaven/issues/2473) observed a
+  resumed run posting 2.5h after mint, and an evening pause resuming the next
+  morning); after it, that run's callback 401s and the answer can never land.
+  That is also what makes the summary's "reply by hand" instruction safe: past
+  the TTL a late agent reply cannot arrive on top of the operator's.
+  `for = 15m` only debounces a scrape blip; the condition already waited a day.
+  **Support only, deliberately.** The press twin
+  `press_dispatch_total{outcome="no_callback"}` is not emitted:  press dispatch
+  is not paired with its callback until
+  [#2517](https://github.com/wifihaven/wifihaven/issues/2517) (its token binds a
+  reply-target address, not a Plain thread id). Authoring a press rule now would
+  break [§2](#2-principles)'s "alert only on series that exist" and sit
+  permanently in no-data. **Nothing alerts on a missing press watchdog until
+  #2517** — W12 does not cover it either (its `absent` arm names
+  `channel="support"`, and its first arm cannot produce a press instance when no
+  press sweep exists). Stated rather than left implicit, because an unwatched
+  gap that reads as a watched one is the failure this whole pair exists to
+  prevent.
+- **W12 — the watchdog stopped reporting.**
+  ```promql
+  (min by (channel) (increase(agent_dispatch_sweeps_total{env="prod"}[15m])) == bool 0)
+    or absent(agent_dispatch_sweeps_total{env="prod",channel="support"})
+  ```
+  `gt = 0`, `for = 30m` (30 × `DispatchTracker.SweepInterval`, so a deploy,
+  restart or scrape gap cannot fire it).
+  **Why a second rule at all.** `agent_dispatch_unreplied` is a gauge, and a
+  gauge keeps exporting its last written value for the life of the process. A
+  sweep fiber that died would therefore publish a stale, reassuring `0` forever
+  while W11's counter simply stopped moving — absence and health back to being
+  one picture. That is the
+  [#2546](https://github.com/wifihaven/wifihaven/issues/2546) shape, where
+  [#2469](https://github.com/wifihaven/wifihaven/issues/2469)'s prompt-drift
+  detector has never emitted a sample in *any* environment and its silence has
+  read as health since it shipped. W12 exists so #2477 is not the third.
+  **Two arms, two different failures.** `== bool 0` catches a dead fiber inside
+  a live process (the counter is still scraped but no longer advances) —
+  `bool` is load-bearing, since a bare `== 0` returns the value `0`, which
+  `gt = 0` reads as healthy. `absent(...)` catches the series being gone
+  entirely; the group's `no_data_state = OK` must stay as it is for W10's sake,
+  so absence has to become a *value* inside the expression rather than a no-data
+  verdict. `by (channel)` gives each responder its own alert instance, so a
+  stalled press sweep cannot be masked by a healthy support one, and `min`
+  rather than `sum` keeps that true under a scale-out (at `numInstances: 1`
+  they are identical, but a `sum` would let one live instance's increases hide
+  a dead fiber on its sibling). The `absent` arm names `channel="support"`
+  explicitly because it asserts which channels are *expected* to sweep — a
+  claim only the code can make and PromQL cannot infer from an empty result;
+  #2517 adds a press arm when it wires a press tracker.
+- Paired panels (per
+  [`docs/process/instrumentation.md#metrics-need-a-dashboard`](../process/instrumentation.md#metrics-need-a-dashboard)):
+  "Customers waiting on an unanswered dispatch" and "Watchdog heartbeat (10m)"
+  on the support dashboard. The press twins are deliberately NOT shipped here:
+  the press series has no producer until #2517, and
+  [`instrumentation.md`](../process/instrumentation.md) §2 says not to ship
+  no-data panels for metrics that are not emitted yet. They land with the
+  tracker, alongside W12's press arm.
+
 ## 8. Gaps — metrics not yet emitted
 
 These are alerts worth having whose metric does not (reliably) exist yet. They
@@ -560,8 +638,9 @@ Filed under the **Alerting & Paging** epic, one per coherent chunk:
    (+ W5 disabled, bound to its readiness issue). Extended by
    [#2416](https://github.com/wifihaven/wifihaven/issues/2416) with W6–W7, by
    [#2488](https://github.com/wifihaven/wifihaven/issues/2488) with W8, by
-   [#2553](https://github.com/wifihaven/wifihaven/issues/2553) with W9, and by
-   [#2646](https://github.com/wifihaven/wifihaven/issues/2646) with W10.
+   [#2553](https://github.com/wifihaven/wifihaven/issues/2553) with W9, by
+   [#2646](https://github.com/wifihaven/wifihaven/issues/2646) with W10, and by
+   [#2477](https://github.com/wifihaven/wifihaven/issues/2477) with W11–W12.
 5. **[#1405](https://github.com/wifihaven/wifihaven/issues/1405) —
    Deploy-failure signal** ([§8](#8-gaps--metrics-not-yet-emitted)): extend
    `deploy-webhook` to emit `render_deploy_total{lifecycle}` (or adopt native

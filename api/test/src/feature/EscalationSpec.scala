@@ -134,7 +134,10 @@ object EscalationSpec
       emailRef    <- Ref.make(List.empty[EmailSender.Sent])
       plainRec    <- PlainClient.recorder
       dispRec     <- CloudAgentDispatcher.recorder
-      tracker     <- DispatchTracker.make(DispatchTracker.deadAfterFor(cfg))
+      tracker     <- DispatchTracker.make(
+        DispatchTracker.deadAfterFor(cfg),
+        wifihaven.api.observability.AgentTokenRejection.Channel.Support,
+      )
       notifier  = new Notifier.EmailNotifier(
         hsRepo,
         sender.getOrElse(EmailSender.recording(emailRef)),
