@@ -44,7 +44,7 @@ object AgentPromptVersion {
    * channel's `deploy/<channel>-agent/agent.yaml` — bump the two together, in the same commit.
    */
   enum Channel(val wire: String, val expected: String) {
-    case Support extends Channel("support", "support-2026-08-09.1")
+    case Support extends Channel("support", "support-2026-08-09.2")
     case Press   extends Channel("press", "press-2026-07-28.1")
   }
 
@@ -61,7 +61,7 @@ object AgentPromptVersion {
 
   /**
    * Longest reported version we will echo into a log line. A real marker is ~20 chars
-   * (`support-2026-08-09.1`); this is a generous ceiling, not a format rule — the value is
+   * (`support-2026-08-09.2`); this is a generous ceiling, not a format rule — the value is
    * agent-supplied, so it is bounded rather than trusted.
    */
   val MaxLoggedVersion = 64

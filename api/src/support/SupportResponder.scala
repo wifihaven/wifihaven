@@ -9,6 +9,7 @@ import wifihaven.api.db.{
   Household,
   HouseholdBillingRepo,
   HouseholdRepo,
+  HouseholdSettingsRepo,
   ProfileRepo,
   SupportConsentRepo,
   UserRepo,
@@ -16,7 +17,8 @@ import wifihaven.api.db.{
 import wifihaven.api.metrics.AppMetrics
 import wifihaven.api.notify.{EscalationChannel, EscalationKind, EscalationNotice, Notifier}
 import wifihaven.api.observability.AgentTokenRejection
-import wifihaven.shared.{Clock, UserRole}
+import wifihaven.api.policy.{PolicyService, ProfileDayState, TimeStatusService}
+import wifihaven.shared.{Clock, MacBlockReason, UserRole}
 import wifihaven.shared.types.HouseholdId
 import zio.*
 import zio.json.*
@@ -71,6 +73,9 @@ import java.time.Instant
  *     rate-limited per-thread + globally (#2241 compensating control + volume alert feed);
  *   - household reads require the token's consent scope and derive the household FROM the verified
  *     token — cross-tenant reads are impossible by construction (#2107/#2108 isolation substrate).
+ *     Since #2665 that read also carries TODAY's per-profile screen time (used / limit / remaining
+ *     / blocked-right-now) and the device→profile map, because the consent it costs the customer
+ *     was buying them nothing on the question this desk is asked most.
  *
  * External I/O (Plain, GitHub, Anthropic) is behind swappable traits stubbed in specs; the Clock is
  * injected (docs/process/testing.md).
@@ -84,6 +89,18 @@ final case class SupportResponder(
     billingRepo: HouseholdBillingRepo,
     deviceRepo: DeviceRepo,
     profileRepo: ProfileRepo,
+    // #2665: the two inputs the consented read needs to answer "how much screen time did X use
+    // today?" — the household's daily-reset settings (which fix what "today" MEANS for this
+    // tenant) and the canonical day-state primitive. NOT defaulted to a noop: a silently-zero
+    // usage read is exactly the confidently-wrong answer #2462 exists to prevent, and
+    // no-dark-by-default forbids a dependency whose absence degrades a feature to a plausible lie.
+    hsRepo: HouseholdSettingsRepo,
+    // The SAME `TimeStatusService` the policy snapshot's TimeLimit decision and `GET /api/blocked`
+    // read. There is no second usage computation here and there must never be one — screen-time
+    // accounting has drifted between readers three times already (#2016 over-count, #2068
+    // under-count, #2274 phantom usage), and a support answer that disagrees with the dashboard the
+    // customer is looking at is worse than no answer (docs/process/single-source-of-truth.md).
+    timeStatus: TimeStatusService,
     // #2419: the server-side per-(household, thread) data-access consent record (V84). The ONLY
     // thing that widens a minted token's `dataAccess` scope beyond the widget-stamped flag — and
     // the only writer is the CUSTOMER's own JWT-authenticated grant ([[recordConsent]]).
@@ -857,18 +874,42 @@ final case class SupportResponder(
       // The distinction is FAILURE-vs-EMPTY, not zero-vs-nonzero. A household that genuinely has
       // nothing still succeeds here with real zeros — that answer is TRUE and the agent should give
       // it. Only a read that threw is refused.
+      //
+      // #2665 adds three reads to the four, on the SAME fail-loud footing: the household's settings
+      // (what "today" means for this tenant), and `dayStateAll`, the canonical per-profile day
+      // state. `dayStateAll` is the very function the policy snapshot's TimeLimit decision and
+      // `GET /api/blocked` call — no query is added and no second usage computation exists.
       (for {
         household <- householdRepo.findById(hh)
         billing   <- billingRepo.findByHousehold(hh)
         devices   <- deviceRepo.listAllForHousehold(hh)
         profiles  <- profileRepo.listAllForHousehold(hh)
+        settings  <- hsRepo.getForHousehold(hh)
+        now       <- clock.instant
+        today = PolicyService.householdLocalDate(now, settings)
+        // Every read here is `hh`-parameterised — including this one, whose INNER reads were
+        // scoped by #2257/#2264 — and `hh` is the verified token's household, the only one in
+        // reach. The join below then keys day-states by THIS household's own profile ids, so a
+        // foreign row is unreachable even if one were ever returned.
+        //
+        // Deliberately NOT wrapped in `HouseholdScoped` (#2630). That type exists to make a
+        // FAN-OUT safe: it stops a loop over many recipients handing household A's value to
+        // household B, because the payload cannot be read without naming the recipient. Here there
+        // is exactly one household in scope and it is the recipient — wrapping and immediately
+        // unwrapping with the same `claims.householdId` is a tautology, and it buys an unreachable
+        // failure branch that would meter `household_read{outcome="error"}` (the #2462 "a repo
+        // query threw" signal) for a state that cannot occur. It becomes the right tool the moment
+        // this read serves a household it did not derive from the token.
+        states <- timeStatus.dayStateAll(hh, now, today, settings)
       } yield HouseholdSummary(
         name = household.map(_.name).getOrElse(""),
         plan = billing.map(_.status),
         founding = billing.map(_.founding),
         deviceCount = devices.size,
         profileCount = profiles.size,
-        profiles = profiles.map(p => ProfileSummary(p.name, p.paused)),
+        profiles = profiles.map(p => profileSummary(p.name, p.paused, states.get(p.id))),
+        devices = devices.map(d => DeviceSummary(d.name, d.profileName)),
+        date = Some(today.toString),
       )).foldZIO(
         e =>
           ZIO.logError(
@@ -889,6 +930,39 @@ final case class SupportResponder(
           ) *> AppMetrics.supportAgentAction(AgentAction.HouseholdRead, "ok").as(Right(summary)),
       )
     }
+
+  /**
+   * #2665 — project ONE profile's canonical [[ProfileDayState]] onto the wire shape. A pure
+   * projection: every number is carried through, none is recomputed, so this cannot become the
+   * second usage computation that #2016 / #2068 / #2274 each were.
+   *
+   * `state` is `None` only for a profile `dayStateAll` returned no entry for. That is the same "no
+   * state yet" the `/api/time/status/summary` route already renders as a zeroed day, and it is an
+   * EMPTY, not a failure — a failed batch never reaches here, it fails the whole read.
+   */
+  private def profileSummary(
+      name: String,
+      paused: Boolean,
+      state: Option[ProfileDayState],
+  ): ProfileSummary =
+    state.fold(ProfileSummary(name = name, paused = paused))(st =>
+      ProfileSummary(
+        name = name,
+        paused = paused,
+        usedMinutes = st.usedMinutes,
+        dailyLimitMinutes = st.dailyLimitMinutes,
+        extensionMinutes = st.extensionMinutes,
+        remainingMinutes = st.remainingMinutes,
+        blockedNow = st.blocked,
+        // `MacBlockReason.asString` — the enum's own case name (`TimeLimit`), which is exactly
+        // what `agent.yaml` tells the agent to expect, so the prompt and this field cannot drift
+        // into two vocabularies. It is NOT either wire tag: `MacBlockReason` separately carries
+        // `jsonKind` (`timeLimit` — the snapshot's JSON kind tag) and `wireKind` (`time_limit`,
+        // `unmanaged_mac` — `asWire`/`fromWire`, and the block page's `reasonClass` in
+        // `BlockedRoutes`). Do not read this field as matching either of those.
+        blockReason = st.blockReason.map(MacBlockReason.asString),
+      ),
+    )
 
   // ── #2437: escalation — the handoff that actually reaches a human ────────────
 
@@ -1854,11 +1928,58 @@ object SupportResponder {
   }
 
   /**
-   * The consented household read response — a BOUNDED account summary (name, plan, counts, profile
-   * names + pause state). Deliberately no MACs, no hostnames, no traffic, no per-device rows: it
-   * grounds a support answer without becoming an exfiltration payload if it leaks into a draft.
+   * The consented household read response — a BOUNDED account summary. Everything here is chosen
+   * because a parental-controls support answer needs it, not because it was available:
+   *
+   *   - the account frame (name, plan, founding, counts) — who we are talking to;
+   *   - per PROFILE: the authored `paused` flag plus TODAY's screen-time state (`usedMinutes`,
+   *     `dailyLimitMinutes`, `extensionMinutes`, `remainingMinutes`) and whether anything is
+   *     blocking it right now (`blockedNow` + `blockReason`). #2665: "how much screen time did X
+   *     use today?" is what the FIRST real prod support conversation asked (#2527 §B), and the
+   *     consented read could not answer it at all — the customer granted 24h of account access for
+   *     nothing;
+   *   - per DEVICE: the device's NAME and the name of the profile it belongs to. Customers ask by
+   *     DEVICE ("macbook-pro") and minutes are accounted per PROFILE, so without this join the
+   *     agent holds the number and cannot connect it to what was asked.
+   *
+   * What is deliberately still ABSENT, and should stay absent: MACs, IPs, hostnames, per-host or
+   * per-app traffic, query logs, block events, user emails, any history beyond today. Those are the
+   * fields that would turn this from "grounds a support answer" into an exfiltration payload if a
+   * session were ever hijacked, and none of them is needed for the questions this desk actually
+   * receives. Widen only against a real, recurring question — and remember a `dataAccess=true`
+   * session is refused issue filing precisely because everything here is unscrubbable by regex
+   * (#2454).
    */
-  final case class ProfileSummary(name: String, paused: Boolean)
+  final case class ProfileSummary(
+      name: String,
+      paused: Boolean,
+      // #2665 — today's state, straight off `TimeStatusService.dayStateAll`. Non-optional (with
+      // defaults only so existing constructions keep compiling): a read that could not compute
+      // these FAILS the whole request rather than answering 0 (#2462).
+      usedMinutes: Int = 0,
+      // `None` = no daily limit configured for this profile — distinct from a 0-minute cap, and the
+      // agent must say "no limit set", not "0 minutes left".
+      dailyLimitMinutes: Option[Int] = None,
+      extensionMinutes: Int = 0,
+      // `None` iff `dailyLimitMinutes` is None — there is nothing to remain against.
+      remainingMinutes: Option[Int] = None,
+      // The EFFECTIVE right-now state, which is not the same fact as `paused`: a profile can be
+      // blocked by schedule or by an exhausted daily limit while `paused` is false.
+      blockedNow: Boolean = false,
+      // Why, when `blockedNow` — `Paused` | `Schedule` | `TimeLimit` | `Manual` | `Unmanaged` |
+      // `DefaultDeny` — `MacBlockReason.asString`, the enum's own case names. `agent.yaml` names
+      // exactly these six, so the prompt and this field stay one vocabulary. Distinct from the two
+      // wire tags (`jsonKind` / `wireKind`); see the note at the `blockReason` assignment.
+      blockReason: Option[String] = None,
+  )
+
+  /**
+   * #2665 — a device, as the agent needs to see it: the name the customer will use for it and the
+   * profile whose minutes govern it. No MAC, no IP, no last-seen — identifying hardware is not what
+   * answering a screen-time question requires.
+   */
+  final case class DeviceSummary(name: String, profileName: Option[String])
+
   final case class HouseholdSummary(
       name: String,
       plan: Option[String],
@@ -1866,9 +1987,18 @@ object SupportResponder {
       deviceCount: Int,
       profileCount: Int,
       profiles: List[ProfileSummary],
+      devices: List[DeviceSummary] = Nil,
+      // #2665 — the household-LOCAL date the minutes above are for (`daily_reset_tz`), so the
+      // agent states which day it is quoting instead of assuming the customer's "today" is UTC's.
+      // Always `Some` on a successful read; `Option` with a `None` default is the additive-wire
+      // shape (docs/process/wire-contract.md), not a state this endpoint produces.
+      date: Option[String] = None,
   )
   object ProfileSummary   {
     given JsonCodec[ProfileSummary] = DeriveJsonCodec.gen[ProfileSummary]
+  }
+  object DeviceSummary    {
+    given JsonCodec[DeviceSummary] = DeriveJsonCodec.gen[DeviceSummary]
   }
   object HouseholdSummary {
     given JsonCodec[HouseholdSummary] = DeriveJsonCodec.gen[HouseholdSummary]

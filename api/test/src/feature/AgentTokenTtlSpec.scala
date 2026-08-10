@@ -109,6 +109,8 @@ object AgentTokenTtlSpec
       billRepo           <- ZIO.service[HouseholdBillingRepo]
       devRepo            <- ZIO.service[DeviceRepo]
       profRepo           <- ZIO.service[ProfileRepo]
+      hsRepo             <- ZIO.service[HouseholdSettingsRepo]
+      timeStatus         <- TestLayers.timeStatusService
       consentRepo        <- ZIO.service[SupportConsentRepo]
       (clock, testClock) <- TestClock.makeWithControl(TestClock.schoolDayAfternoon)
       plainRec           <- PlainClient.recorder
@@ -122,6 +124,8 @@ object AgentTokenTtlSpec
         billRepo,
         devRepo,
         profRepo,
+        hsRepo,
+        timeStatus,
         consentRepo,
         PlainClient.recording(plainRec),
         GithubIssueClient.recording(ghRec),

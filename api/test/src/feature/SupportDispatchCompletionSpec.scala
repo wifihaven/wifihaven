@@ -88,6 +88,8 @@ object SupportDispatchCompletionSpec
       billRepo    <- ZIO.service[HouseholdBillingRepo]
       devRepo     <- ZIO.service[DeviceRepo]
       profRepo    <- ZIO.service[ProfileRepo]
+      hsRepo      <- ZIO.service[HouseholdSettingsRepo]
+      timeStatus  <- TestLayers.timeStatusService
       consentRepo <- ZIO.service[SupportConsentRepo]
       clock       <- ZIO.service[Clock]
       plainRec    <- PlainClient.recorder
@@ -100,6 +102,8 @@ object SupportDispatchCompletionSpec
         billRepo,
         devRepo,
         profRepo,
+        hsRepo,
+        timeStatus,
         consentRepo,
         PlainClient.recording(plainRec),
         GithubIssueClient.noop,
