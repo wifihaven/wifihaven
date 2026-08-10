@@ -162,6 +162,18 @@ object PressResponderSpec
       .value
       .map(_.count)
 
+  // #2467 — reads the threading-shape counter the same way `promptVersionCount` reads its own:
+  // through the ZIO metric registry, so it observes what MetricGuard ACTUALLY emitted. A metric
+  // name or label key missing from `MetricGuard.Allowed` / `KnownLabelKeys` is dropped to a no-op
+  // by `MetricGuard.check`, which is invisible in a log assertion and would leave the #2467
+  // dashboard panels permanently empty — so the pin has to be on the registry, not on the log.
+  private def threadingShapeCount(shape: String): UIO[Double] =
+    zio.metrics.Metric
+      .counter("press_reply_threading_total")
+      .tagged("shape", shape)
+      .value
+      .map(_.count)
+
   private def agentReply(
       routes: Routes[Any, Response],
       body: String,
@@ -1449,6 +1461,42 @@ object PressResponderSpec
           rows.find(_.direction == "inbound").exists(_.references.isEmpty),
           emails.head.headers.contains(Map("In-Reply-To" -> msgId, "References" -> msgId)),
         )
+    },
+    test("each reply meters its threading shape on a series the guard actually emits (#2467)") {
+      for {
+        _                  <- cleanDb
+        (routes, stubs, _) <- makeRoutes(liveCfg)
+        beforeChained      <- threadingShapeCount("chained")
+        beforeParent       <- threadingShapeCount("parent_only")
+        beforeNone         <- threadingShapeCount("none")
+        // A second-level reply → `chained`.
+        chainedBody =
+          """{"from":"reporter@example.com","subject":"Re: Q","text":"a follow-up?","messageId":"<c@x>","references":"<a@x> <b@x>"}"""
+        _ <- postInbound(routes, chainedBody, Some(sign(chainedBody)))
+        // A first-contact reply → `parent_only`.
+        parentBody =
+          """{"from":"reporter@example.com","subject":"Q","text":"a question?","messageId":"<d@x>"}"""
+        _ <- postInbound(routes, parentBody, Some(sign(parentBody)))
+        // No usable Message-ID → `none`.
+        noneBody =
+          """{"from":"reporter@example.com","subject":"Q","text":"a question?"}"""
+        _            <- postInbound(routes, noneBody, Some(sign(noneBody)))
+        dispatches   <- stubs.dispatch.dispatches.get
+        _            <- ZIO.foreachDiscard(dispatches.map(_._1.agentToken))(t =>
+          agentReply(routes, """{"markdown":"a public reply"}""", Some(t)),
+        )
+        afterChained <- threadingShapeCount("chained")
+        afterParent  <- threadingShapeCount("parent_only")
+        afterNone    <- threadingShapeCount("none")
+      } yield assertTrue(
+        dispatches.size == 3,
+        // Each sample landed on the real registry — which only happens if the series and its
+        // label key are registered with MetricGuard. An unregistered name is silently no-opped,
+        // so these deltas are what distinguishes "emitted" from "dropped".
+        afterChained - beforeChained == 1.0,
+        afterParent - beforeParent == 1.0,
+        afterNone - beforeNone == 1.0,
+      )
     },
     test("a hostile inbound References cannot inject an outbound header (#2467)") {
       for {

@@ -129,6 +129,12 @@ object MetricGuard {
       // version STRING is deliberately NOT a label (it is agent-supplied and
       // therefore unbounded — it goes to the log line only).
       "state",
+      // #2467 — how a press reply threaded, for `press_reply_threading_total`. A fixed 4-value
+      // enum (none | parent_only | chained | chained_truncated — `EmailSender.threadingShape`),
+      // bounded by the code; the Message-ID and the References chain themselves are deliberately
+      // NOT labels (attacker-controlled sender content, unbounded — they never leave the process
+      // as a label, and the log line does not carry them either).
+      "shape",
     )
 
   /**
@@ -700,6 +706,8 @@ object MetricGuard {
     // journalist misclassified as an autoresponder shows up here, and on the Press dashboard.
     "press_loop_guard_total"                        -> Set("reason"),
     "press_agent_action_total"                      -> Set("op", "outcome"),
+    // #2467 — press reply threading shape (none | parent_only | chained | chained_truncated).
+    "press_reply_threading_total"                   -> Set("shape"),
     // #2473 — the shared cloud-agent callback REJECTION series, for support AND press on one name
     // (the failure mode and its fix are shared, so a single panel/alert must cover both).
     // `channel` (support | press) × `op` (the five callback names) × `reason` (token_expired |
