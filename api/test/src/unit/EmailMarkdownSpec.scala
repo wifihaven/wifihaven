@@ -190,6 +190,10 @@ object EmailMarkdownSpec extends ZIOSpecDefault {
         // deliberate deviation from CommonMark, because the tail here is the sign-off.
         render("```\nnft add rule\n\nBest,\nSameer") ==
           "<p>```<br>nft add rule</p>\n<p>Best,<br>Sameer</p>",
+        // A fence's info string is the one part of a fence that gets dropped, so only a
+        // language-token info string opens one. Prose after the ticks is prose, not a lost line.
+        render("```note: see the paragraph below\ncode\n```") ==
+          "<p>```note: see the paragraph below<br>code<br>```</p>",
       )
     },
     test("what is deliberately left literal stays literal") {
@@ -232,6 +236,11 @@ object EmailMarkdownSpec extends ZIOSpecDefault {
         "_" * size,
         "`" * size,
         ("a" * 100 + "**") * (size / 102),
+        // Many SHORT lines, not one long one — the block splitter's accumulator is the cost here,
+        // not a regex, and every other case above is single-line so it would miss a quadratic
+        // append (that is exactly how one shipped into review of #2684).
+        "a\n" * (size / 2),
+        "- a\n" * (size / 4),
       )
       inputs.foreach(render)
       val started = java.lang.System.nanoTime()

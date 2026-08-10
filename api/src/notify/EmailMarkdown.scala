@@ -121,12 +121,14 @@ object EmailMarkdown {
   }
 
   /**
-   * A fence line is backticks plus an optional info string and NOTHING else. The trailing `[^`]*`
-   * matters: without it a line like `` ```code``` `` (inline code the writer put on its own line)
-   * reads as an opening fence and its text is swallowed as an info string. This renderer must never
-   * delete a line of a reply — that is the #2677 failure mode, one notch worse.
+   * A fence line is backticks plus an optional LANGUAGE TAG and nothing else. Both halves of that
+   * are load-bearing, because an info string is the one part of a fence that gets dropped, and this
+   * renderer must never delete a line of a reply — that is the #2677 failure mode, one notch worse.
+   * Requiring no further backticks keeps `` ```code``` `` (inline code the writer put on its own
+   * line) from reading as an opener whose content is swallowed; requiring the tag to look like a
+   * language token does the same for `` ```note: see the paragraph below ``.
    */
-  private val FenceLine = """^`{3,}[^`]*$""".r
+  private val FenceLine = """^`{3,}[A-Za-z0-9_+#.-]*$""".r
 
   private def isFence(line: String): Boolean = FenceLine.matches(line.trim)
 
@@ -139,8 +141,12 @@ object EmailMarkdown {
    * of the reply, sign-off included. Here it stays ordinary prose.
    */
   private def blocks(lines: List[String]): List[Block] = {
+    // `cur` accumulates the current block's lines in REVERSE and is flipped at flush. Appending
+    // with `:+` instead is quadratic, and a 64 KiB body of short lines is 32k appends — measured at
+    // seconds and gigabytes of churn during review of #2684, on the same unmetered route the DoS
+    // note above is about.
     def flush(cur: List[String], acc: List[Block]): List[Block] =
-      if cur.forall(_.trim.isEmpty) then acc else Block.Prose(cur) :: acc
+      if cur.forall(_.trim.isEmpty) then acc else Block.Prose(cur.reverse) :: acc
 
     @tailrec def go(rest: List[String], acc: List[Block], cur: List[String]): List[Block] =
       rest match {
@@ -149,7 +155,7 @@ object EmailMarkdown {
           val (code, after) = tail.span(x => !isFence(x))
           go(after.drop(1), Block.Fenced(code) :: flush(cur, acc), Nil)
         case l :: tail if l.trim.isEmpty                     => go(tail, flush(cur, acc), Nil)
-        case l :: tail                                       => go(tail, acc, cur :+ l)
+        case l :: tail                                       => go(tail, acc, l :: cur)
       }
 
     go(lines, Nil, Nil).reverse
