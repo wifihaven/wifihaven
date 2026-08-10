@@ -109,7 +109,7 @@ object SupportConsentSpec
       // owns those assertions.
       tracker     <- DispatchTracker.make(
         DispatchTracker.deadAfterFor(cfg),
-        wifihaven.api.observability.AgentTokenRejection.Channel.Support,
+        DispatchTracker.Channel.Support,
       )
       // #2454: a RECORDING issue client (not the no-op) so the suite can assert both that a
       // data-access session files nothing and that a scope-less one still files normally.

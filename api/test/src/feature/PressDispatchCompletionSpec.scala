@@ -90,8 +90,8 @@ object PressDispatchCompletionSpec
       emailRef <- Ref.make(List.empty[EmailSender.Sent])
       dispRec  <- PressAgentDispatcher.recorder
       tracker  <- DispatchTracker.make(
-        DispatchTracker.Channel.Press,
         DispatchTracker.deadAfterFor(liveCfg),
+        DispatchTracker.Channel.Press,
       )
       responder = PressResponder(
         liveCfg,
@@ -144,6 +144,9 @@ object PressDispatchCompletionSpec
         subject = subject,
         pressMessageId = pressMessageId,
         inboundMessageId = "<abc@mail>",
+        // #2467 — the accumulated References chain. Empty here: this suite is about the
+        // dispatch→completion pairing, and threading has its own coverage in PressResponderSpec.
+        inboundReferences = "",
         now = now,
         // The rig's TTL comes from the SAME config the tracker's dead threshold does, so retuning
         // `press.agentTokenTtlMinutes` can never put `PastDead` beyond the test token's own expiry.

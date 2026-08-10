@@ -4,7 +4,6 @@ import wifihaven.api.{PlainConfig, SupportConfig}
 import wifihaven.api.auth.RateLimiter
 import wifihaven.api.db.*
 import wifihaven.api.notify.Notifier
-import wifihaven.api.observability.AgentTokenRejection
 import wifihaven.api.routes.SupportAgentRoutes
 import wifihaven.api.support.*
 import wifihaven.shared.Clock
@@ -69,8 +68,13 @@ object DispatchWatchdogSpec
   )
 
   private val Transport = CloudAgentObservability.ClaudeCodeCloud
-  private val Support   = AgentTokenRejection.Channel.Support
-  private val Press     = AgentTokenRejection.Channel.Press
+  // #2517 made the channel a TYPE rather than a bare label. The two metric-label aliases below are
+  // derived from the very `Channel` the trackers are built with, so the series this spec asserts on
+  // cannot drift from the series they actually write.
+  private val SupportCh = DispatchTracker.Channel.Support
+  private val PressCh   = DispatchTracker.Channel.Press
+  private val Support   = SupportCh.name
+  private val Press     = PressCh.name
 
   private final case class Rig(
       routes: Routes[Any, Response],
@@ -93,7 +97,7 @@ object DispatchWatchdogSpec
       clock       <- ZIO.service[Clock]
       plainRec    <- PlainClient.recorder
       dispRec     <- CloudAgentDispatcher.recorder
-      tracker     <- DispatchTracker.make(DispatchTracker.deadAfterFor(liveCfg), Support)
+      tracker     <- DispatchTracker.make(DispatchTracker.deadAfterFor(liveCfg), SupportCh)
       responder = SupportResponder(
         liveCfg,
         hhRepo,
@@ -304,14 +308,21 @@ object DispatchWatchdogSpec
     },
     test("the two channels are independent: press's stuck dispatch never moves support's gauge") {
       for {
-        _          <- cleanDb
-        supportTrk <- DispatchTracker.make(DispatchTracker.deadAfterFor(liveCfg), Support)
-        pressTrk   <- DispatchTracker.make(DispatchTracker.deadAfterFor(liveCfg), Press)
-        now        <- at(java.time.Duration.ZERO)
+        _           <- cleanDb
+        supportTrk  <- DispatchTracker.make(DispatchTracker.deadAfterFor(liveCfg), SupportCh)
+        pressTrk    <- DispatchTracker.make(DispatchTracker.deadAfterFor(liveCfg), PressCh)
+        now         <- at(java.time.Duration.ZERO)
         // The correlation key is opaque to the tracker: support keys on a Plain thread id, press
-        // (#2517) on its reply-target address. The watchdog cares only about the channel label.
-        _ <- // #2668: press carries no per-dispatch agent session id, and no callback guard reads one.
-          pressTrk.dispatched("reporter@example.test", "", HouseholdId(1L), Transport, now)
+        // (#2517) on the recorded inbound row id, falling back to the reply-target address. The
+        // watchdog cares only about the channel label.
+        // #2668: press carries no per-dispatch agent session id, and no callback guard reads one.
+        _           <- pressTrk.dispatched(
+          "rt:reporter@example.test",
+          "",
+          DispatchTracker.Subject.replyTo("reporter@example.test"),
+          Transport,
+          now,
+        )
         pressBefore <- sweeps(Press)
         supBefore   <- sweeps(Support)
         later       <- at(PastSlow)

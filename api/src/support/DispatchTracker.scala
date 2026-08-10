@@ -1,6 +1,6 @@
 package wifihaven.api.support
 
-import wifihaven.api.SupportConfig
+import wifihaven.api.{PressConfig, SupportConfig}
 import wifihaven.api.metrics.AppMetrics
 import wifihaven.api.observability.AgentTokenRejection
 import wifihaven.shared.Clock
@@ -10,7 +10,7 @@ import zio.*
 import java.time.{Duration, Instant}
 
 /**
- * #2472 — dispatch→completion tracking for the #2200 support responder.
+ * #2472 (support) / #2517 (press) — dispatch→completion tracking for BOTH cloud-agent responders.
  *
  * WHY IT EXISTS. Dispatch was fire-and-forget. #2444 instruments the dispatch CALL and #2416 makes
  * a 4xx on it fail loud — both are about the HANDOFF. Neither observes whether the cloud agent ever
@@ -56,41 +56,40 @@ import java.time.{Duration, Instant}
  * the sweep's `deadAfter` eviction — which always ran — is now the only exit. A thread holds at
  * most one entry either way.
  *
- * PII FIREWALL (the #2438 discipline): the only things logged are the Plain threadId, the household
- * id, the bounded transport label, and an age in seconds. Never the customer message, the reply,
- * the household name, or a sender address. Metric labels stay the already-allowed bounded
- * `{outcome, transport}` pair — plus `{channel}` on the #2477 watchdog series, itself a two-value
- * enum — never a thread id, household id, or email (docs/process/instrumentation.md §4). Note that
- * the correlation KEY is per-thread and, under #2517, will be a customer's email address; it is a
- * map key and a log field, and must never become a metric label.
+ * PII FIREWALL (the #2438 discipline): the only things logged are the correlation key, the
+ * channel's own subject field, the bounded transport label, and an age in seconds. Never the
+ * inbound message, the reply, or the household name. The subject field is channel-chosen and
+ * channel-reviewed: support logs the household id, press logs the reply-to ADDRESS — press must,
+ * because a press report is only actionable if it names the journalist who got no answer, and that
+ * address is already logged at INFO twice on the same path.
+ *
+ * The correlation KEY is a map key and a log field and must NEVER become a metric label — the press
+ * fallback key embeds a journalist's email address. Metric labels stay the bounded `{outcome,
+ * transport}` pair, plus `{channel}` on the #2477 watchdog series, itself the same two-value enum
+ * as [[DispatchTracker.Channel]] (docs/process/instrumentation.md §4).
  *
  * #2477 adds the WATCHDOG on top: the failure tiers above are counters that move only when
  * something is wrong, so [[sweep]] also publishes an always-on gauge + heartbeat that make the
  * healthy state, and the sweep's own liveness, positively observable. See [[sweep]].
  */
 final class DispatchTracker private (
+    /**
+     * WHICH responder this tracker watches: its metric sink, its log vocabulary, and the operator
+     * advice on a dead dispatch. [[DispatchTracker.Channel.name]] is also the ONLY label on the
+     * #2477 watchdog series, and it is a value from the existing bounded support|press vocabulary
+     * (`AgentTokenRejection.Channel`) rather than a third private copy of it
+     * (docs/process/single-source-of-truth.md).
+     *
+     * The tracker is key-agnostic: the correlation key is an opaque `String`, a Plain thread id for
+     * support and a recorded-row-id-or-reply-address for press (`PressResponder.dispatchKey`).
+     */
+    val channel: DispatchTracker.Channel,
     pending: Ref[Map[String, DispatchTracker.Pending]],
     /**
      * The ERROR threshold — the configured agent-token TTL, NOT a literal of its own. See
      * [[DispatchTracker.deadAfterFor]] for why the TTL is the right (and only sourced) bound.
      */
     val deadAfter: Duration,
-    /**
-     * WHICH responder this tracker watches — the ONLY label on the #2477 watchdog series, and a
-     * value from the existing bounded support|press vocabulary rather than a third private copy of
-     * it (docs/process/single-source-of-truth.md). The tracker itself is channel-agnostic: its
-     * correlation key is an opaque `String`, which is a Plain thread id for support and (per #2517)
-     * a reply-target address for press.
-     *
-     * SCOPE, stated so the half-generalisation is not mistaken for a finished one: this label
-     * drives the #2477 WATCHDOG series only. The two #2472 failure tiers below still emit onto
-     * `support_dispatch_total` and still word their logs "support dispatch", because support is the
-     * only channel that constructs a tracker today. #2517 — which pairs press dispatch with its
-     * callback — is what routes those to `press_dispatch_total`; it must do so, since a press
-     * dispatch reported onto the support series would be worse than not reported at all. Nothing
-     * here mislabels in the meantime: no press tracker exists to run this code.
-     */
-    val channel: String,
 ) {
   import DispatchTracker.*
 
@@ -109,16 +108,14 @@ final class DispatchTracker private (
    * them and refuses nothing. It disables no guard that otherwise exists.
    */
   def dispatched(
-      threadId: String,
+      key: String,
       sessionId: String,
-      household: HouseholdId,
+      subject: Subject,
       transport: String,
       now: Instant,
   ): UIO[Unit] =
     pending
-      .modify { m =>
-        (m.get(threadId), m.updated(threadId, Pending(household, transport, now, sessionId)))
-      }
+      .modify { m => (m.get(key), m.updated(key, Pending(subject, transport, now, sessionId))) }
       .flatMap {
         // Only an OUTSTANDING prior entry is a supersede. #2668 keeps CLOSED entries in the map so
         // `turnOwner` can still recognise the session that owned an answered turn, which makes
@@ -127,9 +124,10 @@ final class DispatchTracker private (
         // line that identified the #2668 race in prod.
         case Some(prev) if !prev.closed =>
           ZIO.logInfo(
-            s"support dispatch superseded thread=$threadId household=${household.value} " +
-              s"transport=$transport priorAgeSeconds=${ageSeconds(prev, now)} — the earlier " +
-              "session no longer owes a reply on this thread",
+            s"${channel.name} dispatch superseded ${channel.keyLabel}=$key " +
+              s"${subject.label}=${subject.value} transport=$transport " +
+              s"priorAgeSeconds=${ageSeconds(prev, now)} — the earlier session no longer owes a " +
+              "reply on this key",
           )
         case _                          => ZIO.unit
       }
@@ -152,18 +150,19 @@ final class DispatchTracker private (
    * SUPERSEDING session replied first, so by the time the superseded one called back the turn was
    * already closed. Eviction is [[sweep]]'s job, on the same [[deadAfter]] bound as before.
    */
-  def turnOwner(threadId: String, sessionId: String, now: Instant): UIO[Turn] =
+  def turnOwner(key: String, sessionId: String, now: Instant): UIO[Turn] =
     if sessionId.isEmpty then ZIO.succeed(Turn.Unknown)
     else
-      pending.get.map(_.get(threadId)).flatMap {
+      pending.get.map(_.get(key)).flatMap {
         case None                                => ZIO.succeed(Turn.Unknown)
         case Some(p) if p.sessionId.isEmpty      => ZIO.succeed(Turn.Unknown)
         case Some(p) if p.sessionId == sessionId => ZIO.succeed(Turn.Current)
         case Some(p)                             =>
           ZIO
             .logInfo(
-              s"support callback from a SUPERSEDED session thread=$threadId " +
-                s"household=${p.household.value} sessionAgeSeconds=${ageSeconds(p, now)} — a later " +
+              s"${channel.name} callback from a SUPERSEDED session ${channel.keyLabel}=$key " +
+                s"${p.subject.label}=${p.subject.value} " +
+                s"sessionAgeSeconds=${ageSeconds(p, now)} — a later " +
                 "dispatch owns this turn and its context is a superset, so this session's " +
                 "customer-visible write is dropped (#2668)",
             )
@@ -190,21 +189,20 @@ final class DispatchTracker private (
    * superseded session from an unknown one after the turn has been answered. [[sweep]] evicts it on
    * the unchanged [[deadAfter]] bound and never reports a closed entry.
    */
-  def calledBack(threadId: String, action: String, now: Instant): UIO[Unit] =
+  def calledBack(key: String, action: String, now: Instant): UIO[Unit] =
     pending
       .modify { m =>
-        m.get(threadId) match {
-          case Some(p) if !p.closed => (Some(p), m.updated(threadId, p.copy(closed = true)))
+        m.get(key) match {
+          case Some(p) if !p.closed => (Some(p), m.updated(key, p.copy(closed = true)))
           case _                    => (None, m)
         }
       }
       .flatMap {
         case None    => ZIO.unit
         case Some(p) =>
-          AppMetrics.supportDispatch(Outcome.Completed, Some(p.transport)) *>
+          channel.record(Outcome.Completed, Some(p.transport)) *>
             ZIO.logInfo(
-              s"support dispatch completed action=$action thread=$threadId " +
-                s"household=${p.household.value} transport=${p.transport} " +
+              s"${channel.name} dispatch completed action=$action ${describe(key, p)} " +
                 s"afterSeconds=${ageSeconds(p, now)}",
             )
       }
@@ -268,29 +266,25 @@ final class DispatchTracker private (
         ((dead, slow, unreplied), next)
       }
       .flatMap { case (dead, slow, unreplied) =>
-        AppMetrics.agentDispatchUnreplied(channel, unreplied) *>
-          AppMetrics.agentDispatchSweep(channel) *>
-          ZIO.foreachDiscard(dead) { case (threadId, p) =>
-            AppMetrics.supportDispatch(Outcome.NoCallback, Some(p.transport)) *>
+        AppMetrics.agentDispatchUnreplied(channel.name, unreplied) *>
+          AppMetrics.agentDispatchSweep(channel.name) *>
+          ZIO.foreachDiscard(dead) { case (key, p) =>
+            channel.record(Outcome.NoCallback, Some(p.transport)) *>
               ZIO.logError(
-                s"support dispatch NEVER CALLED BACK thread=$threadId household=${p.household.value} " +
-                  s"transport=${p.transport} afterSeconds=${ageSeconds(p, now)} — the cloud session " +
-                  "accepted the trigger and no /api/support/agent/{reply,escalate,request-consent} " +
-                  "call ever arrived within the agent-token TTL, so it can no longer answer even if " +
-                  "it resumes (its token is expired — it would 401, #2473) and THIS CUSTOMER GOT NO " +
-                  "ANSWER. Read the thread in Plain and reply by hand; nothing retries automatically " +
-                  "(#2472)",
+                s"${channel.name} dispatch NEVER CALLED BACK ${describe(key, p)} " +
+                  s"afterSeconds=${ageSeconds(p, now)} — ${channel.deadAdvice}",
               )
           } *>
-          ZIO.foreachDiscard(slow) { case (threadId, p) =>
-            AppMetrics.supportDispatch(Outcome.CallbackSlow, Some(p.transport)) *>
+          ZIO.foreachDiscard(slow) { case (key, p) =>
+            channel.record(Outcome.CallbackSlow, Some(p.transport)) *>
               ZIO.logWarning(
-                s"support dispatch still unanswered thread=$threadId " +
-                  s"household=${p.household.value} transport=${p.transport} " +
+                s"${channel.name} dispatch still unanswered ${describe(key, p)} " +
                   s"afterSeconds=${ageSeconds(p, now)} — healthy replies land in 30-110s. A " +
                   s"${CloudAgentObservability.ClaudeCodeCloud} run suspended on subscription usage " +
                   "limits resumes and answers later — possibly the next morning (#2473) — so this " +
-                  "is NOT yet an error and must not be hand-replied blind; a sustained rate is",
+                  "is NOT yet an error and must not be hand-replied blind. What matters is the " +
+                  "SHAPE: a sustained rate, or one that tracks the no_callback tier, means " +
+                  "sessions are STALLING rather than pausing.",
               )
           }
       }
@@ -302,9 +296,93 @@ final class DispatchTracker private (
    */
   def loop(clock: Clock): UIO[Nothing] =
     (clock.instant.flatMap(sweep) *> ZIO.sleep(SweepInterval)).forever
+
+  /**
+   * The channel's identifying fragment for one entry: `<keyLabel>=<key> <subjectLabel>=<value>`.
+   */
+  private def describe(key: String, p: Pending): String =
+    s"${channel.keyLabel}=$key ${p.subject.label}=${p.subject.value} transport=${p.transport}"
 }
 
 object DispatchTracker {
+
+  /**
+   * The channel-specific half of the tracker: where completions are metered, what the log calls
+   * things, and what an operator should DO about a dead dispatch. Everything else — thresholds,
+   * exactly-once reporting, the #2477 watchdog, the #2668 turn ownership, the no-retry decision —
+   * is shared, which is the point of #2517 generalizing over the KEY rather than forking the file.
+   *
+   * A SEALED trait with the metric sink fixed per case, NOT a case class carrying a function field:
+   * a constructible `Channel` would let a call site wire `Channel.Press` to
+   * `AppMetrics.supportDispatch` — it compiles, and press completions would silently land on the
+   * support series.
+   */
+  sealed trait Channel {
+
+    /** Log prefix, the operator's grep handle, and the `{channel}` label on the #2477 series. */
+    def name: String
+
+    /** What the correlation key is called in the log. */
+    def keyLabel: String
+
+    /** The ERROR-tier instruction: who got nothing, and how a human recovers it. */
+    def deadAdvice: String
+
+    /** The channel's `{outcome, transport}` counter. */
+    def record(outcome: String, transport: Option[String]): UIO[Unit]
+  }
+
+  object Channel {
+
+    case object Support extends Channel {
+      // #2477's watchdog series is labelled with this, so it is the SHARED support|press
+      // vocabulary rather than a third private copy of the same two strings.
+      val name: String       = AgentTokenRejection.Channel.Support
+      val keyLabel: String   = "thread"
+      val deadAdvice: String =
+        "the cloud session accepted the trigger and no /api/support/agent/{reply,escalate," +
+          "request-consent} call ever arrived within the agent-token TTL, so it can no longer " +
+          "answer even if it resumes (its token is expired — it would 401, #2473) and THIS " +
+          "CUSTOMER GOT NO ANSWER. Read the thread in Plain and reply by hand; nothing retries " +
+          "automatically (#2472)"
+
+      def record(outcome: String, transport: Option[String]): UIO[Unit] =
+        AppMetrics.supportDispatch(outcome, transport)
+    }
+
+    /**
+     * #2517. The press twin. The advice differs in BOTH halves that matter: the endpoints are the
+     * press pair (there is no consent request — the press token carries no household and no data
+     * scope by construction), and the recovery is an email rather than a Plain thread, because
+     * press has no inbox of ours to reply from — `press@` is a Cloudflare Email Worker, and the
+     * correspondence log at `/press` is a pull surface nothing points a human at.
+     */
+    case object Press extends Channel {
+      val name: String       = AgentTokenRejection.Channel.Press
+      val keyLabel: String   = "key"
+      val deadAdvice: String =
+        "the cloud session accepted the trigger and no /api/press/agent/{reply,escalate} call " +
+          "ever arrived within the agent-token TTL, so it can no longer answer even if it resumes " +
+          "(its token is expired — it would 401, #2473) and THIS JOURNALIST GOT NO ANSWER. Read " +
+          "the inquiry at /press (the #2296 correspondence log) and reply to the address above by " +
+          "hand; nothing retries automatically (#2517)"
+
+      def record(outcome: String, transport: Option[String]): UIO[Unit] =
+        AppMetrics.pressDispatch(outcome, transport)
+    }
+  }
+
+  /**
+   * The channel's identifying field for one dispatch, as a LABEL/VALUE pair so a call site cannot
+   * quietly widen what gets logged: support passes the household id, press the reply-to address.
+   * Never the message text (see the PII note on [[DispatchTracker]]).
+   */
+  final case class Subject(label: String, value: String)
+
+  object Subject {
+    def household(id: HouseholdId): Subject = Subject("household", id.value.toString)
+    def replyTo(address: String): Subject   = Subject("replyTo", address)
+  }
 
   /**
    * One dispatch. `slowReported` makes the [[SlowAfter]] tier fire exactly once; `sessionId` +
@@ -313,7 +391,7 @@ object DispatchTracker {
    * a thread we simply have no record of.
    */
   private[support] final case class Pending(
-      household: HouseholdId,
+      subject: Subject,
       transport: String,
       dispatchedAt: Instant,
       sessionId: String,
@@ -400,6 +478,9 @@ object DispatchTracker {
    */
   def deadAfterFor(cfg: SupportConfig): Duration = cfg.agentTokenTtl
 
+  /** #2517 — the press twin, read from `press.agentTokenTtlMinutes` for the identical reason. */
+  def deadAfterFor(cfg: PressConfig): Duration = cfg.agentTokenTtl
+
   /**
    * #2477 — the watchdog gauge: dispatches outstanding past [[SlowAfter]], written on every sweep.
    * Named here rather than at the emit site so the dashboards, the alert rules and the spec all
@@ -423,17 +504,35 @@ object DispatchTracker {
     Duration.between(p.dispatchedAt, now).compareTo(limit) < 0
 
   /**
-   * `channel` is deliberately NOT defaulted. A default would let a future press tracker (#2517)
-   * publish its unreplied journalists onto the support channel's series by omission — the kind of
-   * silent mislabelling that is worse than no series at all.
+   * `channel` is deliberately NOT defaulted (#2477). A default would let the press tracker publish
+   * its unreplied journalists onto the support channel's series by omission — the kind of silent
+   * mislabelling that is worse than no series at all. #2517 makes that stronger than a convention:
+   * [[Channel]] is a sealed trait carrying the metric SINK as well as the label, so a miswired
+   * channel cannot compile, let alone emit.
    */
-  def make(deadAfter: Duration, channel: String): UIO[DispatchTracker] =
-    Ref.make(Map.empty[String, Pending]).map(new DispatchTracker(_, deadAfter, channel))
+  def make(deadAfter: Duration, channel: Channel): UIO[DispatchTracker] =
+    Ref.make(Map.empty[String, Pending]).map(new DispatchTracker(channel, _, deadAfter))
 
-  val layer: ZLayer[SupportConfig, Nothing, DispatchTracker] =
+  /**
+   * #2517 — the two channels hold SEPARATE instances (separate pending maps, separate metric sinks,
+   * separate #2477 watchdog series), so they need distinct types in the ZIO environment. These thin
+   * wrappers provide that without giving either channel a privileged unwrapped position: `Main` and
+   * `HttpRoutes` unwrap at the seam, and everything downstream takes a plain [[DispatchTracker]].
+   */
+  final case class ForSupport(tracker: DispatchTracker)
+  final case class ForPress(tracker: DispatchTracker)
+
+  val supportLayer: ZLayer[SupportConfig, Nothing, ForSupport] =
     ZLayer.fromZIO(
       ZIO.serviceWithZIO[SupportConfig](cfg =>
-        make(deadAfterFor(cfg), AgentTokenRejection.Channel.Support),
+        make(deadAfterFor(cfg), Channel.Support).map(ForSupport.apply),
+      ),
+    )
+
+  val pressLayer: ZLayer[PressConfig, Nothing, ForPress] =
+    ZLayer.fromZIO(
+      ZIO.serviceWithZIO[PressConfig](cfg =>
+        make(deadAfterFor(cfg), Channel.Press).map(ForPress.apply),
       ),
     )
 }
