@@ -2,6 +2,7 @@ package wifihaven.api.support
 
 import wifihaven.api.SupportConfig
 import wifihaven.api.metrics.AppMetrics
+import wifihaven.api.observability.AgentTokenRejection
 import wifihaven.shared.Clock
 import wifihaven.shared.types.HouseholdId
 import zio.*
@@ -53,8 +54,14 @@ import java.time.{Duration, Instant}
  * PII FIREWALL (the #2438 discipline): the only things logged are the Plain threadId, the household
  * id, the bounded transport label, and an age in seconds. Never the customer message, the reply,
  * the household name, or a sender address. Metric labels stay the already-allowed bounded
- * `{outcome, transport}` pair — never a thread id, household id, or email
- * (docs/process/instrumentation.md §4).
+ * `{outcome, transport}` pair — plus `{channel}` on the #2477 watchdog series, itself a two-value
+ * enum — never a thread id, household id, or email (docs/process/instrumentation.md §4). Note that
+ * the correlation KEY is per-thread and, under #2517, will be a customer's email address; it is a
+ * map key and a log field, and must never become a metric label.
+ *
+ * #2477 adds the WATCHDOG on top: the failure tiers above are counters that move only when
+ * something is wrong, so [[sweep]] also publishes an always-on gauge + heartbeat that make the
+ * healthy state, and the sweep's own liveness, positively observable. See [[sweep]].
  */
 final class DispatchTracker private (
     pending: Ref[Map[String, DispatchTracker.Pending]],
@@ -63,6 +70,22 @@ final class DispatchTracker private (
      * [[DispatchTracker.deadAfterFor]] for why the TTL is the right (and only sourced) bound.
      */
     val deadAfter: Duration,
+    /**
+     * WHICH responder this tracker watches — the ONLY label on the #2477 watchdog series, and a
+     * value from the existing bounded support|press vocabulary rather than a third private copy of
+     * it (docs/process/single-source-of-truth.md). The tracker itself is channel-agnostic: its
+     * correlation key is an opaque `String`, which is a Plain thread id for support and (per #2517)
+     * a reply-target address for press.
+     *
+     * SCOPE, stated so the half-generalisation is not mistaken for a finished one: this label
+     * drives the #2477 WATCHDOG series only. The two #2472 failure tiers below still emit onto
+     * `support_dispatch_total` and still word their logs "support dispatch", because support is the
+     * only channel that constructs a tracker today. #2517 — which pairs press dispatch with its
+     * callback — is what routes those to `press_dispatch_total`; it must do so, since a press
+     * dispatch reported onto the support series would be worse than not reported at all. Nothing
+     * here mislabels in the meantime: no press tracker exists to run this code.
+     */
+    val channel: String,
 ) {
   import DispatchTracker.*
 
@@ -134,32 +157,56 @@ final class DispatchTracker private (
    * untracked — the very silence this exists to close) or stamped `slowReported` (permanently
    * suppressing its WARN). The window was small and dispatch is capped at 50/day, but the class is
    * removable for free, so it is removed.
+   *
+   * #2477 — EVERY sweep also publishes its two watchdog series, before any of the conditional
+   * reporting above and whether or not anything is wrong:
+   *
+   *   - [[UnrepliedGauge]] — how many dispatches are outstanding past [[SlowAfter]] RIGHT NOW,
+   *     counted on the post-sweep map so a dispatch reported dead in this same tick is not also
+   *     counted as still waiting. It is a LEVEL, not an event: the two tiers above are counters
+   *     that move only on failure, so a healthy system emitted nothing at all and "nobody is
+   *     waiting", "the responder was never enabled" and "the sweep fiber died" were one picture.
+   *     The healthy value is an explicit 0.
+   *   - [[SweepsCounter]] — the liveness anchor, without which the zero above would be worthless: a
+   *     gauge keeps exporting its last value for as long as the process lives, so a sweep that
+   *     stopped ticking would keep publishing a stale, reassuring 0 forever. A flat sweep counter
+   *     is what distinguishes "no one is waiting" from "nothing is looking".
+   *
+   * That pairing is the whole point. #2546 records a detector (#2469's prompt-drift check) that has
+   * never emitted a sample in ANY environment, and whose silence has read as health since the day
+   * it shipped; this sweep must not become the next one.
    */
   def sweep(now: Instant): UIO[Unit] =
     pending
       .modify { m =>
-        val dead = m.filter { case (_, p) => !ageBelow(p, now, deadAfter) }
-        val slow = m.filter { case (t, p) =>
+        val dead      = m.filter { case (_, p) => !ageBelow(p, now, deadAfter) }
+        val slow      = m.filter { case (t, p) =>
           !dead.contains(t) && !p.slowReported && !ageBelow(p, now, SlowAfter)
         }
-        val next = (m -- dead.keys).map { case (t, p) =>
+        val next      = (m -- dead.keys).map { case (t, p) =>
           t -> (if slow.contains(t) then p.copy(slowReported = true) else p)
         }
-        ((dead, slow), next)
+        // Counted over `next` (post-sweep) and NOT over `slow`: `slow` is the once-per-dispatch
+        // report set and is empty on every later tick, whereas the gauge must keep reading 1 for
+        // as long as that customer is actually still waiting.
+        val unreplied = next.count { case (_, p) => !ageBelow(p, now, SlowAfter) }
+        ((dead, slow, unreplied), next)
       }
-      .flatMap { case (dead, slow) =>
-        ZIO.foreachDiscard(dead) { case (threadId, p) =>
-          AppMetrics.supportDispatch(Outcome.NoCallback, Some(p.transport)) *>
-            ZIO.logError(
-              s"support dispatch NEVER CALLED BACK thread=$threadId household=${p.household.value} " +
-                s"transport=${p.transport} afterSeconds=${ageSeconds(p, now)} — the cloud session " +
-                "accepted the trigger and no /api/support/agent/{reply,escalate,request-consent} " +
-                "call ever arrived within the agent-token TTL, so it can no longer answer even if " +
-                "it resumes (its token is expired — it would 401, #2473) and THIS CUSTOMER GOT NO " +
-                "ANSWER. Read the thread in Plain and reply by hand; nothing retries automatically " +
-                "(#2472)",
-            )
-        } *>
+      .flatMap { case (dead, slow, unreplied) =>
+        AppMetrics.agentDispatchUnreplied(channel, unreplied) *>
+          AppMetrics.agentDispatchSweep(channel) *>
+          ZIO.foreachDiscard(dead) { case (threadId, p) =>
+            AppMetrics.supportDispatch(Outcome.NoCallback, Some(p.transport)) *>
+              ZIO.logError(
+                s"support dispatch NEVER CALLED BACK thread=$threadId household=${p.household.value} " +
+                  s"transport=${p.transport} afterSeconds=${ageSeconds(p, now)} — the cloud session " +
+                  "accepted the trigger and no /api/support/agent/{reply,escalate,request-consent} " +
+                  "call ever arrived within the agent-token TTL, so it can no longer answer even if " +
+                  "it resumes (its token is expired — it would 401, #2473) and THIS CUSTOMER GOT NO " +
+                  "ANSWER. Read the thread in Plain and reply by hand; nothing retries automatically " +
+                  "(#2472)",
+              )
+          } *>
           ZIO.foreachDiscard(slow) { case (threadId, p) =>
             AppMetrics.supportDispatch(Outcome.CallbackSlow, Some(p.transport)) *>
               ZIO.logWarning(
@@ -254,6 +301,16 @@ object DispatchTracker {
    */
   def deadAfterFor(cfg: SupportConfig): Duration = cfg.agentTokenTtl
 
+  /**
+   * #2477 — the watchdog gauge: dispatches outstanding past [[SlowAfter]], written on every sweep.
+   * Named here rather than at the emit site so the dashboards, the alert rules and the spec all
+   * quote ONE spelling.
+   */
+  val UnrepliedGauge: String = "agent_dispatch_unreplied"
+
+  /** #2477 — the sweep's own heartbeat; see [[sweep]] for why the gauge is useless without it. */
+  val SweepsCounter: String = "agent_dispatch_sweeps_total"
+
   /** How often [[loop]] sweeps. */
   val SweepInterval: Duration = 60.seconds
 
@@ -266,9 +323,18 @@ object DispatchTracker {
   private def ageBelow(p: Pending, now: Instant, limit: Duration): Boolean =
     Duration.between(p.dispatchedAt, now).compareTo(limit) < 0
 
-  def make(deadAfter: Duration): UIO[DispatchTracker] =
-    Ref.make(Map.empty[String, Pending]).map(new DispatchTracker(_, deadAfter))
+  /**
+   * `channel` is deliberately NOT defaulted. A default would let a future press tracker (#2517)
+   * publish its unreplied journalists onto the support channel's series by omission — the kind of
+   * silent mislabelling that is worse than no series at all.
+   */
+  def make(deadAfter: Duration, channel: String): UIO[DispatchTracker] =
+    Ref.make(Map.empty[String, Pending]).map(new DispatchTracker(_, deadAfter, channel))
 
   val layer: ZLayer[SupportConfig, Nothing, DispatchTracker] =
-    ZLayer.fromZIO(ZIO.serviceWithZIO[SupportConfig](cfg => make(deadAfterFor(cfg))))
+    ZLayer.fromZIO(
+      ZIO.serviceWithZIO[SupportConfig](cfg =>
+        make(deadAfterFor(cfg), AgentTokenRejection.Channel.Support),
+      ),
+    )
 }

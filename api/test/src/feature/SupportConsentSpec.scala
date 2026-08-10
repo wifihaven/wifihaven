@@ -107,7 +107,10 @@ object SupportConsentSpec
       // #2472: a real tracker — this suite drives dispatch + agent callbacks, so it must have
       // somewhere to record the pairing. Its sweep is never run here; SupportDispatchCompletionSpec
       // owns those assertions.
-      tracker     <- DispatchTracker.make(DispatchTracker.deadAfterFor(cfg))
+      tracker     <- DispatchTracker.make(
+        DispatchTracker.deadAfterFor(cfg),
+        wifihaven.api.observability.AgentTokenRejection.Channel.Support,
+      )
       // #2454: a RECORDING issue client (not the no-op) so the suite can assert both that a
       // data-access session files nothing and that a scope-less one still files normally.
       ghRec       <- Ref.make(List.empty[IssueFileRequest]).map(GithubIssueClient.Recorder.apply)

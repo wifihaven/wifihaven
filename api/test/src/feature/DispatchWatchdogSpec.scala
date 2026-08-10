@@ -81,6 +81,8 @@ object DispatchWatchdogSpec
       billRepo    <- ZIO.service[HouseholdBillingRepo]
       devRepo     <- ZIO.service[DeviceRepo]
       profRepo    <- ZIO.service[ProfileRepo]
+      hsRepo      <- ZIO.service[HouseholdSettingsRepo]
+      timeStatus  <- TestLayers.timeStatusService
       consentRepo <- ZIO.service[SupportConsentRepo]
       clock       <- ZIO.service[Clock]
       plainRec    <- PlainClient.recorder
@@ -93,6 +95,8 @@ object DispatchWatchdogSpec
         billRepo,
         devRepo,
         profRepo,
+        hsRepo,
+        timeStatus,
         consentRepo,
         PlainClient.recording(plainRec),
         GithubIssueClient.noop,
@@ -281,6 +285,7 @@ object DispatchWatchdogSpec
         // (#2517) on its reply-target address. The watchdog cares only about the channel label.
         _           <- pressTrk.dispatched("reporter@example.test", HouseholdId(1L), Transport, now)
         pressBefore <- sweeps(Press)
+        supBefore   <- sweeps(Support)
         later       <- at(PastSlow)
         _           <- supportTrk.sweep(later)
         _           <- pressTrk.sweep(later)
@@ -290,11 +295,14 @@ object DispatchWatchdogSpec
         supAfter    <- sweeps(Support)
       } yield assertTrue(
         // Support's zero is not an absence: its own sweep ran and wrote it in the same pass that
-        // wrote press's one.
+        // wrote press's one. Anchored on a DELTA, not on `supAfter > 0` — the suite is sequential
+        // and the counter is a process-global registry series, so the earlier tests have already
+        // pushed it above zero and a bare `> 0` would hold whether or not this sweep ran at all.
+        // That is the same vacuous-anchor trap this spec is written to avoid.
         sup == 0.0,
         press == 1.0,
         pressAfter == pressBefore + 1,
-        supAfter > 0.0,
+        supAfter == supBefore + 1,
       )
     },
   ) @@ TestAspect.sequential

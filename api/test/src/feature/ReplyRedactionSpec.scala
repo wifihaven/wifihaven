@@ -143,7 +143,10 @@ object ReplyRedactionSpec
       ghRec       <- GithubIssueClient.recorder
       dispRec     <- CloudAgentDispatcher.recorder
       emailRef    <- Ref.make(List.empty[EmailSender.Sent])
-      tracker     <- DispatchTracker.make(DispatchTracker.deadAfterFor(supportCfg))
+      tracker     <- DispatchTracker.make(
+        DispatchTracker.deadAfterFor(supportCfg),
+        wifihaven.api.observability.AgentTokenRejection.Channel.Support,
+      )
       responder = SupportResponder(
         supportCfg,
         hhRepo,
