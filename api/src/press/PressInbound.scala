@@ -65,7 +65,7 @@ object PressInbound {
       // #2442: the Worker's loop-guard verdict is read BEFORE the from/text requirement, and short
       // -circuits it. A bounce/DSN is the commonest thing that closes the loop and it arrives with
       // a null return path — i.e. exactly the envelope `parse` calls malformed. Reading the marker
-      // first is what makes that drop show up as a LOOP GUARD skip on its own marker series rather
+      // first is what makes that drop show up as a LOOP GUARD skip on its own loop-guard series rather
       // than disappearing into `outcome=malformed`, where nobody could tell an autoresponder from
       // a broken Worker.
       json   <- Json.decoder.decodeJson(payload).toOption.toRight(VerifyError.MalformedPayload)
@@ -151,7 +151,7 @@ final case class PressInboundEvent(
  * (only it can see the raw MIME headers — deploy/press-worker/src/loop-guard.ts); the responder
  * ENFORCES and meters, because dispatch and the metric pipeline live here.
  *
- * This is the `press_loop_guard_total{marker}` label set, and the reason the wire value is mapped
+ * This is the `press_loop_guard_total{reason}` label set, and the reason the wire value is mapped
  * through [[fromWire]] rather than passed through: the label space must be bounded by THIS build
  * (§4 cardinality firewall), so a newer Worker's unrecognized marker collapses to [[Unknown]] —
  * still a skip (fail closed: an unrecognized marker is still a Worker saying "machine-generated"),

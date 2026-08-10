@@ -55,7 +55,7 @@ agent session is created and no reply is sent. It is read *before* the `from`/`t
 because a bounce has neither — pre-#2442 those landed in `outcome=malformed`, indistinguishable from
 a broken Worker.
 
-The skip is **not** silent (#2265/#2266). Every one lands on `press_loop_guard_total{marker}` and on
+The skip is **not** silent (#2265/#2266). Every one lands on `press_loop_guard_total{reason}` and on
 `press_ai_draft_total{outcome="skipped_auto_submitted"}`, both on the Press Grafana dashboard, plus a
 `console.warn` here naming the sender (Workers Logs, on since #2673) — the counter deliberately
 carries no address. That log line is how you check whether a rising count is autoresponders or a

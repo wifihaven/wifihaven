@@ -22,7 +22,7 @@
     {
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "title": "Inbound webhook outcomes",
-      "description": "sum by (outcome) (rate(press_ai_draft_total{env=\"$env\"}[5m])) — dispatched (a press cloud-agent session was created) / rate_limited (the per-sender + global dispatch cost caps fired) / invalid_signature (unsigned or forged POST — security-relevant, investigate a sustained rate; the Worker↔API HMAC is the only auth) / malformed (missing from/text) / disabled (responder dark) / error (Managed Agents dispatch failed). Emitted by PressResponder.handleInbound.",
+      "description": "sum by (outcome) (rate(press_ai_draft_total{env=\"$env\"}[5m])) — dispatched (a press cloud-agent session was created) / rate_limited (the per-sender + global dispatch cost caps fired) / invalid_signature (unsigned or forged POST — security-relevant, investigate a sustained rate; the Worker↔API HMAC is the only auth) / malformed (missing from/text) / skipped_auto_submitted (#2442 — the Cloudflare Worker classified the delivery as an auto-reply, mailing-list post or bounce, so no session was dispatched; the loop-guard panels below split that bucket by reason) / disabled (responder dark) / error (Managed Agents dispatch failed). Emitted by PressResponder.handleInbound.",
       "type": "timeseries",
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
       "id": 1,
@@ -459,8 +459,8 @@
     },
     {
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
-      "title": "Inbound dropped by the auto-reply/DSN loop guard, by marker (#2442)",
-      "description": "sum by (marker) (rate(press_loop_guard_total{env=\"$env\"}[5m])) — press mail the Cloudflare Email Worker (deploy/press-worker/src/loop-guard.ts) classified as machine-generated, so PressResponder dispatched NO agent session and sent NO reply. This is what stops a newsroom autoresponder from looping with us: prod's press From and Reply-To are both press@wifihaven.net (#2439), the address Email Routing binds to that same Worker, and the prod responder is live (#2537). marker=auto_submitted (RFC 3834 header, any value but `no`) / precedence (bulk|auto_reply|junk) / x_auto_response_suppress / list_id / null_return_path (a bounce/DSN, whose empty return path used to land in outcome=malformed) / unknown (a newer Worker sending a marker this API build does not know — still skipped, fail closed). A sustained rate is NOT automatically healthy: every sample is a press message we did not answer, so if it climbs, read the Worker's log line in Workers Logs (#2673) — it names the sender this counter deliberately does not — and confirm they were autoresponders rather than journalists.",
+      "title": "Inbound dropped by the auto-reply/DSN loop guard, by reason (#2442)",
+      "description": "sum by (reason) (rate(press_loop_guard_total{env=\"$env\"}[5m])) — press mail the Cloudflare Email Worker (deploy/press-worker/src/loop-guard.ts) classified as machine-generated, so PressResponder dispatched NO agent session and sent NO reply. This is what stops a newsroom autoresponder from looping with us: prod's press From and Reply-To are both press@wifihaven.net (#2439), the address Email Routing binds to that same Worker, and the prod responder is live (#2537). reason=auto_submitted (RFC 3834 header, any value but `no`) / precedence (bulk|auto_reply|junk) / x_auto_response_suppress / list_id / null_return_path (a bounce/DSN, whose empty return path used to land in outcome=malformed) / unknown (a newer Worker sending a marker this API build does not know — still skipped, fail closed). A sustained rate is NOT automatically healthy: every sample is a press message we did not answer, so if it climbs, read the Worker's log line in Workers Logs (#2673) — it names the sender this counter deliberately does not — and confirm they were autoresponders rather than journalists.",
       "type": "timeseries",
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 62 },
       "id": 20,
@@ -469,8 +469,8 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "sum by (marker) (rate(press_loop_guard_total{env=\"$env\"}[5m]))",
-          "legendFormat": "{{marker}}",
+          "expr": "sum by (reason) (rate(press_loop_guard_total{env=\"$env\"}[5m]))",
+          "legendFormat": "{{reason}}",
           "refId": "A"
         }
       ]

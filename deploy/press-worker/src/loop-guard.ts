@@ -9,7 +9,7 @@
 // PressResponder bounds how FAST that runs; it does not break it.
 //
 // This module classifies; it does not decide. The Worker stamps the verdict onto the envelope and
-// the API refuses to dispatch on it and meters the skip (`press_loop_guard_total{marker}`) — the
+// the API refuses to dispatch on it and meters the skip (`press_loop_guard_total{reason}`) — the
 // enforcement and the metric live where dispatch lives, so the skip is observable rather than a
 // silent drop (docs/process/no-dark-by-default.md). Only the raw MIME headers can be read here, so
 // only the detection lives here.
@@ -21,7 +21,7 @@
 
 /**
  * The bounded reason vocabulary. It is a wire enum — the API maps these onto the
- * `press_loop_guard_total{marker}` label and collapses anything it does not recognize to `unknown`,
+ * `press_loop_guard_total{reason}` label and collapses anything it does not recognize to `unknown`,
  * so a Worker can never mint an unbounded label.
  */
 export type LoopGuardMarker =

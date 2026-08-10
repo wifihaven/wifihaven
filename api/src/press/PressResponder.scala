@@ -101,7 +101,7 @@ final case class PressResponder(
    * this breaks it.
    *
    * The skip is deliberately NOT silent (#2265/#2266). A journalist whose mail is misclassified is
-   * a real cost, so every skip lands on `press_loop_guard_total{marker}` — a bounded label, never a
+   * a real cost, so every skip lands on `press_loop_guard_total{reason}` — a bounded label, never a
    * per-sender one — and on the `press_ai_draft_total{outcome="skipped_auto_submitted"}`
    * disposition series, with a WARN log carrying the marker and Message-ID (the Worker's own log
    * line carries the sender address). Both are on the Press Grafana dashboard.

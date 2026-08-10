@@ -155,10 +155,10 @@ object PressResponderSpec
    * #2442 — the loop-guard series, read as a DELTA for the same reason as above (JVM-global
    * counter).
    */
-  private def loopGuardCount(marker: String): UIO[Double] =
+  private def loopGuardCount(reason: String): UIO[Double] =
     zio.metrics.Metric
       .counter("press_loop_guard_total")
-      .tagged("marker", marker)
+      .tagged("reason", reason)
       .value
       .map(_.count)
 

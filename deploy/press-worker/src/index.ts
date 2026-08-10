@@ -62,7 +62,7 @@ export default {
 
     // #2442 — the auto-reply / DSN loop guard. Only this Worker sees the raw MIME headers, so the
     // classification happens here; the API refuses to dispatch on the verdict and meters the skip
-    // (`press_loop_guard_total{marker}`), because dispatch and the metric pipeline live there. The
+    // (`press_loop_guard_total{reason}`), because dispatch and the metric pipeline live there. The
     // log line below is the sender-attributable half — it names the address the counter deliberately
     // does not, so a journalist wrongly classified as an autoresponder is recoverable from Workers
     // Logs (#2673 turned those on).
