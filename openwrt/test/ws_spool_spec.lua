@@ -204,18 +204,23 @@ describe("ws_spool.append_bounded + drain", function()
   end)
 
   it("does not lose a frame a drain already consumed before a short append", function()
+    -- Swept across caps: at a large cap `base` clamps to 0 and the deficit is
+    -- invisible, so pinning one generous cap would pass over the bug. The loss
+    -- only surfaces once eviction engages and `written - size` starts carrying
+    -- the shortfall.
     -- The shape that made the previous repair worse than doing nothing: the drain
     -- lands between a complete-but-unaccounted write and the failure, so it has
     -- already shipped bytes. Nothing may remove them afterwards, or the reader's
     -- cursor sits past content the file no longer holds and the NEXT frame is
     -- skipped in silence.
+    for _, cap in ipairs({ 30, 40, 50, 100, 1e6 }) do
     local fs = new_fs()
     local state = {}
     local seen = {}
     local function drain()
       for _, l in ipairs(ws_spool.drain("/tmp/sp", state, fs.open)) do seen[l] = true end
     end
-    ws_spool.append_bounded("/tmp/sp", "line1xxxx", 1e6, fs.open, fs.rename, fs.remove)
+    ws_spool.append_bounded("/tmp/sp", "line1xxxx", cap, fs.open, fs.rename, fs.remove)
     drain()
 
     -- close() fails AFTER the whole entry flushed: a complete line the ledger
@@ -229,15 +234,19 @@ describe("ws_spool.append_bounded + drain", function()
       end
       return h
     end
-    assert.is_nil(ws_spool.append_bounded("/tmp/sp", "line2xxxx", 1e6, fs.open, fs.rename, fs.remove))
+    assert.is_nil(ws_spool.append_bounded("/tmp/sp", "line2xxxx", cap, fs.open, fs.rename, fs.remove))
     broken = false
     fs.open = realopen
 
-    ws_spool.append_bounded("/tmp/sp", "line3xxxx", 1e6, fs.open, fs.rename, fs.remove)
-    ws_spool.append_bounded("/tmp/sp", "line4xxxx", 1e6, fs.open, fs.rename, fs.remove)
-    drain()
-    assert.is_true(seen["line3xxxx"], "line3xxxx silently lost after the drain window")
-    assert.is_true(seen["line4xxxx"], "line4xxxx silently lost after the drain window")
+    for i = 3, 9 do
+      ws_spool.append_bounded("/tmp/sp", "line" .. i .. "xxxx", cap, fs.open, fs.rename, fs.remove)
+      drain()
+    end
+    for i = 3, 9 do
+      assert.is_true(seen["line" .. i .. "xxxx"],
+                     "cap=" .. cap .. ": line" .. i .. "xxxx silently lost after the drain window")
+    end
+    end
   end)
 
   it("keeps the spool intact when the rebuilt copy cannot be written", function()

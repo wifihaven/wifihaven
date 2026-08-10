@@ -112,8 +112,8 @@ end
 -- single missing bump lands the cursor at exactly `consumed == base + size` —
 -- missed by the strict comparison by the width of the frame it should rescue, so
 -- one frame is lost silently. Plausible precisely because a full /tmp is what
--- fails the bump. Closing it needs the accounting inside the spool file so
--- publish-and-account is one atomic write, which is a redesign, not a guard.
+-- fails the bump. TODO(#2685): closing it needs the accounting inside the spool
+-- file so publish-and-account is one atomic write. A redesign, not a guard.
 local pending_bytes = {}
 
 local function bump_ledger(path, bytes, open_fn)
@@ -266,7 +266,21 @@ function M.append_bounded(path, line, max_bytes, open_fn, rename_fn, remove_fn)
   -- would skip the following frame.
   local wrote = af:write(entry)
   local closed = af:close()
-  if not (wrote and closed) then return nil, 0, ledger_ok end
+  if not (wrote and closed) then
+    -- The entry may have landed COMPLETE despite the failure — a close that fails
+    -- at flush after the whole line went out. That line is consumable, so the
+    -- drain will ship it and the torn-tail strip will never touch it; but no bump
+    -- ran, so `written` is short by it forever, and once the cap engages
+    -- `written - size` under-shoots and a LATER frame is silently skipped. This is
+    -- exactly the deficit pending_bytes exists for, so record it and let the next
+    -- successful bump catch up. A torn tail needs no carry: it is unconsumable and
+    -- the next append strips it.
+    local after = slurp(path, open_fn) or ""
+    if after:sub(-1) == "\n" and #after == #existing + #entry then
+      pending_bytes[path] = (pending_bytes[path] or 0) + #entry
+    end
+    return nil, 0, ledger_ok
+  end
   ledger_ok = bump_ledger(path, #entry, open_fn)
   if not ledger_ok then return nil, 0, false end
   return true, 0, ledger_ok
