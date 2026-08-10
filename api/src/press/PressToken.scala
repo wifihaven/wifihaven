@@ -43,26 +43,32 @@ import java.util.Base64
  *     silently eating a reply is observable.
  *
  * Wire shape: `v1.<b64url(payload)>.<hmacHex>` where `payload` is
- * `b64(replyTo)|b64(subject)|pressMessageId|expEpochSeconds|b64(inboundMessageId)`
- * (`replyTo`/`subject`/`inboundMessageId` base64url'd so none of them can smuggle the `|`
- * delimiter; `pressMessageId` and `exp` are bare decimal). `pressMessageId` (#2296) is the id of
- * the recorded inbound `press_messages` row this session answers, so the reply callback can pair
- * the outbound row to its inquiry — it rides the SIGNED payload (like every other field), so a
- * hijacked agent can neither forge nor repoint it, and `0` means "no inbound row was recorded"
- * (fail-open: the inbound insert failed). `inboundMessageId` (#2451) is the journalist's RFC 5322
- * `Message-ID` the reply threads under (`In-Reply-To`/`References`); empty means the inbound
- * carried none, in which case the reply sends unthreaded. It is inside the MAC for the same reason
- * the reply target is: a prompt-hijacked agent must not be able to graft its reply onto somebody
- * else's conversation.
+ * `b64(replyTo)|b64(subject)|pressMessageId|expEpochSeconds|b64(inboundMessageId)|b64(inboundReferences)`
+ * (every free-text field base64url'd so none of them can smuggle the `|` delimiter;
+ * `pressMessageId` and `exp` are bare decimal). `pressMessageId` (#2296) is the id of the recorded
+ * inbound `press_messages` row this session answers, so the reply callback can pair the outbound
+ * row to its inquiry — it rides the SIGNED payload (like every other field), so a hijacked agent
+ * can neither forge nor repoint it, and `0` means "no inbound row was recorded" (fail-open: the
+ * inbound insert failed). `inboundMessageId` (#2451) is the journalist's RFC 5322 `Message-ID` the
+ * reply threads under (`In-Reply-To`/`References`); empty means the inbound carried none, in which
+ * case the reply sends unthreaded. It is inside the MAC for the same reason the reply target is: a
+ * prompt-hijacked agent must not be able to graft its reply onto somebody else's conversation.
+ * `inboundReferences` (#2467) is that message's own `References` header, normalised to a
+ * space-separated msg-id list and bounded to
+ * [[wifihaven.api.notify.EmailSender.MaxReferencesChars]] (986 chars, one RFC 5322 header line)
+ * BEFORE it is minted — so an attacker-controlled header cannot inflate the bearer token past a
+ * known bound (986 chars of msg-ids, ~1.3 KB once base64'd). It rides the MAC for exactly the same
+ * reason the Message-ID does.
  *
- * '''Rollout (#2451).''' [[verify]] also accepts the pre-#2451 4-field payload (no
- * `inboundMessageId`), resolving it to an empty Message-ID. Tokens expire
- * (`press.agentTokenTtlMinutes`) and are both minted and verified by this server — this is NOT the
- * router wire contract — so the only exposure is a session dispatched by the old build and redeemed
- * by the new one. That window is real though, and failing it would silently drop a journalist's
- * reply. TODO(#2459): delete the 4-field arm once the deploy has been live longer than one token
- * TTL — note that #2473 raised that TTL from 30 minutes to **24 hours**, so the wait is a day, not
- * half an hour.
+ * '''Rollout (#2451/#2467).''' [[verify]] also accepts the pre-#2467 5-field payload (no
+ * `inboundReferences`, resolving to an empty chain, i.e. the first-level threading #2451 shipped)
+ * and the pre-#2451 4-field payload (no `inboundMessageId` either, resolving to an empty
+ * Message-ID). Tokens expire (`press.agentTokenTtlMinutes`) and are both minted and verified by
+ * this server — this is NOT the router wire contract — so the only exposure is a session dispatched
+ * by the old build and redeemed by the new one. That window is real though, and failing it would
+ * silently drop a journalist's reply. TODO(#2459): delete the 4-field arm once the deploy has been
+ * live longer than one token TTL — note that #2473 raised that TTL from 30 minutes to **24 hours**,
+ * so the wait is a day, not half an hour.
  */
 object PressToken {
 
@@ -92,6 +98,11 @@ object PressToken {
       // #2451 — the journalist's inbound RFC 5322 Message-ID the reply threads under. Empty when the
       // inbound carried none (or the token predates #2451); the reply then sends unthreaded.
       inboundMessageId: String,
+      // #2467 — the journalist's inbound `References` header (a normalised, bounded msg-id list),
+      // which the reply's own `References` accumulates onto per RFC 5322 §3.6.4. Empty when the
+      // inbound carried none (every first-contact email) or when the token predates #2467; the
+      // reply then references the parent alone, exactly as #2451 shipped.
+      inboundReferences: String,
       expiresAt: Instant,
       // #2451 — true when this token used the pre-#2451 4-field payload, i.e. it was minted by a
       // build older than the running one. Distinguishes "old token" from "inbound had no
@@ -104,22 +115,27 @@ object PressToken {
 
   /**
    * Mint a token binding `replyTo` + `subject` + the recorded inbound `pressMessageId` + the
-   * inbound `Message-ID`, expiring at `now + ttl`. Server-side only. Pass `pressMessageId = 0` when
-   * no inbound row was recorded, and `inboundMessageId = ""` when the inbound carried no
-   * Message-ID.
+   * inbound `Message-ID` + the inbound `References` chain, expiring at `now + ttl`. Server-side
+   * only. Pass `pressMessageId = 0` when no inbound row was recorded, `inboundMessageId = ""` when
+   * the inbound carried no Message-ID, and `inboundReferences = ""` when it carried no chain (the
+   * first-contact case, and every non-press caller). `inboundReferences` must already be normalised
+   * and bounded by [[wifihaven.api.notify.EmailSender.normalizeReferences]] — minting is not where
+   * an attacker-controlled header gets sanitised.
    */
   def mint(
       replyTo: String,
       subject: String,
       pressMessageId: Long,
       inboundMessageId: String,
+      inboundReferences: String,
       now: Instant,
       ttl: java.time.Duration,
       secret: String,
   ): String = {
     val exp     = now.plus(ttl).getEpochSecond
     val payload =
-      s"${b64(replyTo)}|${b64(subject)}|$pressMessageId|$exp|${b64(inboundMessageId)}"
+      s"${b64(replyTo)}|${b64(subject)}|$pressMessageId|$exp|${b64(inboundMessageId)}|" +
+        b64(inboundReferences)
     val body    =
       Base64.getUrlEncoder.withoutPadding.encodeToString(payload.getBytes(StandardCharsets.UTF_8))
     s"$Version.$body.${hmacHex(secret, body)}"
@@ -135,7 +151,15 @@ object PressToken {
         if !constantTimeEquals(sig, hmacHex(secret, body)) then Left(Err.BadSignature)
         else
           decode(body).flatMap {
-            case (replyTo, subject, pressMessageId, exp, inboundMessageId, legacyPayload) =>
+            case (
+                  replyTo,
+                  subject,
+                  pressMessageId,
+                  exp,
+                  inboundMessageId,
+                  inboundReferences,
+                  legacyPayload,
+                ) =>
               if now.getEpochSecond > exp then Left(Err.Expired)
               else
                 Right(
@@ -144,6 +168,7 @@ object PressToken {
                     subject,
                     pressMessageId,
                     inboundMessageId,
+                    inboundReferences,
                     Instant.ofEpochSecond(exp),
                     legacyPayload,
                   ),
@@ -154,21 +179,31 @@ object PressToken {
 
   // Returns the payload fields plus a flag for WHICH arity matched, so the caller can tell a
   // legacy token from a current one whose Message-ID happens to be empty.
-  private def decode(body: String): Either[Err, (String, String, Long, Long, String, Boolean)] =
+  private def decode(
+      body: String,
+  ): Either[Err, (String, String, Long, Long, String, String, Boolean)] =
     scala.util
       .Try {
         val raw = new String(Base64.getUrlDecoder.decode(body), StandardCharsets.UTF_8)
-        // `-1` keeps trailing empty fields, so a 5-field payload whose Message-ID is empty still
-        // yields 5 parts — and the arity match below is then exact: a future 6-field payload falls
-        // through to Malformed instead of silently folding its 6th field into `mid`.
+        // `-1` keeps trailing empty fields, so a payload whose Message-ID or References is empty
+        // still yields its full arity — and the arity match below is then exact: a future 7-field
+        // payload falls through to Malformed instead of silently folding its 7th field into `refs`.
         raw.split("\\|", -1) match {
-          case Array(r, s, m, e, mid) => (unb64(r), unb64(s), m.toLong, e.toLong, unb64(mid), false)
+          case Array(r, s, m, e, mid, refs) =>
+            (unb64(r), unb64(s), m.toLong, e.toLong, unb64(mid), unb64(refs), false)
+          // TODO(#2459): the pre-#2467 5-field payload — a session dispatched by the previous build
+          // and redeemed by this one. Its reply threads under the parent alone (the #2451 shape),
+          // which is correct for the first-level replies that are all the old build could produce.
+          // Not flagged `legacyPayload`: that flag tracks the pre-#2451 arm #2459 waits on, and
+          // conflating the two would keep it lit forever.
+          case Array(r, s, m, e, mid)       =>
+            (unb64(r), unb64(s), m.toLong, e.toLong, unb64(mid), "", false)
           // TODO(#2459): the pre-#2451 4-field payload — accepted so a session dispatched by the old
           // build and redeemed by the new one still verifies (its reply just can't thread). Delete
           // once the #2451 deploy has been live longer than one token TTL; `legacyPayload` on the
           // claims is what tells you this arm has stopped being hit.
-          case Array(r, s, m, e)      => (unb64(r), unb64(s), m.toLong, e.toLong, "", true)
-          case _                      => throw new IllegalArgumentException("bad payload")
+          case Array(r, s, m, e) => (unb64(r), unb64(s), m.toLong, e.toLong, "", "", true)
+          case _                 => throw new IllegalArgumentException("bad payload")
         }
       }
       .toEither

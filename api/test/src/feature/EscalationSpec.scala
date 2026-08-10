@@ -327,12 +327,14 @@ object EscalationSpec
           "Interview request",
           "Can I schedule 20 minutes with the founder this week?",
           "<m1>",
+          "",
         )
         now       <- h.clock.instant
         token = PressToken.mint(
           "reporter@techdaily.example",
           "Interview request",
           inboundId,
+          "",
           "",
           now,
           java.time.Duration.ofMinutes(30),
@@ -369,6 +371,7 @@ object EscalationSpec
           "reporter@example.com",
           "Story",
           0L,
+          "",
           "",
           now,
           java.time.Duration.ofMinutes(30),
@@ -409,6 +412,7 @@ object EscalationSpec
           "Story",
           0L,
           "",
+          "",
           now,
           java.time.Duration.ofMinutes(30),
           PressTokenSecret,
@@ -441,6 +445,7 @@ object EscalationSpec
           "reporter@example.com",
           "Story",
           0L,
+          "",
           "",
           now,
           java.time.Duration.ofMinutes(30),

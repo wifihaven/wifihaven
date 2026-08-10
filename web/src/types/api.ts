@@ -808,6 +808,10 @@ export interface PressMessage {
   inReplyTo: number | null
   outcome: string | null
   createdAt: string
+  // #2467 — the inbound `References` chain (normalised msg-id list, bounded to one RFC 5322 header
+  // line). Empty for a first-contact inbound and always for outbound. Additive: the SPA does not
+  // render it, but the wire type must match what the route now returns.
+  references: string
 }
 
 // NOTE: the beta-pipeline wire types (BetaRequestStatus, CreateBetaRequest,

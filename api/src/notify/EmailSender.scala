@@ -29,11 +29,12 @@ trait EmailSender {
    * must point at the press inbox so a journalist's reply routes to the #2203 responder.
    *
    * #2451 — `inReplyTo` is the RFC 5322 `Message-ID` of the message being replied to. When set, the
-   * transport emits BOTH `In-Reply-To` and `References` with that value, so the reply threads under
-   * the original in any compliant client. ONE parameter renders both headers (they carry the same
-   * single id) rather than two that could disagree. Used by the press RESPONDER path, where the id
-   * rides the signed [[wifihaven.api.press.PressToken]] so a hijacked agent cannot repoint the
-   * thread.
+   * transport emits `In-Reply-To` with that value, so the reply threads under the original in any
+   * compliant client. #2467 adds `parentReferences` (that message's own `References`), from which
+   * the transport builds the accumulated `References` chain; both headers come from ONE producer
+   * ([[EmailSender.threadingHeaders]]) rather than being assembled per call site, so they cannot
+   * disagree. Used by the press RESPONDER path, where both values ride the signed
+   * [[wifihaven.api.press.PressToken]] so a hijacked agent cannot repoint the thread.
    *
    * Default implementation ignores the envelope override and the threading id and delegates to
    * [[send]] — so the [[EmailSender.Disabled]] no-op and any transport that doesn't support
@@ -47,6 +48,10 @@ trait EmailSender {
       subject: String,
       htmlBody: String,
       inReplyTo: Option[String] = None,
+      // #2467 — the IMMEDIATE parent's own `References` header, so the reply can emit the
+      // accumulated RFC 5322 §3.6.4 chain rather than only the parent. `None`/empty (every
+      // first-contact email, and every non-press caller) yields exactly the pre-#2467 headers.
+      parentReferences: Option[String] = None,
   ): UIO[EmailOutcome] =
     send(to, subject, htmlBody)
 }
@@ -119,27 +124,117 @@ object EmailSender {
   private val MsgIdPrefix = "<[^<>\\s]+>".r
 
   // RFC 5322 §2.1.1 caps a header LINE at 998 characters excluding the CRLF — field name and
-  // separator included. Budget for the longest of the two names we emit so the rendered line
-  // cannot exceed the limit; an id that doesn't fit isn't a usable header value, and emitting an
-  // over-long one risks a relay rejection, which under this transport means the reply is not
-  // delivered at all (worse than not threading). Derived from the header name, not hardcoded.
-  //
-  // Public so callers that persist or carry a Message-ID around can bound it to the same number
-  // rather than inventing a second one — anything longer could never be emitted anyway.
-  private val ThreadingHeaderNames: List[String] = List("In-Reply-To", "References")
-  val MaxThreadingIdChars: Int                   =
-    998 - ThreadingHeaderNames.map(_.length + ": ".length).max
+  // separator included. An over-long header risks a relay rejection, which under this transport
+  // means the reply is not delivered at all (worse than not threading), so every value we emit is
+  // budgeted against that limit, derived from the header name rather than hardcoded.
+  private val InReplyToHeader: String            = "In-Reply-To"
+  private val ReferencesHeader: String           = "References"
+  private val ThreadingHeaderNames: List[String] = List(InReplyToHeader, ReferencesHeader)
+
+  private def headerValueBudget(name: String): Int = 998 - (name.length + ": ".length)
+
+  // Budget for a SINGLE msg-id, taken against the longest name we emit so the id is usable under
+  // either header. Public so callers that persist or carry a Message-ID around can bound it to the
+  // same number rather than inventing a second one — anything longer could never be emitted anyway.
+  val MaxThreadingIdChars: Int = ThreadingHeaderNames.map(headerValueBudget).min
+
+  // #2467 — budget for the whole accumulated `References` VALUE (a space-separated msg-id list),
+  // against its own header name. Public for the same reason: [[normalizeReferences]] bounds what
+  // the caller persists and puts on the signed token by exactly what can be emitted.
+  val MaxReferencesChars: Int = headerValueBudget(ReferencesHeader)
 
   /**
-   * #2451 — the RFC 5322 threading pair, exactly as it goes on the wire. This is the SINGLE
-   * producer of the header names and of the rule that both carry the same id (this is a first-level
-   * reply to the journalist's original, so there is nothing to disagree — the accumulated-chain
-   * form RFC 5322 §3.6.4 describes for deeper replies is #2467); [[Resend]] puts its result
-   * straight into the request and the recording senders record its result verbatim, so a spec
-   * assertion and a live send cannot diverge.
+   * #2467 — parse an inbound `References` header into the space-separated msg-id list we persist
+   * and carry on the token, bounded to one header line's worth.
+   *
+   * The header is attacker-controlled sender content, so this is a WHITELIST: control characters
+   * are stripped, the remainder is split on whitespace, and only tokens that are themselves
+   * well-formed RFC 5322 msg-ids survive. Anything else — prose, an unclosed bracket, a smuggled
+   * `Bcc:` line — is dropped rather than echoed, so nothing that could inject or malform an
+   * outbound header can reach [[threadingHeaders]]. Bounding here is what keeps an unbounded
+   * inbound header from inflating the `press_messages` row or the signed bearer token; the send
+   * path bounds again (the chain grows by the parent id), so neither side depends on the other.
    */
-  def threadingHeaders(inReplyTo: Option[String]): Option[Map[String, String]] =
-    threadingId(inReplyTo).map(id => ThreadingHeaderNames.map(_ -> id).toMap)
+  def normalizeReferences(raw: Option[String]): String =
+    fitChain(msgIds(raw)).mkString(" ")
+
+  // Split on whitespace and keep only entries that are entirely a msg-id. `MsgIdPrefix` is anchored
+  // at the start, so the `_.length == tok.length` check is what makes it a FULL match: `<a@b>junk`
+  // has a valid prefix but is not a valid id, and is dropped.
+  //
+  // Control characters become SPACES rather than being deleted (which is what the single-id
+  // [[threadingId]] does): a smuggled `<a@x>\r\nBcc: …` must split into `<a@x>` and discardable
+  // junk, where deleting the CRLF would instead glue them into one unparseable token and silently
+  // cost the reply an id it legitimately had.
+  private def msgIds(raw: Option[String]): List[String] =
+    raw.toList
+      .flatMap(_.map(c => if c.isControl then ' ' else c).split("\\s+"))
+      .filter(_.nonEmpty)
+      .flatMap(tok => MsgIdPrefix.findPrefixOf(tok).filter(_.length == tok.length))
+
+  // Drop entries until the rendered value fits one header line. RFC 5322 §3.6.4 says an
+  // implementation that must shorten the chain should keep the FIRST id (the thread root) and the
+  // most recent ones, so the drop happens from the second element inward. With only one entry left
+  // the value is a single msg-id, already bounded by MaxThreadingIdChars, so this terminates.
+  @annotation.tailrec
+  private def fitChain(ids: List[String]): List[String] =
+    if ids.mkString(" ").length <= MaxReferencesChars then ids
+    else
+      ids match {
+        case first :: _ :: rest if rest.nonEmpty => fitChain(first :: rest)
+        case _ :: rest                           => fitChain(rest)
+        case Nil                                 => Nil
+      }
+
+  /**
+   * #2451/#2467 — the RFC 5322 threading pair, exactly as it goes on the wire. This is the SINGLE
+   * producer of the header names and of the rule relating them; [[Resend]] puts its result straight
+   * into the request and the recording senders record its result verbatim, so a spec assertion and
+   * a live send cannot diverge.
+   *
+   * `inReplyTo` is the IMMEDIATE parent's `Message-ID` and is emitted verbatim as `In-Reply-To`.
+   * `parentReferences` is that parent's own `References` header (empty for a first-contact email);
+   * `References` is the two concatenated in order, which is the accumulated chain RFC 5322 §3.6.4
+   * asks for. With no parent chain the pair collapses to the single id both headers carried before
+   * #2467, so a first-level reply — every reply we have sent to date — is unchanged.
+   *
+   * No usable parent `Message-ID` means NO pair at all, chain or not: `In-Reply-To` is what a
+   * client threads on, and a `References`-only reply would be a half-built thread.
+   */
+  def threadingHeaders(
+      inReplyTo: Option[String],
+      parentReferences: Option[String] = None,
+  ): Option[Map[String, String]] =
+    threading(inReplyTo, parentReferences).map { case (id, chain, _) =>
+      Map(InReplyToHeader -> id, ReferencesHeader -> chain.mkString(" "))
+    }
+
+  /**
+   * #2467 — the bounded label for HOW a reply threaded, for `press_reply_threading_total{shape}`.
+   * Derived from the same [[threading]] result the headers are rendered from, so the metric cannot
+   * report a shape the wire did not carry. Never carries a message-id or a sender: the label space
+   * is these four values and nothing else.
+   */
+  def threadingShape(inReplyTo: Option[String], parentReferences: Option[String]): String =
+    threading(inReplyTo, parentReferences) match {
+      case None                                     => "none"
+      case Some((_, chain, _)) if chain.sizeIs <= 1 => "parent_only"
+      case Some((_, _, truncated)) => if truncated then "chained_truncated" else "chained"
+    }
+
+  // The one place the pair is decided: the normalized parent id, the accumulated chain, and
+  // whether fitting it to one header line had to drop anything. The parent id is what the chain
+  // accumulates onto, so it always goes last; a chain that already names it (a mail client that
+  // folded it in) must not repeat it.
+  private def threading(
+      inReplyTo: Option[String],
+      parentReferences: Option[String],
+  ): Option[(String, List[String], Boolean)] =
+    threadingId(inReplyTo).map { id =>
+      val full   = msgIds(parentReferences).filterNot(_ == id) :+ id
+      val fitted = fitChain(full)
+      (id, fitted, fitted.sizeIs < full.size)
+    }
 
   /** No-op sender used when email is unconfigured. */
   val Disabled: EmailSender = new EmailSender {
@@ -192,6 +287,7 @@ object EmailSender {
         subject: String,
         htmlBody: String,
         inReplyTo: Option[String],
+        parentReferences: Option[String],
     ): UIO[EmailOutcome] = {
       val fromHeader  = Option(from).map(_.trim).filter(_.nonEmpty).getOrElse(cfg.fromTrimmed)
       val replyHeader =
@@ -203,7 +299,7 @@ object EmailSender {
           subject = subject,
           html = htmlBody,
           reply_to = replyHeader,
-          headers = threadingHeaders(inReplyTo),
+          headers = threadingHeaders(inReplyTo, parentReferences),
         ),
       )
     }
@@ -265,8 +361,9 @@ object EmailSender {
       subject: String,
       htmlBody: String,
       inReplyTo: Option[String],
+      parentReferences: Option[String],
   ): Sent =
-    Sent(to, subject, htmlBody, Some(from), replyTo, threadingHeaders(inReplyTo))
+    Sent(to, subject, htmlBody, Some(from), replyTo, threadingHeaders(inReplyTo, parentReferences))
 
   def recording(ref: Ref[List[Sent]]): EmailSender = new EmailSender {
     def send(to: String, subject: String, htmlBody: String): UIO[EmailOutcome] =
@@ -281,9 +378,10 @@ object EmailSender {
         subject: String,
         htmlBody: String,
         inReplyTo: Option[String],
+        parentReferences: Option[String],
     ): UIO[EmailOutcome] =
       ref
-        .update(_ :+ sentAs(from, replyTo, to, subject, htmlBody, inReplyTo))
+        .update(_ :+ sentAs(from, replyTo, to, subject, htmlBody, inReplyTo, parentReferences))
         .as(EmailOutcome.Sent)
   }
 
@@ -305,7 +403,10 @@ object EmailSender {
           subject: String,
           htmlBody: String,
           inReplyTo: Option[String],
+          parentReferences: Option[String],
       ): UIO[EmailOutcome] =
-        ref.update(_ :+ sentAs(from, replyTo, to, subject, htmlBody, inReplyTo)).as(outcome(to))
+        ref
+          .update(_ :+ sentAs(from, replyTo, to, subject, htmlBody, inReplyTo, parentReferences))
+          .as(outcome(to))
     }
 }

@@ -223,6 +223,7 @@ object ReplyRedactionSpec
         subject = "Press inquiry",
         pressMessageId = 0L,
         inboundMessageId = "",
+        inboundReferences = "",
         now = now,
         ttl = pressCfg.agentTokenTtl,
         secret = PressTokenSecret,

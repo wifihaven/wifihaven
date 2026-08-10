@@ -78,15 +78,15 @@ object PressMessagesRouteSpec
         pressLog <- ZIO.service[PressMessageRepo]
         auth     <- makeAuth
         // Seed a paired inbound → outbound thread.
-        inId     <- pressLog.recordInbound("reporter@ex.com", "Comment?", "the question", "<m1>")
-        _        <- pressLog.recordOutbound(
+        inId  <- pressLog.recordInbound("reporter@ex.com", "Comment?", "the question", "<m1>", "")
+        _     <- pressLog.recordOutbound(
           "reporter@ex.com",
           "Re: Comment?",
           "the reply",
           Some(inId),
           "sent",
         )
-        token    <- login(auth, "admin", "changeme")
+        token <- login(auth, "admin", "changeme")
         routes = PressRoutes.routes(auth, pressLog)
         (status, body) <- get(routes, Some(token))
         msgs = body.fromJson[List[PressMessage]].getOrElse(Nil)
@@ -104,7 +104,7 @@ object PressMessagesRouteSpec
         two      <- TestLayers.seedTwoHouseholds(macA, macB)
         pressLog <- ZIO.service[PressMessageRepo]
         auth     <- makeAuth
-        _        <- pressLog.recordInbound("reporter@ex.com", "Comment?", "q", "<m1>")
+        _        <- pressLog.recordInbound("reporter@ex.com", "Comment?", "q", "<m1>", "")
         // adminB is a full admin — but of household B, not the operator household.
         token    <- login(auth, two.adminB, two.password, Some(two.slugB))
         routes = PressRoutes.routes(auth, pressLog)

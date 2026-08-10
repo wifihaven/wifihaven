@@ -1301,6 +1301,17 @@ object AppMetrics {
   def pressAgentAction(action: String, outcome: String): UIO[Unit] =
     MetricGuard.counter("press_agent_action_total", Map("op" -> action, "outcome" -> outcome))
 
+  // #2467 — how each autonomous press reply threaded: `none` (no usable parent Message-ID, so the
+  // reply carries no threading headers), `parent_only` (a first-level reply — References is the
+  // parent alone, the #2451 shape), `chained` (the accumulated RFC 5322 §3.6.4 chain), or
+  // `chained_truncated` (the chain did not fit one header line and older ids were dropped). Four
+  // bounded values, produced by the SAME EmailSender.threading the headers are rendered from —
+  // never a per-sender, per-thread, or per-message-id label. A sustained `none` is the #2451
+  // regression signal; a sustained `chained_truncated` means real threads are outgrowing the
+  // header line, which is a thing to know before a journalist reports a split thread.
+  def pressReplyThreading(shape: String): UIO[Unit] =
+    MetricGuard.counter("press_reply_threading_total", Map("shape" -> shape))
+
   // #2438 — the press twin of supportDispatch, emitted from the SAME shared CloudAgentObservability
   // envelope. Same bounded {outcome,transport} space; separate series so press graphs/alerts on its
   // own dispatch health. Never a per-sender / per-thread label.

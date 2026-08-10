@@ -194,6 +194,7 @@ object PressResponderSpec
         subject,
         pressMessageId,
         inboundMessageId,
+        "",
         now,
         java.time.Duration.ofMinutes(ttlMinutes),
         TokenSecret,
@@ -367,10 +368,12 @@ object PressResponderSpec
     test("a PressToken cannot EXPRESS a household or a data scope, even server-side") {
       // The claim "press carries no data scope" has to hold against a future mistake, not just
       // against today's call sites — so pin the token GRAMMAR rather than its current callers.
-      // The payload is a fixed 5-field pipe record (replyTo|subject|pressMessageId|exp|messageId);
-      // a 6th field — a householdId, a dataAccess flag — is Malformed on decode EVEN WHEN signed
-      // with the real secret. Adding a scope to press therefore cannot happen by accident: it
-      // takes a deliberate arity change in PressToken, exactly where this test fails.
+      // The payload is a fixed 6-field pipe record
+      // (replyTo|subject|pressMessageId|exp|messageId|references); a 7th field — a householdId, a
+      // dataAccess flag — is Malformed on decode EVEN WHEN signed with the real secret. Adding a
+      // scope to press therefore cannot happen by accident: it takes a deliberate arity change in
+      // PressToken, exactly where this test fails. (#2467 made the record 6 fields; the guard is
+      // the arity, whatever it currently is.)
       for {
         _     <- cleanDb
         clock <- ZIO.service[Clock]
@@ -382,13 +385,13 @@ object PressResponderSpec
           java.nio.charset.StandardCharsets.UTF_8,
         )
         fields   = raw.split("\\|", -1)
-        // Forge a 6-field payload carrying a household id, signed with the REAL secret — the
+        // Forge a WIDENED payload carrying a household id, signed with the REAL secret — the
         // strongest attacker (or the sloppiest future refactor) this grammar can face.
         forged   = tokenFromPayload(s"$raw|1")
         verified = PressToken.verify(forged, now, TokenSecret)
       } yield assertTrue(
         // The grammar is exactly the reply-target record — there is no scope field to set.
-        fields.length == 5,
+        fields.length == 6,
         // A correctly-SIGNED widened token is still refused: the arity is the guard, not the MAC.
         verified == Left(PressToken.Err.Malformed),
         // …while the unwidened token verifies, so the rejection above is the arity, not the setup.
@@ -505,6 +508,7 @@ object PressResponderSpec
           "Story",
           0L,
           "",
+          "",
           now.minusSeconds(3600),
           java.time.Duration.ofMinutes(1),
           TokenSecret,
@@ -575,6 +579,7 @@ object PressResponderSpec
           "reporter@example.com",
           "Story",
           0L,
+          "",
           "",
           now.minusSeconds(3600),
           java.time.Duration.ofMinutes(1),
@@ -993,7 +998,13 @@ object PressResponderSpec
             ZIO.succeed(EmailOutcome.Failed)
         }
         // Record a real inbound row first, then reply with a token carrying its id.
-        inboundId <- pressLog.recordInbound("reporter@example.com", "Story", "the question", "<m>")
+        inboundId <- pressLog.recordInbound(
+          "reporter@example.com",
+          "Story",
+          "the question",
+          "<m>",
+          "",
+        )
         responder = PressResponder(
           liveCfg,
           failing,
@@ -1053,6 +1064,7 @@ object PressResponderSpec
           "Story",
           4242L,
           "",
+          "",
           now,
           java.time.Duration.ofMinutes(30),
           TokenSecret,
@@ -1067,6 +1079,7 @@ object PressResponderSpec
           "reporter@example.com",
           "Story",
           7L,
+          "",
           "",
           now.minusSeconds(3600),
           java.time.Duration.ofMinutes(1),
@@ -1092,6 +1105,7 @@ object PressResponderSpec
           "Story",
           4242L,
           "<orig@mail.example>",
+          "",
           now,
           ttl,
           TokenSecret,
@@ -1104,6 +1118,7 @@ object PressResponderSpec
           "Story",
           4242L,
           "<attacker@evil.example>",
+          "",
           now,
           ttl,
           TokenSecret,
@@ -1136,6 +1151,7 @@ object PressResponderSpec
           "reporter@example.com",
           "Story",
           77L,
+          "",
           "",
           now,
           java.time.Duration.ofMinutes(30),
