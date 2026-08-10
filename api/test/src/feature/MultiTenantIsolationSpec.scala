@@ -579,11 +579,13 @@ object MultiTenantIsolationSpec
     },
     // #2609: `byDev` filters `d.id` and `byPid` filters `d.profile_id` against the SAME joined `d`,
     // so before the fix a caller could probe with ANOTHER household's deviceId/profileId and have it
-    // match — an identifier oracle on top of the label leak. Post-fix `d` can only be household A's
-    // row, so B's id compares unequal and the row drops. (When the caller's household owns NO device
-    // for the MAC the join yields no `d` at all and the `IN` is NULL rather than FALSE; either way
-    // the row is excluded, so both shapes fail closed. This fixture exercises the FALSE shape —
-    // household A does own a device row for `macM`.)
+    // match — an identifier oracle on top of the label leak. Post-fix `d` can only be the device row
+    // of the EVENT's household (the join keys on `r.household_id`, not on the caller — the caller is
+    // pinned separately, by `householdFilter` on the row set), so B's id compares unequal and the row
+    // drops. (When the event's household owns NO device for the MAC the join yields no `d` at all and
+    // the `IN` is NULL rather than FALSE; either way the row is excluded, so both shapes fail closed.
+    // This fixture exercises the FALSE shape — the event is behind A's router and A does own a device
+    // row for `macM`.)
     test("pin 1b (#2609) — a FOREIGN deviceId/profileId filter on /api/logs matches nothing") {
       for {
         _      <- cleanDb
