@@ -669,9 +669,9 @@ object MultiTenantIsolationSpec
     // mislabeled device/profile by bare MAC. Here the SAME MAC `macA` is present behind BOTH
     // households' routers (posted under `routerIdA` and `routerIdB`); a household-A admin must see
     // ONLY A's host counts, never B's. NOTE: `macA` is a device only in household A (distinct from
-    // B's `macB` device), so the `LEFT JOIN devices d ON d.mac = ce.mac` matches exactly one row and
-    // the counts stay clean — the residual same-MAC device-join fan-out is #2312's scope, not this
-    // aggregation-leak pin.
+    // B's `macB` device), so the device join matches exactly one row and the counts stay clean —
+    // the residual same-MAC device-join fan-out was its own leak, pinned by the #2609 trio above
+    // and fixed by `SqlFragments.deviceLabelJoin`.
     test("pin 1 — GET /api/connection-events/series (raw) counts ONLY the caller's household") {
       for {
         _   <- cleanDb

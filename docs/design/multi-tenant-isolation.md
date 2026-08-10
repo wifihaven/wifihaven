@@ -392,6 +392,20 @@ is a bare MAC, not onto every leaf (`docs/process/single-source-of-truth.md`).
 The `time_usage` backfill must be estimated against prod row counts per
 `docs/process/migrations.md#migrations-prod-data-volume`.
 
+> **Clause (1) is a claim about the JOIN PREDICATE, not about the `devices`
+> table.** "A foreign MAC has no row to join" only holds if the join names the
+> household — `ON d.mac = <mac> AND d.household_id = <this row's household>`. A
+> join written `ON d.mac = <mac>` alone was safe under V1's global
+> `devices_mac_key` and became semantically undefined the moment V74 (#2277)
+> dropped it: with the same MAC in two households there is no single correct row
+> to resolve to, so the join both mislabels and *fans out* (one input row → one
+> output row per matching device). This has now been found twice — `alerts`
+> (#2283) and all three `connection_events` reads behind `/api/logs` +
+> `/api/connection-events/series` (#2609, `SqlFragments.deviceLabelJoin`). Any
+> NEW read that resolves a device or profile label from a MAC must qualify the
+> join the same way; an unqualified `d.mac = …` is the bug, not a missing
+> filter.
+
 ---
 
 ## 4. Auth — where the household comes from
