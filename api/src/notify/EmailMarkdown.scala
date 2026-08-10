@@ -95,10 +95,13 @@ object EmailMarkdown {
    */
   def render(markdown: String): String = {
     val normalized = markdown.replace("\r\n", "\n").replace('\r', '\n').filter(_ != Nul)
-    val rendered   = blocks(escape(normalized).split("\n", -1).toList).map {
-      case Block.Fenced(lines) => s"<pre><code>${lines.mkString("\n")}</code></pre>"
-      case Block.Prose(lines)  => renderProse(lines)
-    }
+    val rendered   = blocks(escape(normalized).split("\n", -1).toList)
+      .map {
+        case Block.Fenced(Nil)   => ""
+        case Block.Fenced(lines) => s"<pre><code>${lines.mkString("\n")}</code></pre>"
+        case Block.Prose(lines)  => renderProse(lines)
+      }
+      .filter(_.nonEmpty)
     if rendered.isEmpty then "<p></p>" else rendered.mkString("\n")
   }
 
@@ -117,12 +120,23 @@ object EmailMarkdown {
     case Fenced(lines: List[String])
   }
 
-  private def isFence(line: String): Boolean = line.trim.startsWith("```")
+  /**
+   * A fence line is backticks plus an optional info string and NOTHING else. The trailing `[^`]*`
+   * matters: without it a line like `` ```code``` `` (inline code the writer put on its own line)
+   * reads as an opening fence and its text is swallowed as an info string. This renderer must never
+   * delete a line of a reply — that is the #2677 failure mode, one notch worse.
+   */
+  private val FenceLine = """^`{3,}[^`]*$""".r
+
+  private def isFence(line: String): Boolean = FenceLine.matches(line.trim)
 
   /**
-   * Split escaped lines into blocks: a fence line opens a verbatim run that ends at the next fence
-   * (or at the end of the text, the way CommonMark treats an unterminated fence); otherwise a blank
-   * line ends a block.
+   * Split escaped lines into blocks: a fence line opens a verbatim run that ends at the next fence;
+   * otherwise a blank line ends a block.
+   *
+   * An UNTERMINATED fence is deliberately not a fence — CommonMark would run it to the end of the
+   * document, which for outbound correspondence means one stray line of backticks swallows the rest
+   * of the reply, sign-off included. Here it stays ordinary prose.
    */
   private def blocks(lines: List[String]): List[Block] = {
     def flush(cur: List[String], acc: List[Block]): List[Block] =
@@ -130,12 +144,12 @@ object EmailMarkdown {
 
     @tailrec def go(rest: List[String], acc: List[Block], cur: List[String]): List[Block] =
       rest match {
-        case Nil                         => flush(cur, acc)
-        case l :: tail if isFence(l)     =>
+        case Nil                                             => flush(cur, acc)
+        case l :: tail if isFence(l) && tail.exists(isFence) =>
           val (code, after) = tail.span(x => !isFence(x))
           go(after.drop(1), Block.Fenced(code) :: flush(cur, acc), Nil)
-        case l :: tail if l.trim.isEmpty => go(tail, flush(cur, acc), Nil)
-        case l :: tail                   => go(tail, acc, cur :+ l)
+        case l :: tail if l.trim.isEmpty                     => go(tail, flush(cur, acc), Nil)
+        case l :: tail                                       => go(tail, acc, cur :+ l)
       }
 
     go(lines, Nil, Nil).reverse
@@ -177,7 +191,9 @@ object EmailMarkdown {
   // Every span excludes `<` and `>` so it cannot reach across a tag an earlier pass emitted (the
   // input is escaped, so those can only be ours), and every quantifier is bounded — the greedy ones
   // possessively, which is lossless here because each excludes its own terminator.
-  private val CodeSpan = s"""`([^`\n]{1,$MaxSpanChars}+)`""".r
+  // The delimiter is captured and back-referenced so a multi-backtick span (```x```, which a writer
+  // may put on its own line) closes on a matching run rather than leaving stray ticks behind.
+  private val CodeSpan = s"""(`{1,3})([^`\n]{1,$MaxSpanChars}+)\\1""".r
 
   private val MdLink =
     s"""\\[([^\\]\n]{0,$MaxLinkTextChars}+)\\]\\(([^)\\s]{1,$MaxSpanChars}+)\\)""".r
@@ -209,7 +225,7 @@ object EmailMarkdown {
     val codes  = List.newBuilder[String]
     var n      = 0
     val masked = sub(CodeSpan, escaped) { m =>
-      codes += m.group(1)
+      codes += m.group(2)
       val token = s"$Nul$n$Nul"
       n += 1
       token

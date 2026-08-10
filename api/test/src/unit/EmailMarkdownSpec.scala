@@ -175,6 +175,21 @@ object EmailMarkdownSpec extends ZIOSpecDefault {
         // Prose either side stays prose.
         render("intro\n\n```\ncode\n```\n\noutro") ==
           "<p>intro</p>\n<pre><code>code</code></pre>\n<p>outro</p>",
+        // An empty fence emits nothing rather than an empty <pre>.
+        render("```\n```") == "<p></p>",
+      )
+    },
+    test("the fence splitter never deletes a line") {
+      // A renderer that silently drops a line of a journalist reply is the #2677 failure mode, one
+      // notch worse. Both shapes below would vanish if a fence opener were just "starts with ```".
+      assertTrue(
+        // Inline code alone on a line: not a fence, because a fence line carries no closing ticks.
+        render("```code```") == "<p><code>code</code></p>",
+        render("run ```x``` now") == "<p>run <code>x</code> now</p>",
+        // An UNTERMINATED fence stays prose instead of swallowing the rest of the reply — the
+        // deliberate deviation from CommonMark, because the tail here is the sign-off.
+        render("```\nnft add rule\n\nBest,\nSameer") ==
+          "<p>```<br>nft add rule</p>\n<p>Best,<br>Sameer</p>",
       )
     },
     test("what is deliberately left literal stays literal") {
@@ -201,9 +216,13 @@ object EmailMarkdownSpec extends ZIOSpecDefault {
     test("adversarial input stays linear — the regexes are bounded") {
       // Unbounded, `MdLink` and the bold body backtrack quadratically: at the route's own 64 KiB
       // body cap (PressAgentRoutes.MaxAgentBodyBytes) these inputs measured 8–45 s of single-fiber
-      // CPU during review of #2677. Bounded + possessive they are milliseconds. The budget is
-      // deliberately loose — it is a regression trip-wire for a quadratic pattern, not a
-      // performance assertion, so ordinary CI jitter cannot flake it.
+      // CPU during review of #2677. Bounded + possessive they are under a second, warm.
+      //
+      // This is a trip-wire for a quadratic pattern, not a performance assertion, and it is timed
+      // twice for a reason: measuring the FIRST pass measures cold-JIT compilation, which review of
+      // #2684 caught flaking red at 5.9 s against a 5 s budget. The first pass is the warm-up and is
+      // not timed; the budget applies to the second, where the quadratic version would still be
+      // tens of seconds.
       val size    = 64 * 1024
       val inputs  = List(
         "[" * size,           // unmatched brackets — the measured 44s case
@@ -214,10 +233,11 @@ object EmailMarkdownSpec extends ZIOSpecDefault {
         "`" * size,
         ("a" * 100 + "**") * (size / 102),
       )
+      inputs.foreach(render)
       val started = java.lang.System.nanoTime()
       val outputs = inputs.map(render)
       val elapsed = (java.lang.System.nanoTime() - started) / 1000000L
-      assertTrue(outputs.forall(_.nonEmpty), elapsed < 5000L)
+      assertTrue(outputs.forall(_.nonEmpty), elapsed < 10000L)
     },
   )
 }
