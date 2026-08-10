@@ -1,0 +1,45 @@
+-- V88__press_messages_references.sql
+-- #2467 (epic #2197/#2203): persist the inbound RFC 5322 `References` header
+-- alongside the `message_id` V71 already stores, so a reply to a journalist's
+-- human FOLLOW-UP can emit the accumulated chain RFC 5322 §3.6.4 asks for
+-- (References = parent's References + parent's Message-ID) instead of only the
+-- immediate parent.
+--
+-- SCHEMA-ONLY PR: per docs/process/migrations.md#migrations-back-compat this
+-- migration ships alone (SQL + docs). The source that writes the column (the
+-- #2203 PressResponder recording inbound) and reads it (the reply path, via the
+-- signed PressToken) lands in the stacked follow-up code PR. The existing
+-- feature suite is the back-compat gate: the column is NOT NULL with a DEFAULT,
+-- so the pre-#2467 INSERT that never names it still succeeds and yields the
+-- empty string — which the reply path treats exactly as today's behaviour
+-- (References = the immediate parent alone).
+--
+-- ── Prod data-volume (docs/process/migrations.md#migrations-prod-data-volume) ─
+-- ADD COLUMN ... NOT NULL DEFAULT '' on Postgres 11+ is a catalog-only change
+-- (the default is stored in pg_attribute and materialised on read, existing
+-- rows are not rewritten), so this neither scans nor rewrites the table.
+-- press_messages is in any case a press-volume table (a handful of rows), not
+-- one of the unbounded-growth tables (traffic_reports, connection_events,
+-- block_events, rollups). Runtime is milliseconds — nowhere near the 15-minute
+-- Render port-scan window.
+
+-- ── press_messages.references_header ─────────────────────────────────────────
+-- Named `references_header`, not `references`: REFERENCES is an SQL reserved
+-- word, and a column that has to be double-quoted at every call site is a
+-- standing footgun in the Doobie fragments that read it.
+--
+--   inbound  — the `References` header of the received email as captured by the
+--              Cloudflare Email Worker, normalised to a space-separated list of
+--              RFC 5322 msg-ids. Empty when the inbound carried none (every
+--              first-contact email, which is every press message we have seen
+--              to date) or when nothing in the header parsed as a msg-id.
+--              Bounded at ingest to what can legally be emitted on one header
+--              line (RFC 5322 §2.1.1, 998 chars) — the column is TEXT, but the
+--              writer never stores more than that, so an attacker-controlled
+--              header cannot grow the row, or the signed token that carries the
+--              value, without limit.
+--   outbound — always empty: the chain we emit is derived from the inbound row
+--              at send time, and Resend assigns the sent Message-ID out of
+--              band — exactly as `message_id` is already empty for outbound.
+ALTER TABLE press_messages
+  ADD COLUMN references_header TEXT NOT NULL DEFAULT '';
