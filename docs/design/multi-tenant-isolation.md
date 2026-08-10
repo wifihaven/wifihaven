@@ -369,8 +369,11 @@ join to another's rows.
 
 - **`router_id`-keyed tables** (`traffic_reports`, `connection_events`) need
   **no new column**: `router_id` → `routers.household_id` scopes them
-  transitively, and reads already filter by router or join through a
-  household-scoped `devices` row. Writes are constructively scoped because the
+  transitively, and reads already filter by router. Where such a read ALSO
+  resolves a device or profile label from the row's MAC, that join must name the
+  household too — filtering by router scopes the row set but not the labels, and
+  the two are separate predicates (#2609; see the clause-(1) note below). Writes
+  are constructively scoped because the
   `router_id` comes from the authed token, never the payload
   ([`RouterIngestService.scala:59`](../../api/src/routes/RouterIngestService.scala)).
 - **Bare-MAC-keyed tables** (`time_usage` — `UNIQUE(device_mac, domain, date)`;

@@ -531,7 +531,9 @@ object MultiTenantIsolationSpec
     // names. A distinct-MAC test passes against the buggy code and proves nothing — the shared MAC
     // IS the exploit condition. Each seeds ONE event, under household A's router only, so any
     // second row or any `sharedB`/`B-Kids` label is unambiguously the leak.
-    test("pin 1 (#2609) — GET /api/logs labels a SHARED MAC with the caller's OWN device/profile") {
+    test(
+      "pin 1b (#2609) — GET /api/logs labels a SHARED MAC with the caller's OWN device/profile",
+    ) {
       for {
         _   <- cleanDb
         two <- TestLayers.seedTwoHouseholds(macA, macB)
@@ -575,8 +577,71 @@ object MultiTenantIsolationSpec
         ) &&
         assertTrue(!bodyA.contains("sharedB"), !bodyA.contains("B-Kids"))
     },
+    // #2609: `byDev` filters `d.id` and `byPid` filters `d.profile_id` against the SAME joined `d`,
+    // so before the fix a caller could probe with ANOTHER household's deviceId/profileId and have it
+    // match. Post-fix `d` is only joined when it belongs to the event's household, so a foreign id
+    // leaves `d.id` / `d.profile_id` NULL, `IN (…)` evaluates to NULL, and the row is excluded —
+    // fail-closed. This property is structural given the join; the pin makes it regression-proof.
+    test("pin 1b (#2609) — a FOREIGN deviceId/profileId filter on /api/logs matches nothing") {
+      for {
+        _      <- cleanDb
+        two    <- TestLayers.seedTwoHouseholds(macA, macB)
+        cer    <- ZIO.service[ConnectionEventRepo]
+        dr     <- ZIO.service[DeviceRepo]
+        up     <- ZIO.service[UserProfileRepo]
+        xa     <- ZIO.service[Transactor[Task]]
+        _      <- dr.upsert(macM, "sharedA", Some(two.profileA), "192.168.1.20", two.hhA)
+        // Household B's device row for the SAME MAC — capture its id so A can try to filter by it.
+        devIdB <-
+          sql"INSERT INTO devices(mac,name,profile_id,household_id) VALUES ($macM,'sharedB',${two.profileB},${two.hhB}) RETURNING id"
+            .query[DeviceId]
+            .unique
+            .transact(xa)
+        ts = Instant.parse("2026-05-07T14:00:00Z")
+        _      <- cer.insertBatch(
+          List(
+            ConnectionEventInsert(
+              two.routerIdA,
+              Some(macM),
+              HostId.Fqdn(Hostname.unsafe("shared.example.com")),
+              None,
+              true,
+              BlockReason.fromWire("allow"),
+              ts,
+            ),
+          ),
+        )
+        auth   <- makeAuth
+        tokenA <- login(auth, two.adminA, two.password)
+        routes = LogRoutes.routes(auth, cer, up)
+        // Household A filters by household B's deviceId, then by B's profileId.
+        (sDev, bodyDev) <- getJson(
+          routes,
+          s"/api/logs?hours=1000000&deviceId=${devIdB.value}",
+          tokenA,
+        )
+        (sPid, bodyPid) <- getJson(
+          routes,
+          s"/api/logs?hours=1000000&profileId=${two.profileB.value}",
+          tokenA,
+        )
+        pageDev <- ZIO.fromEither(bodyDev.fromJson[QueryLogPage]).mapError(new RuntimeException(_))
+        pagePid <- ZIO.fromEither(bodyPid.fromJson[QueryLogPage]).mapError(new RuntimeException(_))
+        // Liveness anchor: A's OWN device id still matches the same event, so "empty" above is the
+        // scope working and not a dead route that returns nothing for every filter.
+        ownDev  <- dr.findByMacInHousehold(macM, two.hhA)
+        (sOwn, bodyOwn) <- getJson(
+          routes,
+          s"/api/logs?hours=1000000&deviceId=${ownDev.get.id.value}",
+          tokenA,
+        )
+        pageOwn <- ZIO.fromEither(bodyOwn.fromJson[QueryLogPage]).mapError(new RuntimeException(_))
+      } yield assertTrue(sDev == Status.Ok, sPid == Status.Ok, sOwn == Status.Ok) &&
+        assertTrue(pageDev.rows.isEmpty, pagePid.rows.isEmpty) &&
+        assertTrue(pageOwn.rows.size == 1, pageOwn.rows.head.deviceName.contains("sharedA"))
+    },
     test(
-      "pin 1 (#2609) — /series (raw) groups a SHARED MAC under the caller's OWN device label",
+      "pin 1b (#2609) — /series (raw) groups a SHARED MAC under the caller's OWN device+profile",
     ) {
       for {
         _   <- cleanDb
@@ -607,20 +672,23 @@ object MultiTenantIsolationSpec
         auth   <- makeAuth
         tokenA <- login(auth, two.adminA, two.password)
         routes = LogRoutes.routes(auth, cer, up)
-        // bucket=1h + default hours=24 stays on the raw `querySeries` path.
+        // bucket=1h + default hours=24 stays on the raw `querySeries` path. Group by BOTH labels:
+        // `p.name` rides the same `d.profile_id`, so the profile label is scoped by the same join
+        // and is worth asserting directly rather than inferring.
         (sA, bodyA) <- getJson(
           routes,
-          "/api/connection-events/series?bucket=1h&groupBy=device",
+          "/api/connection-events/series?bucket=1h&groupBy=device,profile",
           tokenA,
         )
         pageA       <- ZIO.fromEither(bodyA.fromJson[ConnectionEventSeriesPage])
-        devices = pageA.rows.flatMap(_.groups.get("device"))
+        devices  = pageA.rows.flatMap(_.groups.get("device"))
+        profiles = pageA.rows.flatMap(_.groups.get("profile"))
       } yield assertTrue(sA == Status.Ok) &&
-        assertTrue(devices == List("sharedA")) &&
+        assertTrue(devices == List("sharedA"), profiles == List("A-Kids")) &&
         assertTrue(pageA.rows.map(_.countSucceeded).sum == 1)
     },
     test(
-      "pin 1 (#2609) — /series (rollup) groups a SHARED MAC under the caller's OWN device label",
+      "pin 1b (#2609) — /series (rollup) groups a SHARED MAC under the caller's OWN device label",
     ) {
       for {
         _   <- cleanDb

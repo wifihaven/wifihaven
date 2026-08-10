@@ -61,13 +61,16 @@ object SqlFragments {
   // into household A's rows AND fanned one event into one output row per matching device.
   //
   // The predicate is `d.household_id = <routerAlias>.household_id`, NOT `= $callerHousehold`:
-  //   - it derives tenancy from the EVENT's own row (`connection_events.router_id` is `NOT NULL`
-  //     with an FK to `routers`, V42, so the joined `r` always exists and always carries a
-  //     household), so it is correct even for the callers that pass `LogFilter.household = None`
-  //     — the single-household back-compat path and `SpaPush`'s unscoped sweep — where a
-  //     caller-derived predicate would simply be absent;
+  //   - it derives tenancy from the EVENT's OWN row (`connection_events.router_id` V42 and
+  //     `connection_events_{hourly,daily}.router_id` V47 are all `NOT NULL` with an FK to `routers`,
+  //     and `routers.household_id` is `NOT NULL` V65/V66, so the joined `r` always exists and always
+  //     carries a household). It therefore does not depend on `LogFilter.household` being set. All
+  //     three live constructors DO set it (`Routes.scala` /api/logs + /series from `claims.hh`,
+  //     `SpaPush.pushConnectionEvents` per subscribed household since #2636) — the `None` default
+  //     has no live caller today, and this form is what keeps the LABELS scoped if one reappears,
+  //     since a caller-derived predicate would simply be absent there;
   //   - it never accepts a household from the client: the value is a column of a row the query
-  //     already reached through `router_id`.
+  //     already reached through `router_id`, which is itself pinned to the authenticated router.
   // It composes with, and does not replace, [[householdFilter]] — that scopes the ROW SET, this
   // scopes the LABELS. Index-backed by V65's `uq_devices_household_mac` UNIQUE(household_id, mac),
   // whose leading column is exactly this predicate, so the join stays a single index lookup.
