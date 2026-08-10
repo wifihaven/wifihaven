@@ -81,13 +81,13 @@ final case class PressResponder(
               PressInbound.VerifyError.BadSignature,
             ) =>
           meter(WebhookOutcome.InvalidSignature)
-        case Left(PressInbound.VerifyError.MalformedPayload)    =>
+        case Left(PressInbound.VerifyError.MalformedPayload)               =>
           meter(WebhookOutcome.Malformed)
         // #2442: the Worker classified this delivery as machine-generated — break the loop here,
         // ahead of every dispatch control.
-        case Right(PressInbound.Verified.AutoSubmitted(marker)) =>
-          loopGuarded(marker).flatMap(meter)
-        case Right(PressInbound.Verified.Message(event))        =>
+        case Right(PressInbound.Verified.AutoSubmitted(marker, messageId)) =>
+          loopGuarded(marker, messageId).flatMap(meter)
+        case Right(PressInbound.Verified.Message(event))                   =>
           dispatchFor(event).flatMap(meter)
       }
 
@@ -103,13 +103,20 @@ final case class PressResponder(
    * The skip is deliberately NOT silent (#2265/#2266). A journalist whose mail is misclassified is
    * a real cost, so every skip lands on `press_loop_guard_total{reason}` — a bounded label, never a
    * per-sender one — and on the `press_ai_draft_total{outcome="skipped_auto_submitted"}`
-   * disposition series, with a WARN log carrying the marker and Message-ID (the Worker's own log
-   * line carries the sender address). Both are on the Press Grafana dashboard.
+   * disposition series, with a WARN log carrying the marker and the inbound Message-ID. The id is
+   * the JOIN KEY: this log deliberately does not name the sender, the Worker's log line does, and
+   * reconciling them is how an operator answers "which journalist did we refuse". Both series are
+   * on the Press Grafana dashboard.
    */
-  private def loopGuarded(marker: LoopGuardMarker): UIO[WebhookOutcome] = {
-    val label = LoopGuardMarker.label(marker)
+  private def loopGuarded(marker: LoopGuardMarker, messageId: String): UIO[WebhookOutcome] = {
+    val label  = LoopGuardMarker.label(marker)
+    // The id is attacker-supplied, so it is control-stripped at parse and bounded here — an
+    // unbounded one would let a hostile sender flood the log with a single message.
+    val idPart =
+      if messageId.isEmpty then "none" else messageId.take(EmailSender.MaxThreadingIdChars)
     ZIO.logWarning(
-      s"press loop guard: inbound skipped as auto-submitted (marker=$label) — no session dispatched",
+      s"press loop guard: inbound skipped as auto-submitted " +
+        s"(marker=$label, message-id=$idPart) — no session dispatched",
     ) *>
       AppMetrics.pressLoopGuard(label).as(WebhookOutcome.AutoSubmitted)
   }

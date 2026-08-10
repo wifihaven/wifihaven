@@ -755,6 +755,30 @@ object PressResponderSpec
         after - before == 1.0,
       )
     },
+    test("#2442: the skip WARN carries the Message-ID — the join key to the Worker's log line") {
+      // The API log names the marker but deliberately NOT the sender; the Worker's log names the
+      // sender. The Message-ID is what joins them, and that join IS the recovery path for a
+      // journalist misclassified as an autoresponder. Pinned because a docstring claiming the id is
+      // logged, over code that never carried it, is exactly the #2018 class of unsourced assertion.
+      (for {
+        _              <- cleanDb
+        (routes, _, _) <- makeRoutes(liveCfg)
+        body = loopBody("ooo@example-paper.test", "I am out of the office", "auto_submitted")
+        _    <- postInbound(routes, body, Some(sign(body)))
+        logs <- ZTestLogger.logOutput
+      } yield assertTrue(
+        logs.exists(e =>
+          e.logLevel == LogLevel.Warning &&
+            e.message().contains("press loop guard") &&
+            e.message().contains("marker=auto_submitted") &&
+            // The id `loopBody` puts on the envelope — present verbatim, so an operator can grep
+            // the Worker's log for the same string and recover the sender.
+            e.message().contains("message-id=<abc@mail>"),
+        ),
+      )).provideSome[TestDatabase.AllRepos & EmbeddedPostgres & Clock & Transactor[Task]](
+        ZTestLogger.default,
+      )
+    },
     test("#2442: a real journalist's message (no marker, empty marker) still dispatches") {
       for {
         _                  <- cleanDb

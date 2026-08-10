@@ -38,8 +38,17 @@ object PressInbound {
    */
   sealed trait Verified
   object Verified {
-    final case class Message(event: PressInboundEvent)      extends Verified
-    final case class AutoSubmitted(marker: LoopGuardMarker) extends Verified
+    final case class Message(event: PressInboundEvent) extends Verified
+
+    /**
+     * `messageId` is carried for ONE reason: it is the join key. The API's WARN log names the
+     * marker but deliberately not the sender; the Worker's log line names the sender. Without a
+     * shared id, reconciling "which message did we refuse to answer" across the two logs falls back
+     * to timestamp guessing — and that reconciliation is the whole recovery path for a journalist
+     * misclassified as an autoresponder. Empty when the inbound carried no Message-ID (a bounce
+     * often does not).
+     */
+    final case class AutoSubmitted(marker: LoopGuardMarker, messageId: String) extends Verified
   }
 
   sealed trait VerifyError
@@ -62,17 +71,18 @@ object PressInbound {
       header <- sigHeader.map(_.trim).filter(_.nonEmpty).toRight(VerifyError.MissingSignature)
       expected = SupportService.hmacSha256Hex(secret, payload)
       _      <- Either.cond(constantTimeEquals(header, expected), (), VerifyError.BadSignature)
-      // #2442: the Worker's loop-guard verdict is read BEFORE the from/text requirement, and short
-      // -circuits it. A bounce/DSN is the commonest thing that closes the loop and it arrives with
-      // a null return path — i.e. exactly the envelope `parse` calls malformed. Reading the marker
-      // first is what makes that drop show up as a LOOP GUARD skip on its own loop-guard series rather
-      // than disappearing into `outcome=malformed`, where nobody could tell an autoresponder from
-      // a broken Worker.
+      // #2442: the Worker's loop-guard verdict is read BEFORE the from/text requirement, and
+      // short-circuits it. A bounce/DSN is the commonest thing that closes the loop and it arrives
+      // with a null return path — i.e. exactly the envelope `parse` calls malformed. Reading the
+      // marker first is what makes that drop show up as a LOOP GUARD skip on its own series
+      // rather than disappearing into `outcome=malformed`, where nobody could tell an
+      // autoresponder from a broken Worker.
       json   <- Json.decoder.decodeJson(payload).toOption.toRight(VerifyError.MalformedPayload)
       result <- json match {
         case root: Json.Obj =>
           loopMarker(root) match {
-            case Some(marker) => Right(Verified.AutoSubmitted(marker))
+            case Some(marker) =>
+              Right(Verified.AutoSubmitted(marker, messageId(root)))
             case None         =>
               parse(root).map(Verified.Message.apply).toRight(VerifyError.MalformedPayload)
           }
@@ -104,16 +114,20 @@ object PressInbound {
             // JSON-encodes the subject so raw injection is already prevented; this is belt+braces.)
             subject = str(root, "subject").map(stripControl).getOrElse(""),
             messageText = t,
-            // Trimmed as well as control-stripped, exactly like `from`. The id is bounded
-            // downstream (PressResponder truncates it before minting), so leading whitespace
-            // left on it would eat into that budget and could chop the closing `>` off an
-            // otherwise-valid id — silently costing the reply its thread (#2451).
-            messageId = str(root, "messageId").map(stripControl).map(_.trim).getOrElse(""),
+            messageId = messageId(root),
           ),
         )
       case _                  => None
     }
   }
+
+  // Trimmed as well as control-stripped. The id is bounded downstream (PressResponder truncates it
+  // before minting), so leading whitespace left on it would eat into that budget and could chop the
+  // closing `>` off an otherwise-valid id — silently costing the reply its thread (#2451). ONE
+  // reader for both the dispatch path and the #2442 loop-guard log, so the two can never disagree
+  // about what this message's id is.
+  private def messageId(root: Json.Obj): String =
+    str(root, "messageId").map(stripControl).map(_.trim).getOrElse("")
 
   // #2442: the Worker's auto-reply/DSN verdict. Absent (a pre-#2442 Worker) or empty (classified,
   // nothing found) both mean "a person wrote this" — only a non-empty value is a skip.
