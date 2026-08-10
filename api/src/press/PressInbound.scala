@@ -20,10 +20,27 @@ import zio.json.ast.Json
  *
  * `from` is the reply target (the responder locks it into the session token); `text` is UNTRUSTED
  * PUBLIC sender content quoted to the agent as data, never instructions (#2203 injection model).
+ *
+ * #2442 adds one additive field, `"loopGuard": "auto_submitted"` — the Worker's verdict that this
+ * delivery is machine-generated (an out-of-office, a mailing-list post, a bounce). Absent or empty
+ * means a person wrote it. Additive per the wire rule: an API build that predates the field ignores
+ * it, and a Worker that predates it simply never sends one.
  */
 object PressInbound {
 
   val SignatureHeader: String = "X-WifiHaven-Signature"
+
+  /**
+   * What a signature-valid body turned out to be. [[Message]] is a press inquiry to answer;
+   * [[AutoSubmitted]] is one the Cloudflare Worker classified as machine-generated (#2442) — read
+   * BEFORE the from/text requirement, because a bounce/DSN carries neither and would otherwise land
+   * in `MalformedPayload` where the loop is invisible.
+   */
+  sealed trait Verified
+  object Verified {
+    final case class Message(event: PressInboundEvent)      extends Verified
+    final case class AutoSubmitted(marker: LoopGuardMarker) extends Verified
+  }
 
   sealed trait VerifyError
   object VerifyError {
@@ -40,13 +57,28 @@ object PressInbound {
       payload: String,
       sigHeader: Option[String],
       secret: String,
-  ): Either[VerifyError, PressInboundEvent] =
+  ): Either[VerifyError, Verified] =
     for {
       header <- sigHeader.map(_.trim).filter(_.nonEmpty).toRight(VerifyError.MissingSignature)
       expected = SupportService.hmacSha256Hex(secret, payload)
-      _     <- Either.cond(constantTimeEquals(header, expected), (), VerifyError.BadSignature)
-      event <- parse(payload).toRight(VerifyError.MalformedPayload)
-    } yield event
+      _      <- Either.cond(constantTimeEquals(header, expected), (), VerifyError.BadSignature)
+      // #2442: the Worker's loop-guard verdict is read BEFORE the from/text requirement, and short
+      // -circuits it. A bounce/DSN is the commonest thing that closes the loop and it arrives with
+      // a null return path — i.e. exactly the envelope `parse` calls malformed. Reading the marker
+      // first is what makes that drop show up as a LOOP GUARD skip on its own loop-guard series rather
+      // than disappearing into `outcome=malformed`, where nobody could tell an autoresponder from
+      // a broken Worker.
+      json   <- Json.decoder.decodeJson(payload).toOption.toRight(VerifyError.MalformedPayload)
+      result <- json match {
+        case root: Json.Obj =>
+          loopMarker(root) match {
+            case Some(marker) => Right(Verified.AutoSubmitted(marker))
+            case None         =>
+              parse(root).map(Verified.Message.apply).toRight(VerifyError.MalformedPayload)
+          }
+        case _              => Left(VerifyError.MalformedPayload)
+      }
+    } yield result
 
   /** Length-independent constant-time compare — avoids leaking the signature via timing. */
   private def constantTimeEquals(a: String, b: String): Boolean =
@@ -55,36 +87,42 @@ object PressInbound {
   // A well-formed press event needs a `from` (the reply target) and some `text`; `subject` and
   // `messageId` default to empty. A missing `from`/`text` is a malformed payload (the responder has
   // no one to reply to / nothing to answer), not a silent skip.
-  private def parse(payload: String): Option[PressInboundEvent] =
-    Json.decoder.decodeJson(payload).toOption.flatMap {
-      case root: Json.Obj =>
-        // `from` is used verbatim as the outbound reply recipient, so strip CR/LF/control chars —
-        // the reply is emailed autonomously, and a control char in the recipient has no legitimate
-        // place. (The Cloudflare Worker sends a parsed address; this is defense-in-depth.)
-        val from = str(root, "from").map(stripControl).map(_.trim).filter(_.nonEmpty)
-        val text = str(root, "text").filter(_.trim.nonEmpty)
-        (from, text) match {
-          case (Some(f), Some(t)) =>
-            Some(
-              PressInboundEvent(
-                from = f,
-                // The subject is attacker-controlled and lands in the outbound reply's Subject
-                // header (via the session token); strip control chars for the same defense-in-depth
-                // reason as `from` — an autonomous email header must not carry CR/LF material. (Resend
-                // JSON-encodes the subject so raw injection is already prevented; this is belt+braces.)
-                subject = str(root, "subject").map(stripControl).getOrElse(""),
-                messageText = t,
-                // Trimmed as well as control-stripped, exactly like `from`. The id is bounded
-                // downstream (PressResponder truncates it before minting), so leading whitespace
-                // left on it would eat into that budget and could chop the closing `>` off an
-                // otherwise-valid id — silently costing the reply its thread (#2451).
-                messageId = str(root, "messageId").map(stripControl).map(_.trim).getOrElse(""),
-              ),
-            )
-          case _                  => None
-        }
-      case _              => None
+  private def parse(root: Json.Obj): Option[PressInboundEvent] = {
+    // `from` is used verbatim as the outbound reply recipient, so strip CR/LF/control chars —
+    // the reply is emailed autonomously, and a control char in the recipient has no legitimate
+    // place. (The Cloudflare Worker sends a parsed address; this is defense-in-depth.)
+    val from = str(root, "from").map(stripControl).map(_.trim).filter(_.nonEmpty)
+    val text = str(root, "text").filter(_.trim.nonEmpty)
+    (from, text) match {
+      case (Some(f), Some(t)) =>
+        Some(
+          PressInboundEvent(
+            from = f,
+            // The subject is attacker-controlled and lands in the outbound reply's Subject
+            // header (via the session token); strip control chars for the same defense-in-depth
+            // reason as `from` — an autonomous email header must not carry CR/LF material. (Resend
+            // JSON-encodes the subject so raw injection is already prevented; this is belt+braces.)
+            subject = str(root, "subject").map(stripControl).getOrElse(""),
+            messageText = t,
+            // Trimmed as well as control-stripped, exactly like `from`. The id is bounded
+            // downstream (PressResponder truncates it before minting), so leading whitespace
+            // left on it would eat into that budget and could chop the closing `>` off an
+            // otherwise-valid id — silently costing the reply its thread (#2451).
+            messageId = str(root, "messageId").map(stripControl).map(_.trim).getOrElse(""),
+          ),
+        )
+      case _                  => None
     }
+  }
+
+  // #2442: the Worker's auto-reply/DSN verdict. Absent (a pre-#2442 Worker) or empty (classified,
+  // nothing found) both mean "a person wrote this" — only a non-empty value is a skip.
+  private def loopMarker(root: Json.Obj): Option[LoopGuardMarker] =
+    str(root, "loopGuard")
+      .map(stripControl)
+      .map(_.trim)
+      .filter(_.nonEmpty)
+      .map(LoopGuardMarker.fromWire)
 
   private def str(o: Json.Obj, key: String): Option[String] =
     o.fields.collectFirst { case (k, Json.Str(v)) if k == key => v }
@@ -107,3 +145,43 @@ final case class PressInboundEvent(
     messageText: String,
     messageId: String,
 )
+
+/**
+ * #2442 — WHY the press Worker classified an inbound delivery as auto-submitted. The Worker detects
+ * (only it can see the raw MIME headers — deploy/press-worker/src/loop-guard.ts); the responder
+ * ENFORCES and meters, because dispatch and the metric pipeline live here.
+ *
+ * This is the `press_loop_guard_total{reason}` label set, and the reason the wire value is mapped
+ * through [[fromWire]] rather than passed through: the label space must be bounded by THIS build
+ * (§4 cardinality firewall), so a newer Worker's unrecognized marker collapses to [[Unknown]] —
+ * still a skip (fail closed: an unrecognized marker is still a Worker saying "machine-generated"),
+ * never a new series.
+ */
+enum LoopGuardMarker {
+  case AutoSubmitted
+  case Precedence
+  case AutoResponseSuppress
+  case ListId
+  case NullReturnPath
+  case Unknown
+}
+
+object LoopGuardMarker {
+  def fromWire(s: String): LoopGuardMarker = s.toLowerCase match {
+    case "auto_submitted"           => AutoSubmitted
+    case "precedence"               => Precedence
+    case "x_auto_response_suppress" => AutoResponseSuppress
+    case "list_id"                  => ListId
+    case "null_return_path"         => NullReturnPath
+    case _                          => Unknown
+  }
+
+  def label(m: LoopGuardMarker): String = m match {
+    case AutoSubmitted        => "auto_submitted"
+    case Precedence           => "precedence"
+    case AutoResponseSuppress => "x_auto_response_suppress"
+    case ListId               => "list_id"
+    case NullReturnPath       => "null_return_path"
+    case Unknown              => "unknown"
+  }
+}

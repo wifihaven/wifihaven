@@ -686,7 +686,18 @@ object MetricGuard {
     // #2416: `reason` (config | transient | none) attributes a dispatch failure exactly as on the
     // support series — SAME bounded vocabulary from the ONE shared classifier, deliberately SEPARATE
     // series so the two audiences alert independently. Never per-sender / per-thread.
+    // #2442: `skipped_auto_submitted` joins that outcome enum — the Worker classified the delivery
+    // as an auto-reply / mailing-list post / bounce and no session was dispatched.
     "press_ai_draft_total"                          -> Set("outcome", "reason"),
+    // #2442 — WHY a press inbound was dropped by the auto-reply/DSN loop guard. Values are the
+    // bounded LoopGuardMarker enum (auto_submitted | precedence | x_auto_response_suppress |
+    // list_id | null_return_path | unknown), mapped through LoopGuardMarker.fromWire so a newer
+    // Worker cannot mint a label. Carried on the EXISTING `reason` vocabulary key rather than a new
+    // `marker` one — KnownLabelKeys stays small by design (#1210), same call the sibling
+    // `agent_reply_redacted_total` makes. NEVER per-sender: the address stays in the Worker's log
+    // line. This series exists so the guard cannot become its own silent-loss bug (#2265/#2266) — a
+    // journalist misclassified as an autoresponder shows up here, and on the Press dashboard.
+    "press_loop_guard_total"                        -> Set("reason"),
     "press_agent_action_total"                      -> Set("op", "outcome"),
     // #2473 — the shared cloud-agent callback REJECTION series, for support AND press on one name
     // (the failure mode and its fix are shared, so a single panel/alert must cover both).
@@ -1232,6 +1243,11 @@ object AppMetrics {
       "press_ai_draft_total",
       Map("outcome" -> outcome, "reason" -> reason),
     )
+
+  // #2442 — one sample per inbound the loop guard dropped, labelled with the marker that tripped it.
+  // Bounded enum only (wifihaven.api.press.LoopGuardMarker); never a per-sender / per-address label.
+  def pressLoopGuard(reason: String): UIO[Unit] =
+    MetricGuard.counter("press_loop_guard_total", Map("reason" -> reason))
 
   def pressAgentAction(action: String, outcome: String): UIO[Unit] =
     MetricGuard.counter("press_agent_action_total", Map("op" -> action, "outcome" -> outcome))

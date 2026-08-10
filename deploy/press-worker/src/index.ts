@@ -14,6 +14,7 @@
 // this Worker never interprets it, only forwards it.
 
 import PostalMime from 'postal-mime';
+import { classifyLoopMarker } from './loop-guard';
 
 export interface Env {
   // The shared HMAC secret (== the API's `press.webhookSecret` / WIFIHAVEN_PRESS_WEBHOOK_SECRET).
@@ -59,13 +60,28 @@ export default {
     const subject = parsed.subject || message.headers.get('subject') || '';
     const messageId = parsed.messageId || message.headers.get('message-id') || '';
 
+    // #2442 — the auto-reply / DSN loop guard. Only this Worker sees the raw MIME headers, so the
+    // classification happens here; the API refuses to dispatch on the verdict and meters the skip
+    // (`press_loop_guard_total{reason}`), because dispatch and the metric pipeline live there. The
+    // log line below is the sender-attributable half — it names the address the counter deliberately
+    // does not, so a journalist wrongly classified as an autoresponder is recoverable from Workers
+    // Logs (#2673 turned those on).
+    const loopGuard = classifyLoopMarker(message.headers, message.from);
+    if (loopGuard) {
+      console.warn(
+        `press-worker: loop guard — skipping auto-submitted message (marker=${loopGuard}, from=${message.from}, message-id=${messageId})`,
+      );
+    }
+
     // The envelope the API's PressInbound expects. `from` is message.from (the routed sender), the
-    // reply target the API locks into the session token.
+    // reply target the API locks into the session token. `loopGuard` is ADDITIVE (#376 wire rule):
+    // an API that predates #2442 ignores the field and behaves exactly as before.
     const body = JSON.stringify({
       from: message.from,
       subject,
       text,
       messageId,
+      loopGuard: loopGuard ?? '',
     });
 
     const signature = await hmacSha256Hex(env.PRESS_WEBHOOK_SECRET, body);
