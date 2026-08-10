@@ -302,13 +302,16 @@ end
 --
 -- There is no "file shorter than our cursor → restart" branch any more: a shrink
 -- is precisely what the ledger exists to explain, so an eviction and a
--- copytruncate are both followed through `written - size`, and the drain resyncs
--- only when the cursor outruns what the ledger can account for
--- (`consumed > base + size`) or lands off a line boundary.
+-- copytruncate are both followed through `written - size`. The cursor is rewound
+-- in three places: forward to the file start when it sits behind what survived,
+-- back to the file start when it outruns what the ledger can account for
+-- (`consumed > base + size`), and back again when the computed offset does not
+-- land on a line boundary.
 --
--- Still mirrors nflog.drain_file — the proven offset-cursor pattern — but is its
--- own spool (a distinct concern), so it stays self-contained rather than
--- coupling ws to the nflog module.
+-- Descended from nflog.drain_file's offset-cursor pattern, but no longer the same
+-- shape: nflog still treats a shrink as a rotation and restarts, which is right
+-- for a spool nothing evicts from. This one is its own concern anyway, so it
+-- stays self-contained rather than coupling ws to the nflog module.
 function M.drain(path, state, open_fn)
   open_fn = open_fn or io.open
   state = state or {}
