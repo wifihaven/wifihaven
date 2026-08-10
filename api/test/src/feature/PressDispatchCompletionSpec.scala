@@ -8,6 +8,7 @@ import wifihaven.api.press.*
 import wifihaven.api.routes.PressAgentRoutes
 import wifihaven.api.support.{CloudAgentObservability, DispatchTracker, SupportService}
 import wifihaven.shared.Clock
+import wifihaven.shared.types.HouseholdId
 import wifihaven.shared.Clock.TestClock
 import wifihaven.testinfra.*
 import doobie.*
@@ -47,10 +48,13 @@ import zio.test.*
  *     (`{outcome="callback_slow"}`), exactly ONCE however often the sweep runs, and then as
  *     `{outcome="no_callback"}` past the press agent-token TTL, also exactly once;
  *   - a REJECTED callback (no bearer) closes nothing — a forged caller cannot silence the report;
+ *   - a RATE-LIMITED escalation does NOT close the dispatch: the #2437 cap refuses the action
+ *     before it pages anyone, so counting it served would make the "answered" count false AND drop
+ *     the entry from the sweep;
  *   - CHANNEL ISOLATION, the regression risk of generalizing a working component: a press callback
- *     must not close a support dispatch, and each channel's completion lands on its OWN series.
- *     (#2472's own suite, `SupportDispatchCompletionSpec`, remains the unchanged pin that support
- *     behaviour did not move.)
+ *     presenting the very key a support dispatch is tracked under leaves that support entry
+ *     outstanding, so it is still swept. (#2472's own suite, `SupportDispatchCompletionSpec`,
+ *     remains the unchanged pin that support behaviour did not move.)
  */
 object PressDispatchCompletionSpec
     extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clock & Transactor[Task]] {
@@ -63,7 +67,12 @@ object PressDispatchCompletionSpec
   private val WebhookSecret = "press-webhook-signing-secret-2517"
   private val TokenSecret   = "press-agent-token-secret-0123456789abcdef"
 
-  /** A distinctive untrusted payload that must never appear in a tracker report. */
+  /**
+   * The untrusted inbound body. Distinctive on purpose so that a tracker line accidentally carrying
+   * it is obvious in this suite's own captured output — the tracker's PII firewall is a code-level
+   * property (it is handed a key, a `Subject`, and a transport, never the message), so there is no
+   * assertion here pretending to enforce it.
+   */
   private val SecretMsg = "SECRET-JOURNALIST-PAYLOAD-2517-do-not-log"
 
   // The Claude Code Cloud transport — the one whose usage-limit suspends motivate the two tiers.
@@ -83,7 +92,10 @@ object PressDispatchCompletionSpec
 
   private final case class Rig(routes: Routes[Any, Response], tracker: DispatchTracker)
 
-  private def makeRig =
+  /** A limiter that refuses everything — the #2437 escalation cap already spent for this sender. */
+  private val denyAll: RateLimiter = _ => ZIO.succeed(false)
+
+  private def makeRig(escalateLimiter: RateLimiter = RateLimiter.allowAll) =
     for {
       pressLog <- ZIO.service[PressMessageRepo]
       clock    <- ZIO.service[Clock]
@@ -102,7 +114,7 @@ object PressDispatchCompletionSpec
         RateLimiter.allowAll,
         RateLimiter.allowAll,
         Notifier.logOnly,
-        RateLimiter.allowAll,
+        escalateLimiter,
         tracker,
       )
     } yield Rig(PressAgentRoutes.routes(responder), tracker)
@@ -155,9 +167,18 @@ object PressDispatchCompletionSpec
       )
     }
 
-  /** The id of the single recorded inbound row — the press correlation key. */
+  /**
+   * The id of the recorded inbound row — the press correlation key. Fails LOUDLY when no row was
+   * recorded rather than throwing a bare `UnsupportedOperationException` out of `.max`: an empty
+   * log here means the fail-open `recordInbound` missed, which would make every key in the test the
+   * `rt:` fallback and quietly stop exercising the primary one.
+   */
   private def latestInboundId: ZIO[PressMessageRepo, Throwable, Long] =
-    ZIO.serviceWithZIO[PressMessageRepo](_.listRecent(10)).map(_.map(_.id).max)
+    ZIO.serviceWithZIO[PressMessageRepo](_.listRecent(10)).flatMap { rows =>
+      ZIO
+        .fromOption(rows.map(_.id).maxOption)
+        .orElseFail(new AssertionError("no inbound press_messages row was recorded"))
+    }
 
   private def counter(series: String, outcome: String): UIO[Double] =
     Metric
@@ -169,10 +190,10 @@ object PressDispatchCompletionSpec
 
   private def pressCounter(outcome: String): UIO[Double] = counter("press_dispatch_total", outcome)
 
-  private def seeded =
+  private def seeded(escalateLimiter: RateLimiter = RateLimiter.allowAll) =
     for {
       _   <- cleanDb
-      rig <- makeRig
+      rig <- makeRig(escalateLimiter)
     } yield rig
 
   /** `now` shifted by `d` from the injected clock — the sweep takes its instant as a parameter. */
@@ -189,7 +210,7 @@ object PressDispatchCompletionSpec
   def spec = suite("press dispatch→completion tracking (#2517)")(
     test("an agent reply CLOSES the dispatch: completed is metered and no sweep ever reports it") {
       for {
-        rig        <- seeded
+        rig        <- seeded()
         before     <- pressCounter(DispatchTracker.Outcome.Completed)
         status     <- dispatchOne(rig, "reporter@example.test")
         id         <- latestInboundId
@@ -215,7 +236,7 @@ object PressDispatchCompletionSpec
     },
     test("an ESCALATION closes the dispatch too — a handoff to a human is terminal (#2437)") {
       for {
-        rig        <- seeded
+        rig        <- seeded()
         before     <- pressCounter(DispatchTracker.Outcome.Completed)
         _          <- dispatchOne(rig, "reporter-esc@example.test")
         id         <- latestInboundId
@@ -239,7 +260,7 @@ object PressDispatchCompletionSpec
     },
     test("a dispatch nobody answers is WARNed past SlowAfter — once, however often we sweep") {
       for {
-        rig    <- seeded
+        rig    <- seeded()
         before <- pressCounter(DispatchTracker.Outcome.CallbackSlow)
         _      <- dispatchOne(rig, "silent@example.test")
         now    <- at(PastSlow)
@@ -252,7 +273,7 @@ object PressDispatchCompletionSpec
     },
     test("…and is an attributable ERROR past the token TTL — also exactly once") {
       for {
-        rig    <- seeded
+        rig    <- seeded()
         before <- pressCounter(DispatchTracker.Outcome.NoCallback)
         _      <- dispatchOne(rig, "vanished@example.test")
         now    <- at(PastDead)
@@ -264,7 +285,7 @@ object PressDispatchCompletionSpec
     },
     test("a REJECTED callback closes nothing — a forged caller cannot silence the report") {
       for {
-        rig    <- seeded
+        rig    <- seeded()
         _      <- dispatchOne(rig, "forged@example.test")
         denied <- agentPost(rig, "/api/press/agent/reply", """{"markdown":"hi"}""", None)
         before <- pressCounter(DispatchTracker.Outcome.NoCallback)
@@ -273,23 +294,80 @@ object PressDispatchCompletionSpec
         after  <- pressCounter(DispatchTracker.Outcome.NoCallback)
       } yield assertTrue(denied == Status.Unauthorized, after == before + 1)
     },
-    test("channel isolation: a press completion lands on press_dispatch_total, never support's") {
+    test("a RATE-LIMITED escalation does NOT close the dispatch — nothing reached a human") {
+      // #2437 caps escalations at 3/hour per sender. The 4th is REFUSED before it pages anyone, so
+      // the journalist is no better off than if the session had died silently — counting it
+      // `completed` would both make the ANSWERED panel lie and drop the entry from the sweep.
       for {
-        rig           <- seeded
-        supportBefore <- counter("support_dispatch_total", DispatchTracker.Outcome.Completed)
-        pressBefore   <- pressCounter(DispatchTracker.Outcome.Completed)
-        _             <- dispatchOne(rig, "isolated@example.test")
-        id            <- latestInboundId
-        token         <- mintToken("isolated@example.test", id)
-        _             <- agentPost(
+        rig        <- seeded(escalateLimiter = denyAll)
+        doneBefore <- pressCounter(DispatchTracker.Outcome.Completed)
+        deadBefore <- pressCounter(DispatchTracker.Outcome.NoCallback)
+        _          <- dispatchOne(rig, "capped@example.test")
+        id         <- latestInboundId
+        token      <- mintToken("capped@example.test", id)
+        refused    <- agentPost(
+          rig,
+          "/api/press/agent/escalate",
+          """{"note":"needs a human"}""",
+          Some(token),
+        )
+        doneAfter  <- pressCounter(DispatchTracker.Outcome.Completed)
+        now        <- at(PastDead)
+        _          <- rig.tracker.sweep(now)
+        deadAfter  <- pressCounter(DispatchTracker.Outcome.NoCallback)
+      } yield assertTrue(
+        refused == Status.TooManyRequests,
+        doneAfter == doneBefore,
+        deadAfter == deadBefore + 1,
+      )
+    },
+    test("channel isolation: a press callback cannot close a SUPPORT dispatch") {
+      // The regression risk of generalizing a working component is the two channels sharing one
+      // pending map. So this drives a REAL support dispatch on a second tracker instance, fires the
+      // press callback, and then asserts the support entry SURVIVED — it is still swept as
+      // no_callback, and its completion counter never moved. A merged map fails this; asserting
+      // only that the press completion landed on the press series would not.
+      for {
+        rig            <- seeded()
+        supportTracker <- DispatchTracker.make(
+          DispatchTracker.Channel.Support,
+          DispatchTracker.deadAfterFor(liveCfg),
+        )
+        now0           <- ZIO.serviceWithZIO[Clock](_.instant)
+        supportDone0   <- counter("support_dispatch_total", DispatchTracker.Outcome.Completed)
+        supportDead0   <- counter("support_dispatch_total", DispatchTracker.Outcome.NoCallback)
+        pressDone0     <- pressCounter(DispatchTracker.Outcome.Completed)
+        // A support dispatch keyed on the SAME string the press callback will present, so a shared
+        // map would be closed by it. `pm:<id>` is the press key shape; support keys on a thread id,
+        // and the collision is deliberate — it is what makes this test able to fail.
+        _              <- dispatchOne(rig, "isolated@example.test")
+        id             <- latestInboundId
+        _              <- supportTracker.dispatched(
+          PressResponder.dispatchKey(id, "isolated@example.test"),
+          DispatchTracker.Subject.household(HouseholdId(1)),
+          Transport,
+          now0,
+        )
+        token          <- mintToken("isolated@example.test", id)
+        _              <- agentPost(
           rig,
           "/api/press/agent/reply",
           """{"markdown":"public background"}""",
           Some(token),
         )
-        pressAfter    <- pressCounter(DispatchTracker.Outcome.Completed)
-        supportAfter  <- counter("support_dispatch_total", DispatchTracker.Outcome.Completed)
-      } yield assertTrue(pressAfter == pressBefore + 1, supportAfter == supportBefore)
+        pressDone1     <- pressCounter(DispatchTracker.Outcome.Completed)
+        supportDone1   <- counter("support_dispatch_total", DispatchTracker.Outcome.Completed)
+        now            <- at(PastDead)
+        _              <- supportTracker.sweep(now)
+        supportDead1   <- counter("support_dispatch_total", DispatchTracker.Outcome.NoCallback)
+      } yield assertTrue(
+        // the press side closed…
+        pressDone1 == pressDone0 + 1,
+        // …and the support entry was neither completed…
+        supportDone1 == supportDone0,
+        // …nor removed: it is still outstanding, and the sweep reports it.
+        supportDead1 == supportDead0 + 1,
+      )
     },
   ) @@ TestAspect.sequential
 }

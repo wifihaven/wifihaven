@@ -407,10 +407,19 @@ final case class PressResponder(
    * future non-terminal press endpoint (an issue filing, say) cannot silently start marking
    * journalists served by existing.
    *
-   * The close happens BEFORE `f`, at verify time: it measures "did the session come back", not "did
-   * the reply land" — including when `f` then rate-limits or the outbound email fails, both of
-   * which are already loud on `press_agent_action_total` and must not be judged a second time here
+   * WHAT CLOSES. This measures "did the session come back", not "did the reply land": an email the
+   * agent authored and Resend then refused still closes, because the send WAS attempted and its
+   * failure is already loud on `press_agent_action_total{op="reply",outcome="error"}` — judging it
+   * a second time here would be two places computing one thing
    * (docs/process/single-source-of-truth.md).
+   *
+   * A RATE-LIMITED callback is the exception and does NOT close (#2691 review). `escalateLimiter`
+   * (3/hour per sender) REFUSES the action outright: no operator was paged, no journalist was
+   * answered, and nothing happened that a human reading `press_dispatch_total{outcome="completed"}`
+   * — the panel titled "Press inquiries the agent ANSWERED" — would recognise. Counting it served
+   * would make that panel say something false AND drop the entry from the sweep, so the inquiry it
+   * belongs to would go unreported. So `f` runs first and the close is conditional on its outcome
+   * ([[PressResponder.closesDispatch]]).
    */
   private def withClaims(op: String, bearer: Option[String])(
       f: PressToken.Claims => UIO[AgentActionResult],
@@ -428,15 +437,17 @@ final case class PressResponder(
             PressToken.verify(token, now, cfg.agentTokenSecretTrimmed) match {
               case Left(err)     => denyLoudly(op, AgentTokenRejection.reasonFor(err))
               case Right(claims) =>
-                ZIO
-                  .when(PressAgentAction.Terminal.contains(op))(
-                    dispatchTracker.calledBack(
-                      dispatchKey(claims.pressMessageId, claims.replyTo),
-                      op,
-                      now,
-                    ),
-                  )
-                  .unit *> f(claims)
+                f(claims).tap { result =>
+                  ZIO
+                    .when(PressAgentAction.Terminal.contains(op) && closesDispatch(result))(
+                      dispatchTracker.calledBack(
+                        dispatchKey(claims.pressMessageId, claims.replyTo),
+                        op,
+                        now,
+                      ),
+                    )
+                    .unit
+                }
             }
         }
       }
@@ -574,6 +585,24 @@ object PressResponder {
    */
   def dispatchKey(pressMessageId: Long, replyTo: String): String =
     if pressMessageId > 0 then s"pm:$pressMessageId" else s"rt:$replyTo"
+
+  /**
+   * #2517 — does this callback outcome CLOSE the dispatch it belongs to?
+   *
+   * Everything the agent actually did closes it, including a send the transport then refused
+   * (`Error`) and a send our own install has switched off (`Disabled`): in all of those the session
+   * came back and acted, which is the only thing the tracker claims to measure.
+   *
+   * `RateLimited` does not (#2691 review). It is the one outcome where the terminal action was
+   * REFUSED before doing anything — the #2437 3/hour-per-sender escalation cap — so no human was
+   * paged and no journalist was answered. `Denied` and the pre-token `Disabled` never reach here
+   * (they short-circuit ahead of `f`), but the match is total so a new `AgentActionResult` case
+   * cannot be silently absorbed into "served".
+   */
+  def closesDispatch(result: AgentActionResult): Boolean = result match {
+    case AgentActionResult.Ok | AgentActionResult.Error | AgentActionResult.Disabled => true
+    case AgentActionResult.RateLimited | AgentActionResult.Denied                    => false
+  }
 
   /**
    * #2451 — cap on the inbound `Message-ID` carried on the token, so an attacker-controlled field
