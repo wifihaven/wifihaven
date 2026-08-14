@@ -230,23 +230,22 @@ object EmailMarkdownSpec extends ZIOSpecDefault {
         !render(hostile).contains(nul),
       )
     },
-    test("adversarial input stays linear — the regexes and the splitter are bounded") {
-      // Unbounded, `MdLink` and the bold body backtrack quadratically, and `blocks` accumulated
-      // with a quadratic `:+`. At the route's own 64 KiB body cap
-      // (PressAgentRoutes.MaxAgentBodyBytes) those measured 8–45 s and ~2 s of single-fiber CPU
-      // during review of #2677 / #2684.
+    test("the renderer completes on adversarial input at the route's body cap") {
+      // Read the assertion literally: every pathological shape at 64 KiB
+      // (PressAgentRoutes.MaxAgentBodyBytes) RENDERS, and the set finishes rather than hanging CI.
+      // That is all this claims.
       //
-      // The budget below is DELIBERATELY COARSE, and the coarseness is the finding, not laziness.
-      // Three tighter instruments were tried and all three flaked: a 5 s budget measured cold-JIT
-      // compilation and went red at 5.9 s; a 10 s one went red at 14 s with this suite running
-      // beside three embedded-Postgres suites; and a per-axis 4x-input scaling ratio false-flagged
-      // axes whose baseline is 6 ms, where GC noise dwarfs the signal. What survives is a guard
-      // against the CATASTROPHIC class — the 8–45 s backtracking this file's bounds exist for,
-      // which no amount of contention manufactures and no amount of contention hides.
+      // It is deliberately not a regression guard, because four attempts at one all failed and the
+      // failures are worth recording so nobody rebuilds them. A 5 s budget measured cold-JIT and
+      // went red at 5.9 s. A 10 s one went red at 14 s with this suite beside three
+      // embedded-Postgres suites. A per-axis 4x-input scaling ratio false-flagged axes whose
+      // baseline is 6 ms, where GC noise dwarfs the signal. And review of #2684 measured the
+      // remaining coarse budget against the actual regressions: with both bold guards removed the
+      // set runs 10–30 s and passes MORE OFTEN THAN NOT, so it does not reliably catch even that.
       //
-      // It does NOT discriminate the ~2 s quadratic-accumulator class. Nothing timing-based
-      // reliably could at this magnitude, so `blocks` is kept linear structurally instead (it
-      // accumulates in reverse and flips at flush) with the reason written at the code.
+      // The real guards are elsewhere and are not timing-based: the quantifier bounds and the
+      // lone-marker rule in the patterns, the reverse accumulation in `blocks`, and the behavioural
+      // pins above. This one only catches a renderer that stops finishing at all.
       def warmThenTime(inputs: List[String]): (Long, List[String]) = {
         inputs.foreach(render) // untimed: the first pass measures JIT, not the renderer
         val started = java.lang.System.nanoTime()
@@ -255,7 +254,7 @@ object EmailMarkdownSpec extends ZIOSpecDefault {
       }
 
       val axes = List(
-        (n: Int) => "[" * n,           // unmatched brackets — the 44 s case
+        (n: Int) => "[" * n,           // unmatched brackets — the originally reported ~45 s case
         (n: Int) => "[a](b" * (n / 5), // unmatched parens
         (n: Int) => "**a " * (n / 4),  // unmatched bold opens
         (n: Int) => "*" * n,
@@ -268,16 +267,9 @@ object EmailMarkdownSpec extends ZIOSpecDefault {
         (n: Int) => "- a\n" * (n / 4),
       )
 
-      // Every axis at the route's own body cap, in one measurement. Warm, the whole set is well
-      // under a second. Measured, with each guard removed in turn: dropping the LINK bound puts the
-      // bracket axis at 106 s, and dropping both the bound and the marker rule on the bold body
-      // puts `**a ` at 81 s — either trips this on its own.
-      //
-      // Two regressions it would NOT catch, so nothing here should be read as covering them: the
-      // ~2 s quadratic accumulator (held structurally in `blocks`), and reverting just the
-      // lone-marker rule on the bold bodies, which costs ~8 s — under this budget, and pinned by
-      // the nesting cases above instead. On today's pattern the marker rule, not the bound, is what
-      // carries that axis: with the bound alone removed it is 47 ms.
+      // Warm, the whole set is well under a second, so 30 s is a hang ceiling rather than a
+      // threshold anything is expected to approach. It exists so a renderer that has stopped
+      // terminating fails the build instead of wedging the runner.
       val (elapsedMs, outputs) = warmThenTime(axes.map(_(64 * 1024)))
       assertTrue(outputs.forall(_.nonEmpty), elapsedMs < 30000L)
     },

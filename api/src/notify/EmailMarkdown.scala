@@ -66,9 +66,11 @@ import scala.util.matching.Regex
  * Italic nests inside bold (`**a *b* c**`); bold inside italic does not, and a span whose markers
  * CROSS (`**a *b** c*`) renders the pair it can and leaves the stray marker literal. Italic run up
  * against the bold CLOSE (`**Really *important***`) is the one nesting shape that half-renders —
- * the bold close takes two of the three `*` and the third stays literal. Reaching it needs a real
- * parser rather than ordered passes, which is a trade this file makes deliberately; it is pinned in
- * the spec so it stays a known edge instead of a surprise.
+ * the bold close takes two of the three `*` and the third stays literal. That is a CHOICE between
+ * two imperfect outputs, not a limit: tightening the close to reject a following `*` removes the
+ * stray marker, at the cost of the span not matching at all and the whole thing going literal,
+ * which is the #2677 symptom rather than a milder version of it. Half-rendered was judged the
+ * better of the two. It is pinned in the spec so it stays a known edge instead of a surprise.
  */
 object EmailMarkdown {
 
