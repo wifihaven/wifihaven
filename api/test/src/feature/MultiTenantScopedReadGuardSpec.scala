@@ -410,9 +410,11 @@ object MultiTenantScopedReadGuardSpec extends ZIOSpecDefault {
       case c                     => cur.append(c)
     }
     out += cur.toString
-    // Empty segments are dropped, which is what makes a TRAILING comma a non-event. That matters:
-    // `.scalafmt.conf` sets `trailingCommas = always`, so every multi-line argument list in this
-    // repo ends in one, and counting raw commas would read a formatted single-argument call as two.
+    // TWO callers depend on this: the signature scan in `scanRepoReads` and the call-site scan in
+    // `singleArgCalls`. Empty segments are dropped, which is what makes a TRAILING comma a
+    // non-event — `.scalafmt.conf` sets `trailingCommas = always`, so every multi-line argument
+    // list in this repo ends in one, and counting raw commas would read a formatted
+    // single-argument call as two. Restoring empty segments here silently re-breaks B11.
     out.result().map(_.trim).filter(_.nonEmpty)
   }
 
@@ -1027,6 +1029,11 @@ object MultiTenantScopedReadGuardSpec extends ZIOSpecDefault {
           // The scalafmt `trailingCommas = always` spelling — one argument, two commas' worth of
           // punctuation. Blind to this, the detector would miss every multi-line call in the repo.
           found.contains("someLongExpression"),
+          // The negative, stated explicitly rather than carried by the arithmetic of `size == 4`:
+          // a two-argument call passes its household, so it must NEVER be reported. Left implicit,
+          // adding a fifth positive case later would bump the count and silently drop this.
+          !found.exists(_.contains("cr.mac")),
+          !found.exists(_.contains("HouseholdId.Default")),
         )
       }
     },
@@ -1085,7 +1092,10 @@ object MultiTenantScopedReadGuardSpec extends ZIOSpecDefault {
               List("  def findByName[A](name: String): Task[Option[A]]")
             case other                                       => sys.error(s"no sample for $other")
           }
-          samples.forall(s => pattern.r.findFirstIn(s).isDefined)
+          // `nonEmpty` matters: `forall` on an empty list is vacuously TRUE, so emptying a
+          // label's sample list would report the pattern as pinned while driving it through
+          // nothing — one more turn of the screw that un-pinned `Option[` last round.
+          samples.nonEmpty && samples.forall(s => pattern.r.findFirstIn(s).isDefined)
         },
       )
     },
