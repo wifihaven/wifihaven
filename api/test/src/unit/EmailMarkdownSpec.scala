@@ -146,11 +146,17 @@ object EmailMarkdownSpec extends ZIOSpecDefault {
         "***bold italic***" -> "<p><strong><em>bold italic</em></strong></p>",
         "***a*** and **b**" -> "<p><strong><em>a</em></strong> and <strong>b</strong></p>",
         "__bold__"          -> "<p><strong>bold</strong></p>",
-        // Crossed markers are malformed input. Every emphasis body excludes its own marker, so a
-        // crossed span matches nothing and comes out wholly literal — never an interleaved tag
-        // pair, and never a half-rendered one either.
-        "**a *b** c*"       -> "<p>**a *b** c*</p>",
-        "*a **b* c**"       -> "<p>*a **b* c**</p>",
+        // Italic nests INSIDE bold — a bold body admits a lone `*`, just not a doubled one. This
+        // is the case that matters: excluding `*` outright is also linear, but it ships literal
+        // `**` to the recipient, which is the bug this whole file exists to fix.
+        "**bold with *italic* inside**" ->
+          "<p><strong>bold with <em>italic</em> inside</strong></p>",
+        "__bold with _italic_ inside__" ->
+          "<p><strong>bold with <em>italic</em> inside</strong></p>",
+        // Crossed markers are malformed input. Bold binds first and italic cannot reach across the
+        // tag it wrote, so the leftover marker stays literal — never an interleaved tag pair.
+        "**a *b** c*"                   -> "<p><strong>a *b</strong> c*</p>",
+        "*a **b* c**"                   -> "<p>*a <strong>b* c</strong></p>",
       )
       assertTrue(cases.forall((in, want) => render(in) == want))
     },
@@ -257,8 +263,9 @@ object EmailMarkdownSpec extends ZIOSpecDefault {
       )
 
       // Every axis at the route's own body cap, in one measurement. Warm, the whole set is well
-      // under a second; each of the two shipped regressions put a SINGLE axis above the budget on
-      // its own.
+      // under a second. What that 30 s actually catches, measured with the bounds removed again:
+      // the bracket axis alone costs 106 s and `**a ` costs 81 s. What it does NOT catch is the
+      // accumulator regression at ~2 s — see above; that one is held structurally, not here.
       val (elapsedMs, outputs) = warmThenTime(axes.map(_(64 * 1024)))
       assertTrue(outputs.forall(_.nonEmpty), elapsedMs < 30000L)
     },

@@ -62,6 +62,9 @@ import scala.util.matching.Regex
  * `~~strikethrough~~`, `> blockquotes`, tables, and an emphasis span that opens on one line and
  * closes on another. Those are pinned literal in `EmailMarkdownSpec` so the omission stays a
  * decision rather than becoming a gap.
+ *
+ * Italic nests inside bold (`**a *b* c**`); bold inside italic does not, and a span whose markers
+ * CROSS (`**a *b** c*`) renders the pair it can and leaves the stray marker literal.
  */
 object EmailMarkdown {
 
@@ -211,17 +214,21 @@ object EmailMarkdown {
   private val MdLink =
     s"""\\[([^\\]\n]{0,$MaxLinkTextChars}+)\\]\\(([^)\\s]{1,$MaxSpanChars}+)\\)""".r
 
-  // Each body excludes ITS OWN marker, which is what keeps the scan linear: a `**` with no valid
-  // close fails at the next `*` instead of scanning [[MaxSpanChars]] ahead from every start
-  // position. With the body open to `*`, a 64 KiB line of `**a ` cost seconds — the same shape of
-  // cost the bounds were added for. The price is that `**bold with *italic* inside**` does not
-  // nest; `***x***` has its own pass above precisely because that is the nesting worth having.
+  // A bold body admits a LONE marker char but never the doubled one. That is what keeps the scan
+  // linear — a `**` with no valid close fails at the next `**` instead of scanning
+  // [[MaxSpanChars]] ahead from every start position, and with the body fully open to `*` a 64 KiB
+  // line of `**a ` cost seconds, the same shape of cost the bounds exist for. Excluding `*`
+  // outright would be linear too, but it would stop `**bold with *italic* inside**` from
+  // rendering and ship literal `**` to a journalist, which is the very bug this file fixes.
+  private val NotDoubleStar  = """(?:[^*<>\n]|\*(?!\*))"""
+  private val NotDoubleScore = """(?:[^_<>\n]|_(?!_))"""
+
   private val BoldItalic =
-    s"""\\*\\*\\*(?=[^\\s<>])([^*<>\n]{1,$MaxSpanChars}?)(?<=[^\\s<>])\\*\\*\\*""".r
+    s"""\\*\\*\\*(?=[^\\s<>])($NotDoubleStar{1,$MaxSpanChars}?)(?<=[^\\s<>])\\*\\*\\*""".r
   private val BoldStar   =
-    s"""\\*\\*(?=[^\\s<>])([^*<>\n]{1,$MaxSpanChars}?)(?<=[^\\s<>])\\*\\*""".r
+    s"""\\*\\*(?=[^\\s<>])($NotDoubleStar{1,$MaxSpanChars}?)(?<=[^\\s<>])\\*\\*""".r
   private val BoldScore  =
-    s"""__(?=[^\\s<>])([^_<>\n]{1,$MaxSpanChars}?)(?<=[^\\s<>])__""".r
+    s"""__(?=[^\\s<>])($NotDoubleScore{1,$MaxSpanChars}?)(?<=[^\\s<>])__""".r
 
   // Emphasis markers must not sit inside a word: `snake_case_name` and `2*3*4` are not italics.
   private val ItalicStar  =
