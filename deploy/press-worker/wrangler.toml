@@ -4,7 +4,7 @@
 # POSTs a small envelope to the API's /api/press/inbound (see src/index.ts + README.md). This Worker
 # holds only the shared HMAC secret — no Anthropic key, no data access.
 #
-# Deploy:  npm install && npx wrangler deploy            (prod, the top-level env)
+# Deploy:  npm ci && npx wrangler deploy                 (prod, the top-level env)
 #          npx wrangler deploy --env staging             (staging)
 # Secret:  npx wrangler secret put PRESS_WEBHOOK_SECRET   (== the API's press.webhookSecret)
 # Routing: bind press@wifihaven.net → this Worker in Cloudflare → Email Routing (see README.md).
@@ -28,7 +28,9 @@ PRESS_API_URL = "https://api.wifihaven.net"
 
 # #2673 — Workers Logs ON, declared here rather than left to the dashboard toggle.
 #
-# This Worker's ONLY diagnostic is `console.warn`/`console.error` (src/index.ts:52, :84). With
+# This Worker's ONLY in-band diagnostics are the `console.error` / `console.warn` calls in
+# src/index.ts — the missing-binding guard, the loop-guard skip (#2442), and a failed API POST.
+# (Named rather than line-numbered: the refs here went stale twice.) With
 # observability off those go nowhere, and the Worker becomes undiagnosable — which is exactly how
 # #2673 stayed invisible: press@ mail was accepted and silently discarded for weeks because
 # PRESS_WEBHOOK_SECRET was unset, the guard logged a warning, and nothing was listening.

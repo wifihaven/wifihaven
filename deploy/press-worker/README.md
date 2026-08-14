@@ -130,7 +130,7 @@ switch (render.yaml PR) — see [`../press-agent/README.md`](../press-agent/READ
 |---|---|
 | `CLOUDFLARE_API_TOKEN` | Cloudflare token with **Workers Scripts: Edit** (+ the Email Routing / Pages scopes the other pipelines need). Gates both the worker deploy and the TF apply. |
 | `CLOUDFLARE_ACCOUNT_ID` | the Cloudflare account id (already set for the SPA deploy). |
-| `PRESS_WEBHOOK_SECRET` | **prod** shared HMAC secret — MUST equal the prod API's `WIFIHAVEN_PRESS_WEBHOOK_SECRET`. |
+| `PRESS_WEBHOOK_SECRET_PROD` | **prod** shared HMAC secret — MUST equal the prod API's `WIFIHAVEN_PRESS_WEBHOOK_SECRET`. (This table and the workflow used to say `PRESS_WEBHOOK_SECRET`, but the secret that exists is `…_PROD`; the mismatch is why prod's Worker was never given a secret — #2673.) |
 | `PRESS_WEBHOOK_SECRET_STAGING` | **staging** shared HMAC secret — MUST equal the staging API's `WIFIHAVEN_PRESS_WEBHOOK_SECRET`. |
 
 **Operator prerequisites TF/CI can't do:** Email Routing must be enabled on the `wifihaven.net` zone
@@ -142,16 +142,29 @@ switch (render.yaml PR) — see [`../press-agent/README.md`](../press-agent/READ
    first). Outbound email (`WIFIHAVEN_EMAIL_*`) must be configured too — the API refuses to boot with
    the press responder on and email off (#2265).
 
-> First-time bootstrap: a local `npm install && npx wrangler deploy` from this directory works too
+> First-time bootstrap: a local `npm ci && npx wrangler deploy` from this directory works too
 > (identical result), but is not required — CI is the source of truth.
 
 ## Notes
 
-- **`postal-mime`** parses the raw MIME to plain text; `run npm install` before `wrangler deploy`.
-- The Worker never bounces the sender and returns nothing on a downstream error (it logs to the CF
-  dashboard) — mail is never lost.
-- Local dev: `npx wrangler dev` won't receive real email; test the API leg directly by POSTing a
-  signed envelope to `/api/press/inbound` (see `PressResponderSpec` for the exact shape).
-- Tests: `npm test` (vitest) covers the loop-guard classifier; `npm run typecheck` covers both
-  `src/` and `test/`. Both run in CI on any `deploy/press-worker/**` change (the `Press Worker
-  Tests` job in `.github/workflows/ci.yml`) — `master-press-worker.yml` only deploys.
+- **`postal-mime`** parses the raw MIME to plain text; run `npm ci` before `wrangler deploy` (CI and CD both install from the lockfile, so a local `npm install` can bundle a different toolchain than the one that ships).
+- **An unconfigured Worker rejects the message (#2673).** If `PRESS_WEBHOOK_SECRET` or
+  `PRESS_API_URL` is unset on a deployment, the Worker `setReject`s the inbound mail (a permanent
+  SMTP failure — the sender is told it did not arrive and pointed at `support@wifihaven.net`), and
+  logs which binding(s) are missing by name. It does **not** accept-and-discard: that is what it
+  used to do, and press@ silently ate journalist mail for weeks in prod because
+  `PRESS_WEBHOOK_SECRET` was never set. Both bindings are fixed at deploy time, so this can only
+  ever mean misconfiguration — never a transient fault.
+- Once configured, the Worker does **not** bounce on a downstream failure: a 4xx/5xx from the API is
+  logged to Workers Logs and the message is accepted, so a hiccup at the API does not become a
+  delivery failure at the journalist.
+- Local dev: `npx wrangler dev --env=""` serves the email handler at
+  `POST /cdn-cgi/handler/email?from=…&to=…` (body = a raw `.eml`), which is how the config guard
+  above is exercised end-to-end without real mail. Put local values in `.dev.vars` (gitignored) to
+  test the configured path; point `PRESS_API_URL` at a local sink, **never** at
+  `https://api.wifihaven.net`. The API leg can also be tested directly by POSTing a signed envelope
+  to `/api/press/inbound` (see `PressResponderSpec` for the exact shape).
+- Tests: `npm test` (vitest) covers the loop-guard classifier and the missing-binding guard;
+  `npm run typecheck` covers both `src/` and `test/`. Both run in CI on any `deploy/press-worker/**`
+  change (the `Press Worker Tests` job in `.github/workflows/ci.yml`) — `master-press-worker.yml`
+  only deploys.
