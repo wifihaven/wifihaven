@@ -212,6 +212,12 @@ object EmailMarkdownSpec extends ZIOSpecDefault {
         render("| a | b |") == "<p>| a | b |</p>",
         // Emphasis does not span a soft line break inside a paragraph.
         render("**multi\nline**") == "<p>**multi<br>line**</p>",
+        // Italic nests inside bold in the MIDDLE of the span (pinned above), but not up against
+        // the closing marker: the bold close takes two of the three `*` and the third is left
+        // literal. Valid CommonMark and a shape agents write, so it is named here rather than
+        // implied away by the scaladoc — it just isn't reachable without giving the emphasis
+        // passes a real parser, which this file deliberately is not.
+        render("**Really *important***") == "<p><strong>Really *important</strong>*</p>",
       )
     },
     test("a NUL in the input cannot forge a code-span placeholder") {
@@ -263,9 +269,15 @@ object EmailMarkdownSpec extends ZIOSpecDefault {
       )
 
       // Every axis at the route's own body cap, in one measurement. Warm, the whole set is well
-      // under a second. What that 30 s actually catches, measured with the bounds removed again:
-      // the bracket axis alone costs 106 s and `**a ` costs 81 s. What it does NOT catch is the
-      // accumulator regression at ~2 s — see above; that one is held structurally, not here.
+      // under a second. Measured, with each guard removed in turn: dropping the LINK bound puts the
+      // bracket axis at 106 s, and dropping both the bound and the marker rule on the bold body
+      // puts `**a ` at 81 s — either trips this on its own.
+      //
+      // Two regressions it would NOT catch, so nothing here should be read as covering them: the
+      // ~2 s quadratic accumulator (held structurally in `blocks`), and reverting just the
+      // lone-marker rule on the bold bodies, which costs ~8 s — under this budget, and pinned by
+      // the nesting cases above instead. On today's pattern the marker rule, not the bound, is what
+      // carries that axis: with the bound alone removed it is 47 ms.
       val (elapsedMs, outputs) = warmThenTime(axes.map(_(64 * 1024)))
       assertTrue(outputs.forall(_.nonEmpty), elapsedMs < 30000L)
     },
