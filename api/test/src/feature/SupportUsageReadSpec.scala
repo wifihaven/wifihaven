@@ -131,7 +131,15 @@ object SupportUsageReadSpec
     ZIO
       .serviceWithZIO[Clock](_.instant)
       .map(now =>
-        ConsentToken.mint(hh, thread, dataAccess, now, java.time.Duration.ofHours(24), TokenSecret),
+        ConsentToken.mint(
+          hh,
+          thread,
+          dataAccess,
+          now,
+          java.time.Duration.ofHours(24),
+          TokenSecret,
+          ConsentToken.newSessionId(),
+        ),
       )
 
   /** Record the LIVE grant the customer's own authenticated action would have written. */
@@ -346,6 +354,7 @@ object SupportUsageReadSpec
             now,
             java.time.Duration.ofHours(24),
             TokenSecret,
+            ConsentToken.newSessionId(),
           ),
         )
       } yield assertTrue(

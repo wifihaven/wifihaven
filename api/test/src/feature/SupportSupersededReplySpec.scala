@@ -89,6 +89,10 @@ object SupportSupersededReplySpec
       devRepo     <- ZIO.service[DeviceRepo]
       profRepo    <- ZIO.service[ProfileRepo]
       consentRepo <- ZIO.service[SupportConsentRepo]
+      // #2665: the consented read's two new inputs — the household-local timezone and the canonical
+      // day-state primitive. Real ones from the environment, per docs/process/testing.md.
+      hsRepo      <- ZIO.service[HouseholdSettingsRepo]
+      timeStatus  <- TestLayers.timeStatusService
       clock       <- ZIO.service[Clock]
       plainRec    <- PlainClient.recorder
       dispRec     <- CloudAgentDispatcher.recorder
@@ -100,6 +104,8 @@ object SupportSupersededReplySpec
         billRepo,
         devRepo,
         profRepo,
+        hsRepo,
+        timeStatus,
         consentRepo,
         PlainClient.recording(plainRec),
         GithubIssueClient.noop,
