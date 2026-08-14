@@ -330,8 +330,8 @@ object PressDispatchCompletionSpec
       for {
         rig            <- seeded()
         supportTracker <- DispatchTracker.make(
-          DispatchTracker.Channel.Support,
           DispatchTracker.deadAfterFor(liveCfg),
+          DispatchTracker.Channel.Support,
         )
         now0           <- ZIO.serviceWithZIO[Clock](_.instant)
         supportDone0   <- counter("support_dispatch_total", DispatchTracker.Outcome.Completed)
@@ -344,6 +344,10 @@ object PressDispatchCompletionSpec
         id             <- latestInboundId
         _              <- supportTracker.dispatched(
           PressResponder.dispatchKey(id, "isolated@example.test"),
+          // #2668's session id. Any non-empty value would do — this test is about the two
+          // channels' pending maps, and the turn guard reads it only on the support callback
+          // path, which this test never drives.
+          "sess-isolation",
           DispatchTracker.Subject.household(HouseholdId(1)),
           Transport,
           now0,
