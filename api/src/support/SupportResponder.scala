@@ -1615,11 +1615,11 @@ final case class SupportResponder(
    *
    * So the recovery is narrow on purpose: it covers the dark-install case and nothing else. The
    * cost of erring this way is a silent turn — loud on
-   * `support_agent_action_total{op,outcome="error"}`, and on `support_consent_total{request_error}`
-   * when it is the prompt that failed. NOT on the #2472 dispatch pairing: [[withClaimsE]] closes
-   * that at token-verify time, before the write, so do not send an operator there to find one. A
-   * silent turn is the direction a control keeping attacker-influenced text away from a live
-   * consent link should fail in.
+   * `support_agent_action_total{op,outcome="error"}`, and on
+   * `support_consent_total{outcome="request_error"}` when it is the prompt that failed. NOT on the
+   * #2472 dispatch pairing: [[withClaimsE]] closes that at token-verify time, before the write, so
+   * do not send an operator there to find one. A silent turn is the direction a control keeping
+   * attacker-influenced text away from a live consent link should fail in.
    */
   private def settleThreadWrite(
       action: String,

@@ -257,11 +257,12 @@ final class DispatchTracker private (
    *   - both callbacks fired CONCURRENTLY and the first write then failing — the second was already
    *     refused while the first was in flight and cannot be un-refused.
    * Neither is silent to US: the failed write is loud on
-   * `support_agent_action_total{op,outcome="error"}` (and `support_consent_total{request_error}`
-   * for the prompt). NOT on the #2472 pairing, which is already closed by then — [[calledBack]]
-   * fires at token-verify time, before any Plain write, so a turn that ends silent this way still
-   * reads as served there. Buffering a write until a concurrent sibling settles is the only
-   * alternative, and it is not worth the machinery for a Plain failure racing a double callback.
+   * `support_agent_action_total{op,outcome="error"}` (and
+   * `support_consent_total{outcome="request_error"}` for the prompt). NOT on the #2472 pairing,
+   * which is already closed by then — [[calledBack]] fires at token-verify time, before any Plain
+   * write, so a turn that ends silent this way still reads as served there. Buffering a write until
+   * a concurrent sibling settles is the only alternative, and it is not worth the machinery for a
+   * Plain failure racing a double callback.
    */
   def settleThreadWrite(
       threadId: String,
