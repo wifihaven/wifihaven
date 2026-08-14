@@ -214,9 +214,10 @@ object EmailMarkdownSpec extends ZIOSpecDefault {
         render("**multi\nline**") == "<p>**multi<br>line**</p>",
         // Italic nests inside bold in the MIDDLE of the span (pinned above), but not up against
         // the closing marker: the bold close takes two of the three `*` and the third is left
-        // literal. Valid CommonMark and a shape agents write, so it is named here rather than
-        // implied away by the scaladoc — it just isn't reachable without giving the emphasis
-        // passes a real parser, which this file deliberately is not.
+        // literal. Valid CommonMark and a shape agents write, so it is pinned rather than left to
+        // be discovered. It is a CHOICE, not a limit — tightening the close to reject a following
+        // `*` drops the stray marker but stops the span matching at all, so the line goes fully
+        // literal, which is the #2677 symptom rather than a milder version of it.
         render("**Really *important***") == "<p><strong>Really *important</strong>*</p>",
       )
     },
