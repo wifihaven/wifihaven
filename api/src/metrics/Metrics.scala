@@ -765,6 +765,11 @@ object MetricGuard {
     // #2438 — the press dispatcher-level dispatch outcome, the press twin of
     // `support_dispatch_total` (same shared CloudAgentObservability envelope, separate series so the
     // public-press audience graphs + alerts independently). Same bounded {outcome,transport} space.
+    // #2517 widens `outcome` with the COMPLETION half of the pair, emitted from the SAME generalized
+    // `DispatchTracker` support uses (values single-sourced on `DispatchTracker.Outcome`, so the two
+    // channels cannot drift): `completed`, `callback_slow`, `no_callback`. NO new label key — the
+    // press correlation key (the inbound row id / reply-target address) is tracker STATE and must
+    // never become a label.
     "press_dispatch_total"                          -> Set("outcome", "transport"),
     // #2296 — the press correspondence log (V71). `press_message_recorded_total{direction,outcome}`
     // counts each best-effort AUDIT write by direction (inbound | outbound) × outcome (ok | error).
@@ -1328,6 +1333,9 @@ object AppMetrics {
   // #2438 — the press twin of supportDispatch, emitted from the SAME shared CloudAgentObservability
   // envelope. Same bounded {outcome,transport} space; separate series so press graphs/alerts on its
   // own dispatch health. Never a per-sender / per-thread label.
+  // #2517: also the sink `DispatchTracker.Channel.Press` records completions and unanswered
+  // dispatches through — `completed` / `callback_slow` / `no_callback` on this same series, so
+  // `dispatched - completed` reads as the in-flight+lost population exactly as it does for support.
   def pressDispatch(outcome: String, transport: Option[String]): UIO[Unit] =
     MetricGuard.counter(
       "press_dispatch_total",

@@ -539,7 +539,13 @@ final case class SupportResponder(
       // cannot drift from the one `support_dispatch_total{transport}` already carries.
       _       <- ZIO
         .foreachDiscard(CloudAgentDispatcher.transportLabel(cfg))(
-          dispatchTracker.dispatched(threadId, sessionId, hh, _, now),
+          dispatchTracker.dispatched(
+            threadId,
+            sessionId,
+            DispatchTracker.Subject.household(hh),
+            _,
+            now,
+          ),
         )
         .when(outcome == DispatchOutcome.Dispatched)
     } yield outcome

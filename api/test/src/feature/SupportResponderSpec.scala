@@ -174,7 +174,7 @@ object SupportResponderSpec
       dispRec     <- CloudAgentDispatcher.recorder
       tracker     <- DispatchTracker.make(
         DispatchTracker.deadAfterFor(cfg),
-        wifihaven.api.observability.AgentTokenRejection.Channel.Support,
+        DispatchTracker.Channel.Support,
       )
       detachedRef <- Ref.make(0)
       responder = SupportResponder(
@@ -267,7 +267,7 @@ object SupportResponderSpec
       consentRepo <- ZIO.service[SupportConsentRepo]
       tracker     <- DispatchTracker.make(
         DispatchTracker.deadAfterFor(cfg),
-        wifihaven.api.observability.AgentTokenRejection.Channel.Support,
+        DispatchTracker.Channel.Support,
       )
       liveCfg   = cfg.copy(plain = cfg.plain.copy(writeEnabled = true, apiBase = apiBase))
       responder = SupportResponder(

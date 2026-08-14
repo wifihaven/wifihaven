@@ -245,7 +245,7 @@
     {
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "title": "Cloud-agent dispatch outcomes (#2438)",
-      "description": "sum by (outcome, transport) (rate(press_dispatch_total{env=\"$env\"}[5m])) — the dispatcher-level cloud-trigger outcome, measured at the transport boundary (the SAME shared CloudAgentObservability envelope as support): dispatched (the Managed Agents session / Claude Code Cloud routine trigger returned 2xx) / error (the trigger returned non-2xx or the call threw — the press agent NEVER started, so no reply was emailed) / disabled (the responder is dark, #2265; carries no transport). transport ∈ managed-agents (API-credit billed) | claude-code-cloud (subscription billed). The 'Inbound webhook outcomes' panel's 'dispatched' only means a session was ATTEMPTED — a silent non-2xx trigger failure shows up as 'error' HERE and nowhere else. ALERT on any sustained 'error' rate while the responder is enabled (each is a journalist reply that never went out). #2416: when outcome=error, the 'Press dispatch failures by reason' panel below splits that bucket into config (a permanent 4xx misconfiguration — a dead responder needing a human fix, alert W7) vs transient (a 5xx/transport blip).",
+      "description": "sum by (outcome, transport) (rate(press_dispatch_total{env=\"$env\"}[5m])) — the dispatcher-level cloud-trigger outcome, measured at the transport boundary (the SAME shared CloudAgentObservability envelope as support): dispatched (the Managed Agents session / Claude Code Cloud routine trigger returned 2xx) / error (the trigger returned non-2xx or the call threw — the press agent NEVER started, so no reply was emailed) / disabled (the responder is dark, #2265; carries no transport). transport ∈ managed-agents (API-credit billed) | claude-code-cloud (subscription billed). The 'Inbound webhook outcomes' panel's 'dispatched' only means a session was ATTEMPTED — a silent non-2xx trigger failure shows up as 'error' HERE and nowhere else. ALERT on any sustained 'error' rate while the responder is enabled (each is a journalist reply that never went out). #2416: when outcome=error, the 'Press dispatch failures by reason' panel below splits that bucket into config (a permanent 4xx misconfiguration — a dead responder needing a human fix, alert W7) vs transient (a 5xx/transport blip). #2517: this series ALSO carries the COMPLETION half of the pair, emitted from the SAME generalized DispatchTracker the support responder uses — completed (a terminal press agent callback, /reply or /escalate, arrived for a dispatch we recorded), callback_slow (nothing after 10 min; a usage-limit-suspended claude-code-cloud run legitimately reaches this, so an occasional sample is normal), no_callback (nothing landed by the press agent-token TTL — the session accepted the trigger and either died or was refused by the #2437 cap, and the journalist got no answer). Read 'dispatched' against 'completed': before #2517 a dispatched-then-dead press session counted only as a success.",
       "type": "timeseries",
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 22 },
       "id": 10,
@@ -525,6 +525,169 @@
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
           "expr": "sum(increase(press_reply_threading_total{env=\"$env\",shape=\"none\"}[24h]))",
           "legendFormat": "unthreaded (24h)",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "Press sessions that NEVER called back (24h) — expect 0 (#2517)",
+      "description": "sum(increase(press_dispatch_total{env=\"$env\",outcome=\"no_callback\"}[24h])) — a cloud-agent session that ACCEPTED the press trigger and then never delivered: no /api/press/agent/reply or /escalate call ever LANDED within the press agent-token TTL. Usually the session died — crashed, timed out, exhausted quota, produced no tool call — but since #2517 it also covers a session that called back and was REFUSED by the #2437 escalation cap (3/hour/sender), which deliberately does not close the dispatch because nothing reached a human either way. The `press_agent_action_total{outcome=\"rate_limited\"}` series distinguishes the two (DispatchTracker.deadAfterFor = press.agentTokenTtlMinutes, 24h by default). The TTL is the threshold because it is the first instant at which silence is unambiguous: BEFORE it a claude-code-cloud run suspended on subscription usage limits can still resume and answer — possibly the next morning (#2473 / AgentTokenTtl) — and AFTER it that resumed run's callback 401s, so the answer can never reach the journalist. Every sample is a reporter who emailed press@ and got NOTHING back, which during launch coverage (#2233) is the most expensive silence we have. NOTHING RETRIES: auto-retry was deliberately declined (a second billed session plus a duplicate-reply risk), so a non-zero value is an ACTION for a human — open /press (the #2296 correspondence log), read the inquiry, and reply by hand. That is safe at THIS threshold and only at this threshold: a late agent reply can no longer land, so hand-replying cannot produce a duplicate. Correlate with the API log line `press dispatch NEVER CALLED BACK`, which names the correlation key, the reply-to address, and the transport.",
+      "type": "stat",
+      "gridPos": { "h": 8, "w": 6, "x": 0, "y": 78 },
+      "id": 24,
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }]
+          }
+        }
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum(increase(press_dispatch_total{env=\"$env\",outcome=\"no_callback\"}[24h]))",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "Press dispatches still unanswered after 10 min (24h) (#2517)",
+      "description": "sum(increase(press_dispatch_total{env=\"$env\",outcome=\"callback_slow\"}[24h])) — a press dispatch with no terminal agent callback after DispatchTracker.SlowAfter (10 min), against healthy replies observed landing in 30–110s. This is the WARN tier, NOT an error: a claude-code-cloud routine run can be suspended on subscription usage limits and resumed hours later (#2473 / AgentTokenTtl), and those runs do answer, sometimes the next morning — so occasional samples are expected, each dispatch is counted here at most once, and an inquiry on this panel must NOT be hand-replied blind (wait for the no_callback panel, which is past the point a late reply can land). What matters is the SHAPE: a sustained rate, or one that tracks the no_callback panel, means sessions are stalling rather than pausing. Log line: `press dispatch still unanswered`.",
+      "type": "stat",
+      "gridPos": { "h": 8, "w": 6, "x": 6, "y": 78 },
+      "id": 25,
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 3 }]
+          }
+        }
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum(increase(press_dispatch_total{env=\"$env\",outcome=\"callback_slow\"}[24h]))",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "Press inquiries the agent ANSWERED (24h) (#2517)",
+      "description": "sum(increase(press_dispatch_total{env=\"$env\",outcome=\"completed\"}[24h])) — press dispatches CLOSED by a terminal agent callback (/reply or /escalate). This is the panel that gives the dispatched count its meaning: read it against 'Press sessions dispatched (24h)' above, and the gap between the two is the in-flight + lost population. It counts the session COMING BACK AND ACTING, not the email landing. A callback the #2437 escalation cap refused is deliberately NOT counted here (PressResponder.closesDispatch): nothing reached the journalist, so that dispatch stays outstanding and is still swept — a reply Resend then refused is loud separately on press_agent_action_total{op=\"reply\",outcome=\"error\"}, and judging it a second time here would be two places computing one thing (docs/process/single-source-of-truth.md).",
+      "type": "stat",
+      "gridPos": { "h": 8, "w": 6, "x": 12, "y": 78 },
+      "id": 26,
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{ "color": "green", "value": null }]
+          }
+        }
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum(increase(press_dispatch_total{env=\"$env\",outcome=\"completed\"}[24h]))",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "Journalists waiting on an unanswered dispatch — a WRITTEN zero (#2477/#2517)",
+      "description": "agent_dispatch_unreplied{env=\"$env\",channel=\"press\"} — #2477's dispatch WATCHDOG, press channel (wired by #2517). How many JOURNALISTS are waiting RIGHT NOW on a cloud-agent session that accepted the trigger and has not come back, past DispatchTracker.SlowAfter (10 min, sized in #2472 against healthy replies observed landing in 30–110s). Read it as a LEVEL, not a rate: a dispatch enters this count 10 minutes after it fires and leaves it either when the agent calls back or when it is declared dead at the agent-token TTL (DispatchTracker.deadAfterFor = press.agentTokenTtlMinutes, 24h by default via AgentTokenTtl.DefaultMinutes), at which point it is counted once on press_dispatch_total{outcome=\"no_callback\"} instead. WHY THIS PANEL EXISTS ALONGSIDE THOSE COUNTERS: they only move when something is wrong, so a healthy system emitted NOTHING and \"no journalist is waiting\", \"the press responder was never enabled\" and \"the sweep fiber died\" were one indistinguishable picture — the #2546 failure. This series is written on EVERY sweep tick, so the healthy state is an explicit 0 you can see. A NON-ZERO value is not yet an error: a claude-code-cloud run suspended on subscription usage limits legitimately sits here for hours and answers later, possibly the next morning (#2473). What matters is a value that STAYS up as it approaches the TTL. Always read this panel together with the heartbeat beside it — a zero here means \"nobody is waiting\" only if the sweep that wrote it is still running.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 86 },
+      "id": 27,
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "unit": "short",
+          "decimals": 0,
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "stepAfter",
+            "fillOpacity": 15,
+            "showPoints": "never"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{ "color": "green", "value": null }, { "color": "orange", "value": 1 }]
+          }
+        }
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "agent_dispatch_unreplied{env=\"$env\",channel=\"press\"}",
+          "legendFormat": "waiting past the 10m window",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "Press watchdog heartbeat (10m) — 0 means nothing is LOOKING (#2477/#2517)",
+      "description": "min(increase(agent_dispatch_sweeps_total{env=\"$env\",channel=\"press\"}[10m])) — #2477's liveness anchor for the panel beside it, press channel (wired by #2517), and the reason that panel's zero can be believed at all. DispatchTracker.sweep ticks every DispatchTracker.SweepInterval (60s) and counts itself on every tick, healthy ones included, so a healthy 10-minute window reads ~10. min() and not sum(), matching alert W12 exactly: the two are identical at numInstances: 1, but under a scale-out a sum would let one live instance's ticks hide a dead sweep fiber on its sibling. It is REQUIRED rather than nice-to-have because unreplied is a GAUGE: a gauge keeps exporting its last written value for as long as the process lives, so a dead sweep fiber would publish a stale, reassuring 0 indefinitely. ZERO HERE MEANS NOTHING IS LOOKING, and the unreplied panel must not be read at all. Rule out the two benign causes first: the press responder is flag-off in this environment (the press sweep is forked only when press.responderEnabled is true — Main.scala), or the API restarted within the window. Anything else is a dead fiber — redeploy, and grep the API log for a sweep-loop failure. Alert W12 fires on this.",
+      "type": "stat",
+      "gridPos": { "h": 8, "w": 6, "x": 12, "y": 86 },
+      "id": 28,
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "unit": "short",
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{ "color": "red", "value": null }, { "color": "green", "value": 1 }]
+          }
+        }
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "min(increase(agent_dispatch_sweeps_total{env=\"$env\",channel=\"press\"}[10m]))",
           "refId": "A"
         }
       ]

@@ -65,11 +65,22 @@ object Main extends ZIOAppDefault {
         // a dark responder dispatches nothing, so there is nothing to sweep. forkScoped (like the
         // rollup loops, #1247) so it is interrupted on shutdown; it touches no DB, only its own Ref.
         _         <- ZIO
-          .serviceWithZIO[wifihaven.api.support.DispatchTracker](t =>
-            ZIO.serviceWithZIO[wifihaven.shared.Clock](t.loop),
+          .serviceWithZIO[wifihaven.api.support.DispatchTracker.ForSupport](t =>
+            ZIO.serviceWithZIO[wifihaven.shared.Clock](t.tracker.loop),
           )
           .forkScoped
           .when(cfg.support.responderEnabled)
+        // #2517: the same sweep for the #2203 PRESS responder, on its OWN tracker instance (own
+        // pending map, own `press_dispatch_total` sink). Forked only when the press responder is
+        // ENABLED, for the same reason: a dark responder dispatches nothing, so there is nothing to
+        // sweep. Press outreach (#2233) makes this launch-critical — a dead press session currently
+        // reads as a served journalist.
+        _         <- ZIO
+          .serviceWithZIO[wifihaven.api.support.DispatchTracker.ForPress](t =>
+            ZIO.serviceWithZIO[wifihaven.shared.Clock](t.tracker.loop),
+          )
+          .forkScoped
+          .when(cfg.press.responderEnabled)
         _         <- ZIO
           .logWarning(
             "WIFIHAVEN_DEBUG=1 set — /api/debug/* endpoints are MOUNTED (loopback only). " +
@@ -482,13 +493,19 @@ object Main extends ZIOAppDefault {
       // dispatch and closes it on the agent's terminal callback) and the sweep fiber forked in `run`
       // (which reports the dispatches nobody ever closed). A LAYER precisely so both hold the SAME
       // instance — a second one would sweep an empty map and stay silent.
-      wifihaven.api.support.DispatchTracker.layer >+>
+      wifihaven.api.support.DispatchTracker.supportLayer >+>
       // #2203 (press intake C): the public press/PR responder's cloud-agent dispatcher (a SEPARATE
       // Managed Agent persona per inbound press message). Reuses the shared ManagedAgents transport;
       // runs iff press.responderEnabled (#2265), else the logged no-op. The press reply is emailed
       // via the already-wired #578 EmailSender (retrieved below); no press-specific transport.
       ZLayer.fromZIO(ZIO.serviceWith[AppConfig](_.press)) >+>
       wifihaven.api.press.PressAgentDispatcher.layer >+>
+      // #2517: the press half of the dispatch→completion pairing — a SEPARATE instance from
+      // support's (separate pending map, separate metric series), sharing the one generalized
+      // component so the two audiences cannot drift on completion accounting. Like support's, it is
+      // a LAYER precisely so the responder and the sweep fiber forked in `run` hold the SAME
+      // instance; a second one would sweep an empty map and stay silent.
+      wifihaven.api.support.DispatchTracker.pressLayer >+>
       // #1242: Prometheus publisher + snapshot listener, and JVM metrics collectors.
       MetricsRuntime.prometheus() >+>
       DefaultJvmMetrics.live

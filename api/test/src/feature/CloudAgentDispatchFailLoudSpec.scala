@@ -158,7 +158,7 @@ object CloudAgentDispatchFailLoudSpec
       clock       <- ZIO.service[Clock]
       tracker     <- DispatchTracker.make(
         DispatchTracker.deadAfterFor(cfg),
-        wifihaven.api.observability.AgentTokenRejection.Channel.Support,
+        DispatchTracker.Channel.Support,
       )
       dispatcher = CloudAgentDispatcher.transportFor(cfg) match {
         case CloudAgentDispatcher.Transport.ClaudeCodeCloud =>
@@ -241,9 +241,13 @@ object CloudAgentDispatchFailLoudSpec
 
   private def pressResponder(cfg: PressConfig) =
     for {
-      pressLog <- ZIO.service[PressMessageRepo]
-      clock    <- ZIO.service[Clock]
-      emailRef <- Ref.make(List.empty[EmailSender.Sent])
+      pressLog     <- ZIO.service[PressMessageRepo]
+      clock        <- ZIO.service[Clock]
+      emailRef     <- Ref.make(List.empty[EmailSender.Sent])
+      pressTracker <- DispatchTracker.make(
+        DispatchTracker.deadAfterFor(cfg),
+        DispatchTracker.Channel.Press,
+      )
       dispatcher = PressAgentDispatcher.transportFor(cfg) match {
         case PressAgentDispatcher.Transport.ClaudeCodeCloud =>
           new PressAgentDispatcher.ClaudeCodeCloudLive(cfg)
@@ -260,6 +264,7 @@ object CloudAgentDispatchFailLoudSpec
       // #2437: same — dispatch fail-loudness is the subject here, not the operator notice.
       Notifier.logOnly,
       RateLimiter.allowAll,
+      pressTracker,
     )
 
   private def pressPayload(from: String, text: String): String =

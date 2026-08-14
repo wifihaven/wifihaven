@@ -6,7 +6,7 @@ import wifihaven.api.db.*
 import wifihaven.api.notify.{EmailOutcome, EmailSender, Notifier}
 import wifihaven.api.press.*
 import wifihaven.api.routes.PressAgentRoutes
-import wifihaven.api.support.{AgentPromptVersion, SupportService}
+import wifihaven.api.support.{AgentPromptVersion, DispatchTracker, SupportService}
 import wifihaven.shared.Clock
 import wifihaven.shared.Clock.TestClock
 import wifihaven.testinfra.*
@@ -93,10 +93,14 @@ object PressResponderSpec
       dispatchSenderLimiter: RateLimiter = RateLimiter.allowAll,
   ): ZIO[PressMessageRepo & Clock, Nothing, (Routes[Any, Response], Stubs, Clock)] =
     for {
-      pressLog <- ZIO.service[PressMessageRepo]
-      clock    <- ZIO.service[Clock]
-      emailRef <- Ref.make(List.empty[EmailSender.Sent])
-      dispRec  <- PressAgentDispatcher.recorder
+      pressLog     <- ZIO.service[PressMessageRepo]
+      clock        <- ZIO.service[Clock]
+      emailRef     <- Ref.make(List.empty[EmailSender.Sent])
+      dispRec      <- PressAgentDispatcher.recorder
+      pressTracker <- DispatchTracker.make(
+        DispatchTracker.deadAfterFor(cfg),
+        DispatchTracker.Channel.Press,
+      )
       responder = PressResponder(
         cfg,
         EmailSender.recording(emailRef),
@@ -109,6 +113,7 @@ object PressResponderSpec
         // depending on the operator-notification transport (EscalationSpec covers that).
         Notifier.logOnly,
         RateLimiter.allowAll,
+        pressTracker,
       )
     } yield (PressAgentRoutes.routes(responder), Stubs(emailRef, dispRec), clock)
 
@@ -865,11 +870,15 @@ object PressResponderSpec
         clock    <- ZIO.service[Clock]
         // An EmailSender whose send always fails (Resend down / rejected) — the reply endpoint must
         // report the error, not pretend success.
-        failing   = new EmailSender {
+        failing = new EmailSender {
           def send(to: String, subject: String, htmlBody: String): UIO[EmailOutcome] =
             ZIO.succeed(EmailOutcome.Failed)
         }
         dispRec <- PressAgentDispatcher.recorder
+        pressTracker <- DispatchTracker.make(
+          DispatchTracker.deadAfterFor(liveCfg),
+          DispatchTracker.Channel.Press,
+        )
         responder = PressResponder(
           liveCfg,
           failing,
@@ -880,6 +889,7 @@ object PressResponderSpec
           RateLimiter.allowAll,
           Notifier.logOnly,
           RateLimiter.allowAll,
+          pressTracker,
         )
         routes    = PressAgentRoutes.routes(responder)
         token       <- mintToken(clock, "reporter@example.com")
@@ -1005,7 +1015,7 @@ object PressResponderSpec
         _        <- cleanDb
         pressLog <- ZIO.service[PressMessageRepo]
         clock    <- ZIO.service[Clock]
-        failing   = new EmailSender {
+        failing = new EmailSender {
           def send(to: String, subject: String, htmlBody: String): UIO[EmailOutcome] =
             ZIO.succeed(EmailOutcome.Failed)
         }
@@ -1017,6 +1027,10 @@ object PressResponderSpec
           "<m>",
           "",
         )
+        pressTracker <- DispatchTracker.make(
+          DispatchTracker.deadAfterFor(liveCfg),
+          DispatchTracker.Channel.Press,
+        )
         responder = PressResponder(
           liveCfg,
           failing,
@@ -1027,6 +1041,7 @@ object PressResponderSpec
           RateLimiter.allowAll,
           Notifier.logOnly,
           RateLimiter.allowAll,
+          pressTracker,
         )
         routes    = PressAgentRoutes.routes(responder)
         token       <- mintToken(clock, "reporter@example.com", "Story", pressMessageId = inboundId)

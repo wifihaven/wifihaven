@@ -103,7 +103,7 @@ object SupportDispatchCompletionSpec
       dispRec     <- CloudAgentDispatcher.recorder
       tracker     <- DispatchTracker.make(
         DispatchTracker.deadAfterFor(liveCfg),
-        wifihaven.api.observability.AgentTokenRejection.Channel.Support,
+        DispatchTracker.Channel.Support,
       )
       responder = SupportResponder(
         liveCfg,

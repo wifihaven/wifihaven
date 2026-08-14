@@ -136,7 +136,7 @@ object EscalationSpec
       dispRec     <- CloudAgentDispatcher.recorder
       tracker     <- DispatchTracker.make(
         DispatchTracker.deadAfterFor(cfg),
-        wifihaven.api.observability.AgentTokenRejection.Channel.Support,
+        DispatchTracker.Channel.Support,
       )
       notifier  = new Notifier.EmailNotifier(
         hsRepo,
@@ -189,11 +189,15 @@ object EscalationSpec
       sender: Option[EmailSender] = None,
   ) =
     for {
-      pressLog <- ZIO.service[PressMessageRepo]
-      hsRepo   <- ZIO.service[HouseholdSettingsRepo]
-      clock    <- ZIO.service[Clock]
-      emailRef <- Ref.make(List.empty[EmailSender.Sent])
-      dispRec  <- PressAgentDispatcher.recorder
+      pressLog     <- ZIO.service[PressMessageRepo]
+      hsRepo       <- ZIO.service[HouseholdSettingsRepo]
+      clock        <- ZIO.service[Clock]
+      emailRef     <- Ref.make(List.empty[EmailSender.Sent])
+      dispRec      <- PressAgentDispatcher.recorder
+      pressTracker <- DispatchTracker.make(
+        DispatchTracker.deadAfterFor(cfg),
+        DispatchTracker.Channel.Press,
+      )
       transport = sender.getOrElse(EmailSender.recording(emailRef))
       notifier  = new Notifier.EmailNotifier(hsRepo, transport, emailCfgOverride)
       responder = PressResponder(
@@ -206,6 +210,7 @@ object EscalationSpec
         RateLimiter.allowAll,
         notifier,
         escalateLimiter,
+        pressTracker,
       )
     } yield PressHarness(PressAgentRoutes.routes(responder), dispRec, emailRef, clock)
 

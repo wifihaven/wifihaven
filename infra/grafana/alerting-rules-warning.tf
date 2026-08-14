@@ -48,7 +48,7 @@
 # and the rate/increase window come straight from §7.2.
 
 locals {
-  # Keyed w1..w12 (stable resource addressing). `window_s` bounds the data fetch
+  # Keyed w1..w13 (stable resource addressing). `window_s` bounds the data fetch
   # and must cover the rate/increase window in `expr` (for W10, its
   # `last_over_time` lookback). `paused` ships W5 off.
   warning_rules = {
@@ -303,15 +303,12 @@ locals {
     # reply cannot produce the duplicate that made #2472 decline auto-retry.
     # `for = 15m` matches W6-W8 and only debounces a scrape blip — the underlying condition
     # already waited 24h.
-    # SUPPORT ONLY, deliberately. The press twin `press_dispatch_total{outcome="no_callback"}`
-    # is not emitted yet: press dispatch is not paired with its callback until #2517, whose
-    # token binds a reply-target email address rather than a Plain thread id. Authoring a
-    # press rule now would violate this file's own §2 "alert only on series that exist" and
-    # would sit permanently in no-data. NOTHING ALERTS ON A MISSING PRESS WATCHDOG UNTIL
-    # #2517 — not W11, and not W12 below either (its `absent` arm names channel="support",
-    # and its first arm cannot produce a press instance while no press sweep exists). Said
-    # plainly rather than left implied: an unwatched gap that reads as a watched one is the
-    # failure this whole pair exists to prevent.
+    # SUPPORT ONLY — because #2517 gave press its own rule (W13) rather than widening this
+    # one. Two rules, not one `{outcome="no_callback"}` sum across both series, because the
+    # ACTION differs: a dead support dispatch is recovered by replying in the Plain thread,
+    # a dead press one by replying from the #2296 correspondence log at /press, and an alert
+    # whose summary cannot name the recovery is an alert someone has to think about at 2am.
+    # The two series are separate for the same reason (#2438).
     w11 = {
       title    = "W11 A support customer got NO answer (dispatch died)"
       expr     = "sum(increase(support_dispatch_total{env=\"prod\",outcome=\"no_callback\"}[1h]))"
@@ -344,11 +341,16 @@ locals {
     #      was never enabled, or the metric was renamed/dropped in a refactor). no_data_state
     #      is OK for the whole group and must stay that way for W10, so absence has to be
     #      turned into a VALUE here rather than into a no-data verdict.
-    # The absent arm names `channel="support"` explicitly: it asserts which channels are
-    # EXPECTED to be sweeping, which is a claim only the code can make and Prometheus cannot
-    # infer from an empty result. #2517 adds a press arm here when it wires a press-channel
-    # DispatchTracker; until then press has no sweep, arm 1 produces no press instance, and
-    # the press dashboard's watchdog panels correctly read no-data.
+    # The absent arms name each channel explicitly: they assert which channels are EXPECTED
+    # to be sweeping, which is a claim only the code can make and Prometheus cannot infer
+    # from an empty result. #2517 added the `channel="press"` arm when it wired the
+    # press-channel DispatchTracker — press now forks its own sweep (Main.scala, gated on
+    # press.responderEnabled) and publishes its own {channel="press"} series, so a missing
+    # press watchdog is a real, alertable state rather than an empty query.
+    #
+    # Both arms are `absent(...)`, ORed, and not a single `absent(...{channel=~"support|press"})`:
+    # the regex form goes quiet the moment EITHER channel reports, which is exactly the
+    # masking this rule exists to prevent.
     # `for = 30m` is 30 sweep intervals (DispatchTracker.SweepInterval = 60s) — long enough
     # that a deploy, a restart or a scrape gap cannot fire it, short enough that a dead
     # watchdog is caught the same hour rather than the next time someone opens the dashboard.
@@ -361,14 +363,38 @@ locals {
     # {channel="support",env="prod"}, which is both arms doing their job. It resolves on its
     # own once the API deploy lands, with no rule change. `for = 30m` keeps the gap quiet
     # unless the API deploy is genuinely stuck.
+    # W13 (#2517) — the press twin of W11, and a separate rule rather than a widened one
+    # because the RECOVERY differs and the summary has to be able to state it. Same
+    # threshold logic and the same reason it is not a tuned number:
+    # `press_dispatch_total{outcome="no_callback"}` is emitted by DispatchTracker.sweep only
+    # past the press agent-token TTL (`press.agentTokenTtlMinutes`, 24h by default via the
+    # shared AgentTokenTtl.DefaultMinutes), the first instant at which silence is
+    # unambiguous — before it a usage-limit-suspended claude-code-cloud run can still resume
+    # and answer (#2473), after it that resumed run's callback 401s.
+    #
+    # One press-specific note the support rule has no equivalent for: since #2517 this bucket
+    # also holds a session that DID call back and was refused by the #2437 escalation cap
+    # (3/hour/sender), which deliberately does not close the dispatch because nothing reached
+    # a human either way. Check `press_agent_action_total{op="escalate",outcome="rate_limited"}`
+    # before concluding the session died — the fix for that case is to answer the escalation,
+    # not to hand-reply as though the agent never ran.
+    w13 = {
+      title    = "W13 A journalist got NO answer (press dispatch died)"
+      expr     = "sum(increase(press_dispatch_total{env=\"prod\",outcome=\"no_callback\"}[1h]))"
+      window_s = 3600
+      gt       = 0
+      for      = "15m"
+      paused   = false
+      summary  = "A cloud-agent session accepted the PRESS trigger and then never delivered — no /api/press/agent/{reply,escalate} call landed within the agent-token TTL (24h). A JOURNALIST EMAILED press@ AND GOT NOTHING, and nothing retries: auto-retry was declined for the same reasons as support (#2472) plus a worse duplicate-reply blast radius, since the press reply is emailed autonomously to a member of the public. ACTION FOR A HUMAN: find it in the API log line `press dispatch NEVER CALLED BACK`, which names the correlation key, the reply-to address and the transport, then open /press (the #2296 correspondence log), read the inquiry, and reply by hand. That is safe at this threshold and only at this threshold — the dead session's token is expired, so it cannot come back and answer on top of you. FIRST rule out the refused-escalation case: check press_agent_action_total{op=\"escalate\",outcome=\"rate_limited\"} over the same window, because since #2517 a callback the #2437 cap refused also lands in this bucket, and there the agent is alive and the right move is to handle the escalation. During launch coverage (#2233) treat this as time-critical: a journalist on deadline does not email twice."
+    }
     w12 = {
       title    = "W12 The dispatch watchdog stopped reporting"
-      expr     = "(min by (channel) (increase(agent_dispatch_sweeps_total{env=\"prod\"}[15m])) == bool 0) or absent(agent_dispatch_sweeps_total{env=\"prod\",channel=\"support\"})"
+      expr     = "(min by (channel) (increase(agent_dispatch_sweeps_total{env=\"prod\"}[15m])) == bool 0) or absent(agent_dispatch_sweeps_total{env=\"prod\",channel=\"support\"}) or absent(agent_dispatch_sweeps_total{env=\"prod\",channel=\"press\"})"
       window_s = 900
       gt       = 0
       for      = "30m"
       paused   = false
-      summary  = "The #2477 dispatch watchdog has stopped ticking, so NOTHING is watching for a customer left unanswered by a dead cloud-agent session — and because the unreplied count is a gauge, its dashboard panel is still showing you the last value it ever wrote, which is probably a reassuring 0. Treat W11 as unable to fire until this clears. Rule out the benign causes first: the support responder is flag-off in this environment (Main.scala forks the sweep only when support.responderEnabled is true), or the API is down (C5 would also be firing). Otherwise the sweep fiber died inside a live process — grep the API log for a failure in the DispatchTracker loop and redeploy. NOTE this rule covers SUPPORT only, because support is the only channel with a sweep: press dispatch is not paired with its callback until #2517, so a missing press watchdog alerts nowhere today and #2517 is what adds the arm."
+      summary  = "The #2477 dispatch watchdog has stopped ticking, so NOTHING is watching for a customer left unanswered by a dead cloud-agent session — and because the unreplied count is a gauge, its dashboard panel is still showing you the last value it ever wrote, which is probably a reassuring 0. Treat W11 as unable to fire until this clears. Rule out the benign causes first: the support responder is flag-off in this environment (Main.scala forks the sweep only when support.responderEnabled is true), or the API is down (C5 would also be firing). Otherwise the sweep fiber died inside a live process — grep the API log for a failure in the DispatchTracker loop and redeploy. This rule covers BOTH responders since #2517 — the alert instance's channel label says which one stopped, and each channel's dashboard has its own heartbeat panel. A press instance firing while support is healthy usually means press.responderEnabled is false in this environment, which is a legitimate state to be in but NOT one you should discover from an alert: check render.yaml before hunting a dead fiber."
     }
   }
 }

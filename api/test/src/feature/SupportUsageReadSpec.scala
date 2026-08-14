@@ -94,7 +94,7 @@ object SupportUsageReadSpec
       dispRec     <- CloudAgentDispatcher.recorder
       tracker     <- DispatchTracker.make(
         DispatchTracker.deadAfterFor(liveCfg),
-        wifihaven.api.observability.AgentTokenRejection.Channel.Support,
+        DispatchTracker.Channel.Support,
       )
       ghRec       <- Ref.make(List.empty[IssueFileRequest]).map(GithubIssueClient.Recorder.apply)
       responder = SupportResponder(
