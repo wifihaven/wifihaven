@@ -170,6 +170,43 @@ object NamedScheduleHouseholdScopeSpec
         // ...and B's does not see it at all.
         assertTrue(inB.isEmpty)
     },
+    // ── #2572 gaps 1+2, end to end through the routes ──────────────────────────
+    // The scoped read above is only half the fix. `named_schedules.name` was GLOBALLY unique
+    // (V50, written single-household), so even with a scoped pre-check household B's insert hit
+    // `named_schedules_name_key` on a row B cannot see — B was blocked from the name "Bedtime"
+    // because an invisible household A had taken it. V87 widened that to
+    // `UNIQUE (household_id, name)` and dropped V72's expand-window `DEFAULT 1`, so an insert that
+    // fails to stamp a household now errors loudly instead of silently landing in household 1.
+    //
+    // This is deliberately a TWO-household test: the single-household create above passes against
+    // the old global unique and proves nothing about it. Both creates must succeed AND each
+    // household must see only its own row — a shared row would satisfy "both succeeded" alone.
+    test("#2572: households A and B can each hold a schedule named \"Bedtime\"") {
+      for {
+        _      <- cleanDb
+        two    <- TestLayers.seedTwoHouseholds(macA, macB)
+        rs     <- scheduleRoutes
+        auth   <- makeAuth
+        tokA   <- login(auth, two.adminA, two.password)
+        tokB   <- login(auth, two.adminB, two.password, Some(two.slugB))
+        schedA <- createSchedule(rs, "Bedtime", tokA)
+        // Under the pre-V87 global unique this create fails on A's invisible row.
+        schedB <- createSchedule(rs, "Bedtime", tokB)
+        namesA <- listNames(rs, tokA)
+        namesB <- listNames(rs, tokB)
+        nsr    <- ZIO.service[NamedScheduleRepo]
+        ownerA <- nsr.householdOf(schedA.id)
+        ownerB <- nsr.householdOf(schedB.id)
+      } yield
+      // Two distinct rows, not one shared row reused across the boundary.
+      assertTrue(schedA.id != schedB.id) &&
+        // Each landed in its OWN household — the DROP DEFAULT half: neither silently fell to 1.
+        assertTrue(ownerA.contains(two.hhA)) &&
+        assertTrue(ownerB.contains(two.hhB)) &&
+        // And each household still sees exactly its own "Bedtime".
+        assertTrue(namesA == Set("Bedtime")) &&
+        assertTrue(namesB == Set("Bedtime"))
+    },
     // Scoping must not over-reach: a duplicate WITHIN one household is still rejected 409.
     test("POST /api/schedules still 409s on a duplicate name inside the same household (#2572)") {
       for {
