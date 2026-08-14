@@ -415,7 +415,148 @@ object MultiTenantScopedReadGuardSpec extends ZIOSpecDefault {
    * verdict. Test B1 fails until the live declarations and this map agree EXACTLY — so a new read,
    * a rename, or a removal all force someone to write down what its tenancy is.
    */
-  val RowReadCensus: Map[String, RowRead] = Map.empty
+  val RowReadCensus: Map[String, RowRead] = Map(
+    // ── billing ────────────────────────────────────────────────────────────────────────────────
+    "HouseholdBillingRepo.findByHousehold"        -> Scoped,
+    "HouseholdBillingRepo.grantFreeForever"       -> Scoped,
+    "HouseholdBillingRepo.revokeFreeForever"      -> Scoped,
+    "HouseholdBillingRepo.findByStripeCustomerId" -> TenancyKey(
+      "stripe_customer_id is issued by Stripe, unique per household, and stored on exactly one " +
+        "household_billing row; the webhook has no other way to name the household (#2135)",
+    ),
+
+    // ── beta intake — rows that exist BEFORE any household does ────────────────────────────────
+    "BetaRequestRepo.findById"         -> SurrogateId(
+      "beta_requests.id; the operator approval queue is behind requireOperator (#2131)",
+    ),
+    "BetaRequestRepo.findByEmail"      -> InstallWide(
+      "the pre-household intake queue: a beta_request belongs to no household until approval " +
+        "provisions one, and the email is its unique key (#2222 dedup)",
+    ),
+    "BetaRequestRepo.findByInviteHash" -> TenancyKey(
+      "the invite token hash IS the bearer secret, and the row it resolves is what MINTS the " +
+        "household — there is no household to scope to yet (#2131)",
+    ),
+    "BetaRequestRepo.create"           -> Write("intake insert; returns whether the email was new"),
+    "BetaRequestRepo.reject"           -> Write("operator decision stamp on a pre-household row"),
+    "BetaRequestRepo.remintInvite" -> Write("operator re-issue of a pre-household invite token"),
+    "BetaCohortRepo.startClock"    -> Write("install-wide flip-trigger clock latch (#2137)"),
+    "BetaCohortRepo.markFlipped"   -> Write("install-wide flip-trigger latch (#2137)"),
+
+    // ── auth / identity — the reads that DERIVE a household ────────────────────────────────────
+    "UserRepo.findById"                 -> SurrogateId(
+      "users.id is globally unique; ownUser is the route choke point",
+    ),
+    "UserRepo.findByUsername"           -> Scoped,
+    "UserRepo.emailForUser"             -> Scoped,
+    "UserRepo.findAdminForHousehold"    -> Scoped,
+    "UserRepo.findByEmail"              -> TenancyKey(
+      "users.email is globally unique (V65 kept the global key on email while widening username " +
+        "to per-household), and forgot-password derives the household FROM this row (#2308)",
+    ),
+    "HouseholdRepo.findById"            -> Scoped,
+    "HouseholdRepo.findSlugById"        -> Scoped,
+    "HouseholdRepo.findIdBySlug"        -> TenancyKey(
+      "households.slug is the household's own globally-unique name; this read is how a " +
+        "slug-qualified login resolves which household to authenticate against (#2140)",
+    ),
+    "PasswordResetTokenRepo.findByHash" -> TenancyKey(
+      "the token hash is a single-use bearer secret; the row it resolves carries the user, and " +
+        "the household follows from that user (#2308)",
+    ),
+    "PasswordResetTokenRepo.markUsed"   -> Write("single-use consumption of the token above"),
+
+    // ── profiles / schedules / devices / alerts — the household-scoped core ─────────────────────
+    "UserProfileRepo.hasAccess"                    -> SurrogateId(
+      "users.id and profiles.id are both globally unique, so the pair names one link row",
+    ),
+    "ProfileRepo.findById"                         -> SurrogateId(
+      "profiles.id; requireProfileInHousehold is the route choke point",
+    ),
+    "ProfileRepo.householdOf"                      -> SurrogateId(
+      "the choke-point probe itself — it RETURNS the household so the route can compare it",
+    ),
+    "ProfileRepo.getGlobalForHousehold"            -> Scoped,
+    "ProfileRepo.getGlobal"                        -> Tracked(2571),
+    "NamedScheduleRepo.findById"                   -> SurrogateId(
+      "named_schedules.id; requireScheduleInHousehold guards the routes",
+    ),
+    "NamedScheduleRepo.householdOf"                -> SurrogateId(
+      "the choke-point probe; returns the household to compare",
+    ),
+    // THE instance this whole layer exists for. Unscoped, this read answered the name-taken 409 on
+    // POST /api/schedules from a row in a household the caller could not see (#2572/#2586). Test B7
+    // reconstructs the pre-fix signature and asserts the guard catches it.
+    "NamedScheduleRepo.findByName"                 -> Scoped,
+    "HouseholdSettingsRepo.enforcementDisabled"    -> Scoped,
+    "HouseholdSettingsRepo.setEnforcementDisabled" -> Scoped,
+    "TimeLimitRepo.findForProfile"                 -> SurrogateId(
+      "profiles.id; the limit row hangs off one profile",
+    ),
+    "DeviceRepo.findByMac"                         -> Scoped,
+    "DeviceRepo.findByMacInHousehold"              -> Scoped,
+    "DeviceRepo.findOwningHousehold"               -> TenancyKey(
+      "the block-page fallback that RESOLVES a household from a bare MAC when no block-page token " +
+        "is present. Deliberately not SurrogateId: post-V74 a MAC is NOT unique across households " +
+        "(#2125), so for a shared MAC this pick is arbitrary — the residual the route census " +
+        "records against POST /api/access-requests (#2322/#2566)",
+    ),
+    "AlertRepo.findById"                           -> SurrogateId(
+      "alerts.id; requireAlertInHousehold guards the routes (#2564)",
+    ),
+    "AlertRepo.householdOf"                        -> SurrogateId(
+      "the choke-point probe; returns the household to compare",
+    ),
+    "AlertRepo.findRecentAccessRequest"            -> Scoped,
+
+    // ── router plane — a router belongs to exactly one household (#2106) ────────────────────────
+    "RouterRepo.findById"                   -> SurrogateId(
+      "routers.id; the household comes from routers.household_id",
+    ),
+    "RouterRepo.findByTokenHash"            -> TenancyKey(
+      "the router bearer-token hash; this read is HOW the router plane learns its household " +
+        "(routers.household_id), so it cannot be scoped by one (#2106)",
+    ),
+    "RouterRepo.findByEnrollmentTokenHash"  -> TenancyKey(
+      "the single-use enrollment token hash, presented before the router has any identity; the " +
+        "row it resolves is what binds the router to its household (#2106)",
+    ),
+    "ConnectionEventRepo.findRecentFqdnFor" -> TenancyKey(
+      "keyed on router_id, and a router belongs to exactly one household (#2106), so the read " +
+        "cannot cross the boundary; destIp and since only narrow it further",
+    ),
+
+    // ── install-wide catalogs (§0.2) — template-authored, no tenancy dimension ──────────────────
+    "AppRepo.findById"          -> InstallWide("template-authored app catalog, #1798"),
+    "AppRepo.findBySlug"        -> InstallWide("template-authored app catalog, #1798"),
+    "AppRepo.findByTemplateId"  -> InstallWide("template-authored app catalog, #1798"),
+    "BlocklistRepo.findMeta"    -> InstallWide("bundled blocklist catalog metadata, #2535"),
+    "PressMessageRepo.findById" -> InstallWide(
+      "press_messages has no household column at all — press is an install-wide inbox (#2203)",
+    ),
+
+    // ── maintenance / rollup fibers — install-wide by construction, no caller-supplied key ──────
+    "PartitionRepo.ensureFuturePartitions"       -> Write(
+      "DDL maintenance on partitioned tables (#808/#2053)",
+    ),
+    "PartitionRepo.dropExpiredPartitions"        -> Write(
+      "retention DDL on partitioned tables (#808/#2053)",
+    ),
+    "ConnectionEventRepo.rerollConnEventsHourly" -> Write(
+      "install-wide rollup re-derivation fiber",
+    ),
+    "ConnectionEventRepo.rerollConnEventsDaily" -> Write("install-wide rollup re-derivation fiber"),
+    "RollupRepo.rerollHourly"                   -> Write("install-wide rollup re-derivation fiber"),
+    "RollupRepo.rerollDaily"                    -> Write("install-wide rollup re-derivation fiber"),
+    "TrafficReportRepo.earliestPeriodStart"     -> Tracked(2571),
+    "TimeUsedRollupRepo.getDayForProfile"       -> SurrogateId(
+      "profiles.id names one profile across every tenant; the date only narrows the row",
+    ),
+
+    // ── support ────────────────────────────────────────────────────────────────────────────────
+    "SupportConsentRepo.isGranted" -> Scoped,
+    "SupportConsentRepo.revoke"    -> Scoped,
+  )
 
   /** Reads the scan sees that the census does not declare (and vice versa). */
   private[feature] def undeclared(reads: List[RepoRead]): List[String] =
