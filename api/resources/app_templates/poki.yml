@@ -9,16 +9,23 @@ icon_type: url
 # observed only as a marketing surface and is intentionally NOT included
 # (don't template hosts we haven't seen kids use, per the #1705 out-of-scope
 # rule); add it later if the operator's traffic shows otherwise.
-# poki.com / poki-cdn.com / poki-gdn.com added from prod evidence (#2699:
-# 2026-08-14 app-catalog pass): the #1705 watch-item graduated — a 30d window
-# now shows real navigational subdomains (games.poki.com, poki-auth.poki.com,
-# devs-api.poki.com — auth + gameplay, not marketing) plus Poki's own branded
-# CDN (poki-cdn.com: img/a/v subdomains) and game-delivery domain
-# (poki-gdn.com, web-confirmed as Poki's own asset-delivery infra, not a
-# shared multi-tenant CDN) — Class 2 dedicated-per-app domains per
-# _README.yml, same precedent as rbxcdn.com/sc-cdn.net.
+# poki.com / poki-cdn.com added from prod evidence (#2699: 2026-08-14
+# app-catalog pass): the #1705 watch-item graduated — a 30d window now shows
+# real navigational subdomains (games.poki.com, poki-auth.poki.com,
+# devs-api.poki.com — auth + gameplay, not marketing) plus Poki's own
+# branded CDN (poki-cdn.com: img/a/v subdomains, confirmed via Poki's own
+# sdk.poki.com HTML5 docs) — Class 2 dedicated-per-app domains per
+# _README.yml, same precedent as rbxcdn.com/sc-cdn.net. Both hosts were
+# already independently confirmed as real Poki traffic by a prior blocklist
+# pass (#2599, 2026-08-04 — see blocklists/games.yml), corroborating the
+# graduation here.
+# poki-gdn.com (24 KB / 2 hits, no observed subdomains) was NOT added: the
+# name pattern suggests it's Poki's game-delivery domain (matches the
+# gdn.poki.com subdomain seen under poki.com), but web search didn't confirm
+# Poki ownership the way poki-cdn.com was confirmed, and the volume is
+# thinner than several apexes this pass skipped elsewhere. Watch item — add
+# if a future pass shows stronger traffic or confirmed ownership.
 hosts:
   - poki.io
   - poki.com
   - poki-cdn.com
-  - poki-gdn.com
