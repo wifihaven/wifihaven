@@ -18,8 +18,23 @@ icon_type: url
 # bundle), already present in blocklists/games.yml from a prior blocklist pass
 # (#2212) but not wired into this template — same dual-listing precedent as
 # eaglercraft.com.
+# eaglercraftgame.io added from prod evidence (#2699: 2026-08-14 app-catalog pass):
+# a fourth mirror (eaglercraftgame.io — the game itself, no marketing-only
+# subdomains observed), already present in blocklists/games.yml (#2599) but
+# not wired into this template — same dual-listing precedent as .com/.ru.
+# relay.lax1dude.net / relay.deev.is / relay.shhnowisnottheti.me added from
+# the same pass: WebSocket relay servers the client falls back through for
+# LAN/world-sharing multiplayer (web-confirmed — lax1dude is Eaglercraft's
+# creator; the near-identical byte pattern across all three, each observed
+# right after the other, is the client trying its relay list in order).
+# Support infra for the app, not a game-hosting mirror, so kept out of
+# games.yml (same reasoning as the account-scoped workers.dev entry above).
 hosts:
   - eaglercraft.dev
   - eaglercraft.com
   - eaglercraft.ru
+  - eaglercraftgame.io
   - eaglercraft-99f.workers.dev
+  - relay.lax1dude.net
+  - relay.deev.is
+  - relay.shhnowisnottheti.me
