@@ -47,6 +47,9 @@ object SupportMetricsContractSpec extends ZIOSpecDefault {
    */
   private val BlindDedupPanelTitlePrefix = "Duplicate check PERMANENTLY blind"
 
+  /** #2667 — the panel that must count BOTH directions of a suppressed consent-adjacent message. */
+  private val ExclusionPanelTitlePrefix = "Agent text suppressed beside a consent prompt"
+
   /**
    * Mill's cwd at test time is not the repo root, so walk up to find the checked-in dashboard — but
    * STOP at the first checkout root (`build.mill`). Worktrees live at
@@ -214,6 +217,30 @@ object SupportMetricsContractSpec extends ZIOSpecDefault {
         exprs.forall(labelsIn(_) == GithubIssueClient.DedupReason.NeverSelfHealing),
         // Guards the derivation itself — a new reason must be classified deliberately.
         GithubIssueClient.DedupReason.NeverSelfHealing == Set("permission", "schema"),
+      )
+    },
+    test("#2667: the consent-exclusion panel counts BOTH directions of a suppressed message") {
+      // Same drift class, fourth series — and the one where a silent under-count would be worst.
+      // This panel is the only place a suppressed agent message beside a consent prompt is visible,
+      // and it is an expect-0 security panel: an expression selecting a label value nothing can
+      // emit reads as a permanent, reassuring zero, which is worse than having no panel at all.
+      //
+      // EQUALITY, not containment, and both directions: reply-after-prompt is the observed prod
+      // shape, but prompt-after-reply is the direction an injected agent would prefer (its framing
+      // lands first), so a panel watching only one of them watches the wrong half.
+      val matcher                             = "outcome=~\"([^\"]+)\"".r
+      def labelsIn(expr: String): Set[String] =
+        matcher.findAllMatchIn(expr).flatMap(_.group(1).split('|')).toSet
+
+      val exprs = panelExprs(_.startsWith(ExclusionPanelTitlePrefix))
+      assertTrue(
+        exprs.nonEmpty,
+        exprs.forall(_.contains("support_consent_total")),
+        exprs.forall(labelsIn(_) == SupportResponder.ExclusionOutcomes),
+        // Guards the derivation: the set is mapped from AgentAction.ThreadWrites, so a third
+        // thread-writing action would widen it here rather than quietly going unpanelled.
+        SupportResponder.ExclusionOutcomes ==
+          Set("reply_after_consent_prompt", "consent_prompt_after_reply"),
       )
     },
   )

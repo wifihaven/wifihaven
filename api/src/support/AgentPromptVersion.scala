@@ -44,7 +44,7 @@ object AgentPromptVersion {
    * channel's `deploy/<channel>-agent/agent.yaml` — bump the two together, in the same commit.
    */
   enum Channel(val wire: String, val expected: String) {
-    case Support extends Channel("support", "support-2026-08-09.2")
+    case Support extends Channel("support", "support-2026-08-14.1")
     case Press   extends Channel("press", "press-2026-07-28.1")
   }
 

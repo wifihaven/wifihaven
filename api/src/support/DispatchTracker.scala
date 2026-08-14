@@ -171,6 +171,79 @@ final class DispatchTracker private (
       }
 
   /**
+   * #2667 — CLAIM this session's one customer-visible message for the turn, atomically.
+   *
+   * WHAT IT PROTECTS. The #2419 consent prompt is server-authored so that a prompt-injected agent
+   * cannot craft a phishing message under our own `🤖 WifiHaven support assistant` attribution.
+   * That only protects the customer if it is the WHOLE message they see at the consent moment: a
+   * perfectly genuine, correctly-signed link with *"sign in with your password to verify your
+   * identity"* posted beside it is a phishing primitive with every technical control intact. So the
+   * two [[AgentAction.ThreadWrites]] are MUTUALLY EXCLUSIVE within a session — in either order,
+   * because a hostile framing posted before the link works exactly as well as one posted after it.
+   *
+   * WHY A CLAIM AND NOT A CHECK. A check-then-write pair is racy by construction, and the caller
+   * whose race it is, is the untrusted one: an injected agent can fire `reply` and
+   * `request-consent` concurrently and slip both past a read. The claim is one atomic `modify`, so
+   * exactly one of the two kinds can ever be held.
+   *
+   * REPEATS OF THE SAME KIND ARE [[ThreadWriteClaim.Held]], NOT refused. A session replying twice
+   * is a separate question (#2668 owns "one turn, one reply" ACROSS sessions) and is deliberately
+   * not changed here — this guard is about the two kinds not COMBINING.
+   *
+   * [[ThreadWriteClaim.Untracked]] — no record of the thread, a session that no longer owns it, or
+   * a channel with no session identity — FAILS OPEN, the same call [[turnOwner]] makes and for the
+   * same reason: the state is in-memory and dropped on restart, so "nothing recorded" is not
+   * evidence that a consent prompt was posted, and a customer who gets no answer at all is the
+   * worse failure. A superseded session is already refused by [[turnOwner]] before it reaches here.
+   */
+  def claimThreadWrite(
+      threadId: String,
+      sessionId: String,
+      action: String,
+  ): UIO[ThreadWriteClaim] =
+    if sessionId.isEmpty then ZIO.succeed(ThreadWriteClaim.Untracked)
+    else
+      pending.modify { m =>
+        m.get(threadId) match {
+          case Some(p) if p.sessionId == sessionId =>
+            p.threadWrites.find(_ != action) match {
+              case Some(other) => (ThreadWriteClaim.Excluded(other), m)
+              case None        =>
+                if p.threadWrites.contains(action) then (ThreadWriteClaim.Held, m)
+                else
+                  (
+                    ThreadWriteClaim.Claimed,
+                    m.updated(threadId, p.copy(threadWrites = p.threadWrites + action)),
+                  )
+            }
+          case _                                   => (ThreadWriteClaim.Untracked, m)
+        }
+      }
+
+  /**
+   * #2667 — give back a claim whose write did NOT land (Plain refused it, or the client is dark).
+   *
+   * Without this a failed consent post would silently spend the turn: the prompt never reached the
+   * customer, yet the agent's "sorry, something went wrong" reply would be refused as if it had,
+   * and the customer would get nothing at all. Releasing is safe precisely because nothing was put
+   * in front of the customer — the exclusion has nothing to protect.
+   *
+   * Only the caller that took a fresh [[ThreadWriteClaim.Claimed]] may release; a
+   * [[ThreadWriteClaim.Held]] repeat must not clear the claim its predecessor's SUCCESSFUL write
+   * established.
+   */
+  def releaseThreadWrite(threadId: String, sessionId: String, action: String): UIO[Unit] =
+    ZIO
+      .unless(sessionId.isEmpty)(pending.update { m =>
+        m.get(threadId) match {
+          case Some(p) if p.sessionId == sessionId =>
+            m.updated(threadId, p.copy(threadWrites = p.threadWrites - action))
+          case _                                   => m
+        }
+      })
+      .unit
+
+  /**
    * Close the outstanding dispatch for `threadId`, if any: the agent came back. Called for TERMINAL
    * actions only ([[AgentAction.Terminal]]) — a household READ or an issue filing proves the
    * session is alive but produces nothing the customer sees, so it must not mark the turn served.
@@ -311,6 +384,11 @@ object DispatchTracker {
    * `closed` are #2668's turn ownership — a closed entry is kept (never reported) until
    * [[deadAfter]] so a late callback from a SUPERSEDED session is still distinguishable from one on
    * a thread we simply have no record of.
+   *
+   * `threadWrites` is #2667's exclusion: which of the two [[AgentAction.ThreadWrites]] this session
+   * has already put in front of the customer. It holds at most one value in practice — the second
+   * KIND is what [[claimThreadWrite]] refuses — so it costs a few bytes and stays bounded by the
+   * same eviction as everything else on the entry.
    */
   private[support] final case class Pending(
       household: HouseholdId,
@@ -319,7 +397,28 @@ object DispatchTracker {
       sessionId: String,
       slowReported: Boolean = false,
       closed: Boolean = false,
+      threadWrites: Set[String] = Set.empty,
   )
+
+  /**
+   * #2667 — the outcome of claiming a session's one customer-visible message. Bounded on purpose:
+   * [[Excluded]] is the ONLY value that suppresses a write, and [[Untracked]] (the fail-open case)
+   * must never be confused with it.
+   */
+  enum ThreadWriteClaim {
+
+    /** Freshly taken by this call — the caller must [[releaseThreadWrite]] if its write fails. */
+    case Claimed
+
+    /** This session already wrote this KIND. Allowed, and NOT the caller's to release. */
+    case Held
+
+    /** The session already wrote the OTHER kind (`by`), so this one is suppressed. */
+    case Excluded(by: String)
+
+    /** No record, or no session identity — decide nothing, allow. */
+    case Untracked
+  }
 
   /**
    * #2668 — who owns a thread's current turn, from the point of view of a calling-back session.

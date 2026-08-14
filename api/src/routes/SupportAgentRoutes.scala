@@ -133,7 +133,9 @@ object SupportAgentRoutes {
       // consent record (only the customer's JWT-authenticated POST /api/support/consent can), so
       // a hijacked agent cannot widen its own data scope. #2453: the posted link is also stripped
       // out of the thread history the agent is later shown, and is single-use — so the agent can
-      // neither author the prompt nor re-post the real link under our attribution.
+      // neither author the prompt nor re-post the real link under our attribution. #2667: nor put
+      // its own words BESIDE the real prompt — the two thread writes are mutually exclusive within
+      // a session, so the customer's decision rests on the server's message alone.
       Method.POST / "api" / "support" / "agent" / "request-consent" ->
         handler { (req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
@@ -184,22 +186,22 @@ object SupportAgentRoutes {
       )(ApiError.BadRequest("payload too large"))
 
   private def toResponse(r: AgentActionResult): ZIO[Any, ApiError, Response] = r match {
-    case AgentActionResult.Ok          => ZIO.succeed(Response.json("""{"ok":true}"""))
+    case AgentActionResult.Ok               => ZIO.succeed(Response.json("""{"ok":true}"""))
     // #2461: a metric-only distinction — both success values are the same plain `ok` to the caller.
     // Only the issue-filing route can produce it, and that route answers the richer FiledIssue body
     // directly (its success never reaches here), so this case exists for exhaustivity.
-    case AgentActionResult.OkNoLink    => ZIO.succeed(Response.json("""{"ok":true}"""))
+    case AgentActionResult.OkNoLink         => ZIO.succeed(Response.json("""{"ok":true}"""))
     // #2458: same shape — the duplicate-matched success also only arises on the issue-filing route,
     // which answers its own FiledIssue body (carrying the pre-existing issue's number/url).
-    case AgentActionResult.OkDuplicate => ZIO.succeed(Response.json("""{"ok":true}"""))
+    case AgentActionResult.OkDuplicate      => ZIO.succeed(Response.json("""{"ok":true}"""))
     // Uniform denial: bad token, expired token, missing header — the caller learns nothing more.
-    case AgentActionResult.Denied      => ZIO.fail(ApiError.Unauthorized("unauthorized"))
-    case AgentActionResult.NoConsent   => ZIO.fail(ApiError.Forbidden("no data consent"))
+    case AgentActionResult.Denied           => ZIO.fail(ApiError.Unauthorized("unauthorized"))
+    case AgentActionResult.NoConsent        => ZIO.fail(ApiError.Forbidden("no data consent"))
     // #2454: this session holds the consented-read scope, so it cannot file into the PUBLIC repo.
     // Unlike the token denials this one IS explained — the caller is our own agent, and the message
     // tells it what to do instead (describe the symptom, or escalate) rather than leaving it to
     // retry a call that can never succeed for this session.
-    case AgentActionResult.DataSession =>
+    case AgentActionResult.DataSession      =>
       ZIO.fail(
         ApiError.Forbidden(
           "issue filing is unavailable in a data-access session — describe the symptom " +
@@ -209,10 +211,15 @@ object SupportAgentRoutes {
     // #2668: a LATER session owns this thread's turn, so this session's write was dropped. The
     // caller is told OK deliberately — the customer IS being answered, and a 4xx would make the run
     // retry a write it can never legitimately land. The `superseded` metric label carries the truth.
-    case AgentActionResult.Superseded  => ZIO.succeed(Response.json("""{"ok":true}"""))
-    case AgentActionResult.RateLimited => ZIO.fail(ApiError.RateLimited("rate limited"))
+    case AgentActionResult.Superseded       => ZIO.succeed(Response.json("""{"ok":true}"""))
+    // #2667: this session already put its one message in front of the customer, and a reply beside
+    // a consent prompt is exactly the adjacency the server-authored prompt exists to prevent. Told
+    // OK for the same reason as `Superseded` — the turn is handled and a 4xx would make the run
+    // retry a write it can never legitimately land. The `consent_exclusive` label carries the truth.
+    case AgentActionResult.ConsentExclusive => ZIO.succeed(Response.json("""{"ok":true}"""))
+    case AgentActionResult.RateLimited      => ZIO.fail(ApiError.RateLimited("rate limited"))
     // Dark install: the endpoints don't exist as far as a caller can tell.
-    case AgentActionResult.Disabled    => ZIO.fail(ApiError.NotFound("not found"))
-    case AgentActionResult.Error       => ZIO.fail(ApiError.Internal("upstream error"))
+    case AgentActionResult.Disabled         => ZIO.fail(ApiError.NotFound("not found"))
+    case AgentActionResult.Error            => ZIO.fail(ApiError.Internal("upstream error"))
   }
 }

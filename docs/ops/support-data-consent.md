@@ -30,7 +30,8 @@ That is a dead end, not an answer.
    `POST /api/support/agent/request-consent` with its existing thread-bound
    token. It **requests**; it does not grant.
 3. The SERVER posts a fixed, server-authored consent prompt into that thread
-   (never agent-authored text), carrying a signed, short-TTL consent link:
+   (never agent-authored text), and that prompt is **the only message the customer
+   gets for that turn** (#2667 — see below), carrying a signed, short-TTL consent link:
    `<appBaseUrl>/support/consent?g=<grant token>`. The grant token is HMAC-signed
    under the agent-token secret with a distinct `g1` version prefix, and the MAC
    is computed over `"<version>.<payload>"` — the version is **bound into the
@@ -173,12 +174,38 @@ change raises its priority.
   (household + thread, never the token) and metered on
   `support_consent_total{outcome}`. A withdrawal of a grant that was not live
   meters as `revoke_noop`, so the panel counts real withdrawals.
+- **At the consent moment the customer sees only server-authored text.** That is
+  the guarantee, and it has three halves, none sufficient alone: the prompt is
+  server-authored (#2419), the live link never re-enters the agent's context
+  (#2453, below), and no agent-authored message may share the turn with the
+  prompt (#2667).
+- **The agent cannot post beside the prompt (#2667).** Until this, "the agent
+  supplies no text *here*" was true of the consent *message* and false of the
+  consent *moment*: nothing stopped the agent calling `reply` in the same turn,
+  immediately next to the real signed link and under the same
+  `🤖 WifiHaven support assistant` banner. A genuine, correctly-signed link with
+  *"sign in with your password to verify your identity"* posted beside it is a
+  phishing primitive with every technical control intact — the link being real is
+  what makes it work. The two customer-visible agent writes (`reply` and the
+  server's consent prompt) are now **mutually exclusive within a session**, in
+  either order, claimed atomically at the two sites that write to the thread
+  (`DispatchTracker.claimThreadWrite`). The suppressed call returns 200 — the turn
+  IS handled, and a 4xx would make the run retry a write it can never land — and
+  is loud on `support_consent_total{outcome=reply_after_consent_prompt |
+  consent_prompt_after_reply}` plus
+  `support_agent_action_total{outcome=consent_exclusive}`, with a WARN naming the
+  thread and neither the customer nor the suppressed text. **Expect zero:** the
+  repo prompt tells the agent to end its turn after asking, so a non-zero rate
+  means the deployed routine has drifted (#2469) or something is trying it. The
+  claim is in-memory and per-process, and fails **open** across a restart — the
+  same call #2668 makes, since a customer who gets no answer at all is worse.
+  Observed prod symptom that prompted it (#2527 §B): two bot messages under one
+  banner, one saying the grant expires "after 24 hours" and the other "after a
+  while", at the moment the customer was deciding.
 - **The consent link never re-enters the agent's own context (#2453).** The prompt
   is posted through the same machine-user write path as every AI reply, so since
   #2430/#2441 it comes back on the timeline as an `ai_assistant` turn — and the
-  anti-phishing guarantee on `request-consent` ("the agent supplies no text here,
-  so a prompt-injected agent cannot craft a phishing message under our
-  attribution") only holds if the agent never *sees* the link: otherwise it can
+  guarantee above only holds if the agent never *sees* the link: otherwise it can
   re-post the real, valid URL wrapped in a pretext of its own.
   `CloudAgentDispatcher` therefore strips consent links out of **every route by
   which customer- or thread-sourced text reaches the kickoff** — the rendered

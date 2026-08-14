@@ -649,6 +649,9 @@ object MetricGuard {
     // request_disabled | request_error — the AGENT's ask; granted | revoked | revoke_noop | invalid
     // | expired | household_mismatch | disabled | error — the CUSTOMER's action; #2476 adds
     // read_withdrawn | read_no_scope — the AGENT's household READ refused for want of a LIVE grant).
+    // #2667 adds reply_after_consent_prompt | consent_prompt_after_reply — an agent-authored message
+    // SUPPRESSED because it would have sat beside the server-authored consent prompt, one label per
+    // direction (`SupportResponder.exclusionOutcome`).
     // Bounded enum, never a per-household / per-thread label.
     "support_consent_total"                         -> Set("outcome"),
     // #2430 — the per-dispatch Plain thread-history read that gives the stateless responder its

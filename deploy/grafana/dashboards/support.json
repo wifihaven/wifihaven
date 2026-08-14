@@ -906,6 +906,24 @@
           "refId": "A"
         }
       ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "Agent text suppressed beside a consent prompt (24h) — expect 0 (#2667)",
+      "description": "sum by (outcome) (increase(support_consent_total{env=\"$env\",outcome=~\"reply_after_consent_prompt|consent_prompt_after_reply\"}[24h])) — #2667: an AGENT-authored message suppressed because it would have sat beside the server-authored consent prompt. The prompt is fixed server copy so a prompt-injected agent cannot craft a phishing message under our own assistant attribution — and that protects the customer only if it is the WHOLE message they see while deciding. A genuine, correctly-signed link with \"sign in with your password to verify your identity\" posted next to it defeats the customer while every technical control still holds. reply_after_consent_prompt = the agent tried to talk after the prompt; that is the observed prod shape (#2527 §B — two bot messages under one banner, disagreeing on whether the grant expires \"after 24 hours\" or \"after a while\", at the moment the customer was deciding). consent_prompt_after_reply = a prompt was asked for underneath the agent's own words; no link is minted at all in that direction. EXPECT ZERO: an agent following deploy/support-agent/agent.yaml ends its turn after asking, so a sustained non-zero means either the deployed routine has drifted from the repo prompt (check the agent-prompt-version panel, #2469) or something is trying it. Zero is NOT by itself proof the guard runs — the claim is in-memory and per-process (DispatchTracker) and fails OPEN across a restart, the same call #2668 makes — so read it against the consent-requested rate on the consent-lifecycle panel.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 9, "x": 9, "y": 144 },
+      "id": 41,
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "unit": "short", "decimals": 0, "min": 0, "custom": { "drawStyle": "line", "fillOpacity": 10, "showPoints": "never", "lineWidth": 1, "stacking": { "mode": "normal", "group": "A" } } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (outcome) (increase(support_consent_total{env=\"$env\",outcome=~\"reply_after_consent_prompt|consent_prompt_after_reply\"}[24h]))",
+          "legendFormat": "{{outcome}}",
+          "refId": "A"
+        }
+      ]
     }
   ],
   "refresh": "30s",
