@@ -155,7 +155,8 @@ DELETED (no caller in `api/src`; `mill api.compile` is the proof): `TimeUsageRep
 `ConnectionEventRepo.listForMac`; `TrafficReportRepo.earliestPeriodStart`;
 `ProfileRepo.listAllIncludingGlobal` / `getGlobal`; `UserRepo.listAll`; `RouterRepo.listAll`;
 `TimeLimitRepo.listAll`; `AlertRepo.list`. Each retained caller (all in `api/test`) moved to the
-`…ForHousehold` twin. `NamedScheduleRepo.findByName` was closed separately by #2572.
+`…ForHousehold` twin. `NamedScheduleRepo.findByName` was handled separately: it was SCOPED, not deleted — it now takes
+a `household` (`Repos.scala:529`), landed by PRs #2582/#2586 under the still-open #2572.
 
 RETAINED, tracked by **#2702**: `TimeUsageRepo.getProportionalSeconds` / `getSecondsAndBytes` /
 `listForDevice` / `listForDeviceMacs`; `BlockEventRepo.recent`; `ConnectionEventRepo.listForRouter`;

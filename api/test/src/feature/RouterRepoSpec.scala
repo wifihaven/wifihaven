@@ -131,8 +131,8 @@ object RouterRepoSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
           rep <- tRepo.listForRouter(id, 10)
         } yield assertTrue(row.isEmpty) && assertTrue(rep.isEmpty)
       },
-      // #2571: the unscoped `listAll` this once covered is deleted. Its household-scoped twin
-      // `listAllForHousehold` keeps the created_at ordering pinned, in AdultEditBoundarySpec.
+      // #2571: the unscoped `listAll` this once covered is deleted. This test keeps the created_at
+      // ordering pinned, now through the household-scoped twin.
       test("listAllForHousehold returns rows ordered by created_at") {
         for {
           _    <- cleanDb

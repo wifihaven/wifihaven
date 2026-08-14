@@ -111,7 +111,11 @@ object MultiTenantScopedReadGuardSpec extends ZIOSpecDefault {
 
   private def householdRelevantReads(src: String): Set[String] =
     UnscopedRead
-      .findAllMatchIn(stripStringLiterals(stripLineComments(src)))
+      // Literals FIRST, then comments: `stripLineComments` truncates at the first `//`, including
+      // one inside a string, so `val u = "https://x"; someRepo.listAll` would lose its call site if
+      // comments went first. Latent while the scan was routes-only; all of `api/src` carries
+      // URL literals (Stripe, Plain, blocklist fetch), so the order is load-bearing now.
+      .findAllMatchIn(stripLineComments(stripStringLiterals(src)))
       .map(m => s"${m.group(1)}.${m.group(2)}")
       .filterNot(tok => GlobalCatalogReceivers.contains(tok.takeWhile(_ != '.')))
       .toSet
@@ -143,7 +147,27 @@ object MultiTenantScopedReadGuardSpec extends ZIOSpecDefault {
       assertTrue(householdRelevantReads("""DbMetrics.timed("app.listAll")(q)""").isEmpty) &&
       assertTrue(householdRelevantReads("someRepo.listAll").contains("someRepo.listAll"))
     },
-    // The exemption for the global app catalog must actually fire (else it is dead config).
+    // #2571: anchor the scan to the REAL tree, not only to fixture strings. With `Allowlist` empty
+    // and no offender left in `api/src`, the main test above is satisfied by an empty set — and an
+    // empty set is also what a DEAD scan returns (a `repoRoot` that resolves elsewhere, a build CWD
+    // change, a walk that yields nothing). These two assertions are what distinguish "clean" from
+    // "not looking": files were actually walked, and the raw regex still finds a known-present token
+    // in them BEFORE the exemption filter runs. `appRepo.listAll` is that token — it is the one
+    // match left anywhere in `api/src` (the template-global catalog, §0.2), so it doubles as the
+    // liveness anchor and as proof the exemption is not dead config.
+    test("the scan is anchored to real files — it walks api/src and still matches there") {
+      val srcs      = sourceFiles.map(p => new String(Files.readAllBytes(p)))
+      val rawTokens = srcs.flatMap(s =>
+        UnscopedRead
+          .findAllMatchIn(stripLineComments(stripStringLiterals(s)))
+          .map(m => s"${m.group(1)}.${m.group(2)}"),
+      )
+      assertTrue(srcs.nonEmpty) &&
+      assertTrue(rawTokens.contains("appRepo.listAll"))
+    },
+    // The exemption for the global app catalog must actually fire (else it is dead config). Paired
+    // with the anchor above: that one proves the raw scan DOES surface `appRepo.listAll`, this one
+    // proves the filter then removes it — neither is meaningful without the other.
     test("appRepo.listAll (global catalog) is exempt, never flagged") {
       val flaggedAppRepo =
         sourceFiles.exists(p =>

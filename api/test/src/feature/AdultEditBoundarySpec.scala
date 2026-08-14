@@ -591,7 +591,10 @@ object AdultEditBoundarySpec
         )
         list <- statusOf(rts, Method.GET, "/api/admin/routers", fx.adult)
         del  <- statusOf(rts, Method.DELETE, "/api/admin/routers/1", fx.adult)
-        all  <- rr.listAllForHousehold(HouseholdId.Default)
+        // #2571: `fx.hh`, NOT `HouseholdId.Default` — the fixture household is minted fresh and is
+        // never household 1, so a Default-scoped read would make this absence assertion vacuous: a
+        // regressed `requireAdmin` would write the router into `fx.hh` and still leave hh-1 empty.
+        all  <- rr.listAllForHousehold(fx.hh)
       } yield assertTrue(post == Status.Forbidden) &&
         assertTrue(list == Status.Forbidden) &&
         assertTrue(del == Status.Forbidden) &&
