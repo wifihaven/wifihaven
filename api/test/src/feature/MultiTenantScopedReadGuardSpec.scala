@@ -383,7 +383,10 @@ object MultiTenantScopedReadGuardSpec extends ZIOSpecDefault {
       .mkString("\n")
   }
 
-  private val RepoTraitStart = """(?m)^(?:sealed\s+)?trait\s+(\w+)\b""".r
+  // Access modifiers are allowed before `trait`: `private[db] trait DeviceRepo` is a repo like any
+  // other, and a scanner that could not see it would exempt every read on it silently.
+  private val RepoTraitStart =
+    """(?m)^(?:(?:private|protected)(?:\[\w+\])?\s+)?(?:sealed\s+)?trait\s+(\w+)\b""".r
   private val TopLevelStart  = """(?m)^\S""".r
 
   /**
@@ -650,13 +653,25 @@ object MultiTenantScopedReadGuardSpec extends ZIOSpecDefault {
           )
         case Scoped if !r.isScoped                            =>
           Some(s"${r.key} (${r.file}) — declared Scoped but takes no HouseholdId parameter")
-        case ScopedByDefault(_) if !r.hasDefaultedHousehold   =>
-          Some(
+        // Consumes ScopedByDefault entirely — it is the ONE verdict a defaulted household may take,
+        // so it must not fall through to the catch-all below.
+        case ScopedByDefault(_)                               =>
+          Option.when(!r.hasDefaultedHousehold)(
             s"${r.key} (${r.file}) — declared ScopedByDefault but its household is not defaulted; " +
               "declare Scoped",
           )
         case v if v != Scoped && r.isScoped                   =>
           Some(s"${r.key} (${r.file}) — takes a required HouseholdId parameter; declare it Scoped")
+        // A defaulted household under ANY other verdict. Without this clause the BLOCKER's own
+        // example — `findByName(name: String, household: HouseholdId = HouseholdId.Default)` —
+        // passes the whole suite by being declared `TenancyKey`: the first clause refuses it only
+        // under `Scoped`, and B3 polices `SurrogateId` alone. The defaulted household IS the
+        // finding, whatever verdict it is filed under.
+        case v if r.hasDefaultedHousehold                     =>
+          Some(
+            s"${r.key} (${r.file}) — takes a DEFAULTED HouseholdId, so a caller can omit it and " +
+              "read household 1; declare ScopedByDefault, which B11 then bounds",
+          )
         case _                                                => None
       }
     }.sorted
@@ -694,9 +709,9 @@ object MultiTenantScopedReadGuardSpec extends ZIOSpecDefault {
    */
   /** Shapes checked over the WHOLE file — a repo declared somewhere the trait scan cannot start. */
   private val UnscannableDeclarations: List[(String, String)] = List(
-    "abstract class …Repo" -> """(?m)^[ \t]*abstract\s+class\s+\w*Repo\w*\b""",
-    "trait …Repository/Dao/Store" -> """(?m)^[ \t]*(?:sealed\s+)?trait\s+\w+(?:Repository|Dao|Store)\b""",
-    "indented / nested trait …Repo" -> """(?m)^[ \t]+(?:sealed\s+)?trait\s+\w+Repo\b""",
+    "abstract class …Repo" -> """(?m)^[ \t]*(?:(?:private|protected)(?:\[\w+\])?\s+)?abstract\s+class\s+\w*Repo\w*\b""",
+    "trait …Repository/Dao/Store" -> """(?m)^[ \t]*(?:(?:private|protected)(?:\[\w+\])?\s+)?(?:sealed\s+)?trait\s+\w+(?:Repository|Dao|Store)\b""",
+    "indented / nested trait …Repo" -> """(?m)^[ \t]+(?:(?:private|protected)(?:\[\w+\])?\s+)?(?:sealed\s+)?trait\s+\w+Repo\b""",
   )
 
   /**
@@ -707,12 +722,56 @@ object MultiTenantScopedReadGuardSpec extends ZIOSpecDefault {
    */
   private val UnscannableRepoReads: List[(String, String)] = List(
     "read returning UIO/IO/ZIO instead of Task" ->
-      """(?m)^[ \t]{2}def\s+\w+\s*(?:\([^)]*\))?\s*:\s*(?:UIO|IO|ZIO)\[[^\n]*\bOption\[""",
+      """(?m)^[ \t]{2}def\s+\w+\s*(?:\([^)]*\))?\s*:\s*(?:UIO|IO|ZIO)\[[^\n]*\b(?:Option\[|Boolean\b)""",
     "curried parameter lists"                   ->
       """(?m)^[ \t]{2}def\s+\w+\s*\([^)]*\)\s*\([^)]*\)\s*:\s*Task\[\s*(?:Option|Boolean)""",
     "type-parameterised read"                   ->
       """(?m)^[ \t]{2}def\s+\w+\[[^\]]*\]\s*\([^)]*\)\s*:\s*Task\[\s*(?:Option|Boolean)""",
   )
+
+  /**
+   * Call sites of `.method(…)` in `src` that pass exactly ONE top-level argument — i.e. omit the
+   * defaulted household. Returns the argument text of each.
+   *
+   * Bracket-balanced rather than a regex, because the regex this replaced (`\.m\(\s*[^(),]+\s*\)`)
+   * silently missed every call whose single argument contained parens or a comma of its own —
+   * `.findByMac(MacAddress.unsafe(raw))`, `.findByMac(normalizeMac(s))`, `.findByMac(if (a) x else
+   * y)`. Those are the ordinary spellings, so the guard would have been blind to the exact call it
+   * claims to forbid while reporting zero offenders.
+   */
+  private[feature] def singleArgCalls(src: String, method: String): List[String] = {
+    val marker = s".$method("
+    val out    = List.newBuilder[String]
+    var i      = src.indexOf(marker)
+    while i >= 0 do {
+      val open  = i + marker.length - 1
+      var depth = 0
+      var j     = open
+      var close = -1
+      while j < src.length && close < 0 do {
+        src(j) match {
+          case '(' => depth += 1
+          case ')' => depth -= 1; if depth == 0 then close = j
+          case _   => ()
+        }
+        j += 1
+      }
+      if close > open then {
+        val args        = src.substring(open + 1, close)
+        var d           = 0
+        var topLevelSep = false
+        args.foreach {
+          case '(' | '[' | '{' => d += 1
+          case ')' | ']' | '}' => d -= 1
+          case ',' if d == 0   => topLevelSep = true
+          case _               => ()
+        }
+        if !topLevelSep && args.trim.nonEmpty then out += args.trim
+      }
+      i = src.indexOf(marker, i + 1)
+    }
+    out.result()
+  }
 
   /** The `*Repo` trait bodies in one source, sliced exactly as [[scanRepoReads]] slices them. */
   private[feature] def repoTraitBodies(source: String): List[String] = {
@@ -908,7 +967,18 @@ object MultiTenantScopedReadGuardSpec extends ZIOSpecDefault {
           "these reads are declared Scoped but default their HouseholdId, so a caller can omit " +
             "it and read household 1 — declare ScopedByDefault and bound the callers"
         ),
-      )
+      ) && {
+        // …and it cannot be laundered through a DIFFERENT verdict either. `AppRepo.findBySlug` is
+        // censused InstallWide; give it a defaulted household and `misdeclared` must still object,
+        // because the defaulted household is the finding regardless of what it is filed under.
+        val laundered =
+          """trait AppRepo {
+            |  def findBySlug(slug: String, household: HouseholdId = HouseholdId.Default): Task[Option[App]]
+            |}
+            |""".stripMargin
+        val flagged   = misdeclared(scanRepoReads(laundered, "fixture-laundered.scala"))
+        assertTrue(flagged.exists(_.contains("AppRepo.findBySlug")))
+      }
     },
     test("B11 — no api/src call site takes a ScopedByDefault read's default") {
       // What bounds the exemption. `ScopedByDefault` says "the default exists for tests"; this is
@@ -920,10 +990,7 @@ object MultiTenantScopedReadGuardSpec extends ZIOSpecDefault {
       val offenders = apiSourceFiles.flatMap { p =>
         val src = stripComments(Files.readString(p))
         byDefault.toList.flatMap { m =>
-          // `.method(oneArgWithNoComma)` — a call passing a single argument, i.e. omitting the
-          // household. Excludes the declaration itself (`def method(`).
-          val call = s"""\\.$m\\(\\s*[^(),]+\\s*\\)""".r
-          call.findFirstIn(src).map(_ => s"${p.getFileName}: .$m(…) with no household")
+          singleArgCalls(src, m).map(arg => s"${p.getFileName}: .$m($arg) with no household")
         }
       }.sorted
       assert(offenders)(
@@ -932,8 +999,26 @@ object MultiTenantScopedReadGuardSpec extends ZIOSpecDefault {
             "HouseholdId.Default — pass the caller's household explicitly"
         ),
       ) &&
-      // Non-vacuous: the exemption is actually populated, so this test has something to bound.
-      assertTrue(byDefault.nonEmpty)
+      // POSITIVE CONTROL. Asserting only that the census is populated would leave this test green
+      // forever if the detector silently stopped matching — reporting zero offenders reads as "all
+      // clear", which is #2546 exactly. Drive the detector over calls whose answer is known,
+      // INCLUDING the nested-paren spellings the previous regex missed.
+      assertTrue(byDefault.nonEmpty) && {
+        val probe =
+          """deviceRepo.findByMac(mac)
+            |deviceRepo.findByMac(MacAddress.unsafe(raw))
+            |deviceRepo.findByMac(if (a) x else y)
+            |deviceRepo.findByMac(cr.mac, hh)
+            |deviceRepo.findByMac(mac, HouseholdId.Default)
+            |""".stripMargin
+        val found = singleArgCalls(probe, "findByMac")
+        assertTrue(
+          found.size == 3,
+          found.contains("mac"),
+          found.contains("MacAddress.unsafe(raw)"),
+          found.contains("if (a) x else y"),
+        )
+      }
     },
     test("B12 — no repo read is written in a shape the scanner cannot see") {
       // The silent-miss class. A read the regex never matches is exempt without anyone choosing to
@@ -966,11 +1051,14 @@ object MultiTenantScopedReadGuardSpec extends ZIOSpecDefault {
       assertTrue(
         (UnscannableDeclarations ++ UnscannableRepoReads).forall { case (label, pattern) =>
           val sample = label match {
-            case "abstract class …Repo"                      => "abstract class FooRepo {"
-            case "trait …Repository/Dao/Store"               => "trait FooRepository {"
-            case "indented / nested trait …Repo"             => "  trait FooRepo {"
+            // Samples carry a MODIFIER where one is legal, so the patterns are pinned against the
+            // spelling that previously slipped past them (`private[db] trait DeviceRepo`).
+            case "abstract class …Repo"          => "private[db] abstract class FooRepo {"
+            case "trait …Repository/Dao/Store"   => "private[db] trait FooRepository {"
+            case "indented / nested trait …Repo" => "  private[db] trait FooRepo {"
             case "read returning UIO/IO/ZIO instead of Task" =>
-              "  def findByName(name: String): UIO[Option[Foo]]"
+              // Boolean too: the existence probe that backs a 409 leaks the same oracle as the row.
+              "  def nameTaken(name: String): UIO[Boolean]"
             case "curried parameter lists"                   =>
               "  def findByName(name: String)(trace: Trace): Task[Option[Foo]]"
             case "type-parameterised read"                   =>
