@@ -103,7 +103,10 @@ final class DispatchTracker private (
    *
    * `sessionId` is the [[ConsentToken.newSessionId]] baked into the token this dispatch carries —
    * what makes "the earlier session no longer owes a reply" ENFORCEABLE at the callback boundary
-   * ([[turnOwner]]) rather than only observable in this log (#2668).
+   * ([[turnOwner]]) rather than only observable in this log (#2668). EMPTY is the explicit "this
+   * channel has no per-dispatch session identity" value: press dispatches carry no agent session id
+   * and press has no agent-callback guard to enforce, so [[turnOwner]] reports [[Turn.Unknown]] for
+   * them and refuses nothing. It disables no guard that otherwise exists.
    */
   def dispatched(
       threadId: String,
@@ -247,12 +250,12 @@ final class DispatchTracker private (
         // #2668: a CLOSED entry is retained only so `turnOwner` can recognise a superseded
         // session; it is evicted on the same bound as before and is never reported — the agent
         // came back, which is the whole question these two tiers ask.
-        val expired = m.filter { case (_, p) => !ageBelow(p, now, deadAfter) }
-        val dead    = expired.filter { case (_, p) => !p.closed }
-        val slow    = m.filter { case (t, p) =>
+        val expired   = m.filter { case (_, p) => !ageBelow(p, now, deadAfter) }
+        val dead      = expired.filter { case (_, p) => !p.closed }
+        val slow      = m.filter { case (t, p) =>
           !expired.contains(t) && !p.closed && !p.slowReported && !ageBelow(p, now, SlowAfter)
         }
-        val next    = (m -- expired.keys).map { case (t, p) =>
+        val next      = (m -- expired.keys).map { case (t, p) =>
           t -> (if slow.contains(t) then p.copy(slowReported = true) else p)
         }
         // Counted over `next` (post-sweep) and NOT over `slow`: `slow` is the once-per-dispatch

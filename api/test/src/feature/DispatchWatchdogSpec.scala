@@ -72,7 +72,13 @@ object DispatchWatchdogSpec
   private val Support   = AgentTokenRejection.Channel.Support
   private val Press     = AgentTokenRejection.Channel.Press
 
-  private final case class Rig(routes: Routes[Any, Response], tracker: DispatchTracker)
+  private final case class Rig(
+      routes: Routes[Any, Response],
+      tracker: DispatchTracker,
+      // #2668: a callback now has to present the token of the session that owns the thread's turn,
+      // so a spec that wants its reply to LAND reads the real one back off the dispatch recorder.
+      dispatches: CloudAgentDispatcher.Recorder,
+  )
 
   private def makeRig =
     for {
@@ -113,7 +119,15 @@ object DispatchWatchdogSpec
         RateLimiter.allowAll,
         tracker,
       )
-    } yield Rig(SupportAgentRoutes.routes(responder), tracker)
+    } yield Rig(SupportAgentRoutes.routes(responder), tracker, dispRec)
+
+  /** The token of the session `threadId`'s latest dispatch started. */
+  private def sessionToken(rig: Rig, threadId: String) =
+    rig.dispatches.dispatches.get.flatMap(all =>
+      ZIO
+        .fromOption(all.map(_._1).findLast(_.threadId == threadId).map(_.agentToken))
+        .orElseFail(new RuntimeException(s"nothing dispatched for $threadId")),
+    )
 
   private def payload(tenant: Long, threadId: String): String =
     s"""{"workspaceId":"w_1","id":"pEv_chat","payload":{"eventType":"thread.chat_received",""" +
@@ -141,7 +155,17 @@ object DispatchWatchdogSpec
   private def mintToken(hh: HouseholdId, threadId: String) =
     ZIO
       .serviceWithZIO[Clock](_.instant)
-      .map(now => ConsentToken.mint(hh, threadId, false, now, liveCfg.agentTokenTtl, TokenSecret))
+      .map(now =>
+        ConsentToken.mint(
+          hh,
+          threadId,
+          false,
+          now,
+          liveCfg.agentTokenTtl,
+          TokenSecret,
+          ConsentToken.newSessionId(),
+        ),
+      )
 
   /**
    * The gauge as scraped. NOTE the trap this spec is written around: a gauge that has NEVER been
@@ -197,7 +221,7 @@ object DispatchWatchdogSpec
         now       <- at(PastSlow)
         _         <- rig.tracker.sweep(now)
         raised    <- unreplied(Support)
-        token     <- mintToken(hh, "th_healthy")
+        token     <- sessionToken(rig, "th_healthy")
         _         <- agentPost(rig, "/api/support/agent/reply", """{"markdown":"ok"}""", token)
         _         <- rig.tracker.sweep(now.plusSeconds(60))
         healthy   <- unreplied(Support)
@@ -214,7 +238,7 @@ object DispatchWatchdogSpec
         // than off a zero that would also appear if nothing were emitting at all.
         _         <- dispatchOne(rig, hh, "th_answered")
         _         <- dispatchOne(rig, hh, "th_abandoned")
-        token     <- mintToken(hh, "th_answered")
+        token     <- sessionToken(rig, "th_answered")
         replied   <- agentPost(
           rig,
           "/api/support/agent/reply",
@@ -263,6 +287,9 @@ object DispatchWatchdogSpec
         _         <- dispatchOne(rig, hh, "th_esc")
         // The same live-series control as above: one abandoned dispatch pins the gauge non-zero.
         _         <- dispatchOne(rig, hh, "th_esc_abandoned")
+        // Deliberately NOT the dispatched session's token: `escalate` is exempt from the #2668
+        // turn guard (a duplicate handoff is noise, a dropped one is a customer who asked for a
+        // human and did not get one), so it still closes the dispatch from any valid session.
         token     <- mintToken(hh, "th_esc")
         status    <- agentPost(
           rig,
@@ -277,13 +304,14 @@ object DispatchWatchdogSpec
     },
     test("the two channels are independent: press's stuck dispatch never moves support's gauge") {
       for {
-        _           <- cleanDb
-        supportTrk  <- DispatchTracker.make(DispatchTracker.deadAfterFor(liveCfg), Support)
-        pressTrk    <- DispatchTracker.make(DispatchTracker.deadAfterFor(liveCfg), Press)
-        now         <- at(java.time.Duration.ZERO)
+        _          <- cleanDb
+        supportTrk <- DispatchTracker.make(DispatchTracker.deadAfterFor(liveCfg), Support)
+        pressTrk   <- DispatchTracker.make(DispatchTracker.deadAfterFor(liveCfg), Press)
+        now        <- at(java.time.Duration.ZERO)
         // The correlation key is opaque to the tracker: support keys on a Plain thread id, press
         // (#2517) on its reply-target address. The watchdog cares only about the channel label.
-        _           <- pressTrk.dispatched("reporter@example.test", HouseholdId(1L), Transport, now)
+        _ <- // #2668: press carries no per-dispatch agent session id, and no callback guard reads one.
+          pressTrk.dispatched("reporter@example.test", "", HouseholdId(1L), Transport, now)
         pressBefore <- sweeps(Press)
         supBefore   <- sweeps(Support)
         later       <- at(PastSlow)
