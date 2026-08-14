@@ -5,9 +5,9 @@ name: Master Press Worker CD
 # cloudflare_email_routing_rule in infra/cloudflare/, applied by master-cloudflare.yml), signs the
 # inbound email, and POSTs it to the API's /api/press/inbound.
 #
-# Mirrors the SPA Pages deploy (master-api-ui.yml) — cloudflare/wrangler-action bundles the worker
-# (esbuild) and pushes it, so there is NO manual `wrangler deploy` and NO dashboard step
-# (docs/process/declarative-config.md). Deploys prod + staging; the per-env PRESS_WEBHOOK_SECRET is
+# Deploys declaratively on merge — no dashboard step (docs/process/declarative-config.md). The steps
+# call `npx wrangler` directly rather than cloudflare/wrangler-action, because the action's bulk
+# secret upload cannot target a named `--env`. Deploys prod + staging; the per-env PRESS_WEBHOOK_SECRET is
 # set from a repo secret in the same run (it must equal the API's WIFIHAVEN_PRESS_WEBHOOK_SECRET for
 # that environment).
 #

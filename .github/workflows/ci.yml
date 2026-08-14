@@ -191,6 +191,9 @@ jobs:
             press-worker:
               - '.github/workflows/ci.yml'
               - 'deploy/press-worker/**'
+              # A deploy-workflow-only edit changes how this Worker ships; without this glob it
+              # would skip the Worker's own tests entirely.
+              - '.github/workflows/master-press-worker.yml'
             migrations:
               - '.github/workflows/ci.yml'
               - '.github/scripts/check-migrations.sh'

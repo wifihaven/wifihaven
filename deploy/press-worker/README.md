@@ -142,12 +142,12 @@ switch (render.yaml PR) — see [`../press-agent/README.md`](../press-agent/READ
    first). Outbound email (`WIFIHAVEN_EMAIL_*`) must be configured too — the API refuses to boot with
    the press responder on and email off (#2265).
 
-> First-time bootstrap: a local `npm install && npx wrangler deploy` from this directory works too
+> First-time bootstrap: a local `npm ci && npx wrangler deploy` from this directory works too
 > (identical result), but is not required — CI is the source of truth.
 
 ## Notes
 
-- **`postal-mime`** parses the raw MIME to plain text; `run npm install` before `wrangler deploy`.
+- **`postal-mime`** parses the raw MIME to plain text; run `npm ci` before `wrangler deploy` (CI and CD both install from the lockfile, so a local `npm install` can bundle a different toolchain than the one that ships).
 - **An unconfigured Worker rejects the message (#2673).** If `PRESS_WEBHOOK_SECRET` or
   `PRESS_API_URL` is unset on a deployment, the Worker `setReject`s the inbound mail (a permanent
   SMTP failure — the sender is told it did not arrive and pointed at `support@wifihaven.net`), and
