@@ -9,6 +9,18 @@ import scala.jdk.CollectionConverters.*
  * #2176 (multi-tenant hardening, epic #2085/#622) — the REGRESSION GUARD that encodes the lesson,
  * rather than only fixing instances.
  *
+ * TWO LAYERS, both over the REPO surface (the route surface is [[MultiTenantRouteCensusSpec]]):
+ *
+ *   - **Layer A — the unscoped LIST read scan** (the original #2176 guard, below). Greps all of
+ *     `api/src` (widened from the routes plane by #2571) for `listAll` / `listAllIncludingGlobal` /
+ *     `listAllMappings` — reads that return EVERY household's rows.
+ *   - **Layer B — the SINGLE-ROW read census** (#2589, further down). Every abstract `Task[Option
+ *     [_]]` / `Task[Boolean]` declaration on a `*Repo` trait carries an explicit tenancy verdict.
+ *     Layer A cannot see these by construction (it matches method NAMES), and the route census
+ *     cannot see them either (it only reaches routes whose PATH names a row) — which is how
+ *     `NamedScheduleRepo.findByName(name: String)` backed a cross-household name-taken 409 while
+ *     passing both guards. See the Layer B header for the full argument.
+ *
  * The D/E scoping waves added `…ForHousehold` reads but left a residue of UNSCOPED
  * `deviceRepo.listAll` / `profileRepo.listAll` / etc. in user-facing route files, each of which
  * returns EVERY household's rows. Those are tracked for scoping by
@@ -129,7 +141,7 @@ object MultiTenantScopedReadGuardSpec extends ZIOSpecDefault {
   private def householdRelevantReads(src: String): Set[String] =
     rawReads(src).filterNot(tok => GlobalCatalogReceivers.contains(tok.takeWhile(_ != '.'))).toSet
 
-  def spec = suite("MultiTenantScopedReadGuardSpec (#2176)")(
+  private val layerA = suite("Layer A — unscoped LIST reads in api/src (#2176, widened by #2571)")(
     test("every household-relevant unscoped read in api/src is in the tracked allowlist") {
       val offenders =
         sourceFiles.flatMap { p =>
@@ -182,4 +194,419 @@ object MultiTenantScopedReadGuardSpec extends ZIOSpecDefault {
       assertTrue(!flaggedAppRepo)
     },
   )
+
+  // ══ Layer B — the SINGLE-ROW read census (#2589) ══════════════════════════════════════════════
+
+  /**
+   * #2589. The hole this closes, precisely.
+   *
+   * Layer A above matches method NAMES (`listAll…`). A single-row read — `findByName`, and any
+   * future `findBy*` / `getBy*` / `lookupBy*` with a household-scoped sibling — never matches, so
+   * it is invisible to Layer A *by construction*. [[MultiTenantRouteCensusSpec]]'s choke-point
+   * invariant does not reach it either: that applies only to routes whose PATH names a row
+   * (`long("id")` / `string("mac")`), and `POST /api/schedules` names its row in the request BODY
+   * (`{"name": "Bedtime"}`), so it is exempt. A route could therefore read a row by a body-supplied
+   * NATURAL KEY, with no household predicate, and pass both guards. That is exactly what shipped:
+   * `NamedScheduleRepo.findByName(name: String)` backed the name-taken 409 on `POST /api/schedules`
+   * and `PATCH /api/schedules/{id}`, answering "taken" from a row in a household the caller could
+   * not see (#2572 / #2586). Found by hand, twice.
+   *
+   * ── Why the REPO layer, and not a third route-level layer ────────────────────────────────────
+   * The tempting fix is to extend the route census to "routes that read by a body key". A source
+   * scan cannot decide that: the body key lives in a JSON schema the scanner does not parse, and
+   * any name-based approximation is defeated by renaming a field. The repo declaration, by
+   * contrast, states the shape completely and syntactically — the arguments and the return type ARE
+   * the question. So the invariant is enforced at the SOURCE of the read rather than at one of its
+   * callers, and it holds for every caller (routes, services, background fibers, the ws push
+   * builders) rather than the subset the census enumerates. Once no unscoped natural-key read can
+   * be *declared*, no route can *call* one — the route-level hole closes without the route-level
+   * scanner having to detect it. Three partly-overlapping guards with gaps between them is how this
+   * hole appeared; this is the second layer of an existing guard, not a fourth surface.
+   *
+   * ── The invariant ────────────────────────────────────────────────────────────────────────────
+   * Every abstract `Task[Option[_]]` / `Task[Boolean]` declaration on a `*Repo` trait — the
+   * single-row read shape, including the `Boolean` existence probe that backs a 409, which leaks
+   * the same oracle as the row itself — must appear in [[RowReadCensus]] with an explicit
+   * [[RowRead]] verdict. `Scoped` requires a `HouseholdId` parameter and is checked, not trusted;
+   * every other verdict must say WHY in prose a reviewer reads in the diff.
+   *
+   * Note what the scan keys on: the SHAPE (return type + parameter types), never the method name.
+   * Renaming `findByName` to `lookupBy` or `scheduleNamed` does not evade it — the declaration
+   * still matches, and the census key changes, so the rename fails test B1 until re-declared.
+   * Adding an unrelated parameter does not evade it either: eligibility for the `SurrogateId`
+   * exemption is a property of ALL the parameter types (test B3), not of any one of them.
+   */
+  enum RowRead {
+
+    /**
+     * Takes a `HouseholdId` parameter — the read is scoped in the SQL. Test B2 verifies the
+     * parameter is really there rather than taking the declaration on trust.
+     */
+    case Scoped
+
+    /**
+     * Keyed on a globally-unique SURROGATE id, so the argument already names exactly one row across
+     * every tenant and there is nothing to disambiguate; keeping a FOREIGN id out is the route's
+     * choke point (`householdOf` / `requireXInHousehold` / `ownUser`), not the repo's. Test B3 pins
+     * that this may only be claimed when every parameter type is genuinely of that kind — `String`
+     * and `Long` keys can never take this exemption, which is what stops a `findByName` from being
+     * waved through by re-declaration.
+     */
+    case SurrogateId(reason: String)
+
+    /**
+     * The key ITSELF resolves the household: reading this row is HOW the tenancy is determined (a
+     * router bearer-token hash, a Stripe customer id, a household slug, a globally-unique email).
+     * Scoping it would be circular. `reason` must name the key and why it is unambiguous.
+     */
+    case TenancyKey(reason: String)
+
+    /**
+     * Install-wide data with no tenancy dimension at all (the bundled blocklist catalog, the
+     * template-authored app catalog, partition maintenance, press). Same meaning as the route
+     * census's `InstallWide`, and the same caveat: it is a statement about the DATA, not a licence
+     * to mutate it from any household.
+     */
+    case InstallWide(reason: String)
+
+    /**
+     * Matched the single-row READ shape but is a write returning a success `Boolean`. Declared
+     * rather than filtered out by name, because "is this a read?" decided by method name is exactly
+     * the kind of name-keyed judgement that produced this gap.
+     */
+    case Write(reason: String)
+
+    /** Known-unscoped and tracked by `issue`, fixed by its own chip. Shrink-only (test B5). */
+    case Tracked(issue: Int)
+  }
+
+  import RowRead.*
+
+  /**
+   * Types that name exactly one row across every tenant — the surrogate primary keys. A read keyed
+   * ONLY on these (plus the non-identifying filter types below) may take the `SurrogateId`
+   * exemption.
+   *
+   * `MacAddress` is deliberately ABSENT and test B3 pins that: V74 dropped `devices_mac_key`, so
+   * post-multi-tenancy a bare MAC names a SET of devices across households (#2125). `String` and
+   * `Long` are absent for the same reason at a higher level — an untyped natural key is precisely
+   * the shape that shipped #2572.
+   */
+  private val SurrogateIdTypes: Set[String] = Set(
+    "UserId",
+    "ProfileId",
+    "NamedScheduleId",
+    "AlertId",
+    "RouterId",
+    "AppId",
+    "AppTemplateId",
+    "BetaRequestId",
+    "BlocklistId",
+    "HouseholdId",
+  )
+
+  /**
+   * Types that are filter DIMENSIONS rather than row keys — a date window, an instant, a flag. They
+   * narrow a read that some other parameter already keys; on their own they name nothing, so they
+   * neither earn the `SurrogateId` exemption nor disqualify it.
+   */
+  private val NonIdentifyingTypes: Set[String] = Set(
+    "Instant",
+    "LocalDate",
+    "LocalTime",
+    "LocalDateTime",
+    "ZoneId",
+    "Int",
+    "Boolean",
+    "Duration",
+  )
+
+  /** One abstract single-row read declaration on a `*Repo` trait. */
+  final case class RepoRead(repo: String, method: String, paramTypes: List[String], file: String) {
+    def key: String       = s"$repo.$method"
+    def isScoped: Boolean = paramTypes.contains("HouseholdId")
+
+    /** Eligible for [[RowRead.SurrogateId]]: keyed on surrogate ids and filters, nothing else. */
+    def surrogateKeyed: Boolean =
+      paramTypes.nonEmpty &&
+        paramTypes.exists(SurrogateIdTypes.contains) &&
+        paramTypes.forall(t => SurrogateIdTypes.contains(t) || NonIdentifyingTypes.contains(t))
+  }
+
+  private def stripComments(src: String): String = {
+    val noBlock = """(?s)/\*.*?\*/""".r.replaceAllIn(src, _ => "")
+    noBlock.linesIterator
+      .map(l => l.indexOf("//") match { case -1 => l; case i => l.take(i) })
+      .mkString("\n")
+  }
+
+  private val RepoTraitStart = """(?m)^(?:sealed\s+)?trait\s+(\w+)\b""".r
+  private val TopLevelStart  = """(?m)^\S""".r
+
+  /**
+   * An abstract `def` on a trait returning `Task[Option[_]]` or `Task[Boolean]`. The parameter list
+   * allows one level of nested parens (a default like `= Map.empty` has none;
+   * `RetentionDaysByTable` has none either), and the `Option` payload allows one level of nested
+   * brackets.
+   */
+  private val SingleRowRead =
+    """(?s)\bdef\s+(\w+)\s*(\((?:[^()]|\([^()]*\))*\))?\s*:\s*Task\[\s*(?:Option\[(?:[^\[\]]|\[[^\[\]]*\])*\]|Boolean)\s*\]""".r
+
+  /** Split on top-level commas — `Map[String, Int]` is ONE parameter, not two. */
+  private def splitParams(s: String): List[String] = {
+    val out   = List.newBuilder[String]
+    val cur   = new StringBuilder
+    var depth = 0
+    s.foreach {
+      case c @ ('[' | '(')   => depth += 1; cur.append(c)
+      case c @ (']' | ')')   => depth -= 1; cur.append(c)
+      case ',' if depth == 0 => out += cur.toString; cur.clear()
+      case c                 => cur.append(c)
+    }
+    out += cur.toString
+    out.result().map(_.trim).filter(_.nonEmpty)
+  }
+
+  /** `mac: MacAddress = HouseholdId.Default` → `MacAddress`. Whitespace-insensitive. */
+  private def paramType(p: String): String =
+    p.dropWhile(_ != ':').drop(1).takeWhile(_ != '=').replaceAll("\\s+", "")
+
+  /**
+   * The scanner, factored over a SOURCE STRING so the tests can drive it with a fixture. That is
+   * what makes the "does it catch the bug it was built for" question answerable in CI rather than
+   * on a scratch branch — see tests B7/B8.
+   */
+  private[feature] def scanRepoReads(source: String, file: String): List[RepoRead] = {
+    val src    = stripComments(source)
+    val tops   = TopLevelStart.findAllMatchIn(src).map(_.start).toList
+    val traits = RepoTraitStart.findAllMatchIn(src).filter(_.group(1).endsWith("Repo")).toList
+    traits.flatMap { t =>
+      val end  = tops.find(_ > t.start).getOrElse(src.length)
+      val body = src.substring(t.start, end)
+      SingleRowRead
+        .findAllMatchIn(body)
+        // Abstract declarations only: an implementation (`def f(…): Task[Option[X]] = …`) states
+        // no contract of its own, and scanning both would double-count every repo.
+        .filterNot(m => body.drop(m.end).dropWhile(_.isWhitespace).startsWith("="))
+        .map { m =>
+          val params = Option(m.group(2)).map(_.drop(1).dropRight(1)).getOrElse("")
+          RepoRead(t.group(1), m.group(1), splitParams(params).map(paramType), file)
+        }
+        .toList
+    }
+  }
+
+  private def apiSourceFiles: List[Path] = {
+    val dir = repoRoot.resolve("api/src")
+    Files
+      .walk(dir)
+      .iterator()
+      .asScala
+      .filter(p => Files.isRegularFile(p) && p.toString.endsWith(".scala"))
+      .toList
+      .sortBy(_.toString)
+  }
+
+  private[feature] lazy val repoReads: List[RepoRead] =
+    apiSourceFiles.flatMap(p => scanRepoReads(Files.readString(p), p.getFileName.toString))
+
+  /**
+   * Every single-row read declared on a `*Repo` trait, keyed `"<Trait>.<method>"`, with its tenancy
+   * verdict. Test B1 fails until the live declarations and this map agree EXACTLY — so a new read,
+   * a rename, or a removal all force someone to write down what its tenancy is.
+   */
+  val RowReadCensus: Map[String, RowRead] = Map.empty
+
+  /** Reads the scan sees that the census does not declare (and vice versa). */
+  private[feature] def undeclared(reads: List[RepoRead]): List[String] =
+    reads.map(_.key).distinct.filterNot(RowReadCensus.contains).sorted
+
+  private[feature] def ghosts(reads: List[RepoRead]): List[String] =
+    (RowReadCensus.keySet -- reads.map(_.key).toSet).toList.sorted
+
+  /**
+   * The core finding: a read whose declaration and whose signature disagree. Either it claims
+   * `Scoped` without a `HouseholdId` parameter (the #2572 shape — what a re-introduced
+   * `findByName(name: String)` looks like), or it carries an exemption while actually taking one
+   * (dead declaration, or a verdict left behind after a fix).
+   */
+  private[feature] def misdeclared(reads: List[RepoRead]): List[String] =
+    reads.flatMap { r =>
+      RowReadCensus.get(r.key).flatMap {
+        case Scoped if !r.isScoped          =>
+          Some(s"${r.key} (${r.file}) — declared Scoped but takes no HouseholdId parameter")
+        case v if v != Scoped && r.isScoped =>
+          Some(s"${r.key} (${r.file}) — takes a HouseholdId parameter; declare it Scoped")
+        case _                              => None
+      }
+    }.sorted
+
+  private[feature] def reasonOf(v: RowRead): Option[String] = v match {
+    case SurrogateId(r) => Some(r)
+    case TenancyKey(r)  => Some(r)
+    case InstallWide(r) => Some(r)
+    case Write(r)       => Some(r)
+    case _              => None
+  }
+
+  /** Floor for an exemption's reason, same threshold and same rationale as the route census. */
+  private val MinReasonChars = 10
+
+  private val layerB = suite("Layer B — single-row repo reads (#2589)")(
+    test(
+      "B1 — every single-row repo read declares a tenancy verdict, and the census has no ghosts",
+    ) {
+      assert(undeclared(repoReads))(
+        Assertion.isEmpty ?? (
+          "single-row repo reads with NO tenancy verdict. Each returns one row (or a Boolean " +
+            "probe over one row) — add it to RowReadCensus. If it takes a HouseholdId it is " +
+            "Scoped; if not, say why in a reason a reviewer can judge."
+        ),
+      ) && assert(ghosts(repoReads))(
+        Assertion.isEmpty ?? "census entries with no live declaration — delete them (renamed or removed?)",
+      )
+    },
+    test("B2 — the Scoped verdict is verified against the signature, not taken on trust") {
+      assert(misdeclared(repoReads))(
+        Assertion.isEmpty ?? (
+          "these reads' verdicts contradict their signatures. THIS is the #2572 shape: a read " +
+            "keyed on a caller-supplied natural key with no household predicate."
+        ),
+      )
+    },
+    test("B3 — the SurrogateId exemption may only be claimed by reads that are actually id-keyed") {
+      // The anti-defeat check. Without it, re-introducing `findByName(name: String)` and declaring
+      // it `SurrogateId("ids are globally unique")` would pass B1 and B2 — the exemption would be
+      // a free-text opt-out. A `String` or `Long` key can never satisfy `surrogateKeyed`, so the
+      // only remaining route is `TenancyKey` / `InstallWide`, both of which put a claim about the
+      // key's uniqueness in the diff for a reviewer.
+      val bogus = repoReads
+        .filter { r =>
+          RowReadCensus.get(r.key).exists {
+            case SurrogateId(_) => !r.surrogateKeyed
+            case _              => false
+          }
+        }
+        .map(r => s"${r.key} (${r.file}) — keys: ${r.paramTypes.mkString(", ")}")
+        .sorted
+      assert(bogus)(
+        Assertion.isEmpty ?? (
+          "declared SurrogateId but not keyed on globally-unique surrogate ids. A String / Long / " +
+            s"MacAddress key names a SET of rows across households. Known id types: ${SurrogateIdTypes.toList.sorted
+                .mkString(", ")}"
+        ),
+      ) &&
+      // #2125, pinned: V74 dropped `devices_mac_key`, so a bare MAC is not a surrogate key. If a
+      // future edit adds it to the set, every `findByMac`-shaped read silently earns the exemption.
+      assertTrue(!SurrogateIdTypes.contains("MacAddress")) &&
+      assertTrue(!SurrogateIdTypes.contains("String") && !SurrogateIdTypes.contains("Long"))
+    },
+    test("B4 — every exemption from the household-parameter rule states a real reason") {
+      val blank = RowReadCensus.toList
+        .flatMap { case (k, v) => reasonOf(v).map(k -> _) }
+        .filter { case (_, r) => r.trim.length < MinReasonChars }
+        .map(_._1)
+        .sorted
+      assert(blank)(
+        Assertion.isEmpty ?? (
+          "these reads take an exemption with an empty or placeholder reason — say why the key " +
+            "names exactly one row across every household, or give the read a HouseholdId"
+        ),
+      )
+    },
+    test("B5 — the tracked-unscoped set is explicit, shrink-only, and names real issues") {
+      val tracked = RowReadCensus.collect { case (k, Tracked(n)) => k -> n }
+      // Opened at 2 (both #2571's dead unscoped reads). Shrink-only, and deliberately not
+      // `nonEmpty` — the last fix, the one that empties it, must not read as a red build.
+      assertTrue(tracked.size <= 2) &&
+      assert(tracked.values.filter(_ <= 0).toList)(
+        Assertion.isEmpty ?? "Tracked entries must name a real tracking issue",
+      ) &&
+      assert(
+        tracked.keys.toList.sorted.filter(k => repoReads.exists(r => r.key == k && r.isScoped)),
+      )(
+        Assertion.isEmpty ?? "these reads are now scoped — delete their Tracked entry",
+      )
+    },
+    test("B6 — the scan is non-vacuous: it sees the live repo surface and its scoped reads") {
+      // A static scan's characteristic failure is going VACUOUSLY green — the regex stops matching,
+      // reports zero offenders, and that reads as "all clear" (#2546's lesson). Floors, not
+      // equalities, so adding a repo method never fails this.
+      val scoped = repoReads.count(_.isScoped)
+      assertTrue(
+        repoReads.size >= 40,
+        scoped >= 10,
+        repoReads.map(_.repo).distinct.size >= 10,
+      )
+    },
+    test("B7 — it catches the KNOWN instance: the pre-#2586 findByName") {
+      // The bug this guard exists for, reconstructed verbatim as a fixture. A guard that cannot be
+      // SHOWN to catch the bug it was built for is not evidence of anything.
+      val preFix =
+        """trait NamedScheduleRepo {
+          |  def listAllForHousehold(household: HouseholdId): Task[List[NamedSchedule]]
+          |  def findByName(name: String): Task[Option[NamedSchedule]]
+          |}
+          |""".stripMargin
+      val reads  = scanRepoReads(preFix, "fixture-pre-2586.scala")
+      val read   = reads.find(_.method == "findByName")
+      assertTrue(read.isDefined) &&
+      // Seen by the scan, and seen as UNSCOPED — the two halves the old guards each missed.
+      assertTrue(read.exists(!_.isScoped)) &&
+      // And it fails the census: the live declaration is `findByName(name, household)`, so the
+      // unscoped signature contradicts the `Scoped` verdict on record.
+      assertTrue(misdeclared(reads).exists(_.contains("NamedScheduleRepo.findByName"))) &&
+      // It cannot buy its way out via the id exemption either.
+      assertTrue(read.exists(!_.surrogateKeyed))
+    },
+    test("B8 — it catches a NEW instance of the same shape, under any name") {
+      // Not the one method by name. A fresh repo, fresh method names, both read shapes — the
+      // row-returning read and the Boolean existence probe that backs the very same 409.
+      val planted =
+        """trait WidgetRepo {
+          |  def lookupByLabel(label: String): Task[Option[Widget]]
+          |  def labelTaken(label: String): Task[Boolean]
+          |  def widgetNamed(name: String): Task[Option[Widget]]
+          |  def forHousehold(household: HouseholdId, label: String): Task[Option[Widget]]
+          |}
+          |""".stripMargin
+      val reads   = scanRepoReads(planted, "fixture-planted.scala")
+      assertTrue(reads.size == 4) &&
+      // All three unscoped shapes are undeclared offenders, whatever they are called — the scan
+      // keys on the SIGNATURE, so renaming is not an escape.
+      assertTrue(
+        undeclared(reads).contains("WidgetRepo.lookupByLabel"),
+        undeclared(reads).contains("WidgetRepo.labelTaken"),
+        undeclared(reads).contains("WidgetRepo.widgetNamed"),
+      ) &&
+      assertTrue(
+        reads.filter(_.method != "forHousehold").forall(r => !r.isScoped && !r.surrogateKeyed),
+      ) &&
+      // And the scoped sibling is seen as scoped — the guard is not simply flagging everything,
+      // which is what a "no false positives" claim has to be able to fail on.
+      assertTrue(reads.find(_.method == "forHousehold").exists(_.isScoped))
+    },
+    test("B9 — legitimate shapes are NOT flagged: id-keyed, household-keyed, and filtered reads") {
+      // The false-positive half. If these tripped the guard, the reflex would become "add it to the
+      // allowlist", which is how an allowlist stops meaning anything.
+      val legit =
+        """trait ThingRepo {
+          |  def findById(id: ProfileId): Task[Option[Thing]]
+          |  def findForHousehold(household: HouseholdId): Task[Option[Thing]]
+          |  def dayFor(id: ProfileId, date: LocalDate): Task[Option[Thing]]
+          |  def counts(household: HouseholdId): Task[Map[String, Int]]
+          |  def rows(household: HouseholdId): Task[List[Thing]]
+          |}
+          |""".stripMargin
+      val reads = scanRepoReads(legit, "fixture-legit.scala")
+      // `counts` / `rows` are not single-row reads and are outside this layer entirely.
+      assertTrue(reads.map(_.method).toSet == Set("findById", "findForHousehold", "dayFor")) &&
+      assertTrue(reads.find(_.method == "findById").exists(_.surrogateKeyed)) &&
+      // A filter dimension alongside a surrogate id does not disqualify the exemption.
+      assertTrue(reads.find(_.method == "dayFor").exists(_.surrogateKeyed)) &&
+      assertTrue(reads.filter(_.method == "findForHousehold").forall(_.isScoped))
+    },
+  )
+
+  def spec = suite("MultiTenantScopedReadGuardSpec (#2176, #2589)")(layerA, layerB)
 }
