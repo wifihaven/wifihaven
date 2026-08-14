@@ -61,8 +61,10 @@ describe('email() when the Worker is unconfigured', () => {
 
     expect(errorSpy).toHaveBeenCalledOnce();
     const logged = String(errorSpy.mock.calls[0][0]);
-    expect(logged).toContain('PRESS_WEBHOOK_SECRET');
-    expect(logged).not.toContain('PRESS_API_URL:');
+    // Anchored to the REPORTED list, not the whole line: the remediation text that follows names
+    // both bindings, so a bare `not.toContain('PRESS_API_URL')` would be unfalsifiable.
+    expect(logged).toMatch(/binding\(s\) unset on this deployment: PRESS_WEBHOOK_SECRET\./);
+    expect(logged).not.toMatch(/unset on this deployment:[^.]*PRESS_API_URL/);
   });
 
   it('does not reject when both bindings are set', async () => {

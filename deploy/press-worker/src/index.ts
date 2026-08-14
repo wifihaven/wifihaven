@@ -95,9 +95,10 @@ export default {
     //
     // This branch used to `console.warn` and return, and the comment justified the silent discard by
     // claiming press@ was also forwarded elsewhere so mail was not lost. There is no such forwarding
-    // rule: `cloudflare_email_routing_rule.press_to_worker` (infra/cloudflare/main.tf:397) is the
-    // only rule for press@wifihaven.net and it sends here (main.tf:418 routes press@staging to the
-    // staging Worker; there is no `forward` rule for either). Mail was lost. For weeks, with the sender
+    // rule: in infra/cloudflare/main.tf, `cloudflare_email_routing_rule.press_to_worker` is the only
+    // rule for press@wifihaven.net and it sends here (`…press_staging_to_worker` routes press@staging
+    // to the staging Worker; neither address has a `forward` rule). Named rather than line-numbered
+    // for the same reason wrangler.toml's comment is. Mail was lost. For weeks, with the sender
     // told nothing — the exact silent-no-op `docs/process/no-dark-by-default.md` forbids ("absence
     // of a secret is a bug, not a disable switch").
     //
