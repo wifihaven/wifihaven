@@ -107,9 +107,13 @@ object DispatchTrackerClaimSpec extends ZIOSpecDefault {
         b <- claim(t, AgentAction.Reply)
       } yield assertTrue(a == Claimed, b == Claimed)
     },
-    test("truly concurrent claims of the two kinds: exactly one is admitted") {
-      // Not a scheduling accident — `claimThreadWrite` is one atomic `modify`, so whichever order
-      // the fibers land in, the loser is Excluded. Repeated so a lucky interleaving cannot pass.
+    test("claiming the two kinds from parallel fibers admits exactly one, either way round") {
+      // HONEST ABOUT WHAT THIS BUYS: it is a smoke test, not the concurrency pin. Two `Ref.modify`s
+      // on an uncontended path will rarely interleave, so a check-then-write implementation would
+      // probably pass it too. The property is carried by the DETERMINISTIC tests above — an
+      // in-flight write already excludes the other kind, and a failed sibling cannot give back what
+      // a landed one earned — which is where a racy implementation actually fails. This one only
+      // adds that the outcome does not depend on which fiber wins.
       ZIO
         .foreach(1 to 50) { _ =>
           for {

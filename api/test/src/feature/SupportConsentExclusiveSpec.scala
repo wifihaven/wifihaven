@@ -388,6 +388,54 @@ object SupportConsentExclusiveSpec
         sent.exists(_.contains("You have 1 profile.")),
       )
     },
+    test("a consent post Plain FAILED still spends the turn — a failure is not proof of silence") {
+      // The security half of the settle policy. `PlainOutcome.Error` collapses a refusal, a
+      // transport failure and a 20s timeout into one value, so a "failed" prompt may in fact be in
+      // front of the customer. Reading it as "nothing was posted" would free the claim and let the
+      // agent post beside a link that IS there. The cost of erring this way — a silent turn — is
+      // the direction this control must fail in.
+      for {
+        _        <- cleanDb
+        hhRepo   <- ZIO.service[HouseholdRepo]
+        h        <- makeHarness
+        hh       <- hhRepo.create("Family I", "family-i")
+        token    <- inbound(h, hh, "th_i", "how many profiles do I have?")
+        _        <- h.plain.writeOutcome.set(PlainOutcome.Error)
+        asked    <- requestConsent(h, token)
+        // The write was attempted (the recorder logs it either way) — proving the call site ran,
+        // not that some earlier branch short-circuited to the same outcome.
+        attempts <- prompts(h, "th_i")
+        _        <- h.plain.writeOutcome.set(PlainOutcome.Ok)
+        blocked  <- reply(h, token, Phish)
+        adjacent <- agentText(h, "th_i")
+      } yield assertTrue(
+        asked == Status.InternalServerError,
+        attempts.size == 1,
+        blocked == Status.Ok,
+        adjacent.isEmpty,
+      )
+    },
+    test("a DARK Plain client gives the turn back — the one outcome that proves non-delivery") {
+      // `Disabled` is our own flag: the write half is off, so nothing was attempted and nothing can
+      // be in front of the customer. Releasing here is what stops one dark-install prompt from
+      // swallowing the answer the agent still owes.
+      for {
+        _        <- cleanDb
+        hhRepo   <- ZIO.service[HouseholdRepo]
+        h        <- makeHarness
+        hh       <- hhRepo.create("Family J", "family-j")
+        token    <- inbound(h, hh, "th_j", "how many profiles do I have?")
+        _        <- h.plain.writeOutcome.set(PlainOutcome.Disabled)
+        asked    <- requestConsent(h, token)
+        _        <- h.plain.writeOutcome.set(PlainOutcome.Ok)
+        answered <- reply(h, token, "Here is what I can tell you without your account.")
+        sent     <- agentText(h, "th_j")
+      } yield assertTrue(
+        asked == Status.NotFound,
+        answered == Status.Ok,
+        sent.exists(_.contains("without your account")),
+      )
+    },
     test("FAIL OPEN: a session the tracker never saw still gets its reply through") {
       // The claim rides the in-memory dispatch record (#2472), which a restart drops. "No record"
       // is not evidence of a consent prompt, and a customer who gets no answer at all is the worse

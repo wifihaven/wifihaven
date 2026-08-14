@@ -240,21 +240,26 @@ final class DispatchTracker private (
 
   /**
    * #2667 — settle a [[ThreadWriteClaim.Claimed]]: the write is no longer in flight, and `landed`
-   * says whether it reached the customer.
+   * says whether it reached the customer. A write that DID land is remembered for the rest of the
+   * session and can never be given back; one that did not leaves nothing in front of the customer,
+   * so it does not spend the turn.
    *
-   * A write that did NOT land (Plain refused it, or the client is dark) leaves nothing in front of
-   * the customer, so it must not spend the turn — otherwise a failed consent post would make the
-   * agent's "sorry, something went wrong" reply be refused as if the prompt had arrived, and the
-   * customer would get nothing at all. A write that DID land is remembered for the rest of the
-   * session and can never be given back.
+   * WHAT COUNTS AS "did not land" IS THE CALLER'S CALL, and it is deliberately a narrow one —
+   * `SupportResponder.settleThreadWrite` releases ONLY when its own Plain client is dark, because
+   * that is the only outcome that PROVES nothing was posted. A refusal, a transport error and a
+   * timeout are one value at the Plain boundary, and a write that timed out may well have been
+   * applied.
    *
-   * LIMIT, STATED. This recovers the SEQUENTIAL ordering. If the agent fires both callbacks
-   * concurrently and the first one's write then fails, the second was already refused while the
-   * first was in flight and cannot be un-refused — that turn ends silent (loud on
-   * `support_agent_action_total{outcome="error"}` for the failed write). Refusing is the deliberate
-   * direction to fail in for a control whose job is to keep attacker-influenced text away from a
-   * live consent link; buffering a write until a concurrent sibling settles would be the only
-   * alternative, and it is not worth the machinery for a Plain failure racing a double callback.
+   * SO THE TURN CAN END SILENT, in two shapes, and both are the deliberate direction to fail in for
+   * a control whose job is to keep attacker-influenced text away from a live consent link:
+   *   - a Plain FAILURE on the first write — the second kind is then refused as if the first had
+   *     landed, because we cannot show it did not;
+   *   - both callbacks fired CONCURRENTLY and the first write then failing — the second was already
+   *     refused while the first was in flight and cannot be un-refused.
+   * Neither is silent to US: the failed write is loud on
+   * `support_agent_action_total{op,outcome="error"}` and the turn stays open on the #2472 pairing.
+   * Buffering a write until a concurrent sibling settles is the only alternative, and it is not
+   * worth the machinery for a Plain failure racing a double callback.
    */
   def settleThreadWrite(
       threadId: String,

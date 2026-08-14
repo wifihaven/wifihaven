@@ -1072,12 +1072,12 @@ final case class SupportResponder(
    * prompt — the threat model is an agent that ignores its prompt.
    *
    * SCOPE, stated so it is not read as more than it is. The exclusion is per SESSION, and the link
-   * stays redeemable for [[SupportResponder.ConsentTtl]]. A LATER turn — the customer asking "what
-   * is this link?" dispatches a fresh session with nothing claimed — can still post agent text
-   * beneath a live prompt and frame the link the customer can already see. That costs the attacker
-   * a customer round trip and is strictly narrower than what shipped before, but it is open, and
-   * closing it needs durable per-thread state (so, a migration) plus a product call about answering
-   * a customer who asks about the link. Tracked in
+   * stays redeemable for [[SupportResponder.ConsentLinkTtl]]. A LATER turn — the customer asking
+   * "what is this link?" dispatches a fresh session with nothing claimed — can still post agent
+   * text beneath a live prompt and frame the link the customer can already see. That costs the
+   * attacker a customer round trip and is strictly narrower than what shipped before, but it is
+   * open, and closing it needs durable per-thread state (so, a migration) plus a product call about
+   * answering a customer who asks about the link. Tracked in
    * https://github.com/wifihaven/wifihaven/issues/2709. Do NOT relax this wording back to an
    * unqualified "at the consent moment" — the unqualified version is what let #2667 ship.
    *
@@ -1588,8 +1588,9 @@ final case class SupportResponder(
           // suppressed text and never anything about the customer.
           ZIO.logWarning(
             s"support: consent turn is server-authored — dropping op=$action on " +
-              s"thread=${claims.threadId} because this session already posted op=$by. The " +
-              "customer's data-access decision must rest on the server's own message alone (#2667)",
+              s"thread=${claims.threadId} because this session already posted op=$by (or is " +
+              "posting it). The customer's data-access decision must rest on the server's own " +
+              "message alone (#2667)",
           ) *>
             AppMetrics.supportConsent(SupportResponder.exclusionOutcome(action)) *>
             done(action, AgentActionResult.ConsentExclusive)
@@ -1811,7 +1812,7 @@ object SupportResponder {
     // Unreachable: only AgentAction.ThreadWrites members are ever claimed, and the contract spec
     // pins ExclusionOutcomes (derived from that set) against the two values above — so a third
     // thread-writing action fails there rather than silently metering as one of these.
-    case other                      => s"suppressed_$other"
+    case _                          => "suppressed_other"
   }
 
   /** Both values of [[exclusionOutcome]] — what the #2667 panel must match on. */
