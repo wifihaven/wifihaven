@@ -212,6 +212,7 @@ object ReplyRedactionSpec
         _,
         supportCfg.agentTokenTtl,
         SupportTokenSecret,
+        ConsentToken.newSessionId(),
       ),
     )
 

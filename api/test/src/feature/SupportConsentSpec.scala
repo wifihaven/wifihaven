@@ -306,7 +306,15 @@ object SupportConsentSpec
       .serviceWithZIO[Clock](_.instant)
       .map(now =>
         ConsentToken
-          .mint(hh, thread, dataAccess, now, java.time.Duration.ofMinutes(30), TokenSecret),
+          .mint(
+            hh,
+            thread,
+            dataAccess,
+            now,
+            java.time.Duration.ofMinutes(30),
+            TokenSecret,
+            ConsentToken.newSessionId(),
+          ),
       )
 
   // ── the suite ───────────────────────────────────────────────────────────────
@@ -941,13 +949,21 @@ object SupportConsentSpec
       // crypto edge case).
       for {
         now <- ZIO.serviceWithZIO[Clock](_.instant)
-        hh          = HouseholdId(7L)
-        agent       = ConsentToken
-          .mint(hh, "th_swap", true, now, java.time.Duration.ofMinutes(30), TokenSecret)
-        link        = ConsentGrant
+        hh            = HouseholdId(7L)
+        agent: String = ConsentToken
+          .mint(
+            hh,
+            "th_swap",
+            true,
+            now,
+            java.time.Duration.ofMinutes(30),
+            TokenSecret,
+            ConsentToken.newSessionId(),
+          )
+        link          = ConsentGrant
           .mint(hh, "th_swap", now, java.time.Duration.ofHours(1), TokenSecret, "n_swap")
-        agentAsLink = ConsentGrant.verify(agent.replaceFirst("^v1\\.", "g1."), now, TokenSecret)
-        linkAsAgent = ConsentToken.verify(link.replaceFirst("^g1\\.", "v1."), now, TokenSecret)
+        agentAsLink   = ConsentGrant.verify(agent.replaceFirst("^v1\\.", "g1."), now, TokenSecret)
+        linkAsAgent   = ConsentToken.verify(link.replaceFirst("^g1\\.", "v1."), now, TokenSecret)
       } yield assertTrue(
         agentAsLink == Left(ConsentGrant.Err.BadSignature),
         linkAsAgent == Left(ConsentToken.Err.BadSignature),

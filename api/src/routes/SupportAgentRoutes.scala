@@ -206,6 +206,10 @@ object SupportAgentRoutes {
             "without account data in a later session, or escalate to a human",
         ),
       )
+    // #2668: a LATER session owns this thread's turn, so this session's write was dropped. The
+    // caller is told OK deliberately — the customer IS being answered, and a 4xx would make the run
+    // retry a write it can never legitimately land. The `superseded` metric label carries the truth.
+    case AgentActionResult.Superseded  => ZIO.succeed(Response.json("""{"ok":true}"""))
     case AgentActionResult.RateLimited => ZIO.fail(ApiError.RateLimited("rate limited"))
     // Dark install: the endpoints don't exist as far as a caller can tell.
     case AgentActionResult.Disabled    => ZIO.fail(ApiError.NotFound("not found"))

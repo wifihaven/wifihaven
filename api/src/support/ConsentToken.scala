@@ -36,14 +36,16 @@ import java.util.Base64
  *     token check can never again be silent.
  *
  * Wire shape: an HMAC-signed opaque string `v1.<b64url(payload)>.<hmacHex>` where `payload` is
- * `householdId|threadId|dataAccess|expEpochSeconds`. Signed server-side under a dedicated secret so
- * the agent (or anything reading the session transcript) cannot forge, widen, or extend a token.
- * The MAC covers `"<version>.<b64>"`, so the version tag is BOUND into the signature: the #2419
- * consent link ([[ConsentGrant]], `g1`) shares this secret, and MACing the payload alone would let
- * either token be re-labelled as the other and pass its signature check. (The press token
- * `wifihaven.api.press.PressToken` has its OWN secret so it is unaffected, but it still MACs the
- * payload alone — symmetry tracked in [#2426](https://github.com/wifihaven/wifihaven/issues/2426).)
- * This is a functional capability, not a policy the model could be argued out of.
+ * `householdId|threadId|dataAccess|expEpochSeconds|sessionId` (#2668 appended the last field; a
+ * four-field payload minted by an older image still verifies — see [[decode]]). Signed server-side
+ * under a dedicated secret so the agent (or anything reading the session transcript) cannot forge,
+ * widen, or extend a token. The MAC covers `"<version>.<b64>"`, so the version tag is BOUND into
+ * the signature: the #2419 consent link ([[ConsentGrant]], `g1`) shares this secret, and MACing the
+ * payload alone would let either token be re-labelled as the other and pass its signature check.
+ * (The press token `wifihaven.api.press.PressToken` has its OWN secret so it is unaffected, but it
+ * still MACs the payload alone — symmetry tracked in
+ * [#2426](https://github.com/wifihaven/wifihaven/issues/2426).) This is a functional capability,
+ * not a policy the model could be argued out of.
  *
  * NOTE (TTL and revocation) — #2473 changed this, so read it rather than assuming the old story.
  * The TTL USED to be minutes, and "the exposure window is short" was a real part of the answer to
@@ -86,15 +88,37 @@ object ConsentToken {
   }
 
   /**
-   * The claims a verified token resolves to: the single household + thread it authorises, and
-   * whether the customer consented to household data reads.
+   * The claims a verified token resolves to: the single household + thread it authorises, whether
+   * the customer consented to household data reads, and (#2668) WHICH dispatch minted it.
+   *
+   * `sessionId` is empty for a token minted before #2668 — see [[newSessionId]].
    */
   final case class Claims(
       householdId: HouseholdId,
       threadId: String,
       dataAccess: Boolean,
       expiresAt: Instant,
+      sessionId: String,
   )
+
+  /**
+   * #2668 — a fresh id per DISPATCH, so two agent sessions running on the same thread are
+   * distinguishable at the callback boundary and `DispatchTracker` can refuse the reply of a
+   * session that no longer owns the turn.
+   *
+   * It has to be an explicit random field. The rest of the payload is `(household, thread,
+   * dataAccess, exp)` — every one of which is IDENTICAL for two dispatches on the same thread in
+   * the same second (`exp` has second granularity, and on an injected test clock it does not move
+   * at all), so the token bytes cannot serve as the session identity. Same construction as
+   * [[ConsentGrant.newNonce]]: [[java.security.SecureRandom]], 128 bits, url-safe base64 (no `|`,
+   * so it needs no escaping in the payload). Not a secret — it rides inside an already-signed
+   * payload and grants nothing on its own.
+   */
+  def newSessionId(): String = {
+    val bytes = new Array[Byte](16)
+    new java.security.SecureRandom().nextBytes(bytes)
+    Base64.getUrlEncoder.withoutPadding.encodeToString(bytes)
+  }
 
   /**
    * Mint a token for `household` + `thread`, expiring at `now + ttl`. Server-side only; `secret` is
@@ -108,9 +132,11 @@ object ConsentToken {
       now: Instant,
       ttl: java.time.Duration,
       secret: String,
+      sessionId: String,
   ): String = {
     val exp     = now.plus(ttl).getEpochSecond
-    val payload = s"${household.value}|${sanitize(threadId)}|$dataAccess|$exp"
+    val payload =
+      s"${household.value}|${sanitize(threadId)}|$dataAccess|$exp|${sanitize(sessionId)}"
     val b64     =
       Base64.getUrlEncoder.withoutPadding.encodeToString(payload.getBytes(StandardCharsets.UTF_8))
     s"$Version.$b64.${hmacHex(secret, s"$Version.$b64")}"
@@ -126,21 +152,45 @@ object ConsentToken {
       case Array(Version, b64, sig) =>
         if !constantTimeEquals(sig, hmacHex(secret, s"$Version.$b64")) then Left(Err.BadSignature)
         else
-          decode(b64).flatMap { case (household, thread, dataAccess, exp) =>
+          decode(b64).flatMap { case (household, thread, dataAccess, exp, sessionId) =>
             if now.getEpochSecond > exp then Left(Err.Expired)
             else
-              Right(Claims(HouseholdId(household), thread, dataAccess, Instant.ofEpochSecond(exp)))
+              Right(
+                Claims(
+                  HouseholdId(household),
+                  thread,
+                  dataAccess,
+                  Instant.ofEpochSecond(exp),
+                  sessionId,
+                ),
+              )
           }
       case _                        => Left(Err.Malformed)
     }
 
-  private def decode(b64: String): Either[Err, (Long, String, Boolean, Long)] =
+  /**
+   * #2668 widened the payload from four fields to five. Unlike [[ConsentGrant]]'s equivalent
+   * widening (#2453), a four-field payload still verifies here — with an EMPTY `sessionId` — and
+   * that asymmetry is deliberate:
+   *
+   *   - the consent LINK is a capability whose whole point is single use, so accepting a nonce-less
+   *     one would re-open the replay hole it exists to close: fail CLOSED;
+   *   - this token is a session's ONLY way to deliver an answer, and the TTL is 24h (#2473), so
+   *     failing closed would 401 every run that was already in flight across the deploy and throw
+   *     away real customers' answers — the exact loss #2473 was filed for.
+   *
+   * An empty `sessionId` is [[DispatchTracker.Turn.Unknown]] to the #2668 guard, which fails OPEN,
+   * so a pre-deploy session behaves exactly as it did before. Self-limiting: nothing mints a
+   * four-field payload any more, so the case drains within one token TTL of the deploy.
+   */
+  private def decode(b64: String): Either[Err, (Long, String, Boolean, Long, String)] =
     scala.util
       .Try {
         val raw = new String(Base64.getUrlDecoder.decode(b64), StandardCharsets.UTF_8)
-        raw.split("\\|", 4) match {
-          case Array(h, t, d, e) => (h.toLong, t, d.toBoolean, e.toLong)
-          case _                 => throw new IllegalArgumentException("bad payload")
+        raw.split("\\|", 5) match {
+          case Array(h, t, d, e, s) => (h.toLong, t, d.toBoolean, e.toLong, s)
+          case Array(h, t, d, e)    => (h.toLong, t, d.toBoolean, e.toLong, "")
+          case _                    => throw new IllegalArgumentException("bad payload")
         }
       }
       .toEither

@@ -502,13 +502,18 @@ final case class SupportResponder(
       // named only `agentHousehold` and the two origin resolvers); unlike those, this one must not
       // fail the dispatch — a customer message still has to get answered when we cannot read a plan.
       billing <- billingRepo.findByHousehold(hh).catchAll(_ => ZIO.none)
-      token = ConsentToken.mint(
+      // #2668: identity for THIS dispatch, so a callback can be matched against the session that
+      // owns the thread's current turn. Minted here rather than derived from the token bytes —
+      // two dispatches on one thread in the same second produce an identical payload otherwise.
+      sessionId = ConsentToken.newSessionId()
+      token     = ConsentToken.mint(
         household = hh,
         threadId = threadId,
         dataAccess = dataAccess,
         now = now,
         ttl = cfg.agentTokenTtl,
         secret = cfg.agentTokenSecretTrimmed,
+        sessionId = sessionId,
       )
       // Audit trail for every mint (#2241) — household + thread + scope, never the token. ONE line
       // shape, so an operator grep finds resume mints and webhook mints alike.
@@ -534,7 +539,7 @@ final case class SupportResponder(
       // cannot drift from the one `support_dispatch_total{transport}` already carries.
       _       <- ZIO
         .foreachDiscard(CloudAgentDispatcher.transportLabel(cfg))(
-          dispatchTracker.dispatched(threadId, hh, _, now),
+          dispatchTracker.dispatched(threadId, sessionId, hh, _, now),
         )
         .when(outcome == DispatchOutcome.Dispatched)
     } yield outcome
@@ -1432,19 +1437,62 @@ final case class SupportResponder(
             ConsentToken.verify(token, now, cfg.agentTokenSecretTrimmed) match {
               case Left(err)     => denyLoudly(action, AgentTokenRejection.reasonFor(err))
               case Right(claims) =>
-                // #2472: the ONE place every token-authenticated agent callback passes through, so
-                // the dispatch→completion pairing has exactly one closing site. Terminal actions
-                // only (DispatchTracker.TerminalActions) — a household read or an issue filing
-                // proves the session is alive but leaves the customer with nothing, which is the
-                // very failure being tracked. A REJECTED callback never reaches here, so a forged
-                // token cannot close someone else's dispatch.
-                ZIO
-                  .when(AgentAction.Terminal.contains(action))(
-                    dispatchTracker.calledBack(claims.threadId, action, now),
-                  )
-                  .unit *> f(claims, now)
+                // #2668: does this session still own the thread's turn? Checked BEFORE the #2472
+                // close, because a superseded session must not close the turn that the session
+                // which superseded it now owes an answer for.
+                supersededGuard(action, claims, now).flatMap {
+                  case Some(refusal) => ZIO.succeed(refusal)
+                  case None          =>
+                    // #2472: the ONE place every token-authenticated agent callback passes through,
+                    // so the dispatch→completion pairing has exactly one closing site. Terminal
+                    // actions only (AgentAction.Terminal) — a household read or an issue filing
+                    // proves the session is alive but leaves the customer with nothing, which is the
+                    // very failure being tracked. A REJECTED callback never reaches here, so a
+                    // forged token cannot close someone else's dispatch.
+                    ZIO
+                      .when(AgentAction.Terminal.contains(action))(
+                        dispatchTracker.calledBack(claims.threadId, action, now),
+                      )
+                      .unit *> f(claims, now)
+                }
             }
         }
+      }
+
+  /**
+   * #2668 — `Some(refusal)` iff this callback would put a SECOND answer to one customer turn in
+   * front of the customer: a session whose thread has since been re-dispatched, calling one of the
+   * [[AgentAction.ThreadWrites]].
+   *
+   * WHY THE LATER SESSION WINS. Its kickoff is a superset — the same Plain timeline the earlier
+   * session was given, plus whatever arrived after it — so nothing the superseded session was going
+   * to say is lost, while the reverse is not true. That also makes the rule the same one whether
+   * the two dispatches were a #2460 consent resume plus an inbound message (the #2668 prod shape)
+   * or just two customer messages in quick succession, which is why the guard lives here at the
+   * shared callback boundary rather than in the consent flow.
+   *
+   * SCOPED TO THREAD WRITES, not all of [[AgentAction.Terminal]]. `escalate` is deliberately NOT
+   * guarded: it is the human-handoff safety valve (#2437), and a duplicate label + operator email
+   * is noise, whereas a dropped one is a customer who asked for a person and did not get one. The
+   * two non-terminal callbacks (`issue`, `household_read`) are not customer-visible at all.
+   *
+   * The refusal is reported to the agent as SUCCESS (`AgentActionResult.Superseded` → 200) on
+   * purpose: the turn IS handled, just not by this session, and a 4xx would invite the run to retry
+   * a write it can never legitimately land.
+   */
+  private def supersededGuard[A](
+      action: String,
+      claims: ConsentToken.Claims,
+      now: Instant,
+  ): UIO[Option[Either[AgentActionResult, A]]] =
+    if !AgentAction.ThreadWrites.contains(action) then ZIO.none
+    else
+      dispatchTracker.turnOwner(claims.threadId, claims.sessionId, now).flatMap {
+        case DispatchTracker.Turn.Superseded                             =>
+          AppMetrics
+            .supportAgentAction(action, AgentActionResult.label(AgentActionResult.Superseded))
+            .as(Some(Left(AgentActionResult.Superseded)))
+        case DispatchTracker.Turn.Current | DispatchTracker.Turn.Unknown => ZIO.none
       }
 
   /**
@@ -1874,6 +1922,15 @@ object SupportResponder {
      * and given its own metric label so an operator can see the pair being attempted.
      */
     case DataSession
+
+    /**
+     * #2668 — a LATER dispatch owns this thread's turn, so this session's customer-visible write
+     * was dropped. Not a failure and not a success: the customer IS being answered, by the session
+     * that superseded this one. Its own label so the rate is readable — expect it to be small and
+     * non-zero (it tracks how often a customer's follow-up races a session already in flight), and
+     * a spike means dispatches are overlapping far more than the conversation warrants.
+     */
+    case Superseded
     case RateLimited
     case Disabled
     case Error
@@ -1886,6 +1943,7 @@ object SupportResponder {
       case Denied      => "denied"
       case NoConsent   => "denied"
       case DataSession => "denied_data_session"
+      case Superseded  => "superseded"
       case RateLimited => "rate_limited"
       case Disabled    => "disabled"
       case Error       => "error"
@@ -1893,8 +1951,10 @@ object SupportResponder {
 
     /** The cases that mean "the action succeeded" — the ONE place success is defined. */
     private def isSuccess(r: AgentActionResult): Boolean = r match {
-      case Ok | OkNoLink | OkDuplicate                                       => true
-      case Denied | NoConsent | DataSession | RateLimited | Disabled | Error => false
+      case Ok | OkNoLink | OkDuplicate                                                    => true
+      // #2668 `Superseded` is FALSE here even though the caller is told 200: the volume panels this
+      // set feeds ask "did the action happen", and a suppressed duplicate did not.
+      case Denied | NoConsent | DataSession | Superseded | RateLimited | Disabled | Error => false
     }
 
     /**

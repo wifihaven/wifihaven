@@ -44,12 +44,17 @@ import java.time.{Duration, Instant}
  * everything dispatched after it.
  *
  * MEMORY IS BOUNDED BY CONSTRUCTION, not by an eviction policy: dispatch is globally capped at
- * 50/day (`HttpRoutes` `dispatchGlobalLimiter`) and every entry is removed by
+ * 50/day (`HttpRoutes` `dispatchGlobalLimiter`) and [[sweep]] removes every entry by
  * [[DispatchTracker.deadAfterFor]] at the latest, so the live map holds at most one dispatch budget
  * per retention window. At the default 24h TTL that is 50 entries; the bound scales linearly with
  * the operator-tunable `support.agentTokenTtlMinutes` rather than being fixed (a 7-day TTL would
- * make it ~350). Each entry is a threadId plus three small fields, so even a wildly-tuned TTL costs
+ * make it ~350). Each entry is a threadId plus five small fields, so even a wildly-tuned TTL costs
  * kilobytes.
+ *
+ * #2668 changed WHEN an entry leaves, not the bound: [[calledBack]] marks it closed instead of
+ * removing it (so [[turnOwner]] can still recognise the session that owned an answered turn), and
+ * the sweep's `deadAfter` eviction — which always ran — is now the only exit. A thread holds at
+ * most one entry either way.
  *
  * PII FIREWALL (the #2438 discipline): the only things logged are the Plain threadId, the household
  * id, the bounded transport label, and an age in seconds. Never the customer message, the reply,
@@ -95,23 +100,74 @@ final class DispatchTracker private (
    * session is the one now owing a reply — an older outstanding entry for the same thread would
    * otherwise be reported as dead the moment the newer one answered. The replacement is logged so
    * the substitution is never silent.
+   *
+   * `sessionId` is the [[ConsentToken.newSessionId]] baked into the token this dispatch carries —
+   * what makes "the earlier session no longer owes a reply" ENFORCEABLE at the callback boundary
+   * ([[turnOwner]]) rather than only observable in this log (#2668). EMPTY is the explicit "this
+   * channel has no per-dispatch session identity" value: press dispatches carry no agent session id
+   * and press has no agent-callback guard to enforce, so [[turnOwner]] reports [[Turn.Unknown]] for
+   * them and refuses nothing. It disables no guard that otherwise exists.
    */
   def dispatched(
       threadId: String,
+      sessionId: String,
       household: HouseholdId,
       transport: String,
       now: Instant,
   ): UIO[Unit] =
     pending
-      .modify { m => (m.get(threadId), m.updated(threadId, Pending(household, transport, now))) }
+      .modify { m =>
+        (m.get(threadId), m.updated(threadId, Pending(household, transport, now, sessionId)))
+      }
       .flatMap {
-        case None       => ZIO.unit
-        case Some(prev) =>
+        // Only an OUTSTANDING prior entry is a supersede. #2668 keeps CLOSED entries in the map so
+        // `turnOwner` can still recognise the session that owned an answered turn, which makes
+        // `Some(prev)` the ordinary case for any follow-up message — and logging that as
+        // "no longer owes a reply" would be false (it already replied) and would drain the one
+        // line that identified the #2668 race in prod.
+        case Some(prev) if !prev.closed =>
           ZIO.logInfo(
             s"support dispatch superseded thread=$threadId household=${household.value} " +
               s"transport=$transport priorAgeSeconds=${ageSeconds(prev, now)} — the earlier " +
               "session no longer owes a reply on this thread",
           )
+        case _                          => ZIO.unit
+      }
+
+  /**
+   * #2668 — does `sessionId` still own `threadId`'s turn? The ONE place that question is answered;
+   * `SupportResponder.withClaimsE` consults it before letting a callback write anything the
+   * customer sees.
+   *
+   * Structural, not timing-based: ownership is decided by WHICH dispatch was last recorded for the
+   * thread, so two sessions racing 20 seconds apart (the prod #2668 shape) or 20 milliseconds apart
+   * resolve identically, and in whichever order they land.
+   *
+   * [[Turn.Unknown]] — no record of the thread, or a pre-#2668 token with no session id — FAILS
+   * OPEN. The state is in-memory and dropped on restart (see the class doc), so "nothing recorded"
+   * is not evidence that this session was superseded, and an answer nobody receives is a worse
+   * failure than an answer received twice.
+   *
+   * The entry survives [[calledBack]] precisely so this stays answerable afterwards: in prod the
+   * SUPERSEDING session replied first, so by the time the superseded one called back the turn was
+   * already closed. Eviction is [[sweep]]'s job, on the same [[deadAfter]] bound as before.
+   */
+  def turnOwner(threadId: String, sessionId: String, now: Instant): UIO[Turn] =
+    if sessionId.isEmpty then ZIO.succeed(Turn.Unknown)
+    else
+      pending.get.map(_.get(threadId)).flatMap {
+        case None                                => ZIO.succeed(Turn.Unknown)
+        case Some(p) if p.sessionId.isEmpty      => ZIO.succeed(Turn.Unknown)
+        case Some(p) if p.sessionId == sessionId => ZIO.succeed(Turn.Current)
+        case Some(p)                             =>
+          ZIO
+            .logInfo(
+              s"support callback from a SUPERSEDED session thread=$threadId " +
+                s"household=${p.household.value} sessionAgeSeconds=${ageSeconds(p, now)} — a later " +
+                "dispatch owns this turn and its context is a superset, so this session's " +
+                "customer-visible write is dropped (#2668)",
+            )
+            .as(Turn.Superseded)
       }
 
   /**
@@ -124,22 +180,34 @@ final class DispatchTracker private (
    * on `support_agent_action_total{op="reply",outcome="error"}` — duplicating that judgement here
    * would be a second place computing the same thing (docs/process/single-source-of-truth.md).
    *
-   * An UNTRACKED thread is a no-op, not a warning: a second callback on the same thread (reply
-   * after escalate is the instructed #2437 sequence), a dispatch outstanding across a restart, or a
-   * callback arriving after the [[deadAfter]] entry was already reported all land here
-   * legitimately.
+   * An UNTRACKED or already-closed thread is a no-op, not a warning: a second callback on the same
+   * thread (reply after escalate is the instructed #2437 sequence), a dispatch outstanding across a
+   * restart, or a callback arriving after the [[deadAfter]] entry was already reported all land
+   * here legitimately — and each closes at most one dispatch, so `completed` still pairs 1:1 with
+   * `dispatched`.
+   *
+   * #2668: the entry is MARKED closed rather than removed, so [[turnOwner]] can still tell a
+   * superseded session from an unknown one after the turn has been answered. [[sweep]] evicts it on
+   * the unchanged [[deadAfter]] bound and never reports a closed entry.
    */
   def calledBack(threadId: String, action: String, now: Instant): UIO[Unit] =
-    pending.modify(m => (m.get(threadId), m - threadId)).flatMap {
-      case None    => ZIO.unit
-      case Some(p) =>
-        AppMetrics.supportDispatch(Outcome.Completed, Some(p.transport)) *>
-          ZIO.logInfo(
-            s"support dispatch completed action=$action thread=$threadId " +
-              s"household=${p.household.value} transport=${p.transport} " +
-              s"afterSeconds=${ageSeconds(p, now)}",
-          )
-    }
+    pending
+      .modify { m =>
+        m.get(threadId) match {
+          case Some(p) if !p.closed => (Some(p), m.updated(threadId, p.copy(closed = true)))
+          case _                    => (None, m)
+        }
+      }
+      .flatMap {
+        case None    => ZIO.unit
+        case Some(p) =>
+          AppMetrics.supportDispatch(Outcome.Completed, Some(p.transport)) *>
+            ZIO.logInfo(
+              s"support dispatch completed action=$action thread=$threadId " +
+                s"household=${p.household.value} transport=${p.transport} " +
+                s"afterSeconds=${ageSeconds(p, now)}",
+            )
+      }
 
   /**
    * Report the dispatches nobody closed, in two tiers (see [[SlowAfter]] / [[deadAfter]] for why
@@ -179,17 +247,24 @@ final class DispatchTracker private (
   def sweep(now: Instant): UIO[Unit] =
     pending
       .modify { m =>
-        val dead      = m.filter { case (_, p) => !ageBelow(p, now, deadAfter) }
+        // #2668: a CLOSED entry is retained only so `turnOwner` can recognise a superseded
+        // session; it is evicted on the same bound as before and is never reported — the agent
+        // came back, which is the whole question these two tiers ask.
+        val expired   = m.filter { case (_, p) => !ageBelow(p, now, deadAfter) }
+        val dead      = expired.filter { case (_, p) => !p.closed }
         val slow      = m.filter { case (t, p) =>
-          !dead.contains(t) && !p.slowReported && !ageBelow(p, now, SlowAfter)
+          !expired.contains(t) && !p.closed && !p.slowReported && !ageBelow(p, now, SlowAfter)
         }
-        val next      = (m -- dead.keys).map { case (t, p) =>
+        val next      = (m -- expired.keys).map { case (t, p) =>
           t -> (if slow.contains(t) then p.copy(slowReported = true) else p)
         }
         // Counted over `next` (post-sweep) and NOT over `slow`: `slow` is the once-per-dispatch
         // report set and is empty on every later tick, whereas the gauge must keep reading 1 for
         // as long as that customer is actually still waiting.
-        val unreplied = next.count { case (_, p) => !ageBelow(p, now, SlowAfter) }
+        // #2668: `next` now retains CLOSED entries (so `turnOwner` can still place a superseded
+        // session), and a closed dispatch is one the agent ANSWERED — counting it here would read
+        // as a customer still waiting and would light the #2477 alert on a healthy thread.
+        val unreplied = next.count { case (_, p) => !p.closed && !ageBelow(p, now, SlowAfter) }
         ((dead, slow, unreplied), next)
       }
       .flatMap { case (dead, slow, unreplied) =>
@@ -231,13 +306,37 @@ final class DispatchTracker private (
 
 object DispatchTracker {
 
-  /** One outstanding dispatch. `slowReported` makes the [[SlowAfter]] tier fire exactly once. */
+  /**
+   * One dispatch. `slowReported` makes the [[SlowAfter]] tier fire exactly once; `sessionId` +
+   * `closed` are #2668's turn ownership — a closed entry is kept (never reported) until
+   * [[deadAfter]] so a late callback from a SUPERSEDED session is still distinguishable from one on
+   * a thread we simply have no record of.
+   */
   private[support] final case class Pending(
       household: HouseholdId,
       transport: String,
       dispatchedAt: Instant,
+      sessionId: String,
       slowReported: Boolean = false,
+      closed: Boolean = false,
   )
+
+  /**
+   * #2668 — who owns a thread's current turn, from the point of view of a calling-back session.
+   * Bounded on purpose: [[Unknown]] is the FAIL-OPEN case and must never be confused with
+   * [[Superseded]], which is the only one that drops a customer-visible write.
+   */
+  enum Turn {
+
+    /** This session is the latest dispatch on the thread — it owns the turn. */
+    case Current
+
+    /** A LATER dispatch owns the turn; this session's answer is a duplicate. */
+    case Superseded
+
+    /** No record (restart, evicted entry, or a pre-#2668 token) — decide nothing, allow. */
+    case Unknown
+  }
 
   /**
    * The `outcome` values this adds to the existing `support_dispatch_total` series (#2438). It

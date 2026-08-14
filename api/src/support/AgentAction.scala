@@ -39,4 +39,13 @@ object AgentAction {
    * the failure [[DispatchTracker]] exists to catch.
    */
   val Terminal: Set[String] = Set(Reply, Escalate, ConsentRequest)
+
+  /**
+   * #2668 — the callbacks that WRITE A MESSAGE into the customer's thread, and so are the ones a
+   * superseded session must not perform twice (`SupportResponder.supersededGuard`). A strict subset
+   * of [[Terminal]]: [[Escalate]] is terminal but writes no message — it labels the thread and
+   * emails the operator (#2437) — and is deliberately left ungated, because a duplicate handoff is
+   * noise while a dropped one is a customer who asked for a human and did not get one.
+   */
+  val ThreadWrites: Set[String] = Set(Reply, ConsentRequest)
 }
