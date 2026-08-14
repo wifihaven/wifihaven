@@ -300,7 +300,8 @@ object RouterDecisionSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
         // trivially true: only one of them makes the call.
         recorder <- seedAndEnrollRouterWithId(rr, routes)
         other    <- seedAndEnrollRouterWithId(rr, routes)
-        (rid, tok) = recorder
+        (rid, tok)    = recorder
+        (otherRid, _) = other
         resp   <- callDecide(routes, tok, mac, "example.com")
         rBody  <- resp.body.asString
         dec    <- ZIO.fromEither(rBody.fromJson[RouterDecisionResponse])
@@ -308,7 +309,7 @@ object RouterDecisionSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
       } yield assertTrue(dec.decision == ConnectionDecision.Block) &&
         assertTrue(events.size == 1) &&
         assertTrue(events.head.routerId.contains(rid)) &&
-        assertTrue(!events.head.routerId.contains(other._1))
+        assertTrue(!events.head.routerId.contains(otherRid))
     },
     test(
       "#1413: paused profile + AppMode.Allowed host → allow:extra_allowed (extraAllowed beats pause)",

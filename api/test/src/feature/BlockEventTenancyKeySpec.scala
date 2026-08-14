@@ -36,6 +36,17 @@ import zio.test.*
  * someone later backfills the NULLs to household 1, or re-adds a `DEFAULT`. That is precisely the
  * dark-by-default shape gap 2 of this same issue existed to remove.
  *
+ * TEMPORARY SHAPE — retire the hand-written JOIN below when a scoped read lands. The attribution
+ * predicate belongs in `BlockEventRepoLive`, and a copy of it here plus a copy there is the
+ * two-sources drift shape AGENTS.md#single-source-of-truth exists to prevent. The first
+ * household-scoped read must be pinned THROUGH the repo, and this spec's first test rewritten to
+ * call it. It lives here only because there is no repo method to point at yet.
+ *
+ * Note on the `column_default` test: it pins V87 (already merged in #2582), so it passes with every
+ * source change in this PR reverted. It rides here because #2582 was a schema-only PR that could
+ * carry no test, and it is a real guard against a LATER migration re-adding a default — but it is
+ * not coverage of the stamping change. The first test is.
+ *
  * Full stack on embedded Postgres, no repo mocks.
  */
 object BlockEventTenancyKeySpec
