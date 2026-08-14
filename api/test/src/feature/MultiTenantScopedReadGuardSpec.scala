@@ -404,12 +404,15 @@ object MultiTenantScopedReadGuardSpec extends ZIOSpecDefault {
     val cur   = new StringBuilder
     var depth = 0
     s.foreach {
-      case c @ ('[' | '(')   => depth += 1; cur.append(c)
-      case c @ (']' | ')')   => depth -= 1; cur.append(c)
-      case ',' if depth == 0 => out += cur.toString; cur.clear()
-      case c                 => cur.append(c)
+      case c @ ('[' | '(' | '{') => depth += 1; cur.append(c)
+      case c @ (']' | ')' | '}') => depth -= 1; cur.append(c)
+      case ',' if depth == 0     => out += cur.toString; cur.clear()
+      case c                     => cur.append(c)
     }
     out += cur.toString
+    // Empty segments are dropped, which is what makes a TRAILING comma a non-event. That matters:
+    // `.scalafmt.conf` sets `trailingCommas = always`, so every multi-line argument list in this
+    // repo ends in one, and counting raw commas would read a formatted single-argument call as two.
     out.result().map(_.trim).filter(_.nonEmpty)
   }
 
@@ -757,16 +760,13 @@ object MultiTenantScopedReadGuardSpec extends ZIOSpecDefault {
         j += 1
       }
       if close > open then {
-        val args        = src.substring(open + 1, close)
-        var d           = 0
-        var topLevelSep = false
-        args.foreach {
-          case '(' | '[' | '{' => d += 1
-          case ')' | ']' | '}' => d -= 1
-          case ',' if d == 0   => topLevelSep = true
-          case _               => ()
-        }
-        if !topLevelSep && args.trim.nonEmpty then out += args.trim
+        // Count top-level ARGUMENTS, not commas, via the same splitter the signature scan uses. A
+        // raw comma test would miss this repo's own formatted spelling: `.scalafmt.conf` sets
+        // `trailingCommas = always`, so a multi-line single-argument call reads
+        // `.findByMac(\n  mac,\n)` and the trailing comma would look like a second argument —
+        // leaving the detector blind to exactly the call it exists to forbid.
+        val args = splitParams(src.substring(open + 1, close))
+        if args.sizeIs == 1 then out += args.head
       }
       i = src.indexOf(marker, i + 1)
     }
@@ -1008,15 +1008,25 @@ object MultiTenantScopedReadGuardSpec extends ZIOSpecDefault {
           """deviceRepo.findByMac(mac)
             |deviceRepo.findByMac(MacAddress.unsafe(raw))
             |deviceRepo.findByMac(if (a) x else y)
+            |deviceRepo.findByMac(
+            |  someLongExpression,
+            |)
             |deviceRepo.findByMac(cr.mac, hh)
             |deviceRepo.findByMac(mac, HouseholdId.Default)
+            |deviceRepo.findByMac(
+            |  cr.mac,
+            |  hh,
+            |)
             |""".stripMargin
         val found = singleArgCalls(probe, "findByMac")
         assertTrue(
-          found.size == 3,
+          found.size == 4,
           found.contains("mac"),
           found.contains("MacAddress.unsafe(raw)"),
           found.contains("if (a) x else y"),
+          // The scalafmt `trailingCommas = always` spelling — one argument, two commas' worth of
+          // punctuation. Blind to this, the detector would miss every multi-line call in the repo.
+          found.contains("someLongExpression"),
         )
       }
     },
@@ -1050,22 +1060,32 @@ object MultiTenantScopedReadGuardSpec extends ZIOSpecDefault {
       // `exists` over the whole list — one pattern matching a sample would otherwise vouch for all.
       assertTrue(
         (UnscannableDeclarations ++ UnscannableRepoReads).forall { case (label, pattern) =>
-          val sample = label match {
+          // EVERY sample for a label must match — a list, not one representative. Widening the
+          // UIO/IO/ZIO pattern to cover `Boolean` previously replaced its `Option[` sample, which
+          // silently un-pinned the branch the pattern was originally written for.
+          val samples = label match {
             // Samples carry a MODIFIER where one is legal, so the patterns are pinned against the
             // spelling that previously slipped past them (`private[db] trait DeviceRepo`).
-            case "abstract class …Repo"          => "private[db] abstract class FooRepo {"
-            case "trait …Repository/Dao/Store"   => "private[db] trait FooRepository {"
-            case "indented / nested trait …Repo" => "  private[db] trait FooRepo {"
+            case "abstract class …Repo"                      =>
+              List("abstract class FooRepo {", "private[db] abstract class FooRepo {")
+            case "trait …Repository/Dao/Store"               =>
+              List("trait FooRepository {", "private[db] trait FooDao {", "sealed trait FooStore {")
+            case "indented / nested trait …Repo"             =>
+              List("  trait FooRepo {", "  private[db] trait FooRepo {")
             case "read returning UIO/IO/ZIO instead of Task" =>
-              // Boolean too: the existence probe that backs a 409 leaks the same oracle as the row.
-              "  def nameTaken(name: String): UIO[Boolean]"
+              List(
+                "  def findByName(name: String): UIO[Option[Foo]]",
+                // Boolean too: the existence probe backing a 409 leaks the same oracle as the row.
+                "  def nameTaken(name: String): UIO[Boolean]",
+                "  def findByName(name: String): IO[DbError, Option[Foo]]",
+              )
             case "curried parameter lists"                   =>
-              "  def findByName(name: String)(trace: Trace): Task[Option[Foo]]"
+              List("  def findByName(name: String)(trace: Trace): Task[Option[Foo]]")
             case "type-parameterised read"                   =>
-              "  def findByName[A](name: String): Task[Option[A]]"
+              List("  def findByName[A](name: String): Task[Option[A]]")
             case other                                       => sys.error(s"no sample for $other")
           }
-          pattern.r.findFirstIn(sample).isDefined
+          samples.forall(s => pattern.r.findFirstIn(s).isDefined)
         },
       )
     },
