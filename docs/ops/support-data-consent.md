@@ -174,11 +174,14 @@ change raises its priority.
   (household + thread, never the token) and metered on
   `support_consent_total{outcome}`. A withdrawal of a grant that was not live
   meters as `revoke_noop`, so the panel counts real withdrawals.
-- **At the consent moment the customer sees only server-authored text.** That is
-  the guarantee, and it rests on three parts, none sufficient alone: the prompt is
-  server-authored (#2419), the live link never re-enters the agent's context
-  (#2453, below), and no agent-authored message may share the turn with the
-  prompt (#2667).
+- **In the turn that posts the prompt, the customer sees only server-authored
+  text.** That is the guarantee, and it rests on three parts, none sufficient
+  alone: the prompt is server-authored (#2419), the live link never re-enters the
+  agent's context (#2453, below), and no agent-authored message may share the
+  turn with the prompt (#2667). It is scoped to the TURN: the link stays
+  redeemable for 24h, and a later turn can still post text beneath a live prompt
+  and frame the link the customer can already see. That is
+  [#2709](https://github.com/wifihaven/wifihaven/issues/2709), open.
 - **The agent cannot post beside the prompt (#2667).** Until this, "the agent
   supplies no text *here*" was true of the consent *message* and false of the
   consent *moment*: nothing stopped the agent calling `reply` in the same turn,

@@ -1062,14 +1062,24 @@ final case class SupportResponder(
    * in the consent MESSAGE.
    *
    * #2667 — that sentence is narrower than the guarantee it reads as, and the wider one is what
-   * protects customers: AT THE CONSENT MOMENT THE CUSTOMER SEES ONLY SERVER-AUTHORED TEXT. It did
-   * not hold until #2667, because nothing stopped the agent calling [[agentReply]] in the same
-   * turn, immediately beside the real signed link and under the same attribution — and a genuine,
-   * correctly-signed link with a hostile framing next to it is a phishing primitive with every
-   * technical control intact. It is now enforced by [[exclusiveThreadWrite]]: the two
-   * [[AgentAction.ThreadWrites]] are mutually exclusive within a session, in either order. Adjacent
-   * agent text is NOT a separate concern to be left to the prompt — the threat model is an agent
-   * that ignores its prompt.
+   * protects customers: IN THE TURN THAT POSTS THE PROMPT, THE CUSTOMER SEES ONLY SERVER-AUTHORED
+   * TEXT. It did not hold at all until #2667, because nothing stopped the agent calling
+   * [[agentReply]] in the same turn, immediately beside the real signed link and under the same
+   * attribution — and a genuine, correctly-signed link with a hostile framing next to it is a
+   * phishing primitive with every technical control intact. It is now enforced by
+   * [[exclusiveThreadWrite]]: the two [[AgentAction.ThreadWrites]] are mutually exclusive within a
+   * session, in either order. Adjacent agent text is NOT a separate concern to be left to the
+   * prompt — the threat model is an agent that ignores its prompt.
+   *
+   * SCOPE, stated so it is not read as more than it is. The exclusion is per SESSION, and the link
+   * stays redeemable for [[SupportResponder.ConsentTtl]]. A LATER turn — the customer asking "what
+   * is this link?" dispatches a fresh session with nothing claimed — can still post agent text
+   * beneath a live prompt and frame the link the customer can already see. That costs the attacker
+   * a customer round trip and is strictly narrower than what shipped before, but it is open, and
+   * closing it needs durable per-thread state (so, a migration) plus a product call about answering
+   * a customer who asks about the link. Tracked in
+   * https://github.com/wifihaven/wifihaven/issues/2709. Do NOT relax this wording back to an
+   * unqualified "at the consent moment" — the unqualified version is what let #2667 ship.
    *
    * #2453 — that guarantee needs a second half, because the prompt is posted through the SAME
    * machine-user write path as every AI reply and therefore comes back on the timeline as an
@@ -1555,12 +1565,11 @@ final case class SupportResponder(
    * no-op that posts nothing, and a boundary claim would let that silently eat the answer the agent
    * then owes the customer.
    *
-   * Every claim is SETTLED with what its write actually did. A write that did not land leaves
-   * nothing in front of the customer, so it does not spend the turn — otherwise one Plain failure
-   * would become a turn where the customer hears nothing at all. See
-   * [[DispatchTracker.settleThreadWrite]] for the one case that recovery does NOT cover (both
-   * callbacks fired concurrently AND the first write then failing) and why refusing is the right
-   * direction to fail in there.
+   * Every claim is SETTLED with what its write actually did, and the recovery is deliberately
+   * narrow — see [[settleThreadWrite]] for why only a dark Plain client proves non-delivery, and
+   * [[DispatchTracker.settleThreadWrite]] for the concurrent case recovery cannot reach. Both fail
+   * towards refusing, which is the right direction for a control keeping attacker-influenced text
+   * away from a live consent link.
    *
    * The refusal is reported to the agent as SUCCESS (→ 200), like #2668's: the turn IS handled, and
    * a 4xx would invite the run to retry a write it can never legitimately land.
@@ -1568,31 +1577,58 @@ final case class SupportResponder(
   private def exclusiveThreadWrite(action: String, claims: ConsentToken.Claims)(
       post: UIO[AgentActionResult],
   ): UIO[AgentActionResult] =
-    dispatchTracker.claimThreadWrite(claims.threadId, claims.sessionId, action).flatMap {
-      case DispatchTracker.ThreadWriteClaim.Excluded(by) =>
-        // PII firewall (#2438): the thread id and the two bounded action names, never the
-        // suppressed text and never anything about the customer.
-        ZIO.logWarning(
-          s"support: consent turn is server-authored — dropping op=$action on " +
-            s"thread=${claims.threadId} because this session already posted op=$by. The customer's " +
-            "data-access decision must rest on the server's own message alone (#2667)",
-        ) *>
-          AppMetrics.supportConsent(SupportResponder.exclusionOutcome(action)) *>
-          done(action, AgentActionResult.ConsentExclusive)
-      case DispatchTracker.ThreadWriteClaim.Claimed      =>
-        // `onExit`, not a flatMap: an interrupted or defective write must still settle, or the kind
-        // stays in flight forever and silently blocks the other one for the rest of the session.
-        post
-          .onExit(e =>
-            dispatchTracker.settleThreadWrite(
-              claims.threadId,
-              claims.sessionId,
-              action,
-              landed = e.foldExit(_ => false, _ == AgentActionResult.Ok),
-            ),
-          )
-      case DispatchTracker.ThreadWriteClaim.Untracked    => post
+    // The mask makes taking a claim and installing its `onExit` ONE uninterruptible step. Without
+    // it, an interrupt landing between the two leaves the kind in flight for good, silently
+    // blocking the other one for the rest of the session. `restore` puts the write itself — the
+    // only slow part — back under normal interruption.
+    ZIO.uninterruptibleMask { restore =>
+      dispatchTracker.claimThreadWrite(claims.threadId, claims.sessionId, action).flatMap {
+        case DispatchTracker.ThreadWriteClaim.Excluded(by) =>
+          // PII firewall (#2438): the thread id and the two bounded action names, never the
+          // suppressed text and never anything about the customer.
+          ZIO.logWarning(
+            s"support: consent turn is server-authored — dropping op=$action on " +
+              s"thread=${claims.threadId} because this session already posted op=$by. The " +
+              "customer's data-access decision must rest on the server's own message alone (#2667)",
+          ) *>
+            AppMetrics.supportConsent(SupportResponder.exclusionOutcome(action)) *>
+            done(action, AgentActionResult.ConsentExclusive)
+        case DispatchTracker.ThreadWriteClaim.Claimed      =>
+          // `onExit`, not a flatMap: an interrupted or defective write must still settle.
+          restore(post).onExit(e => settleThreadWrite(action, claims, e))
+        case DispatchTracker.ThreadWriteClaim.Untracked    => restore(post)
+      }
     }
+
+  /**
+   * #2667 — did the write reach the customer? Only [[AgentActionResult.Disabled]] answers NO.
+   *
+   * ONLY `Disabled` PROVES NON-DELIVERY. It is our own flag: the Plain write half is off, so
+   * nothing was attempted and giving the turn back is unambiguously safe. Everything else is
+   * settled LANDED, including [[AgentActionResult.Error]] — `PlainClient` collapses a non-2xx, a
+   * GraphQL error, a transport failure and a `RequestTimeout` into that one value, and a write that
+   * timed out may very well have been applied. Reading a timeout as "nothing was posted" would free
+   * the claim and let a consent prompt land underneath a reply the customer can already see, which
+   * is the whole thing this guards. An interrupt or a defect is unknowable and settles the same
+   * way.
+   *
+   * So the recovery is narrow on purpose: it covers the dark-install case and nothing else. The
+   * cost of erring this way is a silent turn — loud on
+   * `support_agent_action_total{op,outcome="error"}` and on the #2472 dispatch pairing — which is
+   * the direction a control keeping attacker-influenced text away from a live consent link should
+   * fail in.
+   */
+  private def settleThreadWrite(
+      action: String,
+      claims: ConsentToken.Claims,
+      exit: Exit[Nothing, AgentActionResult],
+  ): UIO[Unit] =
+    dispatchTracker.settleThreadWrite(
+      claims.threadId,
+      claims.sessionId,
+      action,
+      landed = exit.foldExit(_ => true, _ != AgentActionResult.Disabled),
+    )
 
   /**
    * #2473 — the ONE support-side token rejection path: log + meter the loud shared series, then

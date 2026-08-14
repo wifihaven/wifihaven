@@ -125,7 +125,9 @@ object SupportPrivacy {
    *
    * The guarantee rests on THREE parts, none sufficient alone: the prompt is server-authored
    * (#2419), the live link never reaches the agent (here), and no agent-authored message may share
-   * the turn with the prompt (#2667's mutual exclusion at the two thread-write sites).
+   * the TURN with the prompt (#2667's mutual exclusion at the two thread-write sites). A LATER turn
+   * still can, which is why this redaction matters on its own — it is what stops that turn
+   * re-posting the URL rather than merely referring to it (issue #2709).
    *
    * Deliberately NARROW, and deliberately not [[scrubForIssue]]: thread history must not be
    * blanket-URL-scrubbed, because a customer legitimately pastes links the agent needs to read.
