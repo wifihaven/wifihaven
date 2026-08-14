@@ -212,8 +212,9 @@ object SupportAgentRoutes {
     // caller is told OK deliberately — the customer IS being answered, and a 4xx would make the run
     // retry a write it can never legitimately land. The `superseded` metric label carries the truth.
     case AgentActionResult.Superseded       => ZIO.succeed(Response.json("""{"ok":true}"""))
-    // #2667: this session already put its one message in front of the customer, and a reply beside
-    // a consent prompt is exactly the adjacency the server-authored prompt exists to prevent. Told
+    // #2667: this session already put the OTHER kind of customer-visible message in front of the
+    // customer, and a reply beside a consent prompt is exactly the adjacency the server-authored
+    // prompt exists to prevent. Told
     // OK for the same reason as `Superseded` — the turn is handled and a 4xx would make the run
     // retry a write it can never legitimately land. The `consent_exclusive` label carries the truth.
     case AgentActionResult.ConsentExclusive => ZIO.succeed(Response.json("""{"ok":true}"""))

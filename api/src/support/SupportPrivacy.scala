@@ -123,9 +123,9 @@ object SupportPrivacy {
    * sees only server-authored text — because a prompt-injected agent can re-post the REAL, VALID
    * URL wrapped in a pretext of its own. The premise holds only if the agent never SEES the link.
    *
-   * This is one of the guarantee's THREE halves, and none of them is sufficient alone: the prompt
-   * is server-authored (#2419), the live link never reaches the agent (here), and no agent-authored
-   * message may share the turn with the prompt (#2667's mutual exclusion at the callback layer).
+   * The guarantee rests on THREE parts, none sufficient alone: the prompt is server-authored
+   * (#2419), the live link never reaches the agent (here), and no agent-authored message may share
+   * the turn with the prompt (#2667's mutual exclusion at the two thread-write sites).
    *
    * Deliberately NARROW, and deliberately not [[scrubForIssue]]: thread history must not be
    * blanket-URL-scrubbed, because a customer legitimately pastes links the agent needs to read.

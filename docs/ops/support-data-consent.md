@@ -175,7 +175,7 @@ change raises its priority.
   `support_consent_total{outcome}`. A withdrawal of a grant that was not live
   meters as `revoke_noop`, so the panel counts real withdrawals.
 - **At the consent moment the customer sees only server-authored text.** That is
-  the guarantee, and it has three halves, none sufficient alone: the prompt is
+  the guarantee, and it rests on three parts, none sufficient alone: the prompt is
   server-authored (#2419), the live link never re-enters the agent's context
   (#2453, below), and no agent-authored message may share the turn with the
   prompt (#2667).

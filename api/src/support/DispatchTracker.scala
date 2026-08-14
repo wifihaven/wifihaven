@@ -171,7 +171,7 @@ final class DispatchTracker private (
       }
 
   /**
-   * #2667 — CLAIM this session's one customer-visible message for the turn, atomically.
+   * #2667 — CLAIM one KIND of customer-visible thread write for this session, atomically.
    *
    * WHAT IT PROTECTS. The #2419 consent prompt is server-authored so that a prompt-injected agent
    * cannot craft a phishing message under our own `🤖 WifiHaven support assistant` attribution.
@@ -181,20 +181,31 @@ final class DispatchTracker private (
    * two [[AgentAction.ThreadWrites]] are MUTUALLY EXCLUSIVE within a session — in either order,
    * because a hostile framing posted before the link works exactly as well as one posted after it.
    *
+   * KIND, NOT COUNT. It refuses the OTHER kind, never a repeat of the same one: a session replying
+   * twice is a different question (#2668 owns "one turn, one reply" ACROSS sessions) and is
+   * deliberately unchanged here. What this guard says is that the two kinds never COMBINE.
+   *
    * WHY A CLAIM AND NOT A CHECK. A check-then-write pair is racy by construction, and the caller
    * whose race it is, is the untrusted one: an injected agent can fire `reply` and
-   * `request-consent` concurrently and slip both past a read. The claim is one atomic `modify`, so
-   * exactly one of the two kinds can ever be held.
+   * `request-consent` concurrently — parallel tool calls are ordinary agent behaviour — and slip
+   * both past a read. The claim is one atomic `modify`, so only one KIND can ever be in play.
    *
-   * REPEATS OF THE SAME KIND ARE [[ThreadWriteClaim.Held]], NOT refused. A session replying twice
-   * is a separate question (#2668 owns "one turn, one reply" ACROSS sessions) and is deliberately
-   * not changed here — this guard is about the two kinds not COMBINING.
+   * A KIND IS IN PLAY WHILE IT IS IN FLIGHT, NOT ONLY ONCE IT HAS LANDED ([[ThreadWrite.busy]]).
+   * Counting in-flight writes rather than recording a bare "this kind was claimed" is what makes
+   * [[settleThreadWrite]] safe under concurrency: with a bare set, a failed write would clear the
+   * key a CONCURRENT sibling's landed write had earned, and a consent prompt could then post
+   * underneath agent text already in front of the customer — the exact adjacency this exists to
+   * prevent.
    *
    * [[ThreadWriteClaim.Untracked]] — no record of the thread, a session that no longer owns it, or
    * a channel with no session identity — FAILS OPEN, the same call [[turnOwner]] makes and for the
    * same reason: the state is in-memory and dropped on restart, so "nothing recorded" is not
    * evidence that a consent prompt was posted, and a customer who gets no answer at all is the
    * worse failure. A superseded session is already refused by [[turnOwner]] before it reaches here.
+   *
+   * Every [[ThreadWriteClaim.Claimed]] MUST be settled with [[settleThreadWrite]] — an unsettled
+   * claim leaves the kind permanently in flight and silently blocks the other one for the rest of
+   * the session.
    */
   def claimThreadWrite(
       threadId: String,
@@ -206,38 +217,65 @@ final class DispatchTracker private (
       pending.modify { m =>
         m.get(threadId) match {
           case Some(p) if p.sessionId == sessionId =>
-            p.threadWrites.find(_ != action) match {
+            p.threadWrites.collectFirst {
+              case (other, w) if other != action && w.busy => other
+            } match {
               case Some(other) => (ThreadWriteClaim.Excluded(other), m)
               case None        =>
-                if p.threadWrites.contains(action) then (ThreadWriteClaim.Held, m)
-                else
-                  (
-                    ThreadWriteClaim.Claimed,
-                    m.updated(threadId, p.copy(threadWrites = p.threadWrites + action)),
-                  )
+                val w = p.threadWrites.getOrElse(action, ThreadWrite())
+                (
+                  ThreadWriteClaim.Claimed,
+                  m.updated(
+                    threadId,
+                    p.copy(
+                      threadWrites =
+                        p.threadWrites.updated(action, w.copy(inFlight = w.inFlight + 1)),
+                    ),
+                  ),
+                )
             }
           case _                                   => (ThreadWriteClaim.Untracked, m)
         }
       }
 
   /**
-   * #2667 — give back a claim whose write did NOT land (Plain refused it, or the client is dark).
+   * #2667 — settle a [[ThreadWriteClaim.Claimed]]: the write is no longer in flight, and `landed`
+   * says whether it reached the customer.
    *
-   * Without this a failed consent post would silently spend the turn: the prompt never reached the
-   * customer, yet the agent's "sorry, something went wrong" reply would be refused as if it had,
-   * and the customer would get nothing at all. Releasing is safe precisely because nothing was put
-   * in front of the customer — the exclusion has nothing to protect.
+   * A write that did NOT land (Plain refused it, or the client is dark) leaves nothing in front of
+   * the customer, so it must not spend the turn — otherwise a failed consent post would make the
+   * agent's "sorry, something went wrong" reply be refused as if the prompt had arrived, and the
+   * customer would get nothing at all. A write that DID land is remembered for the rest of the
+   * session and can never be given back.
    *
-   * Only the caller that took a fresh [[ThreadWriteClaim.Claimed]] may release; a
-   * [[ThreadWriteClaim.Held]] repeat must not clear the claim its predecessor's SUCCESSFUL write
-   * established.
+   * LIMIT, STATED. This recovers the SEQUENTIAL ordering. If the agent fires both callbacks
+   * concurrently and the first one's write then fails, the second was already refused while the
+   * first was in flight and cannot be un-refused — that turn ends silent (loud on
+   * `support_agent_action_total{outcome="error"}` for the failed write). Refusing is the deliberate
+   * direction to fail in for a control whose job is to keep attacker-influenced text away from a
+   * live consent link; buffering a write until a concurrent sibling settles would be the only
+   * alternative, and it is not worth the machinery for a Plain failure racing a double callback.
    */
-  def releaseThreadWrite(threadId: String, sessionId: String, action: String): UIO[Unit] =
+  def settleThreadWrite(
+      threadId: String,
+      sessionId: String,
+      action: String,
+      landed: Boolean,
+  ): UIO[Unit] =
     ZIO
       .unless(sessionId.isEmpty)(pending.update { m =>
         m.get(threadId) match {
           case Some(p) if p.sessionId == sessionId =>
-            m.updated(threadId, p.copy(threadWrites = p.threadWrites - action))
+            val w = p.threadWrites.getOrElse(action, ThreadWrite())
+            m.updated(
+              threadId,
+              p.copy(
+                threadWrites = p.threadWrites.updated(
+                  action,
+                  ThreadWrite(landed = w.landed || landed, inFlight = math.max(0, w.inFlight - 1)),
+                ),
+              ),
+            )
           case _                                   => m
         }
       })
@@ -385,10 +423,11 @@ object DispatchTracker {
    * [[deadAfter]] so a late callback from a SUPERSEDED session is still distinguishable from one on
    * a thread we simply have no record of.
    *
-   * `threadWrites` is #2667's exclusion: which of the two [[AgentAction.ThreadWrites]] this session
-   * has already put in front of the customer. It holds at most one value in practice — the second
-   * KIND is what [[claimThreadWrite]] refuses — so it costs a few bytes and stays bounded by the
-   * same eviction as everything else on the entry.
+   * `threadWrites` is #2667's exclusion: per [[AgentAction.ThreadWrites]] KIND, whether this
+   * session has put one in front of the customer and how many are in flight. It is keyed by a
+   * two-value vocabulary and only one kind can ever be non-empty (the other is what
+   * [[claimThreadWrite]] refuses), so it costs a few bytes and stays bounded by the same eviction
+   * as everything else on the entry.
    */
   private[support] final case class Pending(
       household: HouseholdId,
@@ -397,26 +436,37 @@ object DispatchTracker {
       sessionId: String,
       slowReported: Boolean = false,
       closed: Boolean = false,
-      threadWrites: Set[String] = Set.empty,
+      threadWrites: Map[String, ThreadWrite] = Map.empty,
   )
 
   /**
-   * #2667 — the outcome of claiming a session's one customer-visible message. Bounded on purpose:
+   * #2667 — one KIND of customer-visible write, from this session's point of view. `landed` is
+   * permanent (the customer saw it); `inFlight` counts claims taken and not yet settled.
+   */
+  private[support] final case class ThreadWrite(landed: Boolean = false, inFlight: Int = 0) {
+
+    /**
+     * Does this kind block the OTHER one? A LANDED write does, forever. So does one still in flight
+     * — the decisive case: without it, two callbacks racing would each see the other as absent and
+     * both land, which is precisely the adjacency the claim exists to prevent.
+     */
+    def busy: Boolean = landed || inFlight > 0
+  }
+
+  /**
+   * #2667 — the outcome of claiming one KIND of customer-visible write. Bounded on purpose:
    * [[Excluded]] is the ONLY value that suppresses a write, and [[Untracked]] (the fail-open case)
    * must never be confused with it.
    */
   enum ThreadWriteClaim {
 
-    /** Freshly taken by this call — the caller must [[releaseThreadWrite]] if its write fails. */
+    /** Taken by this call — the caller MUST [[settleThreadWrite]] once its write resolves. */
     case Claimed
 
-    /** This session already wrote this KIND. Allowed, and NOT the caller's to release. */
-    case Held
-
-    /** The session already wrote the OTHER kind (`by`), so this one is suppressed. */
+    /** The session has the OTHER kind (`by`) landed or in flight, so this one is suppressed. */
     case Excluded(by: String)
 
-    /** No record, or no session identity — decide nothing, allow. */
+    /** No record, or no session identity — decide nothing, allow, and settle nothing. */
     case Untracked
   }
 

@@ -1085,6 +1085,13 @@ final case class SupportResponder(
    * JWT, writes one. A thread that already has a live grant is a no-op Ok (nothing to ask), so a
    * confused agent can't re-prompt a customer who already said yes; everything else is capped by
    * `consentThreadLimiter`.
+   *
+   * That cap is consumed BEFORE #2667's exclusion check, so an ask that is then suppressed as
+   * `consent_prompt_after_reply` still spends thread budget. Same reasoning as the issue limiters:
+   * what the cap bounds is the COST an agent can impose, and a suppressed ask still cost a token
+   * verification and a tracker round trip. Moving the exclusion earlier is not the alternative —
+   * the claim belongs at the write ([[exclusiveThreadWrite]]), because the already-granted branch
+   * above posts nothing and must not spend the turn.
    */
   def agentRequestConsent(bearer: Option[String]): UIO[AgentActionResult] =
     // The OTHER callback that needs the current time: takes the verified `now` from the token check
@@ -1523,7 +1530,11 @@ final case class SupportResponder(
       }
 
   /**
-   * #2667 — run `post` only if it can be this session's ONE customer-visible message for the turn.
+   * #2667 — run `post` only if this session has not already put the OTHER KIND of customer-visible
+   * message in front of the customer this turn.
+   *
+   * KIND, not count: a session replying twice is unchanged (#2668 owns "one turn, one reply" ACROSS
+   * sessions). What is refused is the two kinds COMBINING.
    *
    * THE GUARANTEE IT MAKES STRUCTURAL. #2419's consent prompt is server-authored so that a
    * prompt-injected agent cannot craft a phishing message under our attribution. Read as it was
@@ -1544,9 +1555,12 @@ final case class SupportResponder(
    * no-op that posts nothing, and a boundary claim would let that silently eat the answer the agent
    * then owes the customer.
    *
-   * A claim this call took is RELEASED when the write did not land. Nothing reached the customer,
-   * so there is nothing to protect — and holding it would turn one Plain failure into a turn where
-   * the customer hears nothing at all.
+   * Every claim is SETTLED with what its write actually did. A write that did not land leaves
+   * nothing in front of the customer, so it does not spend the turn — otherwise one Plain failure
+   * would become a turn where the customer hears nothing at all. See
+   * [[DispatchTracker.settleThreadWrite]] for the one case that recovery does NOT cover (both
+   * callbacks fired concurrently AND the first write then failing) and why refusing is the right
+   * direction to fail in there.
    *
    * The refusal is reported to the agent as SUCCESS (→ 200), like #2668's: the turn IS handled, and
    * a 4xx would invite the run to retry a write it can never legitimately land.
@@ -1555,7 +1569,7 @@ final case class SupportResponder(
       post: UIO[AgentActionResult],
   ): UIO[AgentActionResult] =
     dispatchTracker.claimThreadWrite(claims.threadId, claims.sessionId, action).flatMap {
-      case DispatchTracker.ThreadWriteClaim.Excluded(by)                                      =>
+      case DispatchTracker.ThreadWriteClaim.Excluded(by) =>
         // PII firewall (#2438): the thread id and the two bounded action names, never the
         // suppressed text and never anything about the customer.
         ZIO.logWarning(
@@ -1565,16 +1579,19 @@ final case class SupportResponder(
         ) *>
           AppMetrics.supportConsent(SupportResponder.exclusionOutcome(action)) *>
           done(action, AgentActionResult.ConsentExclusive)
-      case DispatchTracker.ThreadWriteClaim.Claimed                                           =>
-        post.flatMap(r =>
-          ZIO
-            .unless(r == AgentActionResult.Ok)(
-              dispatchTracker.releaseThreadWrite(claims.threadId, claims.sessionId, action),
-            )
-            .as(r),
-        )
-      case DispatchTracker.ThreadWriteClaim.Held | DispatchTracker.ThreadWriteClaim.Untracked =>
+      case DispatchTracker.ThreadWriteClaim.Claimed      =>
+        // `onExit`, not a flatMap: an interrupted or defective write must still settle, or the kind
+        // stays in flight forever and silently blocks the other one for the rest of the session.
         post
+          .onExit(e =>
+            dispatchTracker.settleThreadWrite(
+              claims.threadId,
+              claims.sessionId,
+              action,
+              landed = e.foldExit(_ => false, _ == AgentActionResult.Ok),
+            ),
+          )
+      case DispatchTracker.ThreadWriteClaim.Untracked    => post
     }
 
   /**
@@ -1732,8 +1749,8 @@ object SupportResponder {
   /**
    * #2460 — the fail-open nudge posted when the grant lands but the thread is unreadable, so we
    * cannot tell what to re-ask (a Plain hiccup or the #2452 `timeline:read` gap). FIXED and
-   * SERVER-AUTHORED — the agent supplies no text on any consent-adjacent write (#2419
-   * anti-phishing) — and deliberately carries NO consent URL (#2453).
+   * SERVER-AUTHORED — the agent supplies no text in it (#2419 anti-phishing) — and deliberately
+   * carries NO consent URL (#2453).
    */
   val consentGrantedNudge: String =
     s"""$AiReplyAttribution
@@ -1752,9 +1769,14 @@ object SupportResponder {
    * lesson: `SupportMetricsContractSpec` pins the panel's matcher against [[ExclusionOutcomes]], so
    * a renamed label is a failing test rather than a panel that quietly reads zero forever.
    */
-  private[api] def exclusionOutcome(action: String): String =
-    if action == AgentAction.ConsentRequest then "consent_prompt_after_reply"
-    else "reply_after_consent_prompt"
+  private[api] def exclusionOutcome(action: String): String = action match {
+    case AgentAction.ConsentRequest => "consent_prompt_after_reply"
+    case AgentAction.Reply          => "reply_after_consent_prompt"
+    // Unreachable: only AgentAction.ThreadWrites members are ever claimed, and the contract spec
+    // pins ExclusionOutcomes (derived from that set) against the two values above — so a third
+    // thread-writing action fails there rather than silently metering as one of these.
+    case other                      => s"suppressed_$other"
+  }
 
   /** Both values of [[exclusionOutcome]] — what the #2667 panel must match on. */
   val ExclusionOutcomes: Set[String] =
@@ -2039,12 +2061,13 @@ object SupportResponder {
     case Superseded
 
     /**
-     * #2667 — this session already put its ONE customer-visible message in front of the customer,
-     * and the two [[AgentAction.ThreadWrites]] do not combine: an agent reply beside a consent
-     * prompt is attacker-influenced text next to a genuine signed link, under our own attribution.
-     * Its own label because the rate is the thing an operator watches — a well-behaved agent that
-     * ends its turn after asking produces ZERO of these, so a sustained non-zero rate means either
-     * the deployed routine has drifted from the repo prompt (#2469) or something is trying.
+     * #2667 — this session already put the OTHER KIND of customer-visible message in front of the
+     * customer (or has one in flight), and the two [[AgentAction.ThreadWrites]] do not combine: an
+     * agent reply beside a consent prompt is attacker-influenced text next to a genuine signed
+     * link, under our own attribution. Its own label because the rate is the thing an operator
+     * watches — a well-behaved agent that ends its turn after asking produces ZERO of these, so a
+     * sustained non-zero rate means either the deployed routine has drifted from the repo prompt
+     * (#2469) or something is trying.
      */
     case ConsentExclusive
     case RateLimited
