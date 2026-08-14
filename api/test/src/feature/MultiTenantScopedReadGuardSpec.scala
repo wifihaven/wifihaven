@@ -109,16 +109,24 @@ object MultiTenantScopedReadGuardSpec extends ZIOSpecDefault {
   // in a route at all. See the "non-vacuous" test below for how the scan proves it still matches.
   private val Allowlist: Map[String, Set[String]] = Map.empty
 
-  private def householdRelevantReads(src: String): Set[String] =
+  /**
+   * The scan pipeline, ONE copy. The liveness anchor below asserts on this same function's output
+   * (pre-exemption), so a future strip step cannot land here and leave the anchor certifying a
+   * pipeline the guard no longer runs.
+   *
+   * Literals are stripped FIRST, then comments: `stripLineComments` truncates at the first `//`,
+   * including one inside a string, so `val u = "https://x"; someRepo.listAll` would lose its call
+   * site if comments went first. Latent while the scan was routes-only; all of `api/src` carries
+   * URL literals (Stripe, Plain, blocklist fetch), so the order is load-bearing now.
+   */
+  private def rawReads(src: String): List[String] =
     UnscopedRead
-      // Literals FIRST, then comments: `stripLineComments` truncates at the first `//`, including
-      // one inside a string, so `val u = "https://x"; someRepo.listAll` would lose its call site if
-      // comments went first. Latent while the scan was routes-only; all of `api/src` carries
-      // URL literals (Stripe, Plain, blocklist fetch), so the order is load-bearing now.
       .findAllMatchIn(stripLineComments(stripStringLiterals(src)))
       .map(m => s"${m.group(1)}.${m.group(2)}")
-      .filterNot(tok => GlobalCatalogReceivers.contains(tok.takeWhile(_ != '.')))
-      .toSet
+      .toList
+
+  private def householdRelevantReads(src: String): Set[String] =
+    rawReads(src).filterNot(tok => GlobalCatalogReceivers.contains(tok.takeWhile(_ != '.'))).toSet
 
   def spec = suite("MultiTenantScopedReadGuardSpec (#2176)")(
     test("every household-relevant unscoped read in api/src is in the tracked allowlist") {
@@ -157,11 +165,7 @@ object MultiTenantScopedReadGuardSpec extends ZIOSpecDefault {
     // liveness anchor and as proof the exemption is not dead config.
     test("the scan is anchored to real files — it walks api/src and still matches there") {
       val srcs      = sourceFiles.map(p => new String(Files.readAllBytes(p)))
-      val rawTokens = srcs.flatMap(s =>
-        UnscopedRead
-          .findAllMatchIn(stripLineComments(stripStringLiterals(s)))
-          .map(m => s"${m.group(1)}.${m.group(2)}"),
-      )
+      val rawTokens = srcs.flatMap(rawReads)
       assertTrue(srcs.nonEmpty) &&
       assertTrue(rawTokens.contains("appRepo.listAll"))
     },
