@@ -399,7 +399,7 @@ the shapes that render with `{}` in the census key). A route that names its row 
 ### 7b. The repo read guard
 
 [`api/test/src/feature/MultiTenantScopedReadGuardSpec.scala`](../../api/test/src/feature/MultiTenantScopedReadGuardSpec.scala)
-— three tests over list reads (Layer A, #2176) and nine over single-row reads (Layer B, #2589).
+— three tests over list reads (Layer A, #2176) and twelve over single-row reads (Layer B, #2589).
 
 **Layer A — unscoped list reads.** Greps `api/src/routes` for `listAll` /
 `listAllIncludingGlobal` / `listAllMappings` — reads that return *every* household's rows — and
@@ -439,7 +439,7 @@ source scan — the key lives in a JSON schema the scanner does not parse, and a
 approximation dies to a renamed field. The repo *declaration* states the shape completely and
 syntactically: the parameter types and the return type **are** the question. Enforcing at the source
 of the read also covers every caller — routes, services, background fibers, the ws push builders —
-rather than the subset the route census enumerates. Once no unscoped natural-key read can be
+rather than the subset the route census enumerates. Within that shape, once no unscoped natural-key read can be
 *declared*, no route can *call* one, and the route-level hole closes without the route-level scanner
 having to detect it.
 
@@ -447,6 +447,34 @@ having to detect it.
 does not evade it: the declaration still matches, and the census key changes, so the rename fails
 test B1 until it is re-declared. Adding an unrelated parameter does not evade it either —
 `SurrogateId` eligibility is a property of *all* the parameter types, not of any one of them.
+
+**A defaulted household is not `Scoped`.** `household: HouseholdId = HouseholdId.Default` mentions a
+household while leaving it optional at the call site, so `findByMac(mac)` compiles and reads
+household 1 — #2589 wearing a default argument, and the house style on a dozen-plus repo defs. Those
+declare `ScopedByDefault(why)`; test B10 pins that no `Scoped` entry defaults its household, and
+**B11 bounds the exemption by asserting no `api/src` call site omits the argument**, so "the default
+is only for tests" is enforced rather than asserted.
+
+**What Layer B does NOT reach**, stated as plainly as §7a's limit, because an unstated boundary is
+what made the last gap invisible:
+
+- **Return types outside `Task[Option[_]]` / `Task[Boolean]`.** A single-row read returning a scalar
+  or a tuple is not censused — `TimeUsageRepo.getSecondsUsed(mac, host, date): Task[Long]` and three
+  siblings are MAC-keyed reads of exactly the banned shape that the scanner does not see. Tracked by
+  [#2707](https://github.com/wifihaven/wifihaven/issues/2707).
+- **`Task[List[_]]` reads keyed on a natural key.** Layer A covers the `listAll*` *names*, not the
+  shape. The live example is `RollupRepo.listHourlyInRange` / `listDailyInRange`, which take no
+  household at all and treat an empty MAC list as "every row in the install" —
+  [#2708](https://github.com/wifihaven/wifihaven/issues/2708), found by the security review of the
+  PR that added this section.
+- **Whether the SQL uses the household it accepts.** B2 checks the *signature*. A read that takes a
+  `HouseholdId` and ignores it in its `WHERE` clause still passes; that residual belongs to review
+  and to `MultiTenantIsolationSpec`'s behavioural assertions.
+- **Declaration shapes the scanner cannot parse** — a repo as an `abstract class`, a trait named
+  `…Repository` / `…Dao` / `…Store`, curried or type-parameterised reads, `UIO` / `IO` / `ZIO`
+  returns. These are not silently exempt: **test B12 asserts they do not occur in `api/src`**, so
+  reaching for one is a loud failure that forces the choice — widen the scanner, or use a shape it
+  sees.
 
 **Non-vacuity, and the acceptance test.** #2546's lesson is that a detector which never emits is
 indistinguishable from health, so the demonstration is wired into CI rather than performed once on a

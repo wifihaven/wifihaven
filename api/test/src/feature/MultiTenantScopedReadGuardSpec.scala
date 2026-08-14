@@ -239,10 +239,25 @@ object MultiTenantScopedReadGuardSpec extends ZIOSpecDefault {
   enum RowRead {
 
     /**
-     * Takes a `HouseholdId` parameter — the read is scoped in the SQL. Test B2 verifies the
-     * parameter is really there rather than taking the declaration on trust.
+     * Takes a REQUIRED `HouseholdId` parameter, so no caller can spell this read without naming a
+     * household. Test B2 verifies the parameter is really in the signature rather than taking the
+     * declaration on trust, and B10 pins that it is not defaulted.
+     *
+     * What is checked is the SIGNATURE, not the SQL: a read that accepts a `HouseholdId` and then
+     * ignores it in its `WHERE` clause still passes. That residual belongs to review and to the
+     * behavioural [[MultiTenantIsolationSpec]]; the guard's job is to make the household
+     * unskippable at the call site.
      */
     case Scoped
+
+    /**
+     * Takes a `HouseholdId` that is DEFAULTED (`household: HouseholdId = HouseholdId.Default`), so
+     * scoping is the CALL SITE's choice: `findByMac(mac, hh)` is scoped and `findByMac(mac)` reads
+     * household 1. That is #2589 with a default argument, which is why it may not be declared
+     * `Scoped` (B10) and why B11 bounds it — no `api/src` call site may omit the household. The
+     * `reason` must say why the default exists and who is allowed to take it.
+     */
+    case ScopedByDefault(reason: String)
 
     /**
      * Keyed on a globally-unique SURROGATE id, so the argument already names exactly one row across
@@ -273,6 +288,10 @@ object MultiTenantScopedReadGuardSpec extends ZIOSpecDefault {
      * Matched the single-row READ shape but is a write returning a success `Boolean`. Declared
      * rather than filtered out by name, because "is this a read?" decided by method name is exactly
      * the kind of name-keyed judgement that produced this gap.
+     *
+     * `Scoped` WINS over this one when the write also takes a required household — the checked
+     * verdict is always preferable to the free-text one, so `SupportConsentRepo.revoke` and
+     * `HouseholdBillingRepo.grantFreeForever` are `Scoped`, not `Write`.
      */
     case Write(reason: String)
 
@@ -319,12 +338,36 @@ object MultiTenantScopedReadGuardSpec extends ZIOSpecDefault {
     "Int",
     "Boolean",
     "Duration",
+    // A destination IP and a host id narrow a read that a surrogate id already keys; neither names
+    // a tenant row on its own. Listed so a router-keyed read can take the CHECKED `SurrogateId`
+    // verdict instead of falling through to free-text `TenancyKey` — the two unchecked verdicts
+    // should have fewer residents, not more.
+    "IpAddress",
+    "HostId",
   )
 
+  /** One parameter of a repo declaration: its type as written, and whether it carries a default. */
+  final case class RepoParam(tpe: String, defaulted: Boolean) {
+
+    /** Suffix match, so a fully-qualified `wifihaven.shared.types.HouseholdId` still counts. */
+    def isHousehold: Boolean = tpe == "HouseholdId" || tpe.endsWith(".HouseholdId")
+  }
+
   /** One abstract single-row read declaration on a `*Repo` trait. */
-  final case class RepoRead(repo: String, method: String, paramTypes: List[String], file: String) {
-    def key: String       = s"$repo.$method"
-    def isScoped: Boolean = paramTypes.contains("HouseholdId")
+  final case class RepoRead(repo: String, method: String, params: List[RepoParam], file: String) {
+    def key: String              = s"$repo.$method"
+    def paramTypes: List[String] = params.map(_.tpe)
+
+    /**
+     * Scoped means the household is UNSKIPPABLE. A defaulted `HouseholdId` does not count: with
+     * `household: HouseholdId = HouseholdId.Default`, `findByMac(mac)` compiles and silently reads
+     * household 1, which is #2589's shape wearing a default argument. Those declare
+     * [[RowRead.ScopedByDefault]] instead, and B11 bounds who may take the default.
+     */
+    def isScoped: Boolean = params.exists(p => p.isHousehold && !p.defaulted)
+
+    /** Takes a household, but a defaulted one — scoping is the call site's choice. */
+    def hasDefaultedHousehold: Boolean = params.exists(p => p.isHousehold && p.defaulted)
 
     /** Eligible for [[RowRead.SurrogateId]]: keyed on surrogate ids and filters, nothing else. */
     def surrogateKeyed: Boolean =
@@ -367,9 +410,18 @@ object MultiTenantScopedReadGuardSpec extends ZIOSpecDefault {
     out.result().map(_.trim).filter(_.nonEmpty)
   }
 
-  /** `mac: MacAddress = HouseholdId.Default` → `MacAddress`. Whitespace-insensitive. */
-  private def paramType(p: String): String =
-    p.dropWhile(_ != ':').drop(1).takeWhile(_ != '=').replaceAll("\\s+", "")
+  /**
+   * `household: HouseholdId = HouseholdId.Default` → `RepoParam("HouseholdId", defaulted = true)`.
+   * The default is RECORDED, not discarded: throwing it away is what let a read whose household is
+   * optional at the call site pass as `Scoped`.
+   */
+  private def parseParam(p: String): RepoParam = {
+    val afterColon = p.dropWhile(_ != ':').drop(1)
+    RepoParam(
+      tpe = afterColon.takeWhile(_ != '=').replaceAll("\\s+", ""),
+      defaulted = afterColon.contains('='),
+    )
+  }
 
   /**
    * The scanner, factored over a SOURCE STRING so the tests can drive it with a fixture. That is
@@ -390,7 +442,7 @@ object MultiTenantScopedReadGuardSpec extends ZIOSpecDefault {
         .filterNot(m => body.drop(m.end).dropWhile(_.isWhitespace).startsWith("="))
         .map { m =>
           val params = Option(m.group(2)).map(_.drop(1).dropRight(1)).getOrElse("")
-          RepoRead(t.group(1), m.group(1), splitParams(params).map(paramType), file)
+          RepoRead(t.group(1), m.group(1), splitParams(params).map(parseParam), file)
         }
         .toList
     }
@@ -429,9 +481,12 @@ object MultiTenantScopedReadGuardSpec extends ZIOSpecDefault {
     "BetaRequestRepo.findById"         -> SurrogateId(
       "beta_requests.id; the operator approval queue is behind requireOperator (#2131)",
     ),
-    "BetaRequestRepo.findByEmail"      -> InstallWide(
-      "the pre-household intake queue: a beta_request belongs to no household until approval " +
-        "provisions one, and the email is its unique key (#2222 dedup)",
+    // NOT InstallWide: `beta_requests` DOES carry a household_id (V66:46) — it is nullable and
+    // stays null until approval provisions one. InstallWide means "no tenancy dimension at all",
+    // which would be a false exemption on a table that has the column.
+    "BetaRequestRepo.findByEmail"      -> TenancyKey(
+      "beta_requests.email is globally unique (V66:36) and the read is the pre-auth intake dedup " +
+        "(#2222); the row's household_id is null until approval provisions one",
     ),
     "BetaRequestRepo.findByInviteHash" -> TenancyKey(
       "the invite token hash IS the bearer secret, and the row it resolves is what MINTS the " +
@@ -451,8 +506,8 @@ object MultiTenantScopedReadGuardSpec extends ZIOSpecDefault {
     "UserRepo.emailForUser"             -> Scoped,
     "UserRepo.findAdminForHousehold"    -> Scoped,
     "UserRepo.findByEmail"              -> TenancyKey(
-      "users.email is globally unique (V65 kept the global key on email while widening username " +
-        "to per-household), and forgot-password derives the household FROM this row (#2308)",
+      "users.email is globally unique — uq_users_email, added by V67 (V65 widened only USERNAME to " +
+        "per-household) — and forgot-password derives the household FROM this row (#2308)",
     ),
     "HouseholdRepo.findById"            -> Scoped,
     "HouseholdRepo.findSlugById"        -> Scoped,
@@ -493,7 +548,14 @@ object MultiTenantScopedReadGuardSpec extends ZIOSpecDefault {
     "TimeLimitRepo.findForProfile"                 -> SurrogateId(
       "profiles.id; the limit row hangs off one profile",
     ),
-    "DeviceRepo.findByMac"                         -> Scoped,
+    // NOT `Scoped`: the household is DEFAULTED, so `findByMac(mac)` compiles and reads household 1.
+    // #2312 rewrote this to delegate to findByMacInHousehold after the global version threw on a
+    // MAC present in two households; the block-page paths that once relied on the default now pass
+    // a token-derived household (#2569/#2322). B11 pins that no api/src call site omits it.
+    "DeviceRepo.findByMac"                         -> ScopedByDefault(
+      "household defaults to HouseholdId.Default for the single-household TEST call sites; every " +
+        "api/src caller passes one explicitly, which B11 enforces (#2312/#2569/#2322)",
+    ),
     "DeviceRepo.findByMacInHousehold"              -> Scoped,
     "DeviceRepo.findOwningHousehold"               -> TenancyKey(
       "the block-page fallback that RESOLVES a household from a bare MAC when no block-page token " +
@@ -515,15 +577,22 @@ object MultiTenantScopedReadGuardSpec extends ZIOSpecDefault {
     ),
     "RouterRepo.findByTokenHash"            -> TenancyKey(
       "the router bearer-token hash; this read is HOW the router plane learns its household " +
-        "(routers.household_id), so it cannot be scoped by one (#2106)",
+        "(routers.household_id), so it cannot be scoped by one (#2106). Uniqueness here rests on " +
+        "token ENTROPY, not on a constraint — V2 gives token_hash only a non-unique partial index " +
+        "— but the impl reads with Doobie .option, which RAISES on a second row rather than " +
+        "silently picking a household",
     ),
     "RouterRepo.findByEnrollmentTokenHash"  -> TenancyKey(
       "the single-use enrollment token hash, presented before the router has any identity; the " +
-        "row it resolves is what binds the router to its household (#2106)",
+        "row it resolves is what binds the router to its household (#2106). Same caveat as " +
+        "findByTokenHash: entropy plus a raising .option, not a UNIQUE constraint",
     ),
-    "ConnectionEventRepo.findRecentFqdnFor" -> TenancyKey(
-      "keyed on router_id, and a router belongs to exactly one household (#2106), so the read " +
-        "cannot cross the boundary; destIp and since only narrow it further",
+    // SurrogateId, not TenancyKey: routers.id keys it, and destIp/since are filter dimensions, so
+    // the CHECKED verdict applies (B3 re-derives eligibility from the parameter types). The two
+    // free-text verdicts are the ones B3 cannot police, so they should hold fewer reads, not more.
+    "ConnectionEventRepo.findRecentFqdnFor" -> SurrogateId(
+      "keyed on routers.id, and a router belongs to exactly one household (#2106); destIp and " +
+        "since only narrow the row set further",
     ),
 
     // ── install-wide catalogs (§0.2) — template-authored, no tenancy dimension ──────────────────
@@ -574,24 +643,87 @@ object MultiTenantScopedReadGuardSpec extends ZIOSpecDefault {
   private[feature] def misdeclared(reads: List[RepoRead]): List[String] =
     reads.flatMap { r =>
       RowReadCensus.get(r.key).flatMap {
-        case Scoped if !r.isScoped          =>
+        case Scoped if r.hasDefaultedHousehold && !r.isScoped =>
+          Some(
+            s"${r.key} (${r.file}) — declared Scoped but its HouseholdId is DEFAULTED, so a " +
+              "caller can omit it and read household 1; declare ScopedByDefault",
+          )
+        case Scoped if !r.isScoped                            =>
           Some(s"${r.key} (${r.file}) — declared Scoped but takes no HouseholdId parameter")
-        case v if v != Scoped && r.isScoped =>
-          Some(s"${r.key} (${r.file}) — takes a HouseholdId parameter; declare it Scoped")
-        case _                              => None
+        case ScopedByDefault(_) if !r.hasDefaultedHousehold   =>
+          Some(
+            s"${r.key} (${r.file}) — declared ScopedByDefault but its household is not defaulted; " +
+              "declare Scoped",
+          )
+        case v if v != Scoped && r.isScoped                   =>
+          Some(s"${r.key} (${r.file}) — takes a required HouseholdId parameter; declare it Scoped")
+        case _                                                => None
       }
     }.sorted
 
   private[feature] def reasonOf(v: RowRead): Option[String] = v match {
-    case SurrogateId(r) => Some(r)
-    case TenancyKey(r)  => Some(r)
-    case InstallWide(r) => Some(r)
-    case Write(r)       => Some(r)
-    case _              => None
+    case SurrogateId(r)     => Some(r)
+    case TenancyKey(r)      => Some(r)
+    case InstallWide(r)     => Some(r)
+    case Write(r)           => Some(r)
+    case ScopedByDefault(r) => Some(r)
+    case _                  => None
   }
 
   /** Floor for an exemption's reason, same threshold and same rationale as the route census. */
   private val MinReasonChars = 10
+
+  /**
+   * The issues [[RowRead.Tracked]] entries may cite. A closed set rather than `issue > 0`, so a
+   * typo'd number fails instead of silently reading as tracked. #2571 deletes the dead unscoped
+   * repo methods.
+   */
+  private val TrackingIssues: Set[Int] = Set(2571)
+
+  /**
+   * Declaration shapes the [[SingleRowRead]] scanner CANNOT see, guarded so that reaching for one
+   * is a loud failure rather than a silent exemption (test B12).
+   *
+   * The scanner is deliberately narrow — `trait …Repo`, a single parameter list, a `Task[…]` return
+   * — because a narrow regex is one that can be reasoned about. The cost is that a read written in
+   * any other shape never enters `repoReads` at all, so B1 never asks for a verdict and the read is
+   * exempt WITHOUT anyone deciding to exempt it. That is the #2546 failure mode again, so instead
+   * of widening the regex until it is unreadable, B12 asserts these shapes simply do not occur in
+   * `api/src`. If a future author needs one, B12 fails and the choice becomes explicit: widen the
+   * scanner, or pick a shape it can see.
+   */
+  /** Shapes checked over the WHOLE file — a repo declared somewhere the trait scan cannot start. */
+  private val UnscannableDeclarations: List[(String, String)] = List(
+    "abstract class …Repo" -> """(?m)^[ \t]*abstract\s+class\s+\w*Repo\w*\b""",
+    "trait …Repository/Dao/Store" -> """(?m)^[ \t]*(?:sealed\s+)?trait\s+\w+(?:Repository|Dao|Store)\b""",
+    "indented / nested trait …Repo" -> """(?m)^[ \t]+(?:sealed\s+)?trait\s+\w+Repo\b""",
+  )
+
+  /**
+   * Shapes checked ONLY inside a `*Repo` trait body. Scoped that way deliberately: `UIO[Option[_]]`
+   * is an ordinary, correct return type elsewhere in `api/src` (`SpaWsRegistry.roleFor`,
+   * `AgentCredential.redactOpt`), so a file-wide scan flags innocent files and teaches the next
+   * reader that this test cries wolf — which is how a guard stops being read.
+   */
+  private val UnscannableRepoReads: List[(String, String)] = List(
+    "read returning UIO/IO/ZIO instead of Task" ->
+      """(?m)^[ \t]{2}def\s+\w+\s*(?:\([^)]*\))?\s*:\s*(?:UIO|IO|ZIO)\[[^\n]*\bOption\[""",
+    "curried parameter lists"                   ->
+      """(?m)^[ \t]{2}def\s+\w+\s*\([^)]*\)\s*\([^)]*\)\s*:\s*Task\[\s*(?:Option|Boolean)""",
+    "type-parameterised read"                   ->
+      """(?m)^[ \t]{2}def\s+\w+\[[^\]]*\]\s*\([^)]*\)\s*:\s*Task\[\s*(?:Option|Boolean)""",
+  )
+
+  /** The `*Repo` trait bodies in one source, sliced exactly as [[scanRepoReads]] slices them. */
+  private[feature] def repoTraitBodies(source: String): List[String] = {
+    val src  = stripComments(source)
+    val tops = TopLevelStart.findAllMatchIn(src).map(_.start).toList
+    RepoTraitStart
+      .findAllMatchIn(src)
+      .filter(_.group(1).endsWith("Repo"))
+      .map(t => src.substring(t.start, tops.find(_ > t.start).getOrElse(src.length)))
+      .toList
+  }
 
   private val layerB = suite("Layer B — single-row repo reads (#2589)")(
     test(
@@ -660,8 +792,11 @@ object MultiTenantScopedReadGuardSpec extends ZIOSpecDefault {
       // Opened at 2 (both #2571's dead unscoped reads). Shrink-only, and deliberately not
       // `nonEmpty` — the last fix, the one that empties it, must not read as a red build.
       assertTrue(tracked.size <= 2) &&
-      assert(tracked.values.filter(_ <= 0).toList)(
-        Assertion.isEmpty ?? "Tracked entries must name a real tracking issue",
+      // Against the KNOWN issue ids, not `> 0` — a typo'd number is exactly the failure a
+      // "names a real issue" assertion is supposed to prevent, and `> 0` accepts one.
+      assert(tracked.values.filterNot(TrackingIssues.contains).toList)(
+        Assertion.isEmpty ?? s"Tracked entries must name a real tracking issue (known: ${TrackingIssues.toList.sorted
+            .mkString(", ")})",
       ) &&
       assert(
         tracked.keys.toList.sorted.filter(k => repoReads.exists(r => r.key == k && r.isScoped)),
@@ -746,6 +881,105 @@ object MultiTenantScopedReadGuardSpec extends ZIOSpecDefault {
       // A filter dimension alongside a surrogate id does not disqualify the exemption.
       assertTrue(reads.find(_.method == "dayFor").exists(_.surrogateKeyed)) &&
       assertTrue(reads.filter(_.method == "findForHousehold").forall(_.isScoped))
+    },
+    test("B10 — a DEFAULTED household never counts as Scoped") {
+      // `household: HouseholdId = HouseholdId.Default` is #2589 wearing a default argument: the
+      // signature mentions a household, but `findByMac(mac)` still compiles and reads household 1.
+      // The default is the house style on a dozen-plus repo defs, so a future author does not have
+      // to invent anything to land here — which is exactly why the checked verdict must refuse it.
+      val fixture   =
+        """trait WidgetRepo {
+          |  def findByName(name: String, household: HouseholdId = HouseholdId.Default): Task[Option[W]]
+          |  def findByKey(key: String, household: HouseholdId): Task[Option[W]]
+          |}
+          |""".stripMargin
+      val reads     = scanRepoReads(fixture, "fixture-defaulted.scala")
+      val defaulted = reads.find(_.method == "findByName")
+      val required  = reads.find(_.method == "findByKey")
+      assertTrue(defaulted.exists(!_.isScoped), defaulted.exists(_.hasDefaultedHousehold)) &&
+      assertTrue(required.exists(_.isScoped), required.exists(!_.hasDefaultedHousehold)) &&
+      // And the live census may not paper over it: no Scoped entry defaults its household.
+      assert(
+        repoReads
+          .filter(r => RowReadCensus.get(r.key).contains(Scoped) && r.hasDefaultedHousehold)
+          .map(_.key),
+      )(
+        Assertion.isEmpty ?? (
+          "these reads are declared Scoped but default their HouseholdId, so a caller can omit " +
+            "it and read household 1 — declare ScopedByDefault and bound the callers"
+        ),
+      )
+    },
+    test("B11 — no api/src call site takes a ScopedByDefault read's default") {
+      // What bounds the exemption. `ScopedByDefault` says "the default exists for tests"; this is
+      // what makes that claim true rather than aspirational. A single-argument call in api/src
+      // silently reads household 1, so it fails here and must pass a household explicitly.
+      val byDefault = RowReadCensus.collect { case (k, ScopedByDefault(_)) =>
+        k.split('.').last
+      }.toSet
+      val offenders = apiSourceFiles.flatMap { p =>
+        val src = stripComments(Files.readString(p))
+        byDefault.toList.flatMap { m =>
+          // `.method(oneArgWithNoComma)` — a call passing a single argument, i.e. omitting the
+          // household. Excludes the declaration itself (`def method(`).
+          val call = s"""\\.$m\\(\\s*[^(),]+\\s*\\)""".r
+          call.findFirstIn(src).map(_ => s"${p.getFileName}: .$m(…) with no household")
+        }
+      }.sorted
+      assert(offenders)(
+        Assertion.isEmpty ?? (
+          "an api/src call site omits the household on a ScopedByDefault read, so it reads " +
+            "HouseholdId.Default — pass the caller's household explicitly"
+        ),
+      ) &&
+      // Non-vacuous: the exemption is actually populated, so this test has something to bound.
+      assertTrue(byDefault.nonEmpty)
+    },
+    test("B12 — no repo read is written in a shape the scanner cannot see") {
+      // The silent-miss class. A read the regex never matches is exempt without anyone choosing to
+      // exempt it, and B1/B6 stay green because it simply is not in `repoReads`. Rather than widen
+      // the regex until it cannot be reasoned about, pin that these shapes do not occur.
+      val sources     = apiSourceFiles.map(p => p.getFileName.toString -> Files.readString(p))
+      val declOffends = for {
+        (label, pattern) <- UnscannableDeclarations
+        (file, src)      <- sources
+        if pattern.r.findFirstIn(stripComments(src)).isDefined
+      } yield s"$file: $label"
+      // The read-shape patterns run against the *Repo trait BODIES only, so a `UIO[Option[_]]`
+      // elsewhere in api/src — an ordinary correct signature — is not dragged in.
+      val readOffends = for {
+        (label, pattern) <- UnscannableRepoReads
+        (file, src)      <- sources
+        body             <- repoTraitBodies(src)
+        if pattern.r.findFirstIn(body).isDefined
+      } yield s"$file: $label"
+      assert((declOffends ++ readOffends).sorted)(
+        Assertion.isEmpty ?? (
+          "these declarations are in a shape Layer B's scanner cannot see, so they would be " +
+            "exempt from the census without anyone deciding to exempt them. Either use a shape " +
+            "the scanner sees (a `trait …Repo` with one parameter list returning `Task[…]`), or " +
+            "widen `SingleRowRead` / `RepoTraitStart` and add the shape to the census."
+        ),
+      ) &&
+      // Non-vacuous: every pattern must actually match when its shape IS present. Per-pattern, not
+      // `exists` over the whole list — one pattern matching a sample would otherwise vouch for all.
+      assertTrue(
+        (UnscannableDeclarations ++ UnscannableRepoReads).forall { case (label, pattern) =>
+          val sample = label match {
+            case "abstract class …Repo"                      => "abstract class FooRepo {"
+            case "trait …Repository/Dao/Store"               => "trait FooRepository {"
+            case "indented / nested trait …Repo"             => "  trait FooRepo {"
+            case "read returning UIO/IO/ZIO instead of Task" =>
+              "  def findByName(name: String): UIO[Option[Foo]]"
+            case "curried parameter lists"                   =>
+              "  def findByName(name: String)(trace: Trace): Task[Option[Foo]]"
+            case "type-parameterised read"                   =>
+              "  def findByName[A](name: String): Task[Option[A]]"
+            case other                                       => sys.error(s"no sample for $other")
+          }
+          pattern.r.findFirstIn(sample).isDefined
+        },
+      )
     },
   )
 
