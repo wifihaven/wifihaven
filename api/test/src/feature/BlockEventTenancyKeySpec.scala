@@ -36,7 +36,7 @@ import zio.test.*
  * someone later backfills the NULLs to household 1, or re-adds a `DEFAULT`. That is precisely the
  * dark-by-default shape gap 2 of this same issue existed to remove.
  *
- * TEMPORARY SHAPE — retire the hand-written JOIN below when a scoped read lands. The attribution
+ * TODO(#2703): retire the hand-written JOIN below when a scoped read lands. The attribution
  * predicate belongs in `BlockEventRepoLive`, and a copy of it here plus a copy there is the
  * two-sources drift shape AGENTS.md#single-source-of-truth exists to prevent. The first
  * household-scoped read must be pinned THROUGH the repo, and this spec's first test rewritten to
