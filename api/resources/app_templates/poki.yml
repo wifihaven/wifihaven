@@ -9,5 +9,16 @@ icon_type: url
 # observed only as a marketing surface and is intentionally NOT included
 # (don't template hosts we haven't seen kids use, per the #1705 out-of-scope
 # rule); add it later if the operator's traffic shows otherwise.
+# poki.com / poki-cdn.com / poki-gdn.com added from prod evidence (#2699:
+# 2026-08-14 app-catalog pass): the #1705 watch-item graduated — a 30d window
+# now shows real navigational subdomains (games.poki.com, poki-auth.poki.com,
+# devs-api.poki.com — auth + gameplay, not marketing) plus Poki's own branded
+# CDN (poki-cdn.com: img/a/v subdomains) and game-delivery domain
+# (poki-gdn.com, web-confirmed as Poki's own asset-delivery infra, not a
+# shared multi-tenant CDN) — Class 2 dedicated-per-app domains per
+# _README.yml, same precedent as rbxcdn.com/sc-cdn.net.
 hosts:
   - poki.io
+  - poki.com
+  - poki-cdn.com
+  - poki-gdn.com

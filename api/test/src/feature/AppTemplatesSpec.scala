@@ -163,6 +163,8 @@ object AppTemplatesSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
           "freckle",
           // #2527: enforcement self-test app (plain-HTTP hosts so the block PAGE renders)
           "connectivity-test",
+          // #2699: traffic-driven catalog pass
+          "zoom",
         )
         val slugs    = templates.map(_.slug.value).toSet
         assertTrue(slugs == expected) &&
