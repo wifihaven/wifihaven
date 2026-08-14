@@ -188,6 +188,9 @@ object RouterRoutes {
                     // wrap the Hostname in HostId.Fqdn for the tagged-union insert (#391).
                     List(
                       BlockEventInsert(
+                        // #2572: the authenticated router, which this handler has held all along
+                        // and used to discard. It is the row's only tenancy key.
+                        router.id,
                         Some(dreq.mac),
                         HostId.Fqdn(dreq.hostname),
                         BlockReason.fromWire(result.reason),

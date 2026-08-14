@@ -1130,6 +1130,11 @@ case class TrafficReportInsert(
 )
 
 case class BlockEventInsert(
+    // #2572: REQUIRED, not Option — the type system is what guarantees the tenancy key is on every
+    // new row. The column is nullable in the schema (V87 added it with no backfill), so a NULL
+    // means "written before V87" and nothing else. The one write path, `POST /api/router/decision`,
+    // authenticates a router and so always has this in hand.
+    routerId: RouterId,
     mac: Option[MacAddress],
     host: HostId,
     reason: BlockReason,
@@ -3328,19 +3333,25 @@ class TrafficReportRepoLive(xa: Transactor[Task]) extends TrafficReportRepo {
 }
 
 class BlockEventRepoLive(xa: Transactor[Task]) extends BlockEventRepo {
-  private type R = (BlockEventId, Option[MacAddress], HostId, BlockReason, String)
-  private def toB(r: R)                           = BlockEvent(r._1, r._2, r._3, r._4, r._5)
+  private type R =
+    (BlockEventId, Option[RouterId], Option[MacAddress], HostId, BlockReason, String)
+  private def toB(r: R)                           = BlockEvent(r._1, r._2, r._3, r._4, r._5, r._6)
   // #1176/#1179: dual-write `reason_text` (pre-V40 TEXT wire format) alongside
   // `reason` (post-V40 JSONB). Reads still come from `reason`; the parallel
   // column exists so a Render auto-rollback that lands on a post-V44 image
   // binding the column as TEXT can still serve.
+  // #2572: `router_id` is written on every row from this image (V87 added the column). It is the
+  // table's only tenancy key — `routers.household_id` gives the household by join — so a future
+  // reader has a predicate to scope on. Recording the narrower router fact rather than copying
+  // `household_id` keeps one source of truth for the router→household mapping, matching
+  // `traffic_reports` and `connection_events`.
   def insertBatch(events: List[BlockEventInsert]) =
     Update[(BlockEventInsert, String)](
-      "INSERT INTO block_events(mac,host_type,host_value,reason,reason_text) " +
-        "VALUES(?,?,?,?,?)",
+      "INSERT INTO block_events(router_id,mac,host_type,host_value,reason,reason_text) " +
+        "VALUES(?,?,?,?,?,?)",
     ).updateMany(events.map(e => (e, BlockReason.asWire(e.reason)))).transact(xa)
   def recent(limit: Int)                          =
-    sql"SELECT id,mac,host_type,host_value,reason,ts::TEXT FROM block_events ORDER BY ts DESC LIMIT $limit"
+    sql"SELECT id,router_id,mac,host_type,host_value,reason,ts::TEXT FROM block_events ORDER BY ts DESC LIMIT $limit"
       .query[R]
       .map(toB)
       .to[List]
@@ -4629,8 +4640,10 @@ class NamedScheduleRepoLive(xa: Transactor[Task]) extends NamedScheduleRepo {
                    VALUES($id,${w.days.toArray},${w.startLocal},${w.endLocal},${w.tz})""".update.run.void
     }
 
-  // #2126: AND-scoped to one household via the V72 `household_id` column (index-backed by
-  // idx_named_schedules_household). Backs `GET /api/schedules` with the caller's `claims.hh`.
+  // #2126: AND-scoped to one household via the V72 `household_id` column. Backs `GET /api/schedules`
+  // with the caller's `claims.hh`. #2572: index-backed by `named_schedules_household_name_key`,
+  // V87's UNIQUE (household_id, name) — it leads with household_id, so it serves this lookup, and
+  // V87 dropped the now-redundant idx_named_schedules_household this comment used to name.
   def listAllForHousehold(household: HouseholdId) =
     DbMetrics.timed("namedSchedule.listAllForHousehold")(
       (for {

@@ -1849,6 +1849,13 @@ case class TrafficReport(
 
 case class BlockEvent(
     id: BlockEventId,
+    // #2572: the recording router, and through `routers.household_id` the only tenancy key this
+    // table has. Option because V87 added the column nullable with no backfill — pre-existing rows
+    // have no derivable router (`mac` stopped identifying a household when V74 dropped
+    // `devices_mac_key`, and inventing one would be a confabulation). So None means exactly
+    // "written before V87", never "unknown scope": `BlockEventInsert.routerId` is REQUIRED, so
+    // every row written from this image carries it.
+    routerId: Option[RouterId],
     mac: Option[MacAddress],
     host: HostId,
     reason: BlockReason,
