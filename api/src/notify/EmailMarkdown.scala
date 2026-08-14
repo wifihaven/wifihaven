@@ -211,12 +211,17 @@ object EmailMarkdown {
   private val MdLink =
     s"""\\[([^\\]\n]{0,$MaxLinkTextChars}+)\\]\\(([^)\\s]{1,$MaxSpanChars}+)\\)""".r
 
+  // Each body excludes ITS OWN marker, which is what keeps the scan linear: a `**` with no valid
+  // close fails at the next `*` instead of scanning [[MaxSpanChars]] ahead from every start
+  // position. With the body open to `*`, a 64 KiB line of `**a ` cost seconds — the same shape of
+  // cost the bounds were added for. The price is that `**bold with *italic* inside**` does not
+  // nest; `***x***` has its own pass above precisely because that is the nesting worth having.
   private val BoldItalic =
-    s"""\\*\\*\\*(?=[^\\s<>])([^<>\n]{1,$MaxSpanChars}?)(?<=[^\\s<>])\\*\\*\\*""".r
+    s"""\\*\\*\\*(?=[^\\s<>])([^*<>\n]{1,$MaxSpanChars}?)(?<=[^\\s<>])\\*\\*\\*""".r
   private val BoldStar   =
-    s"""\\*\\*(?=[^\\s<>])([^<>\n]{1,$MaxSpanChars}?)(?<=[^\\s<>])\\*\\*""".r
+    s"""\\*\\*(?=[^\\s<>])([^*<>\n]{1,$MaxSpanChars}?)(?<=[^\\s<>])\\*\\*""".r
   private val BoldScore  =
-    s"""__(?=[^\\s<>])([^<>\n]{1,$MaxSpanChars}?)(?<=[^\\s<>])__""".r
+    s"""__(?=[^\\s<>])([^_<>\n]{1,$MaxSpanChars}?)(?<=[^\\s<>])__""".r
 
   // Emphasis markers must not sit inside a word: `snake_case_name` and `2*3*4` are not italics.
   private val ItalicStar  =

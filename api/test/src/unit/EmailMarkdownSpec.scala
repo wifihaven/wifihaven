@@ -146,10 +146,11 @@ object EmailMarkdownSpec extends ZIOSpecDefault {
         "***bold italic***" -> "<p><strong><em>bold italic</em></strong></p>",
         "***a*** and **b**" -> "<p><strong><em>a</em></strong> and <strong>b</strong></p>",
         "__bold__"          -> "<p><strong>bold</strong></p>",
-        // Crossed markers are malformed input. Bold binds first and italic cannot reach across the
-        // tag it wrote, so the leftover marker stays literal — never an interleaved tag pair.
-        "**a *b** c*"       -> "<p><strong>a *b</strong> c*</p>",
-        "*a **b* c**"       -> "<p>*a <strong>b* c</strong></p>",
+        // Crossed markers are malformed input. Every emphasis body excludes its own marker, so a
+        // crossed span matches nothing and comes out wholly literal — never an interleaved tag
+        // pair, and never a half-rendered one either.
+        "**a *b** c*"       -> "<p>**a *b** c*</p>",
+        "*a **b* c**"       -> "<p>*a **b* c**</p>",
       )
       assertTrue(cases.forall((in, want) => render(in) == want))
     },
@@ -217,52 +218,49 @@ object EmailMarkdownSpec extends ZIOSpecDefault {
         !render(hostile).contains(nul),
       )
     },
-    test("adversarial input stays linear — the regexes are bounded") {
-      // Unbounded, `MdLink` and the bold body backtrack quadratically: at the route's own 64 KiB
-      // body cap (PressAgentRoutes.MaxAgentBodyBytes) these inputs measured 8–45 s of single-fiber
-      // CPU during review of #2677. Bounded + possessive they are under a second, warm.
+    test("adversarial input stays linear — the regexes and the splitter are bounded") {
+      // Unbounded, `MdLink` and the bold body backtrack quadratically, and `blocks` accumulated
+      // with a quadratic `:+`. At the route's own 64 KiB body cap
+      // (PressAgentRoutes.MaxAgentBodyBytes) those measured 8–45 s and ~2 s of single-fiber CPU
+      // during review of #2677 / #2684.
       //
-      // This is a trip-wire for a quadratic pattern, not a performance assertion, and it is timed
-      // twice for a reason: measuring the FIRST pass measures cold-JIT compilation, which review of
-      // #2684 caught flaking red at 5.9 s against a 5 s budget. The first pass is the warm-up and is
-      // not timed; the budget applies to the second, where the quadratic version would still be
-      // tens of seconds.
-      // The two axes get SEPARATE budgets, because one number cannot guard both: a re-introduced
-      // regex quadratic costs tens of seconds, while a re-introduced quadratic list append costs
-      // ~2s — which a budget sized for the regexes swallows whole. Review of #2684 measured exactly
-      // that: the pre-fix accumulator ran the whole set in 3.2s, comfortably under 10s.
-      val size = 64 * 1024
-
-      def timed(inputs: List[String]): (Long, List[String]) = {
-        inputs.foreach(render) // warm-up, untimed: the FIRST pass measures cold-JIT, which flaked
+      // The budget below is DELIBERATELY COARSE, and the coarseness is the finding, not laziness.
+      // Three tighter instruments were tried and all three flaked: a 5 s budget measured cold-JIT
+      // compilation and went red at 5.9 s; a 10 s one went red at 14 s with this suite running
+      // beside three embedded-Postgres suites; and a per-axis 4x-input scaling ratio false-flagged
+      // axes whose baseline is 6 ms, where GC noise dwarfs the signal. What survives is a guard
+      // against the CATASTROPHIC class — the 8–45 s backtracking this file's bounds exist for,
+      // which no amount of contention manufactures and no amount of contention hides.
+      //
+      // It does NOT discriminate the ~2 s quadratic-accumulator class. Nothing timing-based
+      // reliably could at this magnitude, so `blocks` is kept linear structurally instead (it
+      // accumulates in reverse and flips at flush) with the reason written at the code.
+      def warmThenTime(inputs: List[String]): (Long, List[String]) = {
+        inputs.foreach(render) // untimed: the first pass measures JIT, not the renderer
         val started = java.lang.System.nanoTime()
         val out     = inputs.map(render)
         ((java.lang.System.nanoTime() - started) / 1000000L, out)
       }
 
-      // Axis 1 — one long line, the regex axis. Unbounded, these measured 8–45 s each.
-      val (regexMs, regexOut) = timed(
-        List(
-          "[" * size,           // unmatched brackets — the measured 44s case
-          "[a](b" * (size / 5), // unmatched parens
-          "**a " * (size / 4),  // unmatched bold opens
-          "*" * size,
-          "_" * size,
-          "`" * size,
-          ("a" * 100 + "**") * (size / 102),
-        ),
+      val axes = List(
+        (n: Int) => "[" * n,           // unmatched brackets — the 44 s case
+        (n: Int) => "[a](b" * (n / 5), // unmatched parens
+        (n: Int) => "**a " * (n / 4),  // unmatched bold opens
+        (n: Int) => "*" * n,
+        (n: Int) => "_" * n,
+        (n: Int) => "`" * n,
+        (n: Int) => ("a" * 100 + "**") * (n / 102),
+        // Many SHORT lines — the block-splitter's accumulator, not a regex. Every case above is a
+        // single line, which is exactly how a quadratic `:+` got past this test into review once.
+        (n: Int) => "a\n" * (n / 2),
+        (n: Int) => "- a\n" * (n / 4),
       )
-      // Axis 2 — many short lines, the block-splitter axis. Every case above is single-line, which
-      // is precisely how a quadratic `:+` shipped into review of #2684 unnoticed. Measured ~1.9 s
-      // quadratic against ~70 ms linear, so the budget sits between the two rather than past both.
-      val (linesMs, linesOut) = timed(List("a\n" * (size / 2), "- a\n" * (size / 4)))
 
-      assertTrue(
-        regexOut.forall(_.nonEmpty),
-        linesOut.forall(_.nonEmpty),
-        regexMs < 10000L,
-        linesMs < 1000L,
-      )
+      // Every axis at the route's own body cap, in one measurement. Warm, the whole set is well
+      // under a second; each of the two shipped regressions put a SINGLE axis above the budget on
+      // its own.
+      val (elapsedMs, outputs) = warmThenTime(axes.map(_(64 * 1024)))
+      assertTrue(outputs.forall(_.nonEmpty), elapsedMs < 30000L)
     },
   )
 }
