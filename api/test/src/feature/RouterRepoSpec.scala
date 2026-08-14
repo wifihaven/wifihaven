@@ -131,13 +131,15 @@ object RouterRepoSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
           rep <- tRepo.listForRouter(id, 10)
         } yield assertTrue(row.isEmpty) && assertTrue(rep.isEmpty)
       },
-      test("listAll returns rows ordered by created_at") {
+      // #2571: the unscoped `listAll` this once covered is deleted. Its household-scoped twin
+      // `listAllForHousehold` keeps the created_at ordering pinned, in AdultEditBoundarySpec.
+      test("listAllForHousehold returns rows ordered by created_at") {
         for {
           _    <- cleanDb
           repo <- ZIO.service[RouterRepo]
           a    <- repo.create("a", Sha256Hex.unsafe("h" * 64))
           b    <- repo.create("b", Sha256Hex.unsafe("i" * 64))
-          all  <- repo.listAll
+          all  <- repo.listAllForHousehold(HouseholdId.Default)
         } yield assertTrue(all.map(_.id) == List(a, b))
       },
     ),
@@ -275,40 +277,6 @@ object RouterRepoSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
           rows <- repo.recent(10)
         } yield assertTrue(n == 3) && assertTrue(rows.size == 3) &&
           assertTrue(rows.exists(_.mac.isEmpty))
-      },
-      test("listForMac returns only events for that mac, newest first") {
-        for {
-          _    <- cleanDb
-          repo <- ZIO.service[BlockEventRepo]
-          mac = MacAddress.unsafe("aa:bb:cc:00:00:01")
-          _    <- repo.insertBatch(
-            List(
-              BlockEventInsert(
-                Some(mac),
-                HostId.Fqdn(Hostname.unsafe("a.com")),
-                BlockReason.Unknown("r1"),
-              ),
-              BlockEventInsert(
-                Some(MacAddress.unsafe("aa:bb:cc:00:00:99")),
-                HostId.Fqdn(Hostname.unsafe("b.com")),
-                BlockReason.Unknown("r1"),
-              ),
-              BlockEventInsert(
-                Some(mac),
-                HostId.Fqdn(Hostname.unsafe("c.com")),
-                BlockReason.Unknown("r2"),
-              ),
-            ),
-          )
-          rows <- repo.listForMac(mac, 10)
-        } yield assertTrue(rows.size == 2) &&
-          assertTrue(rows.forall(_.mac.contains(mac))) &&
-          assertTrue(
-            rows.map(_.host).toSet == Set(
-              HostId.Fqdn(Hostname.unsafe("a.com")),
-              HostId.Fqdn(Hostname.unsafe("c.com")),
-            ),
-          )
       },
     ),
     suite("time_usage byte columns")(

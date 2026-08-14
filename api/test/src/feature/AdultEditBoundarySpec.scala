@@ -591,7 +591,7 @@ object AdultEditBoundarySpec
         )
         list <- statusOf(rts, Method.GET, "/api/admin/routers", fx.adult)
         del  <- statusOf(rts, Method.DELETE, "/api/admin/routers/1", fx.adult)
-        all  <- rr.listAll
+        all  <- rr.listAllForHousehold(HouseholdId.Default)
       } yield assertTrue(post == Status.Forbidden) &&
         assertTrue(list == Status.Forbidden) &&
         assertTrue(del == Status.Forbidden) &&

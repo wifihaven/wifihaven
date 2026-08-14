@@ -236,17 +236,17 @@ inventory (trait declarations in [`Repos.scala`](../../api/src/db/Repos.scala)):
 
 | Repo read | Decl | Callers to scope |
 | --- | --- | --- |
-| `UserRepo.listAll` | [`:87`](../../api/src/db/Repos.scala) | user admin routes ([`Routes.scala:113`](../../api/src/routes/Routes.scala),[`:635`](../../api/src/routes/Routes.scala)) |
+| ~~`UserRepo.listAll`~~ | — | **CLOSED (#2571).** Deleted; `listAllForHousehold(household)` is the only accessor. The user admin routes had already moved to it, leaving the unscoped read with no caller at all. |
 | ~~`UserProfileRepo.listAllMappings`~~ | — | **CLOSED (#2532).** Deleted; `listMappingsForHousehold(household)` (joined through `users.household_id`) is the only mapping read. Same pass gave `listProfilesForUsername` a `household` parameter — a username is unique only per household (V65/V68), so the bare-username lookup unioned rows across tenants. The id-keyed methods (`listProfilesForUser` / `listUsersForProfile` / `hasAccess` / the link writes) stay unscoped by design: their argument is a globally-unique id naming exactly one row, and keeping a foreign id out is `ownUser` / `requireProfileInHousehold`'s job. That coverage is complete for every user id and for both sides of `setUsersForProfile`, but NOT for the `profileIds` argument of `setProfilesForUser` (`POST /api/users`, `PUT /api/users/{id}/profiles`, `PATCH /api/users/{id}` all pass it through unguarded) — open as #2531, which must retract this qualifier and the matching one in `Repos.scala` together. |
 | `ProfileRepo.listAll` | [`:111`](../../api/src/db/Repos.scala) | profile list, snapshot, time-status |
-| `ProfileRepo.listAllIncludingGlobal` | [`:114`](../../api/src/db/Repos.scala) | snapshot builder ([`PolicyService.scala:316`](../../api/src/policy/PolicyService.scala)) |
+| ~~`ProfileRepo.listAllIncludingGlobal` / `getGlobal`~~ | — | **CLOSED (#2571).** Both deleted; `listAllIncludingGlobalForHousehold(household)` / `getGlobalForHousehold(household)` are the only accessors. The snapshot builder moved to the scoped twin when `PolicyService.snapshot` took a `household` (gap 1), leaving these with no caller. |
 | `NamedScheduleRepo.listAll` | [`:148`](../../api/src/db/Repos.scala) | schedule admin |
 | ~~`HouseholdSettingsRepo.get` (single row)~~ | — | **CLOSED (#2533, #2553).** `get` and the unscoped `update(s)` are deleted; `getForHousehold(household)` / `update(household, s)` are the only accessors. #2553 removed the two all-tenant-batch `HouseholdId.Default` reads: `TimeUsedRollupJob` / `AmbientLearnJob` now read each household's OWN settings inside their per-household loop (own day key, own heartbeat/ambient knobs), and `update`'s rollup-cache invalidation is scoped to the writing household's profiles. One explicit `Default` read remains, separately justified in place: [`BlockedRoutes.scala:113`](../../api/src/routes/BlockedRoutes.scala) (the block-page redirect carries no household). |
-| `TimeLimitRepo.listAll` | [`:217`](../../api/src/db/Repos.scala) | time-status ([`Routes.scala:904`](../../api/src/routes/Routes.scala)) |
+| ~~`TimeLimitRepo.listAll`~~ | — | **CLOSED (#2571).** Deleted; `listAllForHousehold(household)` is the only accessor. Time-status had already moved to it. |
 | ~~`AppTimeLimitRepo.listAll`~~ | — | **CLOSED (#2568).** Deleted; `listAllForHousehold(household)` is the only accessor. Its last caller was the dashboard NOW builder, reached while `DashboardNowRoutes.computeNow` still took an optional household — that parameter is now required. |
 | `DeviceRepo.listAll` | [`:240`](../../api/src/db/Repos.scala) | devices list, snapshot, decision lookup |
-| `AlertRepo.list(includeAll)` | [`:321`](../../api/src/db/Repos.scala) | alerts routes — scope by household |
-| `RouterRepo.listAll` | [`:507`](../../api/src/db/Repos.scala) | routers admin list |
+| ~~`AlertRepo.list(includeAll)`~~ | — | **CLOSED (#2571).** Deleted; `listForHousehold(includeAll, household)` is the only accessor. |
+| ~~`RouterRepo.listAll`~~ | — | **CLOSED (#2571).** Deleted; `listAllForHousehold(household)` is the only accessor. |
 | `AppRepo.listAll` / `listAllHostMappings` | [`:2966`](../../api/src/db/Repos.scala),[`:3032`](../../api/src/db/Repos.scala) | apps are **template-global**; scope only *assignments*, not the catalog |
 
 Plus the global-sentinel profile (`isGlobal`,

@@ -57,7 +57,6 @@ object DbFailureSpec extends ZIOSpecDefault {
   private def throwing[A]: Task[A] = ZIO.fail(new SQLException(secretMsg))
 
   private def brokenRouterRepo: RouterRepo = new RouterRepo {
-    def listAll                                                               = throwing
     def listAllForHousehold(household: HouseholdId)                           = throwing
     def findById(id: RouterId)                                                = throwing
     def findByEnrollmentTokenHash(h: Sha256Hex)                               = throwing
@@ -111,7 +110,6 @@ object DbFailureSpec extends ZIOSpecDefault {
         toInstant: java.time.Instant,
         stepSeconds: Long,
     ) = throwing
-    def earliestPeriodStart = throwing
     def listFqdnHostAggregatesForDevice(
         household: HouseholdId,
         mac: MacAddress,
@@ -133,7 +131,6 @@ object DbFailureSpec extends ZIOSpecDefault {
     ) = throwing
     def incrementSecondsAndBytesBatch(rows: List[TimeUsageIncrement], household: HouseholdId) =
       throwing
-    def getSecondsUsed(mac: MacAddress, host: HostId, date: java.time.LocalDate)         = throwing
     def getSecondsAndBytes(mac: MacAddress, host: HostId, date: java.time.LocalDate)     = throwing
     def getProportionalSeconds(mac: MacAddress, host: HostId, date: java.time.LocalDate) = throwing
     def listForDevice(mac: MacAddress, date: java.time.LocalDate)                        = throwing
@@ -192,7 +189,6 @@ object DbFailureSpec extends ZIOSpecDefault {
     ) = throwing
     def findById(id: AlertId)                                                         = throwing
     def householdOf(id: AlertId)                                                      = throwing
-    def list(includeAll: Boolean)                                                     = throwing
     def listForHousehold(includeAll: Boolean, household: HouseholdId)                 = throwing
     def decide(
         id: AlertId,
@@ -214,7 +210,6 @@ object DbFailureSpec extends ZIOSpecDefault {
   private def brokenConnectionEventRepo: ConnectionEventRepo = new ConnectionEventRepo {
     def insertBatch(es: List[ConnectionEventInsert])                                    = throwing
     def recent(l: Int)                                                                  = throwing
-    def listForMac(mac: MacAddress, l: Int)                                             = throwing
     def listForRouter(r: RouterId, l: Int)                                              = throwing
     def query(f: LogFilter)                                                             = throwing
     def querySeries(f: LogFilter, bucketSeconds: Int, groupBy: Set[String])             = throwing

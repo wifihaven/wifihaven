@@ -148,12 +148,22 @@ standalone repo files). Findings:
 - `TimeUsedRollupRepo.getDayMap(date)` (`TimeUsedRollupRepo.scala:85`) — all-tenant, read inside the
   household-scoped `dayStateAllFromRollup`. See §6 (#2264 scope note).
 
-**Dead and unscoped** (~20 methods, **F8 / #2571**): `TimeUsageRepo.getSecondsUsed` /
-`getProportionalSeconds` / `getSecondsAndBytes` / `listForDevice` / `listForDeviceMacs`;
-`TimeExtensionRepo.getTotalExtension` / `listForDevice`; `BlockEventRepo.recent` / `listForMac`;
-`ConnectionEventRepo.listForMac` / `listForRouter`; `TrafficReportRepo.listForRouter` /
-`earliestPeriodStart`; `ProfileRepo.listAllIncludingGlobal` / `getGlobal`; `UserRepo.listAll`;
-`RouterRepo.listAll`; `TimeLimitRepo.listAll`; `AlertRepo.list`; `NamedScheduleRepo.findByName`.
+**Dead and unscoped** (~20 methods, **F8 / #2571**) — **PARTIALLY CLOSED (#2571).**
+
+DELETED (no caller in `api/src`; `mill api.compile` is the proof): `TimeUsageRepo.getSecondsUsed`;
+`TimeExtensionRepo.getTotalExtension` / `listForDevice`; `BlockEventRepo.listForMac`;
+`ConnectionEventRepo.listForMac`; `TrafficReportRepo.earliestPeriodStart`;
+`ProfileRepo.listAllIncludingGlobal` / `getGlobal`; `UserRepo.listAll`; `RouterRepo.listAll`;
+`TimeLimitRepo.listAll`; `AlertRepo.list`. Each retained caller (all in `api/test`) moved to the
+`…ForHousehold` twin. `NamedScheduleRepo.findByName` was closed separately by #2572.
+
+RETAINED, tracked by **#2702**: `TimeUsageRepo.getProportionalSeconds` / `getSecondsAndBytes` /
+`listForDevice` / `listForDeviceMacs`; `BlockEventRepo.recent`; `ConnectionEventRepo.listForRouter`;
+`TrafficReportRepo.listForRouter`. These have no production caller either, but they ARE the only
+read-back path a live feature test has for the write path it exercises (router ingest, the
+block-event emit path, the #730 IP→FQDN promotion join). None has a `…ForHousehold` twin to move to,
+so deleting them would delete real coverage and adding one is a scoping change, not a deletion —
+out of scope for this PR by construction.
 
 **Clean — verified scoped:** `UserRepo` (`findByUsername`, `emailForUser`, `listAllForHousehold`,
 `findAdminForHousehold`), `HouseholdRepo`, `ProfileRepo` (`listAllForHousehold`,

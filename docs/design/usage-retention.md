@@ -23,9 +23,9 @@ for hourly, 6 months for daily.
 (2026-05) called `time_usage` "unchanged (forever)" and didn't mention
 `block_events` at all — both were, in fact, unbounded, the same latent class as
 the #2053 partition-runway P0. Every `time_usage` read site queries a single
-`date` ("today" — see `Repos.scala`'s `getSecondsUsed` / `listForDevice` /
+`date` ("today" — see `Repos.scala`'s `getSecondsAndBytes` / `listForDevice` /
 `snapshotAll`), so 30 days is generous headroom over actual demand rather than a
-tight bound; `block_events`' reads (`recent`, `listForMac`) are `LIMIT`-bounded,
+tight bound; `block_events`' only read (`recent`) is `LIMIT`-bounded,
 not date-bounded, so 30 days mirrors `connection_events`' raw horizon. Neither
 table is partitioned (V41/V42 partitioned only `traffic_reports` /
 `connection_events`), so both sweep via plain `DELETE`, same as the other

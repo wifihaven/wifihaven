@@ -1509,7 +1509,7 @@ object RouterIngestSpec
         )
         body = RouterEventsRequest(id, List(ev)).toJson
         _      <- post(routes, "/api/router/events", body, Some(tk))
-        alerts <- aRepo.list(includeAll = false)
+        alerts <- aRepo.listForHousehold(includeAll = false, HouseholdId.Default)
       } yield assertTrue(alerts.size == 1) &&
         assertTrue(alerts.head.mac == MacAddress.unsafe(unknownMac)) &&
         assertTrue(alerts.head.status == AlertStatus.Pending)
@@ -1531,7 +1531,7 @@ object RouterIngestSpec
         body = RouterEventsRequest(id, List(ev)).toJson
         _      <- post(routes, "/api/router/events", body, Some(tk))
         _      <- post(routes, "/api/router/events", body, Some(tk))
-        alerts <- aRepo.list(includeAll = true)
+        alerts <- aRepo.listForHousehold(includeAll = true, HouseholdId.Default)
       } yield assertTrue(alerts.size == 1)
     },
     // ── #1010: time_usage bucket follows household-local TZ, not UTC ─────────
@@ -1802,7 +1802,7 @@ object RouterIngestSpec
         )
         body = RouterEventsRequest(id, List(ev)).toJson
         _      <- post(routes, "/api/router/events", body, Some(tk))
-        alerts <- aRepo.list(includeAll = true)
+        alerts <- aRepo.listForHousehold(includeAll = true, HouseholdId.Default)
       } yield assertTrue(alerts.isEmpty)
     },
 
