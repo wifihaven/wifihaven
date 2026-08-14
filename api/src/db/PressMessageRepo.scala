@@ -24,6 +24,10 @@ import java.time.Instant
  *     its inquiry. `None` for inbound (and for an outbound whose inbound row was lost to a
  *     fail-open recording error).
  *   - `outcome` — outbound-only send result (`"sent"` | `"failed"`); `None` for inbound.
+ *   - `references` — #2467, the V88 `references_header` column: the inbound `References` chain,
+ *     normalised to a space-separated msg-id list and bounded to one RFC 5322 header line. Empty
+ *     for a first-contact inbound, and always empty for outbound (the chain we emit is derived at
+ *     send time, and Resend assigns the sent Message-ID out of band).
  */
 case class PressMessage(
     id: Long,
@@ -35,6 +39,7 @@ case class PressMessage(
     inReplyTo: Option[Long],
     outcome: Option[String],
     createdAt: Instant,
+    references: String,
 ) derives JsonCodec
 
 /**
@@ -51,6 +56,8 @@ trait PressMessageRepo {
       subject: String,
       body: String,
       messageId: String,
+      // #2467 — the normalised, bounded inbound `References` chain (empty for first contact).
+      references: String,
   ): Task[Long]
 
   /**
@@ -90,17 +97,22 @@ trait PressMessageRepo {
 }
 
 class PressMessageRepoLive(xa: Transactor[Task]) extends PressMessageRepo {
+  // Column order IS the PressMessage field order — `references_header` last, matching the field
+  // V88 added to the end of the case class.
   private val cols =
-    fr"id, direction, peer_email, subject, body, message_id, in_reply_to, outcome, created_at"
+    fr"""id, direction, peer_email, subject, body, message_id, in_reply_to, outcome, created_at,
+         references_header"""
 
   def recordInbound(
       peerEmail: String,
       subject: String,
       body: String,
       messageId: String,
+      references: String,
   ): Task[Long] =
-    sql"""INSERT INTO press_messages (direction, peer_email, subject, body, message_id)
-          VALUES ('inbound', $peerEmail, $subject, $body, $messageId)
+    sql"""INSERT INTO press_messages
+            (direction, peer_email, subject, body, message_id, references_header)
+          VALUES ('inbound', $peerEmail, $subject, $body, $messageId, $references)
           RETURNING id""".query[Long].unique.transact(xa)
 
   def recordOutbound(

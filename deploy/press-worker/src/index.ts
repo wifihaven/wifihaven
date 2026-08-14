@@ -29,6 +29,13 @@ export interface Env {
 // caps at 256 KiB). Press inquiries are short; 128 KiB of text is generous.
 const MAX_TEXT_BYTES = 128 * 1024;
 
+// #2467 — cap on the inbound `References` header we forward. The header is attacker-controlled in
+// both content and length, and the API bounds it again (it normalises to a msg-id list that fits
+// one 998-char RFC 5322 header line) before persisting it or putting it on the signed session
+// token — this cap just keeps a pathological header out of the envelope in the first place. Sized
+// well above any real thread: 100-char ids fill one header line in ~10 entries.
+const MAX_REFERENCES_CHARS = 8 * 1024;
+
 function hex(buf: ArrayBuffer): string {
   return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
@@ -59,6 +66,15 @@ export default {
     const text = (parsed.text || parsed.html?.replace(/<[^>]+>/g, ' ') || '').slice(0, MAX_TEXT_BYTES);
     const subject = parsed.subject || message.headers.get('subject') || '';
     const messageId = parsed.messageId || message.headers.get('message-id') || '';
+    // #2467 — the accumulated thread chain, so a reply to a journalist's human FOLLOW-UP can emit
+    // References = the parent's References + the parent's Message-ID (RFC 5322 §3.6.4) rather than
+    // the immediate parent alone. Forwarded RAW apart from the length cap: the API is the single
+    // sanitiser (a msg-id whitelist), and stripping here would only give two places to disagree.
+    // Empty for every first-contact email, which is what the API treats as "no chain".
+    const references = (parsed.references || message.headers.get('references') || '').slice(
+      0,
+      MAX_REFERENCES_CHARS,
+    );
 
     // #2442 — the auto-reply / DSN loop guard. Only this Worker sees the raw MIME headers, so the
     // classification happens here; the API refuses to dispatch on the verdict and meters the skip
@@ -82,6 +98,7 @@ export default {
       text,
       messageId,
       loopGuard: loopGuard ?? '',
+      references,
     });
 
     const signature = await hmacSha256Hex(env.PRESS_WEBHOOK_SECRET, body);

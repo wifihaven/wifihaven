@@ -26,6 +26,7 @@ const inbound: PressMessage = {
   inReplyTo: null,
   outcome: null,
   createdAt: '2026-07-18T10:00:00Z',
+  references: '',
 }
 
 const outbound: PressMessage = {
@@ -38,6 +39,7 @@ const outbound: PressMessage = {
   inReplyTo: 1,
   outcome: 'sent',
   createdAt: '2026-07-18T10:05:00Z',
+  references: '',
 }
 
 beforeEach(() => {

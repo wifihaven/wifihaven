@@ -165,10 +165,14 @@ final case class PressResponder(
    */
   private def dispatch(event: PressInboundEvent): UIO[WebhookOutcome] =
     for {
-      now            <- clock.instant
+      now <- clock.instant
       // #2296: record the inbound press email BEFORE dispatch so the reply can pair to it. Fail-open
       // — a recording error yields id 0 ("no inbound row") and never blocks the dispatch.
-      pressMessageId <- recordInbound(event)
+      // #2467: normalise the inbound `References` ONCE, here, before it is persisted OR minted —
+      // so the row, the token, and the header the reply eventually emits are all the same value,
+      // and the attacker-controlled header is whitelisted down to msg-ids and bounded exactly once.
+      references = EmailSender.normalizeReferences(Some(event.references))
+      pressMessageId <- recordInbound(event, references)
       // The reply DESTINATION + subject are baked into the token here — the agent never chooses
       // them. `from` is the sender's address the Worker extracted from the inbound email. The
       // recorded inbound row id (#2296) rides the SIGNED token so the reply callback can pair the
@@ -186,6 +190,11 @@ final case class PressResponder(
         // the id is intact, or it doesn't and the value fails the shape check at send time and the
         // reply goes out unthreaded.
         inboundMessageId = event.messageId.take(MaxMessageIdChars),
+        // #2467: the journalist's own accumulated chain, so a reply to a FOLLOW-UP references the
+        // whole thread rather than just the follow-up (RFC 5322 §3.6.4). Already normalised and
+        // bounded above; it rides the SIGNED payload like every other field, so a hijacked agent
+        // can neither forge the chain nor graft its reply onto another conversation.
+        inboundReferences = references,
         now = now,
         ttl = cfg.agentTokenTtl,
         secret = cfg.agentTokenSecretTrimmed,
@@ -259,11 +268,17 @@ final case class PressResponder(
                   AgentCredential
                     .redact(AgentCredential.Channel.Press, "reply", markdown)
                     .flatMap { safeMarkdown =>
-                      val subject   = replySubject(claims.subject)
+                      val subject    = replySubject(claims.subject)
                       // #2451: normalize HERE via the same primitive the transport uses, so the log line
                       // below reports what will actually go on the wire rather than a second opinion.
-                      val inReplyTo =
+                      val inReplyTo  =
                         EmailSender.threadingId(Some(claims.inboundMessageId).filter(_.nonEmpty))
+                      // #2467: the journalist's own accumulated chain, from the SIGNED token.
+                      val parentRefs =
+                        Some(claims.inboundReferences).filter(_.nonEmpty)
+                      // #2467: how this reply threaded, from the same producer that renders the
+                      // headers — four bounded values, no per-thread label.
+                      val shape      = EmailSender.threadingShape(inReplyTo, parentRefs)
                       // #2407: send FROM the press identity (not the shared #578 alerts@ notification
                       // sender). From and Reply-To are SEPARATE addresses: the From must sit on a
                       // Resend-verified sending domain (the apex — staging borrows it as press-staging@),
@@ -281,8 +296,10 @@ final case class PressResponder(
                       // attacker-controlled sender content.
                       ZIO.logInfo(
                         s"press: sending reply to ${claims.replyTo} " +
-                          s"(threaded=${inReplyTo.isDefined}, legacyToken=${claims.legacyPayload})",
+                          s"(threaded=${inReplyTo.isDefined}, shape=$shape, " +
+                          s"legacyToken=${claims.legacyPayload})",
                       ) *>
+                        AppMetrics.pressReplyThreading(shape) *>
                         email
                           .sendAs(
                             from = cfg.fromAddressTrimmed,
@@ -295,6 +312,11 @@ final case class PressResponder(
                             // missing or malformed Message-ID resolves to None, so the reply still sends,
                             // just unthreaded.
                             inReplyTo = inReplyTo,
+                            // #2467: the journalist's own References, from the signed token. The
+                            // transport accumulates it with the parent id into the reply's own
+                            // References; empty (first contact, or a pre-#2467 token) yields
+                            // exactly the #2451 first-level headers.
+                            parentReferences = parentRefs,
                           )
                           .flatMap { sendResult =>
                             // #2296: record the outbound reply as AUDIT (fail-open) AFTER the send, pairing it
@@ -432,9 +454,9 @@ final case class PressResponder(
    * recording miss is logged + metered (`press_message_recorded_total{direction=inbound}`) and
    * swallowed so the dispatch always proceeds (the token then carries id 0 = "no inbound row").
    */
-  private def recordInbound(event: PressInboundEvent): UIO[Long] =
+  private def recordInbound(event: PressInboundEvent, references: String): UIO[Long] =
     pressLog
-      .recordInbound(event.from, event.subject, event.messageText, event.messageId)
+      .recordInbound(event.from, event.subject, event.messageText, event.messageId, references)
       .flatMap(id => AppMetrics.pressMessageRecorded("inbound", "ok").as(id))
       .catchAll(e =>
         ZIO.logWarning(s"press: inbound recording failed (fail-open): ${e.getMessage}") *>

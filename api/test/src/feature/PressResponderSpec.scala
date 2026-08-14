@@ -162,6 +162,18 @@ object PressResponderSpec
       .value
       .map(_.count)
 
+  // #2467 — reads the threading-shape counter the same way `promptVersionCount` reads its own:
+  // through the ZIO metric registry, so it observes what MetricGuard ACTUALLY emitted. A metric
+  // name or label key missing from `MetricGuard.Allowed` / `KnownLabelKeys` is dropped to a no-op
+  // by `MetricGuard.check`, which is invisible in a log assertion and would leave the #2467
+  // dashboard panels permanently empty — so the pin has to be on the registry, not on the log.
+  private def threadingShapeCount(shape: String): UIO[Double] =
+    zio.metrics.Metric
+      .counter("press_reply_threading_total")
+      .tagged("shape", shape)
+      .value
+      .map(_.count)
+
   private def agentReply(
       routes: Routes[Any, Response],
       body: String,
@@ -194,6 +206,7 @@ object PressResponderSpec
         subject,
         pressMessageId,
         inboundMessageId,
+        "",
         now,
         java.time.Duration.ofMinutes(ttlMinutes),
         TokenSecret,
@@ -367,10 +380,12 @@ object PressResponderSpec
     test("a PressToken cannot EXPRESS a household or a data scope, even server-side") {
       // The claim "press carries no data scope" has to hold against a future mistake, not just
       // against today's call sites — so pin the token GRAMMAR rather than its current callers.
-      // The payload is a fixed 5-field pipe record (replyTo|subject|pressMessageId|exp|messageId);
-      // a 6th field — a householdId, a dataAccess flag — is Malformed on decode EVEN WHEN signed
-      // with the real secret. Adding a scope to press therefore cannot happen by accident: it
-      // takes a deliberate arity change in PressToken, exactly where this test fails.
+      // The payload is a fixed 6-field pipe record
+      // (replyTo|subject|pressMessageId|exp|messageId|references); a 7th field — a householdId, a
+      // dataAccess flag — is Malformed on decode EVEN WHEN signed with the real secret. Adding a
+      // scope to press therefore cannot happen by accident: it takes a deliberate arity change in
+      // PressToken, exactly where this test fails. (#2467 made the record 6 fields; the guard is
+      // the arity, whatever it currently is.)
       for {
         _     <- cleanDb
         clock <- ZIO.service[Clock]
@@ -382,13 +397,13 @@ object PressResponderSpec
           java.nio.charset.StandardCharsets.UTF_8,
         )
         fields   = raw.split("\\|", -1)
-        // Forge a 6-field payload carrying a household id, signed with the REAL secret — the
+        // Forge a WIDENED payload carrying a household id, signed with the REAL secret — the
         // strongest attacker (or the sloppiest future refactor) this grammar can face.
         forged   = tokenFromPayload(s"$raw|1")
         verified = PressToken.verify(forged, now, TokenSecret)
       } yield assertTrue(
         // The grammar is exactly the reply-target record — there is no scope field to set.
-        fields.length == 5,
+        fields.length == 6,
         // A correctly-SIGNED widened token is still refused: the arity is the guard, not the MAC.
         verified == Left(PressToken.Err.Malformed),
         // …while the unwidened token verifies, so the rejection above is the arity, not the setup.
@@ -505,6 +520,7 @@ object PressResponderSpec
           "Story",
           0L,
           "",
+          "",
           now.minusSeconds(3600),
           java.time.Duration.ofMinutes(1),
           TokenSecret,
@@ -575,6 +591,7 @@ object PressResponderSpec
           "reporter@example.com",
           "Story",
           0L,
+          "",
           "",
           now.minusSeconds(3600),
           java.time.Duration.ofMinutes(1),
@@ -993,7 +1010,13 @@ object PressResponderSpec
             ZIO.succeed(EmailOutcome.Failed)
         }
         // Record a real inbound row first, then reply with a token carrying its id.
-        inboundId <- pressLog.recordInbound("reporter@example.com", "Story", "the question", "<m>")
+        inboundId <- pressLog.recordInbound(
+          "reporter@example.com",
+          "Story",
+          "the question",
+          "<m>",
+          "",
+        )
         responder = PressResponder(
           liveCfg,
           failing,
@@ -1053,6 +1076,7 @@ object PressResponderSpec
           "Story",
           4242L,
           "",
+          "",
           now,
           java.time.Duration.ofMinutes(30),
           TokenSecret,
@@ -1067,6 +1091,7 @@ object PressResponderSpec
           "reporter@example.com",
           "Story",
           7L,
+          "",
           "",
           now.minusSeconds(3600),
           java.time.Duration.ofMinutes(1),
@@ -1092,6 +1117,7 @@ object PressResponderSpec
           "Story",
           4242L,
           "<orig@mail.example>",
+          "",
           now,
           ttl,
           TokenSecret,
@@ -1104,6 +1130,7 @@ object PressResponderSpec
           "Story",
           4242L,
           "<attacker@evil.example>",
+          "",
           now,
           ttl,
           TokenSecret,
@@ -1136,6 +1163,7 @@ object PressResponderSpec
           "reporter@example.com",
           "Story",
           77L,
+          "",
           "",
           now,
           java.time.Duration.ofMinutes(30),
@@ -1255,11 +1283,244 @@ object PressResponderSpec
       ) &&
       assertTrue(
         // The pair is rendered from the SAME normalized id, and absent entirely when there is none.
-        EmailSender.threadingHeaders(Some("<a@b>")) ==
+        // With no inbound chain (#2467) both headers still carry the single parent id — the
+        // first-level shape #2451 shipped.
+        EmailSender.threadingHeaders(Some("<a@b>"), None) ==
           Some(Map("In-Reply-To" -> "<a@b>", "References" -> "<a@b>")),
-        EmailSender.threadingHeaders(Some("not-a-msg-id")).isEmpty,
-        EmailSender.threadingHeaders(None).isEmpty,
+        EmailSender.threadingHeaders(Some("not-a-msg-id"), None).isEmpty,
+        EmailSender.threadingHeaders(None, None).isEmpty,
       )
+    },
+    // ── #2467: the ACCUMULATED References chain (RFC 5322 §3.6.4) ─────────────────
+    test("threadingHeaders accumulates parent References + parent Message-ID (#2467)") {
+      assertTrue(
+        // The shape the RFC asks for: the parent's chain, then the parent's own id, in order.
+        // In-Reply-To stays the IMMEDIATE parent — only References accumulates.
+        EmailSender.threadingHeaders(Some("<c@x>"), Some("<a@x> <b@x>")) ==
+          Some(Map("In-Reply-To" -> "<c@x>", "References" -> "<a@x> <b@x> <c@x>")),
+        // An empty/blank inbound chain falls back to exactly the pre-#2467 first-level headers —
+        // this is the regression risk, since every reply we have sent to date is first-level.
+        EmailSender.threadingHeaders(Some("<c@x>"), Some("")) ==
+          EmailSender.threadingHeaders(Some("<c@x>"), None),
+        EmailSender.threadingHeaders(Some("<c@x>"), Some("   ")) ==
+          Some(Map("In-Reply-To" -> "<c@x>", "References" -> "<c@x>")),
+        // No usable parent Message-ID means no threading pair at all, chain or not: In-Reply-To is
+        // the header a client threads on, and References alone would be a half-built thread.
+        EmailSender.threadingHeaders(None, Some("<a@x> <b@x>")).isEmpty,
+        EmailSender.threadingHeaders(Some("not-a-msg-id"), Some("<a@x>")).isEmpty,
+      )
+    },
+    test("the References chain drops anything that is not a msg-id, and cannot inject (#2467)") {
+      assertTrue(
+        // The header is attacker-controlled sender content. Entries that are not RFC 5322 msg-ids
+        // are dropped rather than echoed, so a CRLF-smuggled header line cannot reach the wire.
+        EmailSender.normalizeReferences(Some("<a@x>\r\nBcc: attacker@evil.example <b@x>")) ==
+          "<a@x> <b@x>",
+        EmailSender.normalizeReferences(Some("<a@x> prose <b b@x> <unclosed@x <c@x>")) ==
+          "<a@x> <c@x>",
+        EmailSender.normalizeReferences(Some("nothing here at all")) == "",
+        EmailSender.normalizeReferences(None) == "",
+        // …and the rendered header value never carries control characters, whatever came in.
+        EmailSender
+          .threadingHeaders(Some("<c@x>"), Some("<a@x>\r\nBcc: attacker@evil.example"))
+          .toList
+          .flatMap(_.values)
+          .forall(v => !v.exists(_.isControl)),
+        EmailSender.threadingHeaders(Some("<c@x>"), Some("<a@x>\r\nBcc: attacker@evil.example")) ==
+          Some(Map("In-Reply-To" -> "<c@x>", "References" -> "<a@x> <c@x>")),
+      )
+    },
+    test("an over-long References chain is bounded, keeping the first id and the newest (#2467)") {
+      // RFC 5322 §2.1.1 caps a header LINE at 998 chars, and an over-long header risks a relay
+      // rejection — which under this transport means the reply is NOT DELIVERED, worse than a
+      // shortened chain. §3.6.4 says to drop from the middle, keeping the first id.
+      def id(n: Int): String = s"<$n${"x" * 90}@mail.example>"
+      val chain              = (1 to 60).map(id).mkString(" ")
+      val parent             = id(999)
+      val headers            = EmailSender.threadingHeaders(Some(parent), Some(chain))
+      val refs               = headers.flatMap(_.get("References")).getOrElse("")
+      assertTrue(
+        // Bounded: the rendered line fits RFC 5322 §2.1.1 …
+        ("References: " + refs).length <= 998,
+        // … and is genuinely shorter than the chain it was built from, i.e. it was truncated.
+        refs.length < chain.length,
+        // The oldest id (thread root) and the immediate parent both survive the drop.
+        refs.startsWith(id(1)),
+        refs.endsWith(parent),
+        // Nothing malformed survives the truncation: every surviving entry is still a msg-id.
+        refs.split(" ").forall(e => e.startsWith("<") && e.endsWith(">")),
+        // The normalizer bounds what we PERSIST and what rides the token by the same budget, so an
+        // unbounded header can never inflate the row or the bearer token.
+        EmailSender.normalizeReferences(Some(chain)).length <= EmailSender.MaxReferencesChars,
+      )
+    },
+    test("PressToken carries the inbound References UNDER the MAC; older payloads still verify") {
+      for {
+        clock <- ZIO.service[Clock]
+        now   <- clock.instant
+        ttl        = java.time.Duration.ofMinutes(30)
+        good       = PressToken.mint(
+          "reporter@example.com",
+          "Story",
+          4242L,
+          "<c@x>",
+          "<a@x> <b@x>",
+          now,
+          ttl,
+          TokenSecret,
+        )
+        claims     = PressToken.verify(good, now, TokenSecret)
+        // Repointing the CHAIN must fail the MAC exactly as repointing the Message-ID does: a
+        // hijacked agent must not be able to graft its reply onto somebody else's conversation.
+        other      = PressToken.mint(
+          "reporter@example.com",
+          "Story",
+          4242L,
+          "<c@x>",
+          "<attacker@evil.example>",
+          now,
+          ttl,
+          TokenSecret,
+        )
+        repointed  = {
+          val g = good.split("\\.")
+          val o = other.split("\\.")
+          s"${o(0)}.${o(1)}.${g(2)}"
+        }
+        // A pre-#2467 5-field payload (minted by the previous build, redeemed by this one) still
+        // verifies, with no chain — its reply threads exactly as #2451 shipped.
+        exp        = now.plusSeconds(1800).getEpochSecond
+        fiveField  = tokenFromPayload(
+          s"${b64("reporter@example.com")}|${b64("Story")}|77|$exp|${b64("<c@x>")}",
+        )
+        fiveClaims = PressToken.verify(fiveField, now, TokenSecret)
+        // …and so does the pre-#2451 4-field one, which is still flagged legacy (#2459 waits on it).
+        fourField  = tokenFromPayload(s"${b64("reporter@example.com")}|${b64("Story")}|77|$exp")
+        fourClaims = PressToken.verify(fourField, now, TokenSecret)
+      } yield assertTrue(
+        claims.exists(c => c.inboundMessageId == "<c@x>" && c.inboundReferences == "<a@x> <b@x>"),
+        good.split("\\.")(1) != other.split("\\.")(1),
+        PressToken.verify(repointed, now, TokenSecret) == Left(PressToken.Err.BadSignature),
+        fiveClaims.exists(c =>
+          c.inboundMessageId == "<c@x>" && c.inboundReferences.isEmpty && !c.legacyPayload,
+        ),
+        fourClaims.exists(c => c.inboundReferences.isEmpty && c.legacyPayload),
+      )
+    },
+    test("a second-level reply carries the parent's References plus its Message-ID (#2467)") {
+      for {
+        _                  <- cleanDb
+        pressLog           <- ZIO.service[PressMessageRepo]
+        (routes, stubs, _) <- makeRoutes(liveCfg)
+        // The journalist replied to our first answer, so their follow-up carries the accumulated
+        // chain. Our reply to THAT must reference the whole thread, not just the follow-up.
+        original = "<orig@mail.gmail.example>"
+        ourReply = "<reply@wifihaven.net>"
+        followUp = "<followup@mail.gmail.example>"
+        body     =
+          s"""{"from":"reporter@techdaily.example","subject":"Re: Comment request","text":"a follow-up?","messageId":${followUp.toJson},"references":${s"$original $ourReply".toJson}}"""
+        _          <- postInbound(routes, body, Some(sign(body)))
+        dispatches <- stubs.dispatch.dispatches.get
+        rows       <- pressLog.listRecent(50)
+        token = dispatches.head._1.agentToken
+        (sReply, _) <- agentReply(routes, """{"markdown":"a public reply"}""", Some(token))
+        emails      <- stubs.emails.get
+      } yield assertTrue(sReply == Status.Ok, emails.size == 1) &&
+        assertTrue(
+          // Persisted on the inbound row (#2467 V88), normalized — one value, carried on the signed
+          // token, never re-derived at send time.
+          rows.find(_.direction == "inbound").exists(_.references == s"$original $ourReply"),
+          emails.head.headers.contains(
+            Map(
+              // In-Reply-To stays the IMMEDIATE parent …
+              "In-Reply-To" -> followUp,
+              // … while References accumulates: parent's References + parent's Message-ID.
+              "References"  -> s"$original $ourReply $followUp",
+            ),
+          ),
+        )
+    },
+    test("a first-level reply is unchanged when the inbound carries no References (#2467)") {
+      for {
+        _                  <- cleanDb
+        pressLog           <- ZIO.service[PressMessageRepo]
+        (routes, stubs, _) <- makeRoutes(liveCfg)
+        // First contact: no References header at all. The headers must be exactly what #2451
+        // emitted — this is the regression this change most risks.
+        msgId = "<first@mail.gmail.example>"
+        body  =
+          s"""{"from":"reporter@techdaily.example","subject":"Comment request","text":"a question?","messageId":${msgId.toJson}}"""
+        _          <- postInbound(routes, body, Some(sign(body)))
+        dispatches <- stubs.dispatch.dispatches.get
+        rows       <- pressLog.listRecent(50)
+        token = dispatches.head._1.agentToken
+        (sReply, _) <- agentReply(routes, """{"markdown":"a public reply"}""", Some(token))
+        emails      <- stubs.emails.get
+      } yield assertTrue(sReply == Status.Ok, emails.size == 1) &&
+        assertTrue(
+          rows.find(_.direction == "inbound").exists(_.references.isEmpty),
+          emails.head.headers.contains(Map("In-Reply-To" -> msgId, "References" -> msgId)),
+        )
+    },
+    test("each reply meters its threading shape on a series the guard actually emits (#2467)") {
+      for {
+        _                  <- cleanDb
+        (routes, stubs, _) <- makeRoutes(liveCfg)
+        beforeChained      <- threadingShapeCount("chained")
+        beforeParent       <- threadingShapeCount("parent_only")
+        beforeNone         <- threadingShapeCount("none")
+        // A second-level reply → `chained`.
+        chainedBody =
+          """{"from":"reporter@example.com","subject":"Re: Q","text":"a follow-up?","messageId":"<c@x>","references":"<a@x> <b@x>"}"""
+        _ <- postInbound(routes, chainedBody, Some(sign(chainedBody)))
+        // A first-contact reply → `parent_only`.
+        parentBody =
+          """{"from":"reporter@example.com","subject":"Q","text":"a question?","messageId":"<d@x>"}"""
+        _ <- postInbound(routes, parentBody, Some(sign(parentBody)))
+        // No usable Message-ID → `none`.
+        noneBody =
+          """{"from":"reporter@example.com","subject":"Q","text":"a question?"}"""
+        _            <- postInbound(routes, noneBody, Some(sign(noneBody)))
+        dispatches   <- stubs.dispatch.dispatches.get
+        _            <- ZIO.foreachDiscard(dispatches.map(_._1.agentToken))(t =>
+          agentReply(routes, """{"markdown":"a public reply"}""", Some(t)),
+        )
+        afterChained <- threadingShapeCount("chained")
+        afterParent  <- threadingShapeCount("parent_only")
+        afterNone    <- threadingShapeCount("none")
+      } yield assertTrue(
+        dispatches.size == 3,
+        // Each sample landed on the real registry — which only happens if the series and its
+        // label key are registered with MetricGuard. An unregistered name is silently no-opped,
+        // so these deltas are what distinguishes "emitted" from "dropped".
+        afterChained - beforeChained == 1.0,
+        afterParent - beforeParent == 1.0,
+        afterNone - beforeNone == 1.0,
+      )
+    },
+    test("a hostile inbound References cannot inject an outbound header (#2467)") {
+      for {
+        _                  <- cleanDb
+        pressLog           <- ZIO.service[PressMessageRepo]
+        (routes, stubs, _) <- makeRoutes(liveCfg)
+        hostile = "<a@x>\r\nBcc: attacker@evil.example\r\n <b@x>"
+        body    =
+          s"""{"from":"reporter@example.com","subject":"Q","text":"a question?","messageId":"<c@x>","references":${hostile.toJson}}"""
+        _          <- postInbound(routes, body, Some(sign(body)))
+        dispatches <- stubs.dispatch.dispatches.get
+        rows       <- pressLog.listRecent(50)
+        token = dispatches.head._1.agentToken
+        (sReply, _) <- agentReply(routes, """{"markdown":"a public reply"}""", Some(token))
+        emails      <- stubs.emails.get
+      } yield assertTrue(sReply == Status.Ok, emails.size == 1) &&
+        assertTrue(
+          // The smuggled Bcc line is gone at ingest, so it is not even persisted …
+          rows.find(_.direction == "inbound").exists(_.references == "<a@x> <b@x>"),
+          // … and the emitted header carries only msg-ids.
+          emails.head.headers.contains(
+            Map("In-Reply-To" -> "<c@x>", "References" -> "<a@x> <b@x> <c@x>"),
+          ),
+        )
     },
   ) @@ TestAspect.sequential
 }

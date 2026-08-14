@@ -492,6 +492,42 @@
           "refId": "A"
         }
       ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "Press reply threading shape (#2467)",
+      "description": "sum by (shape) (rate(press_reply_threading_total{env=\"$env\"}[5m])) — how each autonomous press reply threaded, labelled by the SAME EmailSender producer that renders the headers, so the metric cannot report a shape the wire did not carry. parent_only = a first-level reply: References is the journalist's original alone (the #2451 shape, and the expected steady state, since each inbound is dispatched as an independent session). chained = a reply to a journalist's human FOLLOW-UP, carrying the accumulated RFC 5322 §3.6.4 chain (the parent's References plus the parent's Message-ID) so a strict client keeps one thread instead of splitting it. chained_truncated = that chain did not fit one 998-char header line, so middle ids were dropped (the thread root and the newest ids survive); sustained, it means real threads are outgrowing the header. none = the inbound carried no well-formed Message-ID, so the reply went out UNTHREADED.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 70 },
+      "id": 22,
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "unit": "reqps", "min": 0, "custom": { "drawStyle": "line", "fillOpacity": 10, "showPoints": "never", "lineWidth": 1, "stacking": { "mode": "normal", "group": "A" } } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (shape) (rate(press_reply_threading_total{env=\"$env\"}[5m]))",
+          "legendFormat": "{{shape}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "Press replies sent UNTHREADED (24h) — expect 0 (#2467)",
+      "description": "sum(increase(press_reply_threading_total{env=\"$env\",shape=\"none\"}[24h])) — replies emailed with no In-Reply-To/References at all, because the inbound carried no well-formed Message-ID. A one-off is legitimate (a mail client that omitted the header), but a sustained non-zero is exactly how #2451 failed the first time: every reply going out unthreaded with nothing surfacing it.",
+      "type": "stat",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 70 },
+      "id": 23,
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "unit": "short", "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] } } },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "colorMode": "value", "graphMode": "area", "textMode": "auto" },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum(increase(press_reply_threading_total{env=\"$env\",shape=\"none\"}[24h]))",
+          "legendFormat": "unthreaded (24h)",
+          "refId": "A"
+        }
+      ]
     }
   ],
   "refresh": "30s",

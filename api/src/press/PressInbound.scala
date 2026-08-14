@@ -94,8 +94,8 @@ object PressInbound {
   private def constantTimeEquals(a: String, b: String): Boolean =
     java.security.MessageDigest.isEqual(a.getBytes("UTF-8"), b.getBytes("UTF-8"))
 
-  // A well-formed press event needs a `from` (the reply target) and some `text`; `subject` and
-  // `messageId` default to empty. A missing `from`/`text` is a malformed payload (the responder has
+  // A well-formed press event needs a `from` (the reply target) and some `text`; `subject`,
+  // `messageId` and `references` default to empty. A missing `from`/`text` is a malformed payload (the responder has
   // no one to reply to / nothing to answer), not a silent skip.
   private def parse(root: Json.Obj): Option[PressInboundEvent] = {
     // `from` is used verbatim as the outbound reply recipient, so strip CR/LF/control chars —
@@ -115,6 +115,14 @@ object PressInbound {
             subject = str(root, "subject").map(stripControl).getOrElse(""),
             messageText = t,
             messageId = messageId(root),
+            // #2467 — the inbound `References` chain, taken RAW apart from a length cap. It is
+            // deliberately NOT control-stripped here: deleting a smuggled CRLF would glue
+            // `<a@x>\r\nBcc: …` into one unparseable token and cost the reply an id it
+            // legitimately had. `EmailSender.normalizeReferences` is the single sanitiser (a
+            // msg-id whitelist, so nothing else can survive to a header) and the responder runs
+            // it before anything is persisted or minted. The cap here only bounds the work that
+            // sanitiser has to do; the whole request body is already capped upstream.
+            references = str(root, "references").map(_.take(MaxRawReferencesChars)).getOrElse(""),
           ),
         )
       case _                  => None
@@ -138,6 +146,12 @@ object PressInbound {
       .filter(_.nonEmpty)
       .map(LoopGuardMarker.fromWire)
 
+  // #2467 — a generous cap on the RAW inbound `References` before normalisation. Normalisation
+  // bounds the result to one header line (986 chars); this only stops a pathological header from
+  // making the parse itself do unbounded work. Sized well above any real chain: a long-running
+  // thread of 100-char ids fills one header line in ~10 entries.
+  private val MaxRawReferencesChars: Int = 8 * 1024
+
   private def str(o: Json.Obj, key: String): Option[String] =
     o.fields.collectFirst { case (k, Json.Str(v)) if k == key => v }
 
@@ -158,6 +172,9 @@ final case class PressInboundEvent(
     subject: String,
     messageText: String,
     messageId: String,
+    // #2467 — the RAW inbound `References` header (length-capped only). Sanitised by
+    // `EmailSender.normalizeReferences` in the responder, before it is persisted or minted.
+    references: String,
 )
 
 /**

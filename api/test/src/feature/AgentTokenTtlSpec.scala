@@ -196,6 +196,7 @@ object AgentTokenTtlSpec
         pressMessageId = 0L,
         // #2451: no inbound Message-ID — this suite exercises the TTL, not reply threading.
         inboundMessageId = "",
+        inboundReferences = "",
         now = now,
         ttl = pressCfg.agentTokenTtl,
         secret = PressTokenSecret,
