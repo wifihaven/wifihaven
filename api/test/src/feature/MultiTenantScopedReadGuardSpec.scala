@@ -111,8 +111,9 @@ object MultiTenantScopedReadGuardSpec extends ZIOSpecDefault {
 
   /**
    * The scan pipeline, ONE copy. The liveness anchor below asserts on this same function's output
-   * (pre-exemption), so a future strip step cannot land here and leave the anchor certifying a
-   * pipeline the guard no longer runs.
+   * (pre-exemption), so a strip step added HERE is automatically covered by the anchor. Keep new
+   * strip steps in this function — one bolted onto `householdRelevantReads` instead would sit
+   * outside the anchor's reach, which is the drift this collapse exists to prevent.
    *
    * Literals are stripped FIRST, then comments: `stripLineComments` truncates at the first `//`,
    * including one inside a string, so `val u = "https://x"; someRepo.listAll` would lose its call
