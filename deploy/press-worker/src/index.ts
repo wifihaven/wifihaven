@@ -59,8 +59,11 @@ const REQUIRED_BINDINGS = Object.keys({
  * both-missing, one-missing and working as the same (silent) outcome. This is the Worker's
  * equivalent of the API's `Config.missingRequiredKeys`: report every missing key at once, so the
  * operator fixes the whole gap in one pass instead of discovering the second one after redeploying.
+ *
+ * Exported for test/missing-bindings.test.ts — the guard it drives decides whether press mail is
+ * accepted at all, so its per-binding reporting is asserted rather than only exercised by hand.
  */
-function missingBindings(env: Partial<Env>): string[] {
+export function missingBindings(env: Partial<Env>): string[] {
   return REQUIRED_BINDINGS.filter((k) => {
     const v = env[k];
     // A whitespace-only value is as unusable as an absent one, and `wrangler secret put` will

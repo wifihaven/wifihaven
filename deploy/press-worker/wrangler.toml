@@ -28,8 +28,9 @@ PRESS_API_URL = "https://api.wifihaven.net"
 
 # #2673 — Workers Logs ON, declared here rather than left to the dashboard toggle.
 #
-# This Worker's ONLY in-band diagnostic is `console.error` (src/index.ts:102 for the missing-binding
-# guard, :147 for a failed API POST). With
+# This Worker's ONLY in-band diagnostics are the `console.error` / `console.warn` calls in
+# src/index.ts — the missing-binding guard, the loop-guard skip (#2442), and a failed API POST.
+# (Named rather than line-numbered: the refs here went stale twice.) With
 # observability off those go nowhere, and the Worker becomes undiagnosable — which is exactly how
 # #2673 stayed invisible: press@ mail was accepted and silently discarded for weeks because
 # PRESS_WEBHOOK_SECRET was unset, the guard logged a warning, and nothing was listening.
