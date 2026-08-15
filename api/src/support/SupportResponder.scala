@@ -708,26 +708,31 @@ final case class SupportResponder(
       // records — including a `Disabled` (write half dark) or failed write, which is exactly the
       // case we most want on the dashboard. Alert-only: it can never cost the customer their answer.
       AgentPromptVersion.observe(AgentPromptVersion.Channel.Support, promptVersion) *>
-        AgentCredential
-          .redact(AgentCredential.Channel.Support, AgentAction.Reply, markdown)
-          .flatMap { safeMarkdown =>
-            val write = PlainThreadWrite(
-              // #2408: the reply posts INTO the customer's existing thread (`claims.threadId`, the
-              // customer-visible send via Plain's replyToThread), NOT a new createThread. The
-              // thread binding comes from the verified token — the request body carries only the
-              // reply text.
-              threadId = claims.threadId,
-              // #2456: strip the agent's own leading copy first — the server owns this line, and
-              // the agent intermittently copies it out of the thread history it now sees (#2441),
-              // which showed the customer the header twice.
-              markdown = s"$AiReplyAttribution\n\n${stripLeadingAttribution(safeMarkdown)}",
-            )
-            plain.writeThread(write).flatMap {
-              case PlainOutcome.Ok       => done(AgentAction.Reply, AgentActionResult.Ok)
-              case PlainOutcome.Disabled => done(AgentAction.Reply, AgentActionResult.Disabled)
-              case PlainOutcome.Error    => done(AgentAction.Reply, AgentActionResult.Error)
+        // #2667: refused OUTRIGHT if this session already made us post a consent prompt — the
+        // customer's decision moment is server-authored text ONLY. Outside the redaction, so a
+        // suppressed reply does no work at all.
+        exclusiveThreadWrite(AgentAction.Reply, claims) {
+          AgentCredential
+            .redact(AgentCredential.Channel.Support, AgentAction.Reply, markdown)
+            .flatMap { safeMarkdown =>
+              val write = PlainThreadWrite(
+                // #2408: the reply posts INTO the customer's existing thread (`claims.threadId`,
+                // the customer-visible send via Plain's replyToThread), NOT a new createThread. The
+                // thread binding comes from the verified token — the request body carries only the
+                // reply text.
+                threadId = claims.threadId,
+                // #2456: strip the agent's own leading copy first — the server owns this line, and
+                // the agent intermittently copies it out of the thread history it now sees (#2441),
+                // which showed the customer the header twice.
+                markdown = s"$AiReplyAttribution\n\n${stripLeadingAttribution(safeMarkdown)}",
+              )
+              plain.writeThread(write).flatMap {
+                case PlainOutcome.Ok       => done(AgentAction.Reply, AgentActionResult.Ok)
+                case PlainOutcome.Disabled => done(AgentAction.Reply, AgentActionResult.Disabled)
+                case PlainOutcome.Error    => done(AgentAction.Reply, AgentActionResult.Error)
+              }
             }
-          }
+        }
     }
 
   /**
@@ -1060,7 +1065,27 @@ final case class SupportResponder(
    * household data without the consent scope — calls this instead of dead-ending, and the SERVER
    * posts a FIXED, server-authored consent prompt into the token-bound thread carrying a signed
    * [[ConsentGrant]] link. It is deliberately not the agent's own words: the agent supplies no text
-   * here, so a prompt-injected agent cannot craft a phishing message under our attribution.
+   * in the consent MESSAGE.
+   *
+   * #2667 — that sentence is narrower than the guarantee it reads as, and the wider one is what
+   * protects customers: IN THE TURN THAT POSTS THE PROMPT, THE CUSTOMER SEES ONLY SERVER-AUTHORED
+   * TEXT. It did not hold at all until #2667, because nothing stopped the agent calling
+   * [[agentReply]] in the same turn, immediately beside the real signed link and under the same
+   * attribution — and a genuine, correctly-signed link with a hostile framing next to it is a
+   * phishing primitive with every technical control intact. It is now enforced by
+   * [[exclusiveThreadWrite]]: the two [[AgentAction.ThreadWrites]] are mutually exclusive within a
+   * session, in either order. Adjacent agent text is NOT a separate concern to be left to the
+   * prompt — the threat model is an agent that ignores its prompt.
+   *
+   * SCOPE, stated so it is not read as more than it is. The exclusion is per SESSION, and the link
+   * stays redeemable for [[SupportResponder.ConsentLinkTtl]]. A LATER turn — the customer asking
+   * "what is this link?" dispatches a fresh session with nothing claimed — can still post agent
+   * text beneath a live prompt and frame the link the customer can already see. That costs the
+   * attacker a customer round trip and is strictly narrower than what shipped before, but it is
+   * open, and closing it needs durable per-thread state (so, a migration) plus a product call about
+   * answering a customer who asks about the link. Tracked in
+   * https://github.com/wifihaven/wifihaven/issues/2709. Do NOT relax this wording back to an
+   * unqualified "at the consent moment" — the unqualified version is what let #2667 ship.
    *
    * #2453 — that guarantee needs a second half, because the prompt is posted through the SAME
    * machine-user write path as every AI reply and therefore comes back on the timeline as an
@@ -1076,6 +1101,13 @@ final case class SupportResponder(
    * JWT, writes one. A thread that already has a live grant is a no-op Ok (nothing to ask), so a
    * confused agent can't re-prompt a customer who already said yes; everything else is capped by
    * `consentThreadLimiter`.
+   *
+   * That cap is consumed BEFORE #2667's exclusion check, so an ask that is then suppressed as
+   * `consent_prompt_after_reply` still spends thread budget. Same reasoning as the issue limiters:
+   * what the cap bounds is the COST an agent can impose, and a suppressed ask still cost a token
+   * verification and a tracker round trip. Moving the exclusion earlier is not the alternative —
+   * the claim belongs at the write ([[exclusiveThreadWrite]]), because the already-granted branch
+   * above posts nothing and must not spend the turn.
    */
   def agentRequestConsent(bearer: Option[String]): UIO[AgentActionResult] =
     // The OTHER callback that needs the current time: takes the verified `now` from the token check
@@ -1099,6 +1131,14 @@ final case class SupportResponder(
     }
 
   private def postConsentPrompt(
+      claims: ConsentToken.Claims,
+      now: Instant,
+  ): UIO[AgentActionResult] =
+    // #2667: if this session has already spoken to the customer this turn, we do NOT post a prompt
+    // underneath its words — and we mint no grant, so no live link exists for a turn we refused.
+    exclusiveThreadWrite(AgentAction.ConsentRequest, claims)(mintAndPostConsentPrompt(claims, now))
+
+  private def mintAndPostConsentPrompt(
       claims: ConsentToken.Claims,
       now: Instant,
   ): UIO[AgentActionResult] = {
@@ -1353,9 +1393,13 @@ final case class SupportResponder(
    * a terminal page with nothing happening, post a SERVER-AUTHORED nudge telling them the
    * permission landed and one more message will get their answer.
    *
-   * Server-authored is load-bearing (#2419 anti-phishing): the agent supplies no text on any
-   * consent-adjacent write, so a prompt-injected agent cannot craft a message under our
-   * attribution. It carries NO consent URL (#2453).
+   * Server-authored is load-bearing (#2419 anti-phishing): the agent supplies no text in this
+   * message, so a prompt-injected agent cannot craft one under our attribution. It carries NO
+   * consent URL (#2453).
+   *
+   * This nudge is NOT covered by #2667's turn exclusion, and does not need to be: it is written by
+   * the SERVER on the customer's own grant, not by an agent callback, and it is posted only when
+   * the grant has already been given — there is no decision left for adjacent text to bias.
    */
   private def nudgeAfterGrant(threadId: String): UIO[Unit] =
     plain
@@ -1502,6 +1546,100 @@ final case class SupportResponder(
       }
 
   /**
+   * #2667 — run `post` only if this session has not already put the OTHER KIND of customer-visible
+   * message in front of the customer this turn.
+   *
+   * KIND, not count: a session replying twice is unchanged (#2668 owns "one turn, one reply" ACROSS
+   * sessions). What is refused is the two kinds COMBINING.
+   *
+   * THE GUARANTEE IT MAKES STRUCTURAL. #2419's consent prompt is server-authored so that a
+   * prompt-injected agent cannot craft a phishing message under our attribution. Read as it was
+   * meant — *at the consent moment the customer sees only server-authored text* — that was FALSE
+   * until this: nothing stopped the agent posting its own words in the same turn, immediately
+   * beside a perfectly genuine, correctly-signed link, under the same `🤖 WifiHaven support
+   * assistant` banner. The link being real is what makes the framing around it work.
+   *
+   * WHY IT IS HERE AND NOT IN `deploy/support-agent/agent.yaml`. The threat is an agent that
+   * ignores its prompt, so a prompt rule cannot be the control — the same reasoning that put
+   * #2454's data-session issue refusal in code. The prompt IS updated to match (an agent that stops
+   * after asking never sees this refusal), but it is downstream of the guarantee, not the source of
+   * it.
+   *
+   * The two call sites are the two places anything reaches the customer's thread — [[agentReply]]
+   * and [[postConsentPrompt]] — and the claim is taken IMMEDIATELY around the write rather than at
+   * the shared callback boundary, on purpose: `request-consent` on an already-consented thread is a
+   * no-op that posts nothing, and a boundary claim would let that silently eat the answer the agent
+   * then owes the customer.
+   *
+   * Every claim is SETTLED with what its write actually did, and the recovery is deliberately
+   * narrow — see [[settleThreadWrite]] for why only a dark Plain client proves non-delivery, and
+   * [[DispatchTracker.settleThreadWrite]] for the concurrent case recovery cannot reach. Both fail
+   * towards refusing, which is the right direction for a control keeping attacker-influenced text
+   * away from a live consent link.
+   *
+   * The refusal is reported to the agent as SUCCESS (→ 200), like #2668's: the turn IS handled, and
+   * a 4xx would invite the run to retry a write it can never legitimately land.
+   */
+  private def exclusiveThreadWrite(action: String, claims: ConsentToken.Claims)(
+      post: UIO[AgentActionResult],
+  ): UIO[AgentActionResult] =
+    // The mask makes taking a claim and installing its `onExit` ONE uninterruptible step. Without
+    // it, an interrupt landing between the two leaves the kind in flight for good, silently
+    // blocking the other one for the rest of the session. `restore` puts the write itself — the
+    // only slow part — back under normal interruption.
+    ZIO.uninterruptibleMask { restore =>
+      dispatchTracker.claimThreadWrite(claims.threadId, claims.sessionId, action).flatMap {
+        case DispatchTracker.ThreadWriteClaim.Excluded(by) =>
+          // PII firewall (#2438): the thread id and the two bounded action names, never the
+          // suppressed text and never anything about the customer.
+          ZIO.logWarning(
+            s"support: consent turn is server-authored — dropping op=$action on " +
+              s"thread=${claims.threadId} because this session already posted op=$by (or is " +
+              "posting it). The customer's data-access decision must rest on the server's own " +
+              "message alone (#2667)",
+          ) *>
+            AppMetrics.supportConsent(SupportResponder.exclusionOutcome(action)) *>
+            done(action, AgentActionResult.ConsentExclusive)
+        case DispatchTracker.ThreadWriteClaim.Claimed      =>
+          // `onExit`, not a flatMap: an interrupted or defective write must still settle.
+          restore(post).onExit(e => settleThreadWrite(action, claims, e))
+        case DispatchTracker.ThreadWriteClaim.Untracked    => restore(post)
+      }
+    }
+
+  /**
+   * #2667 — did the write reach the customer? Only [[AgentActionResult.Disabled]] answers NO.
+   *
+   * ONLY `Disabled` PROVES NON-DELIVERY. It is our own flag: the Plain write half is off, so
+   * nothing was attempted and giving the turn back is unambiguously safe. Everything else is
+   * settled LANDED, including [[AgentActionResult.Error]] — `PlainClient` collapses a non-2xx, a
+   * GraphQL error, a transport failure and a `RequestTimeout` into that one value, and a write that
+   * timed out may very well have been applied. Reading a timeout as "nothing was posted" would free
+   * the claim and let a consent prompt land underneath a reply the customer can already see, which
+   * is the whole thing this guards. An interrupt or a defect is unknowable and settles the same
+   * way.
+   *
+   * So the recovery is narrow on purpose: it covers the dark-install case and nothing else. The
+   * cost of erring this way is a silent turn — loud on
+   * `support_agent_action_total{op,outcome="error"}`, and on
+   * `support_consent_total{outcome="request_error"}` when it is the prompt that failed. NOT on the
+   * #2472 dispatch pairing: [[withClaimsE]] closes that at token-verify time, before the write, so
+   * do not send an operator there to find one. A silent turn is the direction a control keeping
+   * attacker-influenced text away from a live consent link should fail in.
+   */
+  private def settleThreadWrite(
+      action: String,
+      claims: ConsentToken.Claims,
+      exit: Exit[Nothing, AgentActionResult],
+  ): UIO[Unit] =
+    dispatchTracker.settleThreadWrite(
+      claims.threadId,
+      claims.sessionId,
+      action,
+      landed = exit.foldExit(_ => true, _ != AgentActionResult.Disabled),
+    )
+
+  /**
    * #2473 — the ONE support-side token rejection path: log + meter the loud shared series, then
    * return the SAME uniform 401-shaped `Denied` (and the same `…_agent_action_total{denied}`
    * sample) every rejection has always returned. The response is deliberately identical for every
@@ -1630,9 +1768,14 @@ object SupportResponder {
 
   /**
    * #2419 — the FIXED, server-authored consent prompt posted into the thread when the agent asks
-   * for data access. Never agent-authored: the agent supplies no text on that path, so it cannot
-   * craft a phishing message under our attribution. Names exactly what is shared, that it is
-   * read-only, that it is scoped to this conversation, and how to say no (do nothing).
+   * for data access. Never agent-authored: the agent supplies no text in it, so it cannot craft a
+   * phishing message under our attribution. Names exactly what is shared, that it is read-only,
+   * that it is scoped to this conversation, and how to say no (do nothing).
+   *
+   * #2667 — and it is now the WHOLE message for that turn, which is what makes the sentence above
+   * mean what it appears to mean. Its terms (the 24 hours, the read-only scope) are the only ones
+   * the customer is shown; nothing agent-authored may sit beside them (the #2667 turn exclusion).
+   * Keep the copy self-sufficient for that reason — the agent is not there to add the missing half.
    */
   def consentPromptTemplate(consentUrl: String): String =
     s"""$AiReplyAttribution
@@ -1651,14 +1794,38 @@ object SupportResponder {
   /**
    * #2460 — the fail-open nudge posted when the grant lands but the thread is unreadable, so we
    * cannot tell what to re-ask (a Plain hiccup or the #2452 `timeline:read` gap). FIXED and
-   * SERVER-AUTHORED — the agent supplies no text on any consent-adjacent write (#2419
-   * anti-phishing) — and deliberately carries NO consent URL (#2453).
+   * SERVER-AUTHORED — the agent supplies no text in it (#2419 anti-phishing) — and deliberately
+   * carries NO consent URL (#2453).
    */
   val consentGrantedNudge: String =
     s"""$AiReplyAttribution
        |
        |Thanks — I can see your account summary for this conversation now. Ask me your question
        |again and I'll take a look.""".stripMargin
+
+  /**
+   * #2667 — the `support_consent_total{outcome}` values a SUPPRESSED consent-adjacent write emits,
+   * one per direction so the operator can tell which way round it happened: the agent talking after
+   * the prompt (the observed prod shape, a prompt the routine has drifted from), or a prompt asked
+   * for underneath the agent's own words (which never posts a link at all). Two bounded constants,
+   * never a per-thread or per-household label.
+   *
+   * Named here, in ONE place, because a Grafana panel selects them by string — the #2461/#2482
+   * lesson: `SupportMetricsContractSpec` pins the panel's matcher against [[ExclusionOutcomes]], so
+   * a renamed label is a failing test rather than a panel that quietly reads zero forever.
+   */
+  private[api] def exclusionOutcome(action: String): String = action match {
+    case AgentAction.ConsentRequest => "consent_prompt_after_reply"
+    case AgentAction.Reply          => "reply_after_consent_prompt"
+    // Unreachable: only AgentAction.ThreadWrites members are ever claimed, and the contract spec
+    // pins ExclusionOutcomes (derived from that set) against the two values above — so a third
+    // thread-writing action fails there rather than silently metering as one of these.
+    case _                          => "suppressed_other"
+  }
+
+  /** Both values of [[exclusionOutcome]] — what the #2667 panel must match on. */
+  val ExclusionOutcomes: Set[String] =
+    AgentAction.ThreadWrites.map(exclusionOutcome)
 
   /**
    * #2460 — the `support_consent_total{outcome}` values the post-grant RESUME emits. Named, in ONE
@@ -1937,30 +2104,47 @@ object SupportResponder {
      * a spike means dispatches are overlapping far more than the conversation warrants.
      */
     case Superseded
+
+    /**
+     * #2667 — this session already put the OTHER KIND of customer-visible message in front of the
+     * customer (or has one in flight), and the two [[AgentAction.ThreadWrites]] do not combine: an
+     * agent reply beside a consent prompt is attacker-influenced text next to a genuine signed
+     * link, under our own attribution. Its own label because the rate is the thing an operator
+     * watches — a well-behaved agent that ends its turn after asking produces ZERO of these, so a
+     * sustained non-zero rate means either the deployed routine has drifted from the repo prompt
+     * (#2469) or something is trying.
+     */
+    case ConsentExclusive
     case RateLimited
     case Disabled
     case Error
   }
   object AgentActionResult {
     def label(r: AgentActionResult): String = r match {
-      case Ok          => "ok"
-      case OkNoLink    => "ok_no_link"
-      case OkDuplicate => "ok_duplicate"
-      case Denied      => "denied"
-      case NoConsent   => "denied"
-      case DataSession => "denied_data_session"
-      case Superseded  => "superseded"
-      case RateLimited => "rate_limited"
-      case Disabled    => "disabled"
-      case Error       => "error"
+      case Ok               => "ok"
+      case OkNoLink         => "ok_no_link"
+      case OkDuplicate      => "ok_duplicate"
+      case Denied           => "denied"
+      case NoConsent        => "denied"
+      case DataSession      => "denied_data_session"
+      case Superseded       => "superseded"
+      // #2667 — kept distinct from `superseded`: that one is a benign race between two live
+      // sessions, this one is an agent talking over the customer's consent decision.
+      case ConsentExclusive => "consent_exclusive"
+      case RateLimited      => "rate_limited"
+      case Disabled         => "disabled"
+      case Error            => "error"
     }
 
     /** The cases that mean "the action succeeded" — the ONE place success is defined. */
     private def isSuccess(r: AgentActionResult): Boolean = r match {
-      case Ok | OkNoLink | OkDuplicate                                                    => true
+      case Ok | OkNoLink | OkDuplicate => true
       // #2668 `Superseded` is FALSE here even though the caller is told 200: the volume panels this
       // set feeds ask "did the action happen", and a suppressed duplicate did not.
-      case Denied | NoConsent | DataSession | Superseded | RateLimited | Disabled | Error => false
+      // #2667 `ConsentExclusive` is likewise FALSE: the suppressed write did not happen.
+      case Denied | NoConsent | DataSession | Superseded | ConsentExclusive | RateLimited |
+          Disabled | Error =>
+        false
     }
 
     /**

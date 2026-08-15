@@ -253,8 +253,8 @@ object SupportThreadHistorySpec extends ZIOSpecDefault {
     test("a consent link in an earlier AI turn is stripped out of the rendered history") {
       // The #2419 consent prompt is posted through the SAME machine-user write path as every AI
       // reply, so it comes back on the timeline as an `ai_assistant` turn. The anti-phishing
-      // guarantee ("the agent supplies no text here, so a prompt-injected agent cannot craft a
-      // phishing message under our attribution") only holds if the agent never SEES the live link:
+      // guarantee — that at the consent moment the customer sees only server-authored text
+      // (#2419, made structural in #2667) — only holds if the agent never SEES the live link:
       // otherwise it can re-post the real, valid URL wrapped in its own pretext.
       val prompt =
         "To answer that I need to look at your account.\n\n" +

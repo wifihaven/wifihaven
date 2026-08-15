@@ -170,6 +170,125 @@ final class DispatchTracker private (
       }
 
   /**
+   * #2667 — CLAIM one KIND of customer-visible thread write for this session, atomically.
+   *
+   * WHAT IT PROTECTS. The #2419 consent prompt is server-authored so that a prompt-injected agent
+   * cannot craft a phishing message under our own `🤖 WifiHaven support assistant` attribution.
+   * That only protects the customer if it is the WHOLE message they see at the consent moment: a
+   * perfectly genuine, correctly-signed link with *"sign in with your password to verify your
+   * identity"* posted beside it is a phishing primitive with every technical control intact. So the
+   * two [[AgentAction.ThreadWrites]] are MUTUALLY EXCLUSIVE within a session — in either order,
+   * because a hostile framing posted before the link works exactly as well as one posted after it.
+   *
+   * KIND, NOT COUNT. It refuses the OTHER kind, never a repeat of the same one: a session replying
+   * twice is a different question (#2668 owns "one turn, one reply" ACROSS sessions) and is
+   * deliberately unchanged here. What this guard says is that the two kinds never COMBINE.
+   *
+   * WHY A CLAIM AND NOT A CHECK. A check-then-write pair is racy by construction, and the caller
+   * whose race it is, is the untrusted one: an injected agent can fire `reply` and
+   * `request-consent` concurrently — parallel tool calls are ordinary agent behaviour — and slip
+   * both past a read. The claim is one atomic `modify`, so only one KIND can ever be in play.
+   *
+   * A KIND IS IN PLAY WHILE IT IS IN FLIGHT, NOT ONLY ONCE IT HAS LANDED ([[ThreadWrite.busy]]).
+   * Counting in-flight writes rather than recording a bare "this kind was claimed" is what makes
+   * [[settleThreadWrite]] safe under concurrency: with a bare set, a failed write would clear the
+   * key a CONCURRENT sibling's landed write had earned, and a consent prompt could then post
+   * underneath agent text already in front of the customer — the exact adjacency this exists to
+   * prevent.
+   *
+   * [[ThreadWriteClaim.Untracked]] — no record of the thread, a session that no longer owns it, or
+   * a channel with no session identity — FAILS OPEN, the same call [[turnOwner]] makes and for the
+   * same reason: the state is in-memory and dropped on restart, so "nothing recorded" is not
+   * evidence that a consent prompt was posted, and a customer who gets no answer at all is the
+   * worse failure. A superseded session is already refused by [[turnOwner]] before it reaches here.
+   *
+   * Every [[ThreadWriteClaim.Claimed]] MUST be settled with [[settleThreadWrite]] — an unsettled
+   * claim leaves the kind permanently in flight and silently blocks the other one for the rest of
+   * the session.
+   */
+  def claimThreadWrite(
+      threadId: String,
+      sessionId: String,
+      action: String,
+  ): UIO[ThreadWriteClaim] =
+    if sessionId.isEmpty then ZIO.succeed(ThreadWriteClaim.Untracked)
+    else
+      pending.modify { m =>
+        m.get(threadId) match {
+          case Some(p) if p.sessionId == sessionId =>
+            p.threadWrites.collectFirst {
+              case (other, w) if other != action && w.busy => other
+            } match {
+              case Some(other) => (ThreadWriteClaim.Excluded(other), m)
+              case None        =>
+                val w = p.threadWrites.getOrElse(action, ThreadWrite())
+                (
+                  ThreadWriteClaim.Claimed,
+                  m.updated(
+                    threadId,
+                    p.copy(
+                      threadWrites =
+                        p.threadWrites.updated(action, w.copy(inFlight = w.inFlight + 1)),
+                    ),
+                  ),
+                )
+            }
+          case _                                   => (ThreadWriteClaim.Untracked, m)
+        }
+      }
+
+  /**
+   * #2667 — settle a [[ThreadWriteClaim.Claimed]]: the write is no longer in flight, and `landed`
+   * says whether it reached the customer. A write that DID land is remembered for the rest of the
+   * session and can never be given back; one that did not leaves nothing in front of the customer,
+   * so it does not spend the turn.
+   *
+   * WHAT COUNTS AS "did not land" IS THE CALLER'S CALL, and it is deliberately a narrow one —
+   * `SupportResponder.settleThreadWrite` releases ONLY when its own Plain client is dark, because
+   * that is the only outcome that PROVES nothing was posted. A refusal, a transport error and a
+   * timeout are one value at the Plain boundary, and a write that timed out may well have been
+   * applied.
+   *
+   * SO THE TURN CAN END SILENT, in two shapes, and both are the deliberate direction to fail in for
+   * a control whose job is to keep attacker-influenced text away from a live consent link:
+   *   - a Plain FAILURE on the first write — the second kind is then refused as if the first had
+   *     landed, because we cannot show it did not;
+   *   - both callbacks fired CONCURRENTLY and the first write then failing — the second was already
+   *     refused while the first was in flight and cannot be un-refused.
+   * Neither is silent to US: the failed write is loud on
+   * `support_agent_action_total{op,outcome="error"}` (and
+   * `support_consent_total{outcome="request_error"}` for the prompt). NOT on the #2472 pairing,
+   * which is already closed by then — [[calledBack]] fires at token-verify time, before any Plain
+   * write, so a turn that ends silent this way still reads as served there. Buffering a write until
+   * a concurrent sibling settles is the only alternative, and it is not worth the machinery for a
+   * Plain failure racing a double callback.
+   */
+  def settleThreadWrite(
+      threadId: String,
+      sessionId: String,
+      action: String,
+      landed: Boolean,
+  ): UIO[Unit] =
+    ZIO
+      .unless(sessionId.isEmpty)(pending.update { m =>
+        m.get(threadId) match {
+          case Some(p) if p.sessionId == sessionId =>
+            val w = p.threadWrites.getOrElse(action, ThreadWrite())
+            m.updated(
+              threadId,
+              p.copy(
+                threadWrites = p.threadWrites.updated(
+                  action,
+                  ThreadWrite(landed = w.landed || landed, inFlight = math.max(0, w.inFlight - 1)),
+                ),
+              ),
+            )
+          case _                                   => m
+        }
+      })
+      .unit
+
+  /**
    * Close the outstanding dispatch for `threadId`, if any: the agent came back. Called for TERMINAL
    * actions only ([[AgentAction.Terminal]]) — a household READ or an issue filing proves the
    * session is alive but produces nothing the customer sees, so it must not mark the turn served.
@@ -399,6 +518,12 @@ object DispatchTracker {
    * `closed` are #2668's turn ownership — a closed entry is kept (never reported) until
    * [[deadAfter]] so a late callback from a SUPERSEDED session is still distinguishable from one on
    * a thread we simply have no record of.
+   *
+   * `threadWrites` is #2667's exclusion: per [[AgentAction.ThreadWrites]] KIND, whether this
+   * session has put one in front of the customer and how many are in flight. It is keyed by a
+   * two-value vocabulary and only one kind can ever be non-empty (the other is what
+   * [[claimThreadWrite]] refuses), so it costs a few bytes and stays bounded by the same eviction
+   * as everything else on the entry.
    */
   private[support] final case class Pending(
       subject: Subject,
@@ -407,7 +532,39 @@ object DispatchTracker {
       sessionId: String,
       slowReported: Boolean = false,
       closed: Boolean = false,
+      threadWrites: Map[String, ThreadWrite] = Map.empty,
   )
+
+  /**
+   * #2667 — one KIND of customer-visible write, from this session's point of view. `landed` is
+   * permanent (the customer saw it); `inFlight` counts claims taken and not yet settled.
+   */
+  private[support] final case class ThreadWrite(landed: Boolean = false, inFlight: Int = 0) {
+
+    /**
+     * Does this kind block the OTHER one? A LANDED write does, forever. So does one still in flight
+     * — the decisive case: without it, two callbacks racing would each see the other as absent and
+     * both land, which is precisely the adjacency the claim exists to prevent.
+     */
+    def busy: Boolean = landed || inFlight > 0
+  }
+
+  /**
+   * #2667 — the outcome of claiming one KIND of customer-visible write. Bounded on purpose:
+   * [[Excluded]] is the ONLY value that suppresses a write, and [[Untracked]] (the fail-open case)
+   * must never be confused with it.
+   */
+  enum ThreadWriteClaim {
+
+    /** Taken by this call — the caller MUST [[settleThreadWrite]] once its write resolves. */
+    case Claimed
+
+    /** The session has the OTHER kind (`by`) landed or in flight, so this one is suppressed. */
+    case Excluded(by: String)
+
+    /** No record, or no session identity — decide nothing, allow, and settle nothing. */
+    case Untracked
+  }
 
   /**
    * #2668 — who owns a thread's current turn, from the point of view of a calling-back session.

@@ -119,10 +119,15 @@ object SupportPrivacy {
    * The consent prompt is posted into the customer's Plain thread through the SAME machine-user
    * write path as every AI reply, so since #2430/#2441 it comes back on the timeline and re-enters
    * the agent's own kickoff as `ai_assistant` history. That defeats the documented anti-phishing
-   * guarantee on [[SupportResponder.agentRequestConsent]] — "the agent supplies no text here, so a
-   * prompt-injected agent cannot craft a phishing message under our attribution" — because a
-   * prompt-injected agent can re-post the REAL, VALID URL wrapped in a pretext of its own. The
-   * premise holds only if the agent never SEES the link.
+   * guarantee on [[SupportResponder.agentRequestConsent]] — that at the consent moment the customer
+   * sees only server-authored text — because a prompt-injected agent can re-post the REAL, VALID
+   * URL wrapped in a pretext of its own. The premise holds only if the agent never SEES the link.
+   *
+   * The guarantee rests on THREE parts, none sufficient alone: the prompt is server-authored
+   * (#2419), the live link never reaches the agent (here), and no agent-authored message may share
+   * the TURN with the prompt (#2667's mutual exclusion at the two thread-write sites). A LATER turn
+   * still can, which is why this redaction matters on its own — it is what stops that turn
+   * re-posting the URL rather than merely referring to it (issue #2709).
    *
    * Deliberately NARROW, and deliberately not [[scrubForIssue]]: thread history must not be
    * blanket-URL-scrubbed, because a customer legitimately pastes links the agent needs to read.
