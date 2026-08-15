@@ -32,12 +32,12 @@ template) and [`api/resources/press/media-contacts.yml`](../../api/resources/pre
 `pressOutreach` block at all, so the flag could not be set from the environment and the
 endpoints 404'd everywhere. The keys now exist:
 
-| env var | prod default | meaning |
-|---|---|---|
-| `WIFIHAVEN_PRESS_OUTREACH_ENABLED` | `false` (declared in `render.yaml`) | mounts `/api/press/outreach/{preview,send}`. **This is the one value to flip.** |
-| `WIFIHAVEN_PRESS_OUTREACH_FROM_ADDRESS` | `WifiHaven Press <press@wifihaven.net>` | verified Resend sender |
-| `WIFIHAVEN_PRESS_OUTREACH_REPLY_TO` | `press@wifihaven.net` | → CF Email Worker → #2203 responder |
-| `WIFIHAVEN_PRESS_OUTREACH_PER_SEND_DELAY_MS` | `2000` | spacing between sends |
+| env var | staging | prod | meaning |
+|---|---|---|---|
+| `WIFIHAVEN_PRESS_OUTREACH_ENABLED` | **`true`** | `false` | mounts `/api/press/outreach/{preview,send}`. **This is the one value to flip on prod.** |
+| `WIFIHAVEN_PRESS_OUTREACH_FROM_ADDRESS` | `press-staging@wifihaven.net` | `press@wifihaven.net` | verified Resend sender (apex-only verification, #2407) |
+| `WIFIHAVEN_PRESS_OUTREACH_REPLY_TO` | `press@staging.wifihaven.net` | `press@wifihaven.net` | → CF Email Worker → #2203 responder |
+| `WIFIHAVEN_PRESS_OUTREACH_PER_SEND_DELAY_MS` | `2000` | `2000` | spacing between sends |
 
 Which produces:
 
@@ -58,6 +58,58 @@ resolved state is visible at boot and on the loopback `GET /api/debug/config`.
 
 Turning the flag on does not send anything on its own: a send additionally needs `confirm=true`
 in the request, every release fill token resolved, and an admin in the operator household.
+
+## Rehearse on staging first
+
+Staging has the capability **on**, so the whole path can be exercised against a deployed API
+without any chance of reaching a journalist. Two independent reasons it cannot:
+
+- `preview` resolves every contact to `dry_run` before the transport is reached, whatever else
+  is in the request;
+- the bundled manifest ships **no journalist addresses at all**, so even a `confirm=true` call
+  returns `skipped_no_email` for all 21 — there is nothing for it to send to. The only way to
+  transmit is to supply an address yourself, in `emailOverrides` or `testRecipient`.
+
+```bash
+ADMIN_JWT=$(curl -sS -X POST https://api-staging.wifihaven.net/api/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"admin","password":"<staging admin password>"}' | jq -r .token)
+
+curl -sS -X POST https://api-staging.wifihaven.net/api/press/outreach/preview \
+  -H "Authorization: Bearer $ADMIN_JWT" -H 'Content-Type: application/json' \
+  -d '{
+        "fill": {
+          "date": "August 17, 2026",
+          "founderName": "Test Founder",
+          "betaSignupUrl": "https://app.wifihaven.net/beta",
+          "pressKitUrl": "https://wifihaven.net/press"
+        }
+      }' | jq '{mode, totalContacts, emailable, formOnly, unresolvedPlaceholders,
+                outcomes: [.results[].outcome] | group_by(.) | map({(.[0]): length}) | add}'
+```
+
+Expect `mode: "preview"`, `totalContacts: 21`, `emailable: 0`, `formOnly: 21`,
+`unresolvedPlaceholders: []`, and every outcome `dry_run`. To read the emails as a
+journalist would:
+
+```bash
+curl -sS -X POST https://api-staging.wifihaven.net/api/press/outreach/preview \
+  -H "Authorization: Bearer $ADMIN_JWT" -H 'Content-Type: application/json' \
+  -d '{"fill":{"date":"August 17, 2026","founderName":"Test Founder","betaSignupUrl":"https://app.wifihaven.net/beta","pressKitUrl":"https://wifihaven.net/press"}}' \
+  | jq -r '.emails[] | "=== \(.outlet) — \(.person) ===\nSubject: \(.subject)\n\(.htmlBody)\n"' \
+  > /tmp/press-preview.html
+```
+
+Check the **HTML**, not a text rendering of it — #2677 shipped literal `**` to a journalist
+because only the text part was ever inspected.
+
+A 404 from either endpoint means one of three things, and they are deliberately
+indistinguishable from outside: the flag is off, you are not an admin, or you are not in the
+operator household (household 1). Check the boot log or `GET /api/debug/config` on the loopback.
+
+To transmit for real on staging, add `"testRecipient": "you@yourinbox.example"` and
+`"confirm": true`. That composes each email for the real journalist but sends every one to your
+address only, and records nothing to the ledger.
 
 ## Endpoints
 

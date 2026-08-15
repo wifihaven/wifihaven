@@ -352,11 +352,24 @@ services:
       # RESPONDER_ENABLED=true.
       - key: WIFIHAVEN_PRESS_REPLY_TO_ADDRESS
         value: press@staging.wifihaven.net
-      # #2233: the press-OUTREACH send capability, declared EXPLICITLY OFF on staging as well as
-      # prod. Naming the off-state in BOTH environments is the point of #2265 — an absent key is a
-      # compiled default nobody reviewed, and "it's only staging" is how the two drift.
+      # #2233: the press-OUTREACH capability is ON here so the preview/dry-run path can actually be
+      # exercised against a deployed API before the launch send. Turning it on mounts
+      # /api/press/outreach/{preview,send}; it does NOT enable a send. `preview` short-circuits every
+      # contact to `dry_run` before the transport is reached, and `send` additionally requires
+      # `confirm=true`, every release fill token resolved, and an admin in the operator household.
+      #
+      # STAGING is where this belongs: the manifest ships no journalist addresses, so even a
+      # confirmed send here returns `skipped_no_email` for all 21 — there is no address for it to
+      # reach. Prod stays explicitly false until the operator's launch flip.
       - key: WIFIHAVEN_PRESS_OUTREACH_ENABLED
-        value: "false"
+        value: "true"
+      # #2407 applies here too: Resend verifies per DOMAIN and only the apex wifihaven.net is
+      # verified, so staging borrows the apex for the From and points Reply-To at the staging press
+      # mailbox the CF Email Worker actually watches. Required once ENABLED=true.
+      - key: WIFIHAVEN_PRESS_OUTREACH_FROM_ADDRESS
+        value: "WifiHaven Press <press-staging@wifihaven.net>"
+      - key: WIFIHAVEN_PRESS_OUTREACH_REPLY_TO
+        value: press@staging.wifihaven.net
 
   # ── Production API ─────────────────────────────────────────────────────────
   - type: web
