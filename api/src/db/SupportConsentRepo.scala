@@ -73,7 +73,14 @@ enum LinkResolution(val label: String) {
   /** The customer withdrew — the outstanding link dies with the decision. */
   case Withdrawn extends LinkResolution("withdrawn")
 
-  /** A later prompt replaced it, so exactly one link is outstanding per thread at a time. */
+  /**
+   * A later prompt replaced it. Note what this does and does not say: it resolves the row, so the
+   * link stops counting as OUTSTANDING for the #2709 exclusion — it does not make the link
+   * unredeemable. `grant` gates single-use on `consumed_at`, never on `resolution` (#2453's rule),
+   * so a superseded link the customer can still see still works until it is consumed, withdrawn, or
+   * lapses. That is deliberate: a customer clicking the older of two genuine links they were sent
+   * should not get an error.
+   */
   case Superseded extends LinkResolution("superseded")
 }
 
@@ -85,9 +92,15 @@ trait SupportConsentRepo {
    * [[LinkResolution.Superseded]]. Answers how many were superseded, so the caller can meter a
    * substitution rather than let it be silent.
    *
-   * Both halves are one transaction: a thread must never have two links reading as outstanding,
-   * because "is a link live here" is a security predicate and two rows would make its answer depend
-   * on which one resolved first.
+   * Both halves are one transaction, so a failed insert cannot leave the previous link resolved and
+   * nothing in its place — which would read as "no link outstanding" on a thread that still has one
+   * in front of the customer.
+   *
+   * It supersedes what it can SEE, which is not quite "at most one row is ever outstanding": two
+   * genuinely concurrent calls can each supersede nothing and both insert. [[outstandingLink]]
+   * tolerates that by construction (it takes the newest), and the security answer is unchanged
+   * either way — the thread is muted while ANY row is outstanding, so an extra row can only mute,
+   * never unmute. Do not read this as a uniqueness guarantee; the schema does not enforce one.
    */
   def recordPrompt(
       household: HouseholdId,
@@ -290,8 +303,15 @@ class SupportConsentRepoLive(xa: Transactor[Task]) extends SupportConsentRepo {
       .map(_ == 1)
 
   def releaseExplainer(household: HouseholdId, threadId: String, nonce: String): Task[Unit] =
+    // Guarded on the SETTLED state as well as the key: the customer can redeem or withdraw between
+    // the liveness read and this release, and a resolved row's audit fields are not ours to rewrite
+    // afterwards. Refusing changes no behaviour — a resolved row can never be returned by
+    // `outstandingLink` again, so the explainer could not re-post either way — it keeps the
+    // statement correct on its own terms rather than by virtue of its call site.
     sql"""UPDATE support_consent_link_use SET explained_at = NULL
-          WHERE nonce = $nonce AND household_id = $household AND thread_id = $threadId""".update.run
+          WHERE nonce = $nonce AND household_id = $household AND thread_id = $threadId
+            AND explained_at IS NOT NULL
+            AND consumed_at IS NULL AND resolution IS NULL""".update.run
       .transact(xa)
       .unit
 

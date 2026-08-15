@@ -1405,7 +1405,8 @@ final case class SupportResponder(
         ZIO
           .logInfo(
             s"support: a new consent prompt SUPERSEDED $superseded outstanding link(s) on " +
-              s"thread=${claims.threadId} — exactly one link is live per thread (#2709)",
+              s"thread=${claims.threadId} — they stop counting as outstanding, though a link the " +
+              "customer can still see stays redeemable until it is used or withdrawn (#2709)",
           )
           .zipRight(AppMetrics.supportConsent(SupportResponder.LinkSuperseded))
           .when(superseded > 0),
@@ -2117,7 +2118,10 @@ object SupportResponder {
   /** The Plain write half is dark, so nothing customer-visible is flowing at all. */
   val LinkExplainDisabled: String = "link_explain_disabled"
 
-  /** A newer prompt replaced an outstanding link — exactly one is live per thread. */
+  /**
+   * A newer prompt replaced an outstanding link, so the older one stops counting for the exclusion.
+   * It does NOT stop being redeemable — see `LinkResolution.Superseded`.
+   */
   val LinkSuperseded: String = "link_superseded"
 
   /**
