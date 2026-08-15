@@ -449,7 +449,9 @@ locals {
     #     self-clears with no bookkeeping: a decommissioned or unplugged router drops its
     #     socket and leaves the reference count on its own, which is the exact property
     #     the enrolled gauge lacks. Replayed over the full retained window
-    #     (2026-08-01T19:01Z → 08-15T18:56Z, 4032 samples at 300s): 3966 at 2 and 66 at 1,
+    #     (2026-08-01T19:01Z → 08-15T18:56Z, 4032 samples at 300s — note both integers
+    #     below are phase-sensitive at this step, since a 30s dip lands on a 300s grid
+    #     point only about a tenth of the time): 3966 at 2 and 66 at 1,
     #     the latter in just two stretches — a 5.3h run at the very start of retention
     #     (08-01 19:01 → 08-02 00:21, which reads as the second router joining rather than
     #     a flap) and one single sample on 08-07 14:16. Both LOWER the reference, so both
@@ -496,14 +498,18 @@ locals {
     # the single sample. `max` is chosen only as the conservative aggregator over a gauge
     # documented as channels; it buys nothing else.
     # DO NOT READ IT AS MAKING W14 SCALE-OUT-CORRECT. Raising numInstances (render.yaml,
-    # 1 today) does NOT produce per-instance series, because Render's internal address
-    # round-robins behind that single fixed-`instance` scrape target: each 30s scrape
-    # returns whichever instance answered. So the reference becomes that instance's
-    # channel count while `agent_version` series from the OTHER instance are still inside
-    # the staleness window — the two operands flap against each other and the rule
-    # FALSE-FIRES. That is fail-unsafe, and no choice of aggregator fixes it: the scrape
-    # topology in config.alloy has to be reworked (per-instance targets, or a
-    # server-side aggregate) BEFORE numInstances is raised.
+    # 1 today) does NOT produce per-instance series: Render's internal address
+    # round-robins behind that single fixed-`instance` scrape target, so each 30s scrape
+    # returns whichever instance answered, and BOTH operands are then sampled from that
+    # one arbitrary instance. No choice of aggregator fixes that.
+    # WHICH WAY the comparison then breaks is deliberately NOT predicted here. Two
+    # successive drafts of this comment asserted opposite directions (silently blind vs
+    # false-firing) and neither was derivable from the scrape config; it is not
+    # determinable without actually running a two-instance deploy. What IS certain is that
+    # the reference stops meaning "the fleet's connected routers", which is the property
+    # the rule rests on. So: rework the scrape topology in config.alloy (per-instance
+    # targets, or a server-side aggregate) BEFORE raising numInstances, and re-derive this
+    # rule against whatever that produces rather than reasoning about it in advance.
     # If the reference gauge itself is absent (the API is down), the comparison is empty
     # and the rule correctly lands in no_data → OK — an API outage is C-tier, not this.
     #

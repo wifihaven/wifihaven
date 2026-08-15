@@ -666,7 +666,9 @@ the same failure and neither subsumes the other.
     bookkeeping — a decommissioned or unplugged router drops its socket and
     leaves the reference count on its own, the property the enrolled gauge
     lacks. Replayed over the full retained window (2026-08-01T19:01Z to
-    08-15T18:56Z, 4032 samples at 300s): 3966 at 2 and 66 at 1, the latter in
+    08-15T18:56Z, 4032 samples at 300s — both integers below are phase-sensitive
+    at this step, since a 30s dip lands on a 300s grid point only about a tenth
+    of the time): 3966 at 2 and 66 at 1, the latter in
     only two stretches — a 5.3h run at the very start of retention (08-01
     19:01 to 08-02 00:21, which reads as the second router joining rather than
     a flap) and one single sample on 08-07 14:16. Both *lower* the reference,
@@ -722,13 +724,17 @@ the same failure and neither subsumes the other.
   scale-out-correct.** Raising `numInstances` (1 today, `render.yaml`) does not
   produce per-instance series: Render's internal address round-robins behind
   that single fixed-`instance` scrape target, so each 30s scrape returns
-  whichever instance answered. The reference becomes that instance's channel
-  count while `agent_version` series from the *other* instance are still inside
-  the staleness window, the two operands flap against each other, and the rule
-  **false-fires**. That is fail-*unsafe*, and no choice of aggregator fixes it:
-  the scrape topology in `config.alloy` has to be reworked (per-instance
-  targets, or a server-side aggregate) before `numInstances` is raised. If the
-  reference
+  whichever instance answered, and *both* operands are then sampled from that
+  one arbitrary instance. No choice of aggregator fixes that. **Which way the
+  comparison then breaks is deliberately not predicted here.** Two successive
+  drafts of this section asserted opposite directions — silently blind, then
+  false-firing — and neither was derivable from the scrape config; it is not
+  determinable without running a two-instance deploy. What *is* certain is that
+  the reference stops meaning "the fleet's connected routers", which is the
+  property the rule rests on. So rework the scrape topology in `config.alloy`
+  (per-instance targets, or a server-side aggregate) before raising
+  `numInstances`, and re-derive this rule against whatever that produces rather
+  than reasoning about it in advance. If the reference
   gauge is itself absent (the API is down) the comparison is empty and the rule
   lands in no-data → OK, which is right: an API outage is C-tier.
 - **`for: 6h` — calibrated against 14 days of prod, not picked.** The
