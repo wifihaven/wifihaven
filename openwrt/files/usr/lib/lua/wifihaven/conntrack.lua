@@ -188,11 +188,14 @@ end
 --
 -- Called only when DNS attribution (hname) is unavailable for a flow that
 -- targets a MAC with extraBlocked entries, so one nft query per eb_host per
--- flow — acceptable because it is the slow-path (#579 logging correction).
+-- flow — acceptable because it is the slow-path (#579 logging correction) AND
+-- because extraBlocked is small (single digits per profile in production).
 --
--- The bl_ labeling fallback in handle_flow piggybacks on this same helper
--- (the comment there explains why both paths share the eb_-style query), so
--- branching family here fixes v6 attribution for category drops too (#1668).
+-- #2719: the category-blocklist fallback used to piggyback on this helper too,
+-- iterating every MEMBER HOST of every assigned list (180,343 on the prod
+-- family router). It now probes the per-list bl_<id>/bl6_<id> sets via
+-- nft_bl_hit instead — see the loop in handle_flow. Do not re-point the bl_
+-- path back here.
 -- ---------------------------------------------------------------------------
 function M.nft_eb_hit(dst_ip, eb_host, exec_fn)
   exec_fn = exec_fn or os.execute
@@ -209,6 +212,139 @@ function M.nft_eb_hit(dst_ip, eb_host, exec_fn)
     return ret  -- Lua 5.3+: true = success (exit 0)
   end
   return ret == 0  -- Lua 5.1/5.2: 0 = success
+end
+
+-- ---------------------------------------------------------------------------
+-- bl_san(id) -> string   (#2719)
+--
+-- Sanitize a blocklist id into the nftables set-name suffix render.lua uses
+-- for the per-list sets. MUST stay identical to render.bl_sanitize (dots,
+-- colons, hyphens and whitespace → underscore) — a divergence here silently
+-- turns every category probe into a miss, which reads as "nothing blocked"
+-- rather than as an error. Deliberately NOT the same function as eb_san:
+-- eb_/ea_ set names are host-derived and only collapse dots and colons.
+-- ---------------------------------------------------------------------------
+function M.bl_san(id)
+  return (tostring(id):gsub("[%.%:%-%s]", "_"))
+end
+
+-- ---------------------------------------------------------------------------
+-- nft_bl_hit(dst_ip, bl_id, exec_fn) -> bool   (#2719)
+--
+-- Returns true when dst_ip is a current member of the per-blocklist nftables
+-- set `bl_<san(id)>` (v4) or `bl6_<san(id)>` (v6). Same exec_fn contract and
+-- same Lua 5.1-vs-5.3 os.execute return normalisation as nft_eb_hit.
+--
+-- This is THE category probe on the DNS-attribution-miss path. The kernel
+-- already maintains one set per list (dnsmasq's nftset= callback adds each
+-- resolved member IP at resolve time), so a flow can be tested with one query
+-- per assigned LIST instead of one per member HOST — 10 forks instead of
+-- 180,343 on the prod family router.
+--
+-- Trade: the matched member host is not recoverable from a per-list probe, so
+-- an event labelled on this path carries `category:<id>` with no host. That is
+-- the whole label the block page and the connection_event log consume anyway
+-- (#594); the per-host granularity (#1636/#1640) survives on the normal
+-- DNS-attributed path, where the host is known for free.
+-- ---------------------------------------------------------------------------
+function M.nft_bl_hit(dst_ip, bl_id, exec_fn)
+  exec_fn = exec_fn or os.execute
+  local family_v6  = dst_ip:find(":", 1, true) ~= nil
+  local set_prefix = family_v6 and "bl6_" or "bl_"
+  local cmd = string.format(
+    "nft get element inet wifihaven %s%s '{ %s }' >/dev/null 2>&1",
+    set_prefix, M.bl_san(bl_id), dst_ip)
+  local ret = exec_fn(cmd)
+  if type(ret) == "boolean" then
+    return ret
+  end
+  return ret == 0
+end
+
+-- ---------------------------------------------------------------------------
+-- is_attributable_dst(ip) -> bool   (#2719)
+--
+-- False for destination addresses that can NEVER appear in a DNS-resolved
+-- nftables set, because nothing resolves to them: IPv6 multicast (ff00::/8),
+-- IPv6 link-local (fe80::/10), IPv4 multicast (224.0.0.0/4) and IPv4
+-- link-local (169.254.0.0/16).
+--
+-- A DHCPv6 solicit to ff02::1:2 is what wedged the prod agent for six hours:
+-- it reached the DNS-miss fallback, and since a multicast dst is in no eb6_ /
+-- bl6_ set the loop was guaranteed to run to exhaustion. Every one of these
+-- ranges is link-scoped LAN traffic, so the flow is neither WAN-bound nor
+-- attributable — is_wan_bound rejects it outright and handle_flow's slow path
+-- guards on it a second time.
+-- ---------------------------------------------------------------------------
+function M.is_attributable_dst(ip)
+  if type(ip) ~= "string" or ip == "" then return false end
+  if ip:find(":", 1, true) then
+    local head = ip:lower():sub(1, 3)
+    if head:sub(1, 2) == "ff" then return false end          -- ff00::/8 multicast
+    if head == "fe8" or head == "fe9"
+       or head == "fea" or head == "feb" then return false end -- fe80::/10 link-local
+    return true
+  end
+  local a, b = ip:match("^(%d+)%.(%d+)%.")
+  if not a then return true end
+  a, b = tonumber(a), tonumber(b)
+  if a >= 224 and a <= 239 then return false end             -- 224.0.0.0/4 multicast
+  if a == 169 and b == 254 then return false end             -- 169.254.0.0/16 link-local
+  return true
+end
+
+-- Slow-path ceilings (#2719). These are a structural backstop, not a tuning
+-- knob: with the per-list category probe and the non-attributable-destination
+-- filter in place a real flow costs at most (extraBlocked hosts + assigned
+-- blocklist ids) probes — single-to-low-double digits in production. The
+-- ceiling exists so that a candidate set nobody anticipated still cannot stop
+-- the agent, because every agent timer (policy apply, usage flush, event
+-- flush, metrics push, ws pending-apply) runs from the conntrack watcher's
+-- on_tick and therefore stops with it.
+M.SLOW_PATH_MAX_PROBES  = 64
+M.SLOW_PATH_MAX_SECONDS = 0.5
+
+local _clock_module
+local function default_now()
+  if _clock_module == nil then
+    local ok, c = pcall(require, "wifihaven.clock")
+    if not ok then ok, c = pcall(require, "clock") end
+    _clock_module = (ok and c) or false
+  end
+  if _clock_module and _clock_module.monotonic_seconds then
+    return _clock_module.monotonic_seconds()
+  end
+  return os.time()
+end
+
+-- new_probe_budget(ctx) -> budget   (#2719)
+--
+-- One budget per flow, shared across BOTH slow-path loops (extraBlocked and
+-- category) so the ceiling bounds the flow, not each loop separately.
+--   budget.take()    → true while another nft probe is allowed
+--   budget.tripped() → nil, or "probes" / "deadline" once a ceiling was hit
+local function new_probe_budget(ctx)
+  local max_probes  = ctx.slow_path_max_probes  or M.SLOW_PATH_MAX_PROBES
+  local max_seconds = ctx.slow_path_max_seconds or M.SLOW_PATH_MAX_SECONDS
+  local now         = ctx.now_fn or default_now
+  local started     = now()
+  local used        = 0
+  local tripped
+  return {
+    take = function()
+      if used >= max_probes then
+        tripped = tripped or "probes"
+        return false
+      end
+      if max_seconds > 0 and (now() - started) >= max_seconds then
+        tripped = tripped or "deadline"
+        return false
+      end
+      used = used + 1
+      return true
+    end,
+    tripped = function() return tripped end,
+  }
 end
 
 -- ---------------------------------------------------------------------------
@@ -774,8 +910,17 @@ end
 --                            (filled by render.update_shared — per-host eb_/bl_ drops)
 --   ea_hosts_by_mac  table   { mac -> { hostname -> true } }
 --                            (filled by render.update_shared — extraAllowed carve-outs)
+--   bl_ids_by_mac    table   { mac -> { blocklist_id -> true } }
+--                            (filled by render.update_shared — the ASSIGNED
+--                            list ids, not their membership; the DNS-miss
+--                            category probe iterates these, #2719)
 --   exec_fn          func    (optional) injectable exec_fn(cmd) -> exit_code;
 --                            used by nft_eb_hit fallback when hname is nil (#579)
+--   inc_counter_fn   func    (optional) inc_counter_fn(name, labels, by) —
+--                            agent metric sink for the #2719 slow-path ceiling
+--   slow_path_max_probes  int (optional) per-flow nft probe ceiling (#2719)
+--   slow_path_max_seconds num (optional) per-flow wall-clock ceiling (#2719)
+--   now_fn           func    (optional) monotonic clock for the ceiling (tests)
 --   fqdn_retry_state table   (optional) per-second retry budget for the
 --                            FQDN-attribution race (#583); created by
 --                            new_fqdn_retry_state. Passing nil disables retries.
@@ -910,6 +1055,16 @@ function M.handle_flow(flow, ctx, batcher)
   -- #594: extraBlocked hits report reason="host"; category-blocklist hits
   -- report reason="category:<id>" so the block page and connection_event log
   -- can name the matched list.
+  --
+  -- #2719: the slow path is bounded three ways. (1) A destination that cannot
+  -- be in any DNS-resolved set — multicast, link-local — is never probed at
+  -- all. (2) The category loop probes one bl_<id> set per assigned list rather
+  -- than one eb_-style set per member host. (3) A per-flow probe budget caps
+  -- both loops together. Each nft probe is a fork+exec inside the watcher's
+  -- foreground loop, so an unbounded loop here does not slow the agent down —
+  -- it stops it (six hours on prod, agent alive and silent).
+  local slow_path_ok = M.is_attributable_dst(flow.dst_ip)
+  local budget = new_probe_budget(ctx)
   local function check_ea_carveout(eb_hit_host)
     local ea_hosts = ctx.ea_hosts_by_mac and ctx.ea_hosts_by_mac[mac]
     if not ea_hosts then return false end
@@ -933,7 +1088,10 @@ function M.handle_flow(flow, ctx, batcher)
           if M.host_matches(match_hname, host) then
             eb_hit = true; eb_hit_host = host; break
           end
+        elseif not slow_path_ok then
+          break
         else
+          if not budget.take() then break end
           if M.nft_eb_hit(flow.dst_ip, host, ctx.exec_fn) then
             eb_hit = true; eb_hit_host = host; break
           end
@@ -963,29 +1121,63 @@ function M.handle_flow(flow, ctx, batcher)
   -- if eb_ already classified the flow as blocked (extraBlocked wins).
   if allowed and mac then
     local bl_hosts = ctx.bl_hosts_by_mac and ctx.bl_hosts_by_mac[mac]
-    if bl_hosts then
-      local bl_hit_host
-      local bl_hit_id
+    local bl_hit_host
+    local bl_hit_id
+    if match_hname and bl_hosts then
+      -- Fast path: the attributed hostname is matched against the MAC's
+      -- membership table, so the event names both the list AND the host.
       for host, id in pairs(bl_hosts) do
-        if match_hname then
-          if M.host_matches(match_hname, host) then
-            bl_hit_host = host; bl_hit_id = id; break
-          end
-        else
-          -- Slow-path: query the live nft eb_-style set keyed on host. The
-          -- category enforcement uses bl_<id> sets populated at resolve time
-          -- per-host; the per-host eb-style query is still meaningful when
-          -- DNS attribution is missing because the same host saturates both
-          -- the eb_<host> and bl_<id> indexing paths via dnsmasq.
-          if M.nft_eb_hit(flow.dst_ip, host, ctx.exec_fn) then
-            bl_hit_host = host; bl_hit_id = id; break
+        if M.host_matches(match_hname, host) then
+          bl_hit_host = host; bl_hit_id = id; break
+        end
+      end
+    elseif not match_hname and slow_path_ok then
+      -- #2719 slow path: one probe per ASSIGNED LIST against the kernel's
+      -- bl_<id>/bl6_<id> set, which dnsmasq's nftset= callback already
+      -- populates with every resolved member IP. The old shape probed one
+      -- eb_-style set per MEMBER HOST of every list (180,343 forks on the
+      -- prod family router) purely so the reason string could name the host;
+      -- a correct `category:<id>` label is worth more than an agent that
+      -- stops. ctx.bl_ids_by_mac is maintained by render.update_shared from
+      -- the snapshot's blocklistIds — it is the ids themselves, never a
+      -- reduction over the membership table, so reading it is O(1) in list
+      -- size. Ids are probed in sorted order so the label is deterministic
+      -- when a dst_ip is in more than one list.
+      local bl_ids = ctx.bl_ids_by_mac and ctx.bl_ids_by_mac[mac]
+      if bl_ids then
+        local ids = {}
+        for id in pairs(bl_ids) do ids[#ids + 1] = id end
+        table.sort(ids)
+        for _, id in ipairs(ids) do
+          if not budget.take() then break end
+          if M.nft_bl_hit(flow.dst_ip, id, ctx.exec_fn) then
+            bl_hit_id = id; break
           end
         end
       end
-      if bl_hit_host and not check_ea_carveout(bl_hit_host) then
-        allowed = false
-        reason  = "category:" .. tostring(bl_hit_id)
-      end
+    end
+    -- bl_hit_host is nil on the slow path (a per-list probe cannot name the
+    -- member host), so check_ea_carveout's host comparison cannot fire there.
+    -- That matches the DNS-miss reporting limitation already documented at the
+    -- top of this file: without attribution the agent cannot tell whether the
+    -- kernel's ea_ carve-out fired, and the event is labelled blocked.
+    if bl_hit_id and not check_ea_carveout(bl_hit_host) then
+      allowed = false
+      reason  = "category:" .. tostring(bl_hit_id)
+    end
+  end
+
+  -- #2719: a tripped ceiling means some flow's candidate set outgrew the slow
+  -- path's assumptions. Meter it so a recurrence is a visible series instead
+  -- of a silently mislabelled event (the wedge itself was invisible — the
+  -- agent stopped emitting the very metrics that would have shown it).
+  local capped = budget.tripped()
+  if capped then
+    log.warn("handle_flow: slow-path probe ceiling hit (%s) dst=%s mac=%s — " ..
+             "flow labelled without full nft membership check",
+             capped, tostring(flow.dst_ip), tostring(mac))
+    if ctx.inc_counter_fn then
+      ctx.inc_counter_fn("conntrack_slow_path_capped_total", { reason = capped }, 1)
     end
   end
   log.debug("handle_flow: connection_attempt src=%s dst=%s mac=%s hostname=%s allowed=%s reason=%s",
@@ -1050,6 +1242,16 @@ end
 -- lan_ip_set    example: { ["2601:280:4700:f32::42"] = "aa:bb:.." }  (parse_arp_table)
 -- ---------------------------------------------------------------------------
 function M.is_wan_bound(flow, lan_prefix, lan_prefix_v6, lan_ip_set)
+  -- #2719: multicast and link-local destinations are link-scoped LAN traffic
+  -- by definition — a DHCPv6 solicit to ff02::1:2, an mDNS query to
+  -- 224.0.0.251 — so they are exactly the noise #575 exists to filter. They
+  -- reached here only because the LAN tests are membership tests on the
+  -- neighbor set / prefix, and no neighbor entry or prefix ever covers a
+  -- multicast group. Filtering at the classifier rather than only at the
+  -- slow-path guard means such flows never become connection_events at all,
+  -- which is the correct semantics AND removes the only category of flow that
+  -- is guaranteed to miss every attribution path.
+  if not M.is_attributable_dst(flow.dst_ip) then return false end
   local is_v6 = flow.src_ip:find(":", 1, true) ~= nil
   if not is_v6 then
     if not lan_prefix or lan_prefix == "" then return false end
@@ -1280,7 +1482,11 @@ function M.watch(cfg)
         eb_hosts_by_mac       = cfg.eb_hosts_by_mac,
         ea_hosts_by_mac       = cfg.ea_hosts_by_mac,
         bl_hosts_by_mac       = cfg.bl_hosts_by_mac,
+        bl_ids_by_mac         = cfg.bl_ids_by_mac,
         exec_fn               = cfg.exec_fn,
+        inc_counter_fn        = cfg.inc_counter_fn,
+        slow_path_max_probes  = cfg.slow_path_max_probes,
+        slow_path_max_seconds = cfg.slow_path_max_seconds,
         reported_macs         = reported_macs,
         pending_hostname_macs = pending_hostname_macs,
         leases                = leases or {},

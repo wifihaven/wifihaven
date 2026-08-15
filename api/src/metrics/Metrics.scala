@@ -316,6 +316,19 @@ object MetricGuard {
     // over-count condition. A healthy fleet holds this flat at 0; a climbing
     // rate is the leading signal of the over-count regressing.
     "usage_window_stall_total"                  -> Set("router_id", "installation_id"),
+    // #2719 — the agent's conntrack DNS-attribution-miss path hit its per-flow
+    // ceiling and stopped probing nftables set membership before it had checked
+    // every candidate. Each of those probes is a fork+exec inside the watcher's
+    // foreground loop, and every agent timer (policy apply, usage flush, event
+    // flush, metrics push, ws pending-apply) runs from that same loop — an
+    // unbounded loop there does not slow the agent, it stops it (six hours on
+    // the prod family router, process alive and silent). `reason` is a fixed
+    // two-value enum: `probes` (iteration ceiling) | `deadline` (wall clock).
+    // Steady-state value MUST be 0. A non-zero series means some flow's
+    // candidate set outgrew the slow path's assumptions again, and that
+    // router's connection_events are being labelled without a full membership
+    // check — the label degrades, the agent keeps running.
+    "conntrack_slow_path_capped_total"          -> Set("reason", "router_id", "installation_id"),
     // Server-side ingest health for POST /api/router/metrics (#1205). Concrete, emitted now.
     "router_metrics_batches_total"              -> Set("status"),
     // #1846 — websocket router transport (server side). `router_ws_connections_active` is the live

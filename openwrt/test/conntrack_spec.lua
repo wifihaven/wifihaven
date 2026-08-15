@@ -1447,11 +1447,11 @@ describe("handle_flow", function()
       "exec_fn must have queried the v4 eb_<host> set for a v4 dst_ip")
   end)
 
-  it("#1668: v6 bl_ labeling fallback queries eb6_<host> set → reason=category:<id>", function()
-    -- bl_ labeling fallback (line ~750 in conntrack.lua) piggybacks on the
-    -- same nft_eb_hit helper — the comment there explicitly says it reuses
-    -- the eb_-style query because dnsmasq populates both indexing paths for
-    -- the same host. Pin that this piggyback works for v6 too.
+  it("#1668/#2719: v6 bl_ labeling fallback queries the bl6_<id> set → reason=category:<id>", function()
+    -- The bl_ labeling fallback used to piggyback on nft_eb_hit, probing an
+    -- eb6_<host> set per MEMBER HOST. #2719 re-pointed it at the per-list
+    -- bl6_<id> set the kernel already maintains; this pins that v6 category
+    -- labeling still works through the new probe.
     local b = collecting_batcher()
     local exec_calls = {}
     local ctx = ctx_with({
@@ -1460,9 +1460,10 @@ describe("handle_flow", function()
       eb_hosts_by_mac = {},
       ea_hosts_by_mac = {},
       bl_hosts_by_mac = { [MAC] = { ["ad.doubleclick.net"] = "ads" } },
+      bl_ids_by_mac   = { [MAC] = { ads = true } },
       exec_fn = function(cmd)
         exec_calls[#exec_calls + 1] = cmd
-        if cmd:find("eb6_ad_doubleclick_net") then return 0 end
+        if cmd:find("bl6_ads") then return 0 end
         return 1
       end,
     })
