@@ -1,7 +1,6 @@
 package wifihaven.api.unit
 
 import wifihaven.api.support.{AgentAction, DispatchTracker}
-import wifihaven.api.observability.AgentTokenRejection
 import wifihaven.shared.types.HouseholdId
 import zio.*
 import zio.test.*
@@ -24,14 +23,16 @@ import java.time.{Duration, Instant}
  */
 object DispatchTrackerClaimSpec extends ZIOSpecDefault {
 
-  private val Household = HouseholdId(1L)
+  // #2517 generalised the tracker over its subject: a support thread reports the household,
+  // a press dispatch a reply-to address. Same bounded label vocabulary, one type.
+  private val Household = DispatchTracker.Subject.household(HouseholdId(1L))
   private val Now       = Instant.parse("2026-08-14T12:00:00Z")
   private val Thread    = "th_claim"
   private val Session   = "sess_a"
 
   private def tracker =
     DispatchTracker
-      .make(Duration.ofHours(24), AgentTokenRejection.Channel.Support)
+      .make(Duration.ofHours(24), DispatchTracker.Channel.Support)
       .tap(_.dispatched(Thread, Session, Household, "managed-agents", Now))
 
   private def claim(t: DispatchTracker, action: String) =

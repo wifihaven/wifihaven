@@ -4,7 +4,6 @@ import wifihaven.api.{JwtConfig, PlainConfig, SupportConfig}
 import wifihaven.api.auth.*
 import wifihaven.api.db.*
 import wifihaven.api.notify.Notifier
-import wifihaven.api.observability.AgentTokenRejection
 import wifihaven.api.routes.{SupportAgentRoutes, SupportConsentRoutes}
 import wifihaven.api.support.*
 import wifihaven.shared.Clock
@@ -100,7 +99,7 @@ object SupportConsentExclusiveSpec
       dispRec     <- CloudAgentDispatcher.recorder
       tracker     <- DispatchTracker.make(
         DispatchTracker.deadAfterFor(liveCfg),
-        AgentTokenRejection.Channel.Support,
+        DispatchTracker.Channel.Support,
       )
       base      = SupportResponder(
         liveCfg,
