@@ -441,6 +441,15 @@ class RollupRepoLive(xa: Transactor[Task]) extends RollupRepo {
     // scoped + 26 macs is 3,329 ms hourly and 8,387 ms daily — on the daily tier the planner flips
     // to `traffic_daily_pkey` and it lands 2.3x WORSE than the pre-#2708 baseline.
     //
+    // The raw tier is not re-measured here: it has carried this same predicate since #2313, and
+    // this change moves it in the identical direction (its no-filter read loses the same device-MAC
+    // IN-list and keeps the same household semijoin), so the measurements above bound it too.
+    //
+    // Both reads still scan every tenant's rows in the window before the semijoin discards them —
+    // unchanged by this PR, and the reason it needs no new index today at two households. A
+    // `(router_id, bucket_start DESC)` index is the fix once tenant count makes that scan the
+    // dominant cost; tracked separately rather than pre-emptively added here.
+    //
     // So no new index is needed, and no `household_id` column on these unbounded-growth tables is
     // justified — see `docs/design/multi-tenant-isolation.md` § "router_id-keyed tables".
     type Row = (MacAddress, String, Instant, Int, Long, Long)
@@ -544,12 +553,14 @@ class RollupRepoLive(xa: Transactor[Task]) extends RollupRepo {
         .to[List]
         .transact(xa)
 
-    for {
-      stale <- staleSql.query[Long].unique.transact(xa)
-      aggs  <-
-        if (stale == 0L) sqlPath
-        else listHourlyInRange(household, macs, from, to).map(aggregateInScala(_, appsByApex))
-    } yield aggs
+    DbMetrics.timed("rollup.aggregateByAppHourly") {
+      for {
+        stale <- staleSql.query[Long].unique.transact(xa)
+        aggs  <-
+          if (stale == 0L) sqlPath
+          else listHourlyInRange(household, macs, from, to).map(aggregateInScala(_, appsByApex))
+      } yield aggs
+    }
   }
 
   def aggregateByAppDaily(
@@ -595,12 +606,14 @@ class RollupRepoLive(xa: Transactor[Task]) extends RollupRepo {
         .to[List]
         .transact(xa)
 
-    for {
-      stale <- staleSql.query[Long].unique.transact(xa)
-      aggs  <-
-        if (stale == 0L) sqlPath
-        else listDailyInRange(household, macs, from, to).map(aggregateInScala(_, appsByApex))
-    } yield aggs
+    DbMetrics.timed("rollup.aggregateByAppDaily") {
+      for {
+        stale <- staleSql.query[Long].unique.transact(xa)
+        aggs  <-
+          if (stale == 0L) sqlPath
+          else listDailyInRange(household, macs, from, to).map(aggregateInScala(_, appsByApex))
+      } yield aggs
+    }
   }
 
   // Read-time fallback when any in-window rollup row is stale: re-match each

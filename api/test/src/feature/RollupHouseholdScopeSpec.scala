@@ -209,28 +209,48 @@ object RollupHouseholdScopeSpec
     // `macs.isEmpty && (macsRaw.nonEmpty || profileIds.nonEmpty)` short-circuits, so it needs its
     // own pin: a filter that WAS supplied and selected nothing must read nothing — distinct from
     // the no-filter case above, which reads the whole household.
-    test("a supplied filter that selects no device reads nothing (MacScope.NoDevices)") {
+    // The input has to be a `profileId` that owns no devices, NOT an unknown MAC: an unknown MAC is
+    // 404'd by the handler's per-mac guard (`UsageRoutes` `allDevices.find(...).orElseFail`) BEFORE
+    // `resolveMacs` is called, so it never reaches this constructor at all. An empty profile is the
+    // one request that resolves a supplied filter down to zero devices.
+    test("a profileId that owns no device reads nothing (MacScope.NoDevices)") {
       for {
-        _      <- cleanDb
-        two    <- seedFixture
-        auth   <- makeAuth
-        routes <- buildRoutes(auth)
-        tokenB <- login(auth, two.adminB, two.password, two.slugB)
-        // B DOES own rows (the liveness anchor below proves it), but this MAC is not its device.
-        unknown = "aa:bb:cc:00:00:ff"
+        _                      <- cleanDb
+        two                    <- seedFixture
+        xa                     <- ZIO.service[Transactor[Task]]
+        // A real profile in household B with NO device assigned to it.
+        emptyB                 <-
+          sql"INSERT INTO profiles(name, blocked_categories, household_id) VALUES ('B-Empty', '{}', ${two.hhB}) RETURNING id"
+            .query[ProfileId]
+            .unique
+            .transact(xa)
+        auth                   <- makeAuth
+        routes                 <- buildRoutes(auth)
+        tokenB                 <- login(auth, two.adminB, two.password, two.slugB)
         (stFiltered, filtered) <- getJson(
           routes,
-          trafficPath("1h", hourlyFrom, hourlyTo) + s"&mac=$unknown",
+          trafficPath("1h", hourlyFrom, hourlyTo) + s"&profileId=${emptyB.value}",
           tokenB,
         )
+        rowsFiltered           <- rowsOf(filtered)
         (stAll, all)           <- getJson(routes, trafficPath("1h", hourlyFrom, hourlyTo), tokenB)
         rowsAll                <- rowsOf(all)
       } yield
-      // A MAC with no device row in this household is a 404 (the handler's per-mac guard) — it
-      // never reaches the read at all. Either way it must not return another household's rows.
-      assertTrue(stFiltered == Status.NotFound, !filtered.contains(hostB)) &&
-        // Liveness anchor: the same token over the same window with NO filter does read rows, so
-        // the empty/404 above is the filter's doing, not an inert fixture.
+      // 200 with nothing — the filter resolved to zero devices, so the read is skipped entirely.
+      // Crucially NOT household B's own rows (which `AllInHousehold` would have returned) and not
+      // anyone else's.
+      assertTrue(stFiltered == Status.Ok, rowsFiltered.isEmpty, !filtered.contains(hostB)) &&
+        // Liveness anchor: the SAME token over the SAME window with no filter does read rows, so
+        // the empty result above is the filter's doing and not an inert fixture.
+        //
+        // To be precise about what this pins: pre-#2708 the handler's `macs.isEmpty &&
+        // (macsRaw.nonEmpty || profileIds.nonEmpty)` short-circuit already returned empty here, so
+        // this is a behaviour-PRESERVATION pin, not a second leak pin — `NoDevices` is the
+        // constructor that replaced that short-circuit and nothing else covered it. It fails on the
+        // regression that matters, verified by mutation rather than argued: patching
+        // `MacScope.fold` to `case NoDevices => ifRead(Nil)` turns both assertions below red
+        // (`rowsFiltered.isEmpty` false, `filtered.contains(hostB)` true) while the other three
+        // tests here stay green.
         assertTrue(stAll == Status.Ok, rowsAll.nonEmpty, all.contains(hostB))
     },
     // #2708 deliberately widened the no-filter case WITHIN a household: it now restricts by
