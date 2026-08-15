@@ -27,10 +27,11 @@ import zio.test.*
  * That leaves a decision someone has to be able to find later: what a NULL row means to a
  * household-scoped read. The answer pinned here is that an unattributable row belongs to NOBODY —
  * it is excluded from every household's view, not defaulted into one. `BlockEventRepo` has no
- * household-scoped read to assert that through (`recent` / `listForMac` are the unscoped dead
- * methods #2571 deletes; a scoped read comes back when a real caller needs one), so what is pinned
- * is the data-model invariant that any such reader must inherit: attribution runs through
- * `routers.household_id`, and an inner join on `router_id` drops NULL rows by construction.
+ * household-scoped read to assert that through (#2571 deleted the bare-MAC `listForMac`; the
+ * surviving `recent` is a whole-table read with no household parameter, and per that issue's rule a
+ * scoped read comes back only when a real caller needs one), so what is pinned is the data-model
+ * invariant that any such reader must inherit: attribution runs through `routers.household_id`, and
+ * an inner join on `router_id` drops NULL rows by construction.
  *
  * This is a guard against a specific regression, not a restatement of the schema: it fails if
  * someone later backfills the NULLs to household 1, or re-adds a `DEFAULT`. That is precisely the
