@@ -325,10 +325,19 @@ Asked to confirm whether each one's scope is complete or wider than described:
 
 ---
 
-## 7. The structural guard
+## 7. The structural guards
+
+Two specs, both CI-enforced via the existing `mill __.test`, over two different surfaces:
+
+| Spec | Surface | Catches |
+| --- | --- | --- |
+| `MultiTenantRouteCensusSpec` | every route in `api/src/routes` | a route that lets the caller name a row in its **path** without proving the row is theirs |
+| `MultiTenantScopedReadGuardSpec` | every read declared on a `*Repo` trait | an unscoped **list** read (Layer A), and an unscoped **single-row** read (Layer B, #2589) |
+
+### 7a. The route census
 
 [`api/test/src/feature/MultiTenantRouteCensusSpec.scala`](../../api/test/src/feature/MultiTenantRouteCensusSpec.scala)
-— six tests, CI-enforced via the existing `mill __.test`.
+— six tests.
 
 **Layer 1 — the census.** Every route in `api/src/routes` must appear in a `Census` map with an
 explicit `Tenancy` verdict (`Scoped`, `InstallWide(why)`, `Operator(why)`, `RouterToken(why)`,
@@ -380,6 +389,123 @@ for it first.
 
 **Red → green** is visible in this PR's history: commit 1 declares all three routes plain `Scoped`
 and test 2 fails naming them; commit 2 moves them to the allowlist.
+
+**What Layer 2 does NOT reach**, stated plainly because leaving it unstated is what made the next
+gap invisible: it applies only to routes whose **path** names a row (`long("id")` / `string("mac")`,
+the shapes that render with `{}` in the census key). A route that names its row in the request
+**body** — `POST /api/schedules` with `{"name": "Bedtime"}` — has no `{}` and is exempt. That is
+§7b's job.
+
+### 7b. The repo read guard
+
+[`api/test/src/feature/MultiTenantScopedReadGuardSpec.scala`](../../api/test/src/feature/MultiTenantScopedReadGuardSpec.scala)
+— five tests over list reads (Layer A, #2176, widened to all of `api/src` by #2571) and
+eleven over single-row reads (Layer B, #2589).
+
+**Layer A — unscoped list reads.** Greps all of `api/src` for `listAll` /
+`listAllIncludingGlobal` / `listAllMappings` — reads that return *every* household's rows — and
+asserts each is in a tracked, shrink-only allowlist. That allowlist is now **empty**: #2257 / #2532
+/ #2568 scoped or removed every one.
+
+**Layer B — the single-row read census (#2589).** Layer A matches method *names*, so a single-row
+read (`findByName`, and any future `findBy*` / `getBy*`) never matched it, and §7a's Layer 2 never
+reached it either. `NamedScheduleRepo.findByName(name: String)` sat in exactly that gap: it backed
+the name-taken 409 on `POST /api/schedules` and `PATCH /api/schedules/{id}`, answering "taken" from
+a row in a household the caller could not see (#2572, fixed by #2586). Found by hand, twice — by a
+sweep, not by a gate.
+
+Layer B closes it at the **repo** rather than adding a third route-level surface. Every abstract
+`Task[Option[_]]` / `Task[Boolean]` declaration on a `*Repo` trait — the single-row read shape,
+including the `Boolean` existence probe that backs a 409 and leaks the same oracle as the row — must
+appear in `RowReadCensus` with an explicit verdict:
+
+- `Scoped` — takes a `HouseholdId` parameter. **Verified against the signature, not trusted**
+  (test B2): declaring `Scoped` on a read that takes no `HouseholdId` is the #2572 shape itself, and
+  it fails.
+- `SurrogateId(why)` — keyed on a globally-unique surrogate primary key, so the argument already
+  names one row and the choke point belongs at the route. **Test B3 checks eligibility from the
+  parameter types**: a `String` or `Long` key can never claim it, and `MacAddress` is deliberately
+  not a surrogate type (V74 dropped `devices_mac_key`, so a bare MAC names a *set* of rows — #2125).
+- `TenancyKey(why)` — the key itself *resolves* the household (a router token hash, a Stripe
+  customer id, a household slug, the globally-unique `users.email`). Scoping it would be circular.
+- `InstallWide(why)` — data with no tenancy dimension: the app catalog (§0.2), the bundled blocklist
+  catalog, the pre-household beta queue, press.
+- `Write(why)` — matched the read shape but is a write returning a success `Boolean`. Declared
+  rather than filtered out by name, because deciding "is this a read?" from the method name is the
+  same name-keyed judgement that produced the gap.
+There is deliberately **no `Tracked` escape hatch**. It existed while this PR was in review, holding
+#2571's two dead reads; #2571 then landed and deleted both methods, B1 reported the leftover
+verdicts as ghosts, and the case was removed with them — following the rule
+`MultiTenantRouteCensusSpec` states for its own `ScopedTracked`: *when it reaches zero, delete the
+case rather than leave a dead escape hatch.* A genuinely-broken read found later re-adds the case
+with its issue number, which is a visible line in the diff rather than a pre-authorised slot.
+
+**Why the repo layer.** Extending §7a to "routes that read by a body key" is not decidable by a
+source scan — the key lives in a JSON schema the scanner does not parse, and any name-based
+approximation dies to a renamed field. The repo *declaration* states the shape completely and
+syntactically: the parameter types and the return type **are** the question. Enforcing at the source
+of the read also covers every caller — routes, services, background fibers, the ws push builders —
+rather than the subset the route census enumerates. Within that shape, once no unscoped natural-key read can be
+*declared*, no route can *call* one, and the route-level hole closes without the route-level scanner
+having to detect it.
+
+**The scan keys on shape, never on a name.** Renaming `findByName` to `lookupBy` or `scheduleNamed`
+does not evade it: the declaration still matches, and the census key changes, so the rename fails
+test B1 until it is re-declared. Adding an unrelated parameter does not evade it either —
+`SurrogateId` eligibility is a property of *all* the parameter types, not of any one of them.
+
+**A defaulted household is not `Scoped`.** `household: HouseholdId = HouseholdId.Default` mentions a
+household while leaving it optional at the call site, so `findByMac(mac)` compiles and reads
+household 1 — #2589 wearing a default argument, and the house style on a dozen-plus repo defs. Those
+declare `ScopedByDefault(why)`; test B10 pins that no `Scoped` entry defaults its household, and
+**B11 bounds the exemption by asserting no `api/src` call site omits the argument**, so "the default
+is only for tests" is enforced rather than asserted.
+
+**What Layer B does NOT reach**, stated as plainly as §7a's limit, because an unstated boundary is
+what made the last gap invisible:
+
+- **Return types outside `Task[Option[_]]` / `Task[Boolean]`.** A single-row read returning a scalar
+  or a tuple is not censused. Live examples, MAC-keyed and of exactly the banned shape:
+  `TimeUsageRepo.getProportionalSeconds(mac, host, date): Task[Long]` (`Repos.scala:1042`) and
+  `getSecondsAndBytes(mac, host, date): Task[(Long, Long, Long)]` (`:1031`). Tracked by
+  [#2707](https://github.com/wifihaven/wifihaven/issues/2707). (`getSecondsUsed` and
+  `getTotalExtension`, cited here when this section was written, were deleted by #2571 — §F8.)
+- **`Task[List[_]]` reads keyed on a natural key.** Layer A covers the `listAll*` *names*, not the
+  shape, so a list read under any other name is uncovered by both layers.
+  `TimeUsageRepo.listForDeviceMacs(macs, date)` (`Repos.scala:1044`) is one. The worked example was
+  `RollupRepo.listHourlyInRange` / `listDailyInRange`, which took no household at all and treated an
+  empty MAC list as "every row in the install" — found by the security review of the PR that added
+  this section, and **since fixed and CLOSED by
+  [#2708](https://github.com/wifihaven/wifihaven/issues/2708)**: both now take a required leading
+  `household: HouseholdId` (`RollupRepo.scala:143-148`, `:155-160`). The instance is closed; the
+  SHAPE remains outside Layer B's reach, which is what #2707 covers.
+- **Whether the SQL uses the household it accepts.** B2 checks the *signature*. A read that takes a
+  `HouseholdId` and ignores it in its `WHERE` clause still passes; that residual belongs to review
+  and to `MultiTenantIsolationSpec`'s behavioural assertions.
+- **Declaration shapes the scanner cannot parse** — a repo as an `abstract class`, a trait named
+  `…Repository` / `…Dao` / `…Store`, curried or type-parameterised reads, `UIO` / `IO` / `ZIO`
+  returns. These are not silently exempt: **test B12 asserts they do not occur in `api/src`**, so
+  reaching for one is a loud failure that forces the choice — widen the scanner, or use a shape it
+  sees.
+
+**Non-vacuity, and the acceptance test.** #2546's lesson is that a detector which never emits is
+indistinguishable from health, so the demonstration is wired into CI rather than performed once on a
+branch:
+
+- **B7** reconstructs the pre-#2586 `findByName(name: String)` as a fixture and asserts the scanner
+  sees it, sees it as *unscoped*, finds it contradicting its `Scoped` census entry, and cannot buy
+  its way out via the id exemption.
+- **B8** plants a *fresh* violating repo — different trait, different method names, both the
+  row-returning and the `Boolean`-probe shapes — and asserts all three are reported. This is what
+  makes the guard a rule rather than a snapshot of one method.
+- **B9** is the false-positive half: id-keyed, household-keyed and date-filtered reads are *not*
+  flagged. If they were, "add it to the allowlist" would become the reflex and the allowlist would
+  stop meaning anything.
+- **B6** pins floors on the live scan (≥40 reads, ≥10 scoped, ≥10 repos) so the regex silently
+  ceasing to match cannot read as "all clear".
+
+**Red → green** is visible in this PR's history: commit 1 lands the scanner with the census empty
+and B1 fails naming all 59 declarations; commit 2 writes the verdicts.
 
 ---
 
