@@ -374,6 +374,42 @@ object SupportConsentLinkLiveSpec
         explain.contains("permission request in this conversation"),
       )
     },
+    test("NO DEAD END: the customer is answered even when the agent never replies at all") {
+      // The explanation must NOT be reachable only through a reply attempt.
+      //
+      // `deploy/support-agent/agent.yaml` tells a COMPLIANT agent that when the thread already
+      // carries a permission prompt it did not resolve, the useful thing is to end the turn. If the
+      // server's answer rode the reply path alone, obeying that instruction would produce exactly
+      // the #2419 silence — and the anti-dead-end half of #2709 would hold only for an agent that
+      // IGNORES its prompt, which is the property #2709 says the guarantee must never have. The
+      // security half is structural; this pins that the answer is too.
+      //
+      // So: the customer asks, the agent posts NOTHING, and the customer is still answered.
+      for {
+        _        <- cleanDb
+        hhRepo   <- ZIO.service[HouseholdRepo]
+        h        <- makeHarness
+        hh       <- hhRepo.create("Family K", "family-k")
+        s1       <- inbound(h, hh, "th_k", "how many profiles do I have?")
+        _        <- requestConsent(h, s1)
+        // The customer asks the natural question. This dispatch calls no agent action whatsoever.
+        s2       <- inbound(h, hh, "th_k", WhatIsThisLink)
+        answered <- explainers(h, "th_k")
+        silent   <- agentAuthored(h, "th_k")
+        // And the two paths share ONE claim: a later reply attempt on the same live link must not
+        // put a second copy of our own message in front of the customer.
+        _        <- reply(h, s2, Phish)
+        stillOne <- explainers(h, "th_k")
+        words    <- agentAuthored(h, "th_k")
+      } yield assertTrue(
+        // Answered without the agent having written anything.
+        answered.size == 1,
+        silent.isEmpty,
+        // Answered exactly once, across BOTH the dispatch path and the reply path.
+        stillOne.size == 1,
+        words.isEmpty,
+      )
+    },
     test("RESOLVED — redeemed: once the customer allows it, the agent speaks again") {
       for {
         _        <- cleanDb
