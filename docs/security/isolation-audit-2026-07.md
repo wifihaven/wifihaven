@@ -399,7 +399,8 @@ the shapes that render with `{}` in the census key). A route that names its row 
 ### 7b. The repo read guard
 
 [`api/test/src/feature/MultiTenantScopedReadGuardSpec.scala`](../../api/test/src/feature/MultiTenantScopedReadGuardSpec.scala)
-— three tests over list reads (Layer A, #2176) and twelve over single-row reads (Layer B, #2589).
+— five tests over list reads (Layer A, #2176, widened to all of `api/src` by #2571) and
+twelve over single-row reads (Layer B, #2589).
 
 **Layer A — unscoped list reads.** Greps `api/src/routes` for `listAll` /
 `listAllIncludingGlobal` / `listAllMappings` — reads that return *every* household's rows — and
@@ -432,7 +433,11 @@ appear in `RowReadCensus` with an explicit verdict:
 - `Write(why)` — matched the read shape but is a write returning a success `Boolean`. Declared
   rather than filtered out by name, because deciding "is this a read?" from the method name is the
   same name-keyed judgement that produced the gap.
-- `Tracked(issue)` — known-unscoped, shrink-only. Opens at two entries, both #2571's dead reads.
+- `Tracked(issue)` — known-unscoped, shrink-only. Opened at two entries, both #2571's dead reads
+  (`ProfileRepo.getGlobal`, `TrafficReportRepo.earliestPeriodStart`). **#2571 has since landed and
+  deleted both methods, so B1 reported the leftover verdicts as ghosts and they came out with them
+  — the set is now empty.** That is the mechanism working as designed: the guard would not let the
+  fix delete the method and quietly leave a stale verdict behind claiming it was still tracked.
 
 **Why the repo layer.** Extending §7a to "routes that read by a body key" is not decidable by a
 source scan — the key lives in a JSON schema the scanner does not parse, and any name-based
@@ -493,7 +498,7 @@ branch:
   ceasing to match cannot read as "all clear".
 
 **Red → green** is visible in this PR's history: commit 1 lands the scanner with the census empty
-and B1 fails naming all 58 declarations; commit 2 writes the verdicts.
+and B1 fails naming all 56 declarations; commit 2 writes the verdicts.
 
 ---
 

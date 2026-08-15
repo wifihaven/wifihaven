@@ -540,7 +540,6 @@ object MultiTenantScopedReadGuardSpec extends ZIOSpecDefault {
       "the choke-point probe itself — it RETURNS the household so the route can compare it",
     ),
     "ProfileRepo.getGlobalForHousehold"            -> Scoped,
-    "ProfileRepo.getGlobal"                        -> Tracked(2571),
     "NamedScheduleRepo.findById"                   -> SurrogateId(
       "named_schedules.id; requireScheduleInHousehold guards the routes",
     ),
@@ -625,7 +624,6 @@ object MultiTenantScopedReadGuardSpec extends ZIOSpecDefault {
     "ConnectionEventRepo.rerollConnEventsDaily" -> Write("install-wide rollup re-derivation fiber"),
     "RollupRepo.rerollHourly"                   -> Write("install-wide rollup re-derivation fiber"),
     "RollupRepo.rerollDaily"                    -> Write("install-wide rollup re-derivation fiber"),
-    "TrafficReportRepo.earliestPeriodStart"     -> Tracked(2571),
     "TimeUsedRollupRepo.getDayForProfile"       -> SurrogateId(
       "profiles.id names one profile across every tenant; the date only narrows the row",
     ),
@@ -850,8 +848,16 @@ object MultiTenantScopedReadGuardSpec extends ZIOSpecDefault {
     },
     test("B5 — the tracked-unscoped set is explicit, shrink-only, and names real issues") {
       val tracked = RowReadCensus.collect { case (k, Tracked(n)) => k -> n }
-      // Opened at 2 (both #2571's dead unscoped reads). Shrink-only, and deliberately not
-      // `nonEmpty` — the last fix, the one that empties it, must not read as a red build.
+      // Opened at 2 — `ProfileRepo.getGlobal` and `TrafficReportRepo.earliestPeriodStart`, both of
+      // #2571's dead unscoped reads. #2571 landed and DELETED both methods, so B1 reported them as
+      // ghosts and the entries came out with them; the set is now EMPTY. That is the mechanism
+      // working: the guard would not let the fix delete the method and leave the verdict behind.
+      //
+      // Empty means the three assertions below are all trivially true today. They are kept, and the
+      // bound stays shrink-only rather than `nonEmpty`, because the protection that matters is that
+      // ADDING a tracked entry requires an edit here — a reviewer then sees the issue number in the
+      // diff. Deliberately not `nonEmpty`: the last fix, the one that empties the set, must not read
+      // as a red build.
       assertTrue(tracked.size <= 2) &&
       // Against the KNOWN issue ids, not `> 0` — a typo'd number is exactly the failure a
       // "names a real issue" assertion is supposed to prevent, and `> 0` accepts one.
