@@ -248,9 +248,9 @@ object RollupHouseholdScopeSpec
         // this is a behaviour-PRESERVATION pin, not a second leak pin — `NoDevices` is the
         // constructor that replaced that short-circuit and nothing else covered it. It fails on the
         // regression that matters, verified by mutation rather than argued: patching
-        // `MacScope.fold` to `case NoDevices => ifRead(Nil)` turns both assertions below red
-        // (`rowsFiltered.isEmpty` false, `filtered.contains(hostB)` true) while the other three
-        // tests here stay green.
+        // `MacScope.fold` to `case NoDevices => ifRead(Nil)` turns the two filtered-request
+        // assertions above red (`rowsFiltered.isEmpty` false, `filtered.contains(hostB)` true)
+        // while the other three tests here stay green.
         assertTrue(stAll == Status.Ok, rowsAll.nonEmpty, all.contains(hostB))
     },
     // #2708 deliberately widened the no-filter case WITHIN a household: it now restricts by

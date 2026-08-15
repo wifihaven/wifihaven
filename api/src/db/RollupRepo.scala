@@ -446,9 +446,10 @@ class RollupRepoLive(xa: Transactor[Task]) extends RollupRepo {
     // IN-list and keeps the same household semijoin), so the measurements above bound it too.
     //
     // Both reads still scan every tenant's rows in the window before the semijoin discards them —
-    // unchanged by this PR, and the reason it needs no new index today at two households. A
-    // `(router_id, bucket_start DESC)` index is the fix once tenant count makes that scan the
-    // dominant cost; tracked separately rather than pre-emptively added here.
+    // unchanged by this PR, and cheap today at the 2 households prod carries (`SELECT count(*) FROM
+    // households`, 2026-08-14). The discarded fraction grows with tenant count, so a
+    // `(router_id, bucket_start DESC)` index becomes the fix once that scan dominates; tracked with
+    // the measurements and the trigger condition in #2716, not pre-emptively added here.
     //
     // So no new index is needed, and no `household_id` column on these unbounded-growth tables is
     // justified — see `docs/design/multi-tenant-isolation.md` § "router_id-keyed tables".
@@ -553,6 +554,11 @@ class RollupRepoLive(xa: Transactor[Task]) extends RollupRepo {
         .to[List]
         .transact(xa)
 
+    // The `op` here spans the whole composite — staleness probe, then EITHER the SQL aggregate OR
+    // the in-process fallback. On the fallback path that inner read is separately timed as
+    // `rollup.listHourlyInRange`, so one wall-clock span is reported under two DIFFERENT ops
+    // (outer = the operation, inner = its sub-read). That is nesting, not double-counting, but it
+    // does mean these series must never be SUMMED across `op` to get "time in the DB".
     DbMetrics.timed("rollup.aggregateByAppHourly") {
       for {
         stale <- staleSql.query[Long].unique.transact(xa)
@@ -606,6 +612,7 @@ class RollupRepoLive(xa: Transactor[Task]) extends RollupRepo {
         .to[List]
         .transact(xa)
 
+    // Same nesting caveat as `aggregateByAppHourly` — see the note there.
     DbMetrics.timed("rollup.aggregateByAppDaily") {
       for {
         stale <- staleSql.query[Long].unique.transact(xa)
