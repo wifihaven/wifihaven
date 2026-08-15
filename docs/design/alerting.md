@@ -673,8 +673,9 @@ the same failure and neither subsumes the other.
     19:01 to 08-02 00:21, which reads as the second router joining rather than
     a flap) and one single sample on 08-07 14:16. Both *lower* the reference,
     so both fail safe. Three transitions across the fortnight against
-    `agent_connected_routers`' 48 over the same window: the stablest of the
-    three by an order of magnitude.
+    `agent_connected_routers`' 48 over the same window — same phase caveat, the
+    `48` moves if you re-query at a different step phase, the order-of-magnitude
+    gap does not. The stablest of the three by an order of magnitude.
 - **What it depends on**, stated plainly because it is the fragile part. The
   gauge is documented as a count of *channels*, not routers; it is a router
   count only because `RouterWsRegistry.register` **supersedes** — a reconnect
@@ -726,10 +727,10 @@ the same failure and neither subsumes the other.
   that single fixed-`instance` scrape target, so each 30s scrape returns
   whichever instance answered, and *both* operands are then sampled from that
   one arbitrary instance. No choice of aggregator fixes that. **Which way the
-  comparison then breaks is deliberately not predicted here.** Two successive
-  drafts of this section asserted opposite directions — silently blind, then
-  false-firing — and neither was derivable from the scrape config; it is not
-  determinable without running a two-instance deploy. What *is* certain is that
+  comparison then breaks is deliberately not predicted here.** Earlier drafts of
+  this section did predict a direction and could not support it from the scrape
+  config; it is not determinable without running a two-instance deploy. What
+  *is* certain is that
   the reference stops meaning "the fleet's connected routers", which is the
   property the rule rests on. So rework the scrape topology in `config.alloy`
   (per-instance targets, or a server-side aggregate) before raising
