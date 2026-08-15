@@ -43,7 +43,7 @@ object PolicySnapshotBlocklistScopeSpec
   private def clearDefaultProfileCategories: ZIO[ProfileRepo, Throwable, Unit] =
     for {
       pr  <- ZIO.service[ProfileRepo]
-      all <- pr.listAllIncludingGlobal
+      all <- pr.listAllIncludingGlobalForHousehold(HouseholdId.Default)
       _   <- ZIO.foreachDiscard(all)(p => pr.setBlockedCategories(p.id, List.empty))
     } yield ()
 
@@ -127,7 +127,7 @@ object PolicySnapshotBlocklistScopeSpec
         pr   <- ZIO.service[ProfileRepo]
         blr  <- ZIO.service[BlocklistRepo]
         _    <- seedThreeLists(blr)
-        g    <- pr.getGlobal.map(_.get.id)
+        g    <- pr.getGlobalForHousehold(HouseholdId.Default).map(_.get.id)
         _    <- pr.setBlockedCategories(g, List(BlocklistId.unsafe("ads")))
         svc  <- makePs
         snap <- svc.snapshot

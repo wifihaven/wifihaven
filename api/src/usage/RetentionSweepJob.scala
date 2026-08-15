@@ -62,9 +62,9 @@ object RetentionSweepJob {
   val ConnEventsHourlyRetentionDays: Int = 90
   val ConnEventsDailyRetentionDays: Int  = 180
   // #2086: neither table had any retention path before this. time_usage's only
-  // read sites query a single `date` (today) — see Repos.scala getSecondsUsed /
+  // read sites query a single `date` (today) — see Repos.scala getSecondsAndBytes /
   // listForDevice / snapshotAll — so 30d is generous headroom, not a tight bound.
-  // block_events' reads (`recent`, `listForMac`) are LIMIT-bounded rather than
+  // block_events' only read (`recent`) is LIMIT-bounded rather than
   // date-bounded; 30d mirrors connection_events' raw horizon.
   val TimeUsageRetentionDays: Int        = 30
   val BlockEventsRetentionDays: Int      = 30

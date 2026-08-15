@@ -263,7 +263,6 @@ object SpaWsS6aSpec
         toInstant: java.time.Instant,
         stepSeconds: Long,
     ) = underlying.listRawAggregatedInRange(household, macs, fromInstant, toInstant, stepSeconds)
-    def earliestPeriodStart = underlying.earliestPeriodStart
     def listFqdnHostAggregatesForDevice(
         household: HouseholdId,
         mac: MacAddress,

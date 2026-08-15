@@ -133,7 +133,7 @@ object AccessRequestHardeningSpec
         alertRepo <- ZIO.service[AlertRepo]
         longNote = "x" * (AlertRoutes.MaxNoteLength + 100)
         resp   <- postCreateAR(routes, Hostname.unsafe("a.example.com"), Some(longNote))
-        stored <- alertRepo.list(includeAll = true)
+        stored <- alertRepo.listForHousehold(includeAll = true, HouseholdId.Default)
       } yield assertTrue(resp.status == Status.Created) &&
         assertTrue(stored.exists(_.note.exists(_.length == AlertRoutes.MaxNoteLength)))
     },
