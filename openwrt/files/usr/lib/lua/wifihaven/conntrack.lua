@@ -342,7 +342,8 @@ end
 -- Slow-path ceilings (#2719). These are a structural backstop, not a tuning
 -- knob: with the per-list category probe and the non-attributable-destination
 -- filter in place a real flow costs at most (extraBlocked hosts + assigned
--- blocklist ids + extraAllowed hosts + 1) probes — single-to-low-double digits
+-- blocklist ids + extraAllowed hosts + 1) probes, and the carve-out check runs
+-- at most once per flow (memoized) — single-to-low-double digits
 -- in production. The ceiling exists so that a candidate set nobody anticipated
 -- still cannot stop the agent, because every agent timer (policy apply, usage
 -- flush, event flush, metrics push, ws pending-apply) runs from the conntrack
@@ -1165,7 +1166,12 @@ function M.handle_flow(flow, ctx, batcher)
   -- drop we could not verify is how an allowed host ends up reported as
   -- category-blocked (the #2601 shape, as a false event rather than a false
   -- drop).
-  local function slow_path_carve_state()
+  --
+  -- Memoized per flow: the eb_ and bl_ paths can both reach it, and the answer
+  -- is a property of (dst_ip, mac), not of which loop asked. Without the memo
+  -- the both-hit case re-forks the whole probe sequence.
+  local carve_state_memo
+  local function compute_carve_state()
     if not budget.take("carve") then return "unknown" end
     if M.nft_ga_hit(flow.dst_ip, ctx.exec_fn) then return "carved" end
     local ea_hosts = ctx.ea_hosts_by_mac and ctx.ea_hosts_by_mac[mac]
@@ -1178,6 +1184,12 @@ function M.handle_flow(flow, ctx, batcher)
       end
     end
     return "clear"
+  end
+  local function slow_path_carve_state()
+    if carve_state_memo == nil then
+      carve_state_memo = compute_carve_state()
+    end
+    return carve_state_memo
   end
 
   if allowed and mac then

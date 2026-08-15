@@ -2563,21 +2563,25 @@ describe("slow-path bounding (#2719)", function()
     assert.equal("category:ads", b.events[#b.events].reason)
   end)
 
-  it("probes extraBlocked hosts in a deterministic order under a tripped ceiling", function()
+  it("probes extraBlocked hosts in sorted order under a tripped ceiling", function()
+    -- Asserting "two runs agree" would NOT catch a `pairs` regression: Lua's
+    -- iteration order over an unmodified table is stable within a process, so
+    -- that test passes for free. Pin the actual order instead — the first N
+    -- hosts by sort — which fails the moment the loop stops sorting.
     local eb_hosts = {}
     for i = 1, 50 do eb_hosts[string.format("h%02d.example", i)] = true end
-    local function probed()
-      local calls, exec = counting_exec(nil)
-      conntrack.handle_flow({ src_ip = SRC_IP, dst_ip = DST_IP }, ctx_with({
-        eb_hosts_by_mac      = { [MAC] = eb_hosts },
-        ea_hosts_by_mac      = {},
-        exec_fn              = exec,
-        slow_path_max_probes = 3,
-      }), collecting_batcher())
-      return table.concat(calls, "|")
+    local calls, exec = counting_exec(nil)
+    conntrack.handle_flow({ src_ip = SRC_IP, dst_ip = DST_IP }, ctx_with({
+      eb_hosts_by_mac      = { [MAC] = eb_hosts },
+      ea_hosts_by_mac      = {},
+      exec_fn              = exec,
+      slow_path_max_probes = 3,
+    }), collecting_batcher())
+    assert.equal(3, #calls)
+    for i, expected in ipairs({ "eb_h01_example", "eb_h02_example", "eb_h03_example" }) do
+      assert.is_truthy(calls[i]:find(expected, 1, true),
+        "probe " .. i .. " must be " .. expected .. ", got: " .. calls[i])
     end
-    assert.equal(probed(), probed(),
-      "the capped subset must not vary between runs for identical input")
   end)
 
   it("issues zero probes for the IPv4 limited broadcast (DHCPv4's ff02::1:2)", function()
