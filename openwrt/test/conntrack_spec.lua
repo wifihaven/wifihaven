@@ -2438,6 +2438,20 @@ describe("slow-path bounding (#2719)", function()
     assert.equal("deadline", metered[1].labels.reason)
   end)
 
+  it("bl_san agrees with render's bl_ set-name sanitizer for every id shape", function()
+    -- The probe is only as good as the set name: a sanitizer that drifts from
+    -- render's turns every category probe into a miss, which reads as "nothing
+    -- was blocked" rather than as an error. Hyphens matter — blocklist ids use
+    -- them (social-media) and eb_san does NOT collapse them.
+    local render = require("render")
+    for _, id in ipairs({ "ads", "social-media", "adult", "a.b", "a:b", "a b", "x-y.z" }) do
+      assert.equal(render.bl_sanitize(id), conntrack.bl_san(id),
+        "bl_san must match render.bl_sanitize for id " .. id)
+    end
+    assert.equal("bl_social_media",
+      "bl_" .. conntrack.bl_san("social-media"))
+  end)
+
   it("does not meter anything when the slow path completes inside its budget", function()
     local metered = {}
     local _calls, exec = counting_exec(nil)
