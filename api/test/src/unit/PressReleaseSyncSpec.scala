@@ -98,11 +98,14 @@ object PressReleaseSyncSpec extends ZIOSpecDefault {
   def spec = suite("press release — the authored copy and the published page stay in sync")(
     test("every paragraph of the authored release appears on the published page") {
       val authored = paragraphs(authoredBody(readAll(AuthoredPath)))
-      val page     = pageText(readAll(PagePath))
-      // The page legitimately carries ONE line the authored copy does not: it says "Press kit: this
-      // page." where the release names the URL, because on the page that URL is where you already
-      // are. Everything else must match.
-      val exempt   = (p: String) => p.startsWith("Press kit:") || p.contains("Press kit: ")
+      val rawPage  = readAll(PagePath)
+      val page     = pageText(rawPage)
+      // ONE paragraph is exempt: the links line. The page renders those URLs as anchors and says
+      // "Press kit: this page." where the release names the URL, because on the page that URL is
+      // where you already are — so the paragraph cannot match as text. That exemption drops the
+      // beta-signup and source URLs out of the comparison, which is exactly the wrong thing to
+      // leave unguarded, so they are asserted individually below.
+      val exempt   = (p: String) => p.contains("Press kit:")
       val expected = authored.filterNot(exempt)
       val missing  = expected.filterNot(page.contains)
       assertTrue(
@@ -111,6 +114,13 @@ object PressReleaseSyncSpec extends ZIOSpecDefault {
         // `missing.isEmpty` would pass for free. The release is 14 paragraphs; 10 is a floor well
         // under that and well over anything a broken extractor would produce.
         expected.size > 10,
+        // Exactly one paragraph may be exempt. More means the exemption started swallowing prose.
+        authored.count(exempt) == 1,
+        // The two URLs the exempt paragraph carries. The beta link is what the whole announcement
+        // drives at and the source link is the open-source claim's evidence; a journalist follows
+        // both. Asserted on the RAW page so an anchor's href counts, not only its visible text.
+        rawPage.contains("app.wifihaven.net/beta"),
+        rawPage.contains("github.com/wifihaven/wifihaven"),
       )
     },
     test("neither copy carries an unfilled [PLACEHOLDER]") {

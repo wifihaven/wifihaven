@@ -6,11 +6,11 @@ import scala.util.matching.Regex
 /**
  * #2677 — the ONE renderer for a plain-text/markdown email body into the HTML part, used by the
  * press responder (`PressResponder.htmlBody`). It was extracted because that shape had grown twice
- * independently — here and in the (since-removed, #2233) press-outreach composer — escape, split on
- * blank lines, `<br>` the single newlines, and so both shipped the same defect: the agent writes
- * markdown and the recipient reads literal `**` (the reported bug was in a reply that reached a
- * journalist). Per docs/process/single-source-of-truth.md this is the single implementation; do not
- * re-derive it at a call site.
+ * independently — in `PressResponder` and in the since-removed (#2233) press-outreach composer —
+ * escape, split on blank lines, `<br>` the single newlines, and both shipped the same defect: the
+ * agent writes markdown and the recipient reads literal `**` (the reported bug was in a reply that
+ * reached a journalist). Per docs/process/single-source-of-truth.md this is the single
+ * implementation; do not re-derive it at a call site.
  *
  * ==Security model — escape first, then render a closed allowlist==
  *
