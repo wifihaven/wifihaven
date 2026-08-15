@@ -665,8 +665,11 @@ the same failure and neither subsumes the other.
     talking, and pushing nothing is exactly the failure. It self-clears with no
     bookkeeping — a decommissioned or unplugged router drops its socket and
     leaves the reference count on its own, the property the enrolled gauge
-    lacks. Measured flat at 2 across the whole 14-day window, through both
-    outage episodes: the stablest of the three by a wide margin.
+    lacks. Measured at 2 in 3105 of 3106 samples across the 14-day window —
+    one single-sample dip to 1 on 2026-08-07T14:15Z, which *lowers* the
+    reference and so fails safe — through both outage episodes, and 2
+    transitions against `agent_connected_routers`' 64 over the same window.
+    The stablest of the three by a wide margin.
 - **What it depends on**, stated plainly because it is the fragile part. The
   gauge is documented as a count of *channels*, not routers; it is a router
   count only because `RouterWsRegistry.register` **supersedes** — a reconnect
@@ -682,14 +685,17 @@ the same failure and neither subsumes the other.
   makes that acceptable rather than a hole.
 - **Counts, not identities — deliberately.** The rule fires without naming the
   silent router, because naming it would need a per-router *server-derived*
-  series, which
-  [`docs/process/instrumentation.md`](../process/instrumentation.md) forbids as
-  an unbounded label dimension. (`agent_version`'s own `router_id` is the
+  series, which is out of bounds under the cardinality firewall in
+  [`docs/process/instrumentation.md`](../process/instrumentation.md). (`agent_version`'s own `router_id` is the
   documented exception because it is agent-pushed; that exception does not
   extend to inventing a new server-side per-router gauge.) "One router is
   silent" is enough to act on, and the operator identifies which one in two
   clicks from the paired panel. A count comparison that fires beats an
-  identity-precise rule that does not exist.
+  identity-precise rule that does not exist. The two clicks land on the
+  router-fleet dashboard's **"Agent versions across the fleet"** panel, which
+  is the one whose query carries `router_id` — *not* "Fleet agent-version
+  distribution" beside it, which counts by version only and cannot identify a
+  router.
 - **How it reads.** `count by (router_id)` collapses the version label so an
   in-flight upgrade cannot double-count a router; the outer `count` is then the
   number of routers with a live `agent_version`. `or vector(0)` is load-bearing,
@@ -705,7 +711,17 @@ the same failure and neither subsumes the other.
   same reasoning as W12's `== bool`. `max` and not `sum` over the reference
   gauge: the API is `numInstances: 1` (`render.yaml`) so they are identical
   today, but under a scale-out, or a lingering old instance during a rolling
-  deploy, `sum` would inflate the reference and false-fire. If the reference
+  deploy, `sum` would inflate the reference and false-fire. **`max` does not
+  make the rule scale-out-correct**, and nobody raising `numInstances` should
+  read it that way. The two sides are asymmetric: the reporting side dedupes
+  across instances (it groups by `router_id` only) while `max` takes one
+  instance's channel count, so a fleet split across N instances leaves
+  reporting at the full fleet and the reference at one instance's share, and
+  the comparison can never go true — W14 goes *silently blind*. Fail-safe
+  rather than noisy, which is why `max` is right at `numInstances: 1`, but a
+  scale-out disables this rule until the reference is reworked (the natural
+  rework is `sum` against a reporting side that is likewise per-instance). If
+  the reference
   gauge is itself absent (the API is down) the comparison is empty and the rule
   lands in no-data → OK, which is right: an API outage is C-tier.
 - **`for: 6h` — calibrated against 14 days of prod, not picked.** The
@@ -737,8 +753,9 @@ the same failure and neither subsumes the other.
   [`docs/process/instrumentation.md#metrics-need-a-dashboard`](../process/instrumentation.md#metrics-need-a-dashboard)):
   "Routers connected vs reporting metrics" on the router-ws-transport
   dashboard, plotting both sides of the comparison so the gap is the thing you
-  see. Cross-reference the router-fleet dashboard's version-distribution panel
-  to identify which router is missing.
+  see. Cross-reference the router-fleet dashboard's "Agent versions across the
+  fleet" panel — the one that carries `router_id` — to identify which router is
+  missing.
 
 ## 8. Gaps — metrics not yet emitted
 

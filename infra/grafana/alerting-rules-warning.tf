@@ -1,6 +1,6 @@
-# Warning (notify, look-today) alert rules — W1–W12
+# Warning (notify, look-today) alert rules — W1–W14
 # (W1–W5: #1405, parent #1381. W6–W7: #2416. W8: #2488. W9: #2553. W10: #2646.
-#  W11–W12: #2477.)
+#  W11–W12: #2477. W13: #2517. W14: #2646 follow-up, W10's absence arm.)
 # Implements docs/design/alerting.md §7.2.
 #
 # Every expression is grounded in a series emitted today (§2 "alert only on
@@ -448,8 +448,11 @@ locals {
     #     talking and still pushing no metrics, that is precisely the failure. It
     #     self-clears with no bookkeeping: a decommissioned or unplugged router drops its
     #     socket and leaves the reference count on its own, which is the exact property
-    #     the enrolled gauge lacks. Measured flat at 2 for the whole 14-day window,
-    #     through both outage episodes — the stablest of the three by a wide margin.
+    #     the enrolled gauge lacks. Measured at 2 in 3105 of 3106 samples across the 14-day
+    #     window (one single-sample dip to 1 on 2026-08-07T14:15Z, which LOWERS the reference
+    #     and so fails safe), through both outage episodes — 2 transitions against
+    #     agent_connected_routers' 64 over the same window, the stablest of the three by a
+    #     wide margin.
     #
     # WHAT IT DEPENDS ON, stated plainly because it is the fragile part. The gauge is
     # documented as a count of CHANNELS, not routers; it is only a router count because
@@ -491,8 +494,9 @@ locals {
     #
     # WHY for = 6h — CALIBRATED AGAINST 14 DAYS OF PROD, not picked. The expression was
     # replayed over 2026-08-01→08-15 at 5-minute resolution. It went true in exactly three
-    # runs: 0.8h on 08-10, 17.2h from 08-14 16:38 to 08-15 09:53, and the ongoing run that
-    # began 08-15 15:03. (An API restart also produces a sub-scrape transient — the
+    # runs: 0.8h on 08-10, 17.2h from 08-14 16:38 to 08-15 09:53, and 3.7h from 08-15 15:03
+    # to 18:44 — the third never reached 6h, which corroborates the threshold rather than
+    # qualifying it. (An API restart also produces a sub-scrape transient — the
     # agent-pushed gauges repopulate only on the next push, `metrics_report_interval` 60s
     # — one of which showed as a single 5-minute sample in an earlier draft of the
     # expression.) 6h clears
@@ -517,7 +521,7 @@ locals {
       gt      = 0
       for     = "6h"
       paused  = false
-      summary = "Fewer routers are pushing metrics than are holding a live websocket to us — at least one router is CONNECTED and silent, and has been for 6h. This is the door W10 cannot watch: W10 keys off the presence of an agent_version series, so a router that reports nothing vanishes from its comparison instead of being flagged by it, and the stuck-agent detector is silently off for that box. Observed live on prod 2026-08-15 (2 connected, 1 reporting). WHICH ROUTER: the rule cannot name it (a per-router server-derived label is forbidden by docs/process/instrumentation.md) — open the router-ws-transport dashboard's \"Routers connected vs reporting metrics\" panel, then the router-fleet dashboard's version-distribution panel, which lists the router_ids that ARE reporting; the silent one is the enrolled router missing from that list. THEN: the box is up (it is holding a socket), so this is the metrics push specifically, not the agent. Check POST /api/router/metrics in the API log for that router, and on the box check the agent's metrics reporter and `logread | grep wifihaven`. If instead ALL routers went silent at once (the panel shows reporting at 0), suspect the ingest route or the metrics pipeline rather than any single router."
+      summary = "Fewer routers are pushing metrics than are holding a live websocket to us — at least one router is CONNECTED and silent, and has been for 6h. This is the door W10 cannot watch: W10 keys off the presence of an agent_version series, so a router that reports nothing vanishes from its comparison instead of being flagged by it, and the stuck-agent detector is silently off for that box. Observed live on prod 2026-08-15 (2 connected, 1 reporting). WHICH ROUTER: the rule cannot name it (a per-router server-derived label is out of bounds under the cardinality firewall in docs/process/instrumentation.md — see W10's cardinality note for why agent_version's own router_id is the documented exception) — open the router-ws-transport dashboard's \"Routers connected vs reporting metrics\" panel to confirm the gap, then the router-fleet dashboard's \"Agent versions across the fleet\" panel, which is the one that carries router_id (the \"Fleet agent-version distribution\" panel next to it counts by version only and CANNOT identify a router); the silent box is the enrolled router missing from that list. THEN: the box is up (it is holding a socket), so this is the metrics push specifically, not the agent. Check POST /api/router/metrics in the API log for that router, and on the box check the agent's metrics reporter and `logread | grep wifihaven`. If instead ALL routers went silent at once (the panel shows reporting at 0), suspect the ingest route or the metrics pipeline rather than any single router."
     }
   }
 }
