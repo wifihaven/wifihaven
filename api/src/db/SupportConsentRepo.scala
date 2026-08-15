@@ -168,6 +168,11 @@ trait SupportConsentRepo {
    * refusal, a transport failure and a timeout — and a write that timed out may well have landed.
    * Releasing on `Error` would let a `reply` loop retry until one landed, which is the duplicate
    * this claim exists to prevent.
+   *
+   * NOT unconditional: it gives back only a claim that is still OUTSTANDING and unclaimed-again —
+   * the customer can redeem or withdraw between the liveness read and this call, and a settled
+   * row's audit fields are not ours to rewrite afterwards. Refusing changes nothing observable,
+   * since a resolved row can never be returned by [[outstandingLink]] again.
    */
   def releaseExplainer(household: HouseholdId, threadId: String, nonce: String): Task[Unit]
 

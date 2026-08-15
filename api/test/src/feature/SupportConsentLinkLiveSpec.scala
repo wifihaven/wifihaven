@@ -519,8 +519,10 @@ object SupportConsentLinkLiveSpec
         first == Status.Ok,
         replay != Status.Ok,
         // A DELTA, not the process-global count: this must distinguish "refused as spent" from
-        // "refused as stale", and any other spec in the JVM can move the absolute counter.
-        spent == before + 1,
+        // "refused as stale", which scores zero on this series. `>=` rather than `==` on purpose —
+        // SupportConsentSpec drives the same emission in the same JVM, and `TestAspect.sequential`
+        // orders THIS suite, not other spec classes. Exact equality would couple the two.
+        spent >= before + 1,
         // The withdrawal stands: the replayed link did not re-grant.
         !live,
       )
