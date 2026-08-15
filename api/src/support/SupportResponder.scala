@@ -10,6 +10,7 @@ import wifihaven.api.db.{
   HouseholdBillingRepo,
   HouseholdRepo,
   HouseholdSettingsRepo,
+  OutstandingConsentLink,
   ProfileRepo,
   SupportConsentRepo,
   UserRepo,
@@ -700,7 +701,9 @@ final case class SupportResponder(
       // Optional — an agent predating the marker reports nothing and is recorded `unknown`.
       promptVersion: Option[String] = None,
   ): UIO[AgentActionResult] =
-    withClaims(AgentAction.Reply, bearer) { claims =>
+    // #2709 takes the instant the token was verified against rather than reading the clock again,
+    // so the live-link predicate is evaluated on the same instant as the token check.
+    withClaimsAt(AgentAction.Reply, bearer) { (claims, now) =>
       // #2469: recorded HERE, not in the route, because here we are PAST the token check — the
       // caller provably is the dispatched agent. The route is public (the token is verified inside
       // `withClaims`), so a route-level observe would let any anonymous POST forge `state="current"`
@@ -712,28 +715,142 @@ final case class SupportResponder(
         // customer's decision moment is server-authored text ONLY. Outside the redaction, so a
         // suppressed reply does no work at all.
         exclusiveThreadWrite(AgentAction.Reply, claims) {
-          AgentCredential
-            .redact(AgentCredential.Channel.Support, AgentAction.Reply, markdown)
-            .flatMap { safeMarkdown =>
-              val write = PlainThreadWrite(
-                // #2408: the reply posts INTO the customer's existing thread (`claims.threadId`,
-                // the customer-visible send via Plain's replyToThread), NOT a new createThread. The
-                // thread binding comes from the verified token — the request body carries only the
-                // reply text.
-                threadId = claims.threadId,
-                // #2456: strip the agent's own leading copy first — the server owns this line, and
-                // the agent intermittently copies it out of the thread history it now sees (#2441),
-                // which showed the customer the header twice.
-                markdown = s"$AiReplyAttribution\n\n${stripLeadingAttribution(safeMarkdown)}",
-              )
-              plain.writeThread(write).flatMap {
-                case PlainOutcome.Ok       => done(AgentAction.Reply, AgentActionResult.Ok)
-                case PlainOutcome.Disabled => done(AgentAction.Reply, AgentActionResult.Disabled)
-                case PlainOutcome.Error    => done(AgentAction.Reply, AgentActionResult.Error)
+          // #2709: refused OUTRIGHT while an unredeemed consent link is live on this THREAD, no
+          // matter which session is asking — #2667's claim map is per-session and every inbound
+          // customer message dispatches a fresh one. Inside the #2667 claim so that the
+          // same-session case keeps reporting as `consent_exclusive`, and outside the redaction so
+          // a suppressed reply does no work at all.
+          consentLinkGuard(claims, now) {
+            AgentCredential
+              .redact(AgentCredential.Channel.Support, AgentAction.Reply, markdown)
+              .flatMap { safeMarkdown =>
+                val write = PlainThreadWrite(
+                  // #2408: the reply posts INTO the customer's existing thread (`claims.threadId`,
+                  // the customer-visible send via Plain's replyToThread), NOT a new createThread. The
+                  // thread binding comes from the verified token — the request body carries only the
+                  // reply text.
+                  threadId = claims.threadId,
+                  // #2456: strip the agent's own leading copy first — the server owns this line, and
+                  // the agent intermittently copies it out of the thread history it now sees (#2441),
+                  // which showed the customer the header twice.
+                  markdown = s"$AiReplyAttribution\n\n${stripLeadingAttribution(safeMarkdown)}",
+                )
+                plain.writeThread(write).flatMap {
+                  case PlainOutcome.Ok       => done(AgentAction.Reply, AgentActionResult.Ok)
+                  case PlainOutcome.Disabled => done(AgentAction.Reply, AgentActionResult.Disabled)
+                  case PlainOutcome.Error    => done(AgentAction.Reply, AgentActionResult.Error)
+                }
               }
-            }
+          }
         }
     }
+
+  /**
+   * #2709 — REFUSE agent-authored text while an unredeemed consent link is LIVE on this thread.
+   *
+   * WHAT #2667 LEFT OPEN. #2667 made the consent TURN server-authored, keyed on the agent SESSION.
+   * The link stays redeemable for [[SupportResponder.ConsentLinkTtl]] and every inbound customer
+   * message dispatches a FRESH session with an empty claim map, so the primitive survives displaced
+   * by one customer round trip: S1 posts the prompt, the customer asks the natural question ("what
+   * is this link?"), and the session THAT dispatches has claimed nothing — its reply lands under
+   * the same `🤖 WifiHaven support assistant` banner, directly beneath a live genuine link. A
+   * prompt-injected session can then frame the link that is already on screen. #2453 stops it
+   * SEEING the URL; it does not need the URL to frame a link the customer can already see.
+   *
+   * So the rule is keyed on the THREAD and the LINK'S LIFETIME. It reads the V89 consent-link
+   * ledger — a durable row written when the prompt is posted and resolved when the link dies — and
+   * not `DispatchTracker`, whose state is per-session, in-memory, and replaced on the next
+   * dispatch. `deploy/support-agent/agent.yaml` is updated to match, but a prompt rule cannot BE
+   * the control here: the threat model is an agent that ignores its prompt.
+   *
+   * IT MUST NOT DEAD-END THE CUSTOMER, which is the reason #2709 was more than a widening of #2667.
+   * Silence in answer to "what is this link?" is the failure #2419 was filed for and #2469 shipped
+   * once already. So the refusal POSTS — [[SupportResponder.consentLinkExplainer]], the server's
+   * own fixed words, carrying no link of its own and stating plainly that we never ask for a
+   * password, which is what defeats a framing rather than merely withholding one. Exactly once per
+   * link, claimed with a conditional UPDATE, so a looping agent cannot turn our own message into
+   * spam.
+   *
+   * The residual cost is stated rather than hidden: a customer whose question is unrelated to the
+   * link gets the explanation instead of an answer until they act on the prompt (or it lapses at
+   * 24h). That is the price of the guarantee, and it is bounded, visible on
+   * `support_consent_total{outcome="reply_blocked_link_live"}`, and self-clearing — every
+   * resolution path lifts it, including the customer simply declining.
+   *
+   * FAIL-CLOSED on a lookup error, unlike [[consentGranted]]. There the fail-open direction is
+   * "assume no consent", which is also the safe one; here "assume no link" would re-open the
+   * phishing window on a DB blip. Closing costs nothing extra in practice: the same database backs
+   * every other read this request makes, so a persistent failure is an outage the customer sees
+   * regardless — and the refusal is loud rather than silent.
+   */
+  private def consentLinkGuard(claims: ConsentToken.Claims, now: Instant)(
+      post: UIO[AgentActionResult],
+  ): UIO[AgentActionResult] =
+    consentRepo
+      .outstandingLink(claims.householdId, claims.threadId, now)
+      .foldZIO(
+        e =>
+          ZIO.logError(
+            s"support: could not tell whether a consent link is live on " +
+              s"thread=${claims.threadId} household=${claims.householdId.value} — refusing the " +
+              s"agent reply rather than risk posting beneath one (#2709): ${e.getMessage}",
+          ) *> AppMetrics.supportConsent(SupportResponder.LinkStateUnknown) *>
+            done(AgentAction.Reply, AgentActionResult.ConsentPending),
+        {
+          case None       => post
+          case Some(link) =>
+            // PII firewall (#2438): the thread and household ids, never the suppressed text and
+            // never anything the customer wrote.
+            ZIO.logWarning(
+              s"support: a consent link is live on thread=${claims.threadId} " +
+                s"household=${claims.householdId.value} — dropping op=${AgentAction.Reply}. No " +
+                "agent-authored message may sit beneath an unredeemed consent link, whichever " +
+                "session wrote it (#2709)",
+            ) *> AppMetrics.supportConsent(SupportResponder.ReplyBlockedLinkLive) *>
+              explainLinkOnce(claims, link, now) *>
+              done(AgentAction.Reply, AgentActionResult.ConsentPending)
+        },
+      )
+
+  /**
+   * #2709 — post the server's fixed explanation of the outstanding link, at most once per link.
+   *
+   * The claim is a conditional UPDATE and not a read of `explainedAt`, because the caller racing
+   * itself is the untrusted one: an agent firing `reply` twice concurrently would pass two reads
+   * and put two copies of our own message in front of the customer.
+   *
+   * Every outcome is metered. A Plain failure here leaves the customer with the original prompt and
+   * no explanation — worth seeing, and not worth un-claiming for: re-claiming on failure would let
+   * a `reply` loop retry the write until one landed, which is the spam this exists to prevent.
+   */
+  private def explainLinkOnce(
+      claims: ConsentToken.Claims,
+      link: OutstandingConsentLink,
+      now: Instant,
+  ): UIO[Unit] =
+    consentRepo
+      .claimExplainer(link.nonce, now)
+      .foldZIO(
+        e =>
+          ZIO.logWarning(s"support: consent-link explainer claim failed: ${e.getMessage}") *>
+            AppMetrics.supportConsent(SupportResponder.LinkExplainError),
+        {
+          case false => AppMetrics.supportConsent(SupportResponder.LinkExplainRepeat)
+          case true  =>
+            plain
+              .writeThread(
+                PlainThreadWrite(claims.threadId, SupportResponder.consentLinkExplainer),
+              )
+              .flatMap {
+                case PlainOutcome.Ok       =>
+                  AppMetrics.supportConsent(SupportResponder.LinkExplained)
+                case PlainOutcome.Disabled =>
+                  AppMetrics.supportConsent(SupportResponder.LinkExplainDisabled)
+                case PlainOutcome.Error    =>
+                  AppMetrics.supportConsent(SupportResponder.LinkExplainError)
+              }
+        },
+      )
 
   /**
    * File a GitHub issue on the support bot's behalf. Rate-limited per-thread and globally (the
@@ -1077,15 +1194,20 @@ final case class SupportResponder(
    * session, in either order. Adjacent agent text is NOT a separate concern to be left to the
    * prompt — the threat model is an agent that ignores its prompt.
    *
-   * SCOPE, stated so it is not read as more than it is. The exclusion is per SESSION, and the link
-   * stays redeemable for [[SupportResponder.ConsentLinkTtl]]. A LATER turn — the customer asking
-   * "what is this link?" dispatches a fresh session with nothing claimed — can still post agent
-   * text beneath a live prompt and frame the link the customer can already see. That costs the
-   * attacker a customer round trip and is strictly narrower than what shipped before, but it is
-   * open, and closing it needs durable per-thread state (so, a migration) plus a product call about
-   * answering a customer who asks about the link. Tracked in
-   * https://github.com/wifihaven/wifihaven/issues/2709. Do NOT relax this wording back to an
-   * unqualified "at the consent moment" — the unqualified version is what let #2667 ship.
+   * #2709 — #2667's exclusion was per SESSION, and that was not the whole guarantee either: the
+   * link stays redeemable for [[SupportResponder.ConsentLinkTtl]], and a LATER turn (the customer
+   * asking "what is this link?" dispatches a fresh session with nothing claimed) could still post
+   * agent text beneath a live prompt and frame the link the customer can already see. So the rule
+   * is now keyed on the THREAD and the LINK'S LIFETIME as well: while an unredeemed link is
+   * outstanding, agent-authored text is refused on that thread whichever session asks
+   * ([[consentLinkGuard]], reading the durable V89 ledger this path writes). The customer is not
+   * left waiting — the server posts [[SupportResponder.consentLinkExplainer]] in its place — and
+   * the exclusion lifts the moment the link is redeemed, withdrawn, superseded, or lapses.
+   *
+   * State the guarantee with BOTH qualifiers or not at all: from the moment the prompt is posted
+   * until the link is resolved, everything the customer sees on that thread is server-authored. Do
+   * NOT relax the wording back to an unqualified "at the consent moment" — an unqualified version
+   * is what let #2667 ship, and a session-scoped one is what left #2709 open.
    *
    * #2453 — that guarantee needs a second half, because the prompt is posted through the SAME
    * machine-user write path as every AI reply and therefore comes back on the timeline as an
@@ -1142,15 +1264,17 @@ final case class SupportResponder(
       claims: ConsentToken.Claims,
       now: Instant,
   ): UIO[AgentActionResult] = {
+    // #2453: a fresh nonce per link — redemption consumes it, so a captured link cannot be
+    // replayed to re-grant access the customer has since withdrawn. #2709 names it here because it
+    // is also the ledger key: the row recording that this link is OUTSTANDING is keyed by it.
+    val nonce = ConsentGrant.newNonce()
     val grant = ConsentGrant.mint(
       household = claims.householdId,
       threadId = claims.threadId,
       now = now,
       ttl = SupportResponder.ConsentLinkTtl,
       secret = cfg.agentTokenSecretTrimmed,
-      // #2453: a fresh nonce per link — redemption consumes it, so a captured link cannot be
-      // replayed to re-grant access the customer has since withdrawn.
-      nonce = ConsentGrant.newNonce(),
+      nonce = nonce,
     )
     val write = PlainThreadWrite(
       threadId = claims.threadId,
@@ -1162,16 +1286,71 @@ final case class SupportResponder(
     ) *>
       plain.writeThread(write).flatMap {
         case PlainOutcome.Ok       =>
-          AppMetrics
-            .supportConsent("requested") *> done(AgentAction.ConsentRequest, AgentActionResult.Ok)
+          recordPostedLink(claims, nonce, now) *>
+            AppMetrics
+              .supportConsent("requested") *> done(AgentAction.ConsentRequest, AgentActionResult.Ok)
         case PlainOutcome.Disabled =>
+          // The write half is dark, so nothing was attempted and no link can be in front of the
+          // customer — the ONE outcome that proves non-delivery (see [[settleThreadWrite]]). No row
+          // is recorded, because a link nobody was shown must not mute the agent for 24h.
           AppMetrics.supportConsent("request_disabled") *>
             done(AgentAction.ConsentRequest, AgentActionResult.Disabled)
         case PlainOutcome.Error    =>
-          AppMetrics.supportConsent("request_error") *>
+          // Recorded anyway, and on purpose: `PlainOutcome.Error` collapses a refusal, a transport
+          // failure and a timeout into one value, and a write that timed out may well have been
+          // applied. Treating that as "no link exists" is how agent text ends up beneath a link
+          // that IS there. Same direction #2667's settle policy fails in.
+          recordPostedLink(claims, nonce, now) *>
+            AppMetrics.supportConsent("request_error") *>
             done(AgentAction.ConsentRequest, AgentActionResult.Error)
       }
   }
+
+  /**
+   * #2709 — record that a consent link is now OUTSTANDING on this thread, superseding whatever was
+   * outstanding before. This is what makes "is a link live here" answerable by a LATER session; the
+   * #2667 claim map cannot be, since it is per-session and in-memory.
+   *
+   * `linkExpiresAt` is recomputed as `now + ConsentLinkTtl` from the same `now` and the same
+   * constant the token was minted with, so the row and the signed `exp` describe one instant.
+   *
+   * A failure here is LOUD (ERROR + its own metric) and does not fail the request: the prompt is
+   * already in front of the customer and answering the agent with a 500 would neither unpost it nor
+   * make the guard work. What it does mean is stated plainly rather than hidden — for THAT link the
+   * cross-turn exclusion is not in force, so `link_record_error` is an expect-zero series. A
+   * PERSISTENT database failure does not leave a hole: the guard's own read fails closed, so
+   * replies on that thread are refused anyway.
+   */
+  private def recordPostedLink(
+      claims: ConsentToken.Claims,
+      nonce: String,
+      now: Instant,
+  ): UIO[Unit] =
+    consentRepo
+      .recordPrompt(
+        claims.householdId,
+        claims.threadId,
+        nonce,
+        now,
+        now.plus(SupportResponder.ConsentLinkTtl),
+      )
+      .foldZIO(
+        e =>
+          ZIO.logError(
+            s"support: FAILED to record the posted consent link for thread=${claims.threadId} " +
+              s"household=${claims.householdId.value} — the #2709 cross-turn exclusion cannot see " +
+              s"this link: ${e.getMessage}",
+          ) *> AppMetrics.supportConsent(SupportResponder.LinkRecordError),
+        superseded =>
+          ZIO
+            .logInfo(
+              s"support: a new consent prompt SUPERSEDED $superseded outstanding link(s) on " +
+                s"thread=${claims.threadId} — exactly one link is live per thread (#2709)",
+            )
+            .zipRight(AppMetrics.supportConsent(SupportResponder.LinkSuperseded))
+            .when(superseded > 0)
+            .unit,
+      )
 
   /** `<appBaseUrl>/support/consent?g=<grant token>` — the customer-facing consent link. */
   private def consentUrl(grant: String): String =
@@ -1804,6 +1983,88 @@ object SupportResponder {
        |again and I'll take a look.""".stripMargin
 
   /**
+   * #2709 — the FIXED, server-authored answer posted in place of a reply the live-link exclusion
+   * refused. The anti-dead-end half of that guard, and the reason #2709 is more than a widening of
+   * #2667: a customer who asks "what is this link?" and gets silence is the failure #2419 was filed
+   * for, and #2469 is what it looks like in prod.
+   *
+   * Three properties this copy must keep, all of them load-bearing:
+   *   - it carries NO link. The thread already has one, and adding a second URL beside a live
+   *     capability link is the adjacency #2453 exists to prevent.
+   *   - it says what we will NEVER ask for. That is the part a hostile framing cannot survive:
+   *     withholding an answer only leaves the customer guessing, whereas "we will never ask for
+   *     your password" contradicts the framing outright, wherever it reached them from.
+   *   - it names a way OUT, including declining. A guarantee whose only exit is "do the thing we
+   *     asked" is coercive, and withdrawal lifts the exclusion exactly like consent does.
+   *
+   * Its terms are read from the same [[ConsentTtl]] the prompt quotes, so the two messages can
+   * never disagree about the expiry the way the agent's own restatement did in #2667.
+   */
+  val consentLinkExplainer: String =
+    s"""$AiReplyAttribution
+       |
+       |There's a permission request open in this conversation, so I'll hold the rest of my answer
+       |until it's settled.
+       |
+       |Here's what it covers: reading your account summary, meaning your plan, your profiles, and
+       |how many devices you have. It's read-only, it applies to this conversation only, and it
+       |expires after ${ConsentTtl.toHours} hours. **WifiHaven will never ask you for your
+       |password, your card details, or a security code** — if any message asks you for those, it
+       |didn't come from us.
+       |
+       |Open the link above and choose Allow or Don't allow. Either answer is fine, and either one
+       |lets us carry on. If you do nothing, it lapses on its own.""".stripMargin
+
+  /**
+   * #2709 — the `support_consent_total{outcome}` values the live-link exclusion emits. Named in ONE
+   * place for the same reason as [[ExclusionOutcomes]]: a Grafana panel selects them by string, and
+   * `SupportMetricsContractSpec` pins the panel's matcher against [[LinkLiveOutcomes]], so a
+   * renamed label fails a test rather than leaving a panel reading zero forever.
+   *
+   * All bounded constants. Never a thread id, household id, or nonce — the correlation keys here
+   * are per-customer and belong in logs, never in a label (docs/process/instrumentation.md §4).
+   */
+  val ReplyBlockedLinkLive: String = "reply_blocked_link_live"
+
+  /** The server's explanation reached the customer — the anti-dead-end half firing. */
+  val LinkExplained: String = "link_explained"
+
+  /** Already explained for this link: refused again, and deliberately silent this time. */
+  val LinkExplainRepeat: String = "link_explain_repeat"
+
+  /** The explanation could not be posted. The customer has the prompt and no explanation. */
+  val LinkExplainError: String = "link_explain_error"
+
+  /** The Plain write half is dark, so nothing customer-visible is flowing at all. */
+  val LinkExplainDisabled: String = "link_explain_disabled"
+
+  /** A newer prompt replaced an outstanding link — exactly one is live per thread. */
+  val LinkSuperseded: String = "link_superseded"
+
+  /**
+   * EXPECT ZERO: a posted link the ledger never recorded, so the cross-turn exclusion is not in
+   * force for it.
+   */
+  val LinkRecordError: String = "link_record_error"
+
+  /**
+   * EXPECT ZERO: the liveness lookup itself failed, and the reply was refused rather than risked.
+   */
+  val LinkStateUnknown: String = "link_state_unknown"
+
+  /** Every value above — what the #2709 panel must match on. */
+  val LinkLiveOutcomes: Set[String] = Set(
+    ReplyBlockedLinkLive,
+    LinkExplained,
+    LinkExplainRepeat,
+    LinkExplainError,
+    LinkExplainDisabled,
+    LinkSuperseded,
+    LinkRecordError,
+    LinkStateUnknown,
+  )
+
+  /**
    * #2667 — the `support_consent_total{outcome}` values a SUPPRESSED consent-adjacent write emits,
    * one per direction so the operator can tell which way round it happened: the agent talking after
    * the prompt (the observed prod shape, a prompt the routine has drifted from), or a prompt asked
@@ -2115,6 +2376,17 @@ object SupportResponder {
      * (#2469) or something is trying.
      */
     case ConsentExclusive
+
+    /**
+     * #2709 — an unredeemed consent link is LIVE on this thread, so this reply was refused
+     * whichever session asked for it. Distinct from [[ConsentExclusive]] on purpose: that one is
+     * per-session and can only be an agent talking over its OWN consent request, while this one is
+     * the cross-turn case — the customer's next message dispatched a fresh session, which would
+     * otherwise post beneath a link the customer can already see and frame it. Expect a small
+     * non-zero rate (a customer asking "what is this link?" is the ordinary shape); a sustained one
+     * means the deployed routine has drifted (#2469) or something is trying.
+     */
+    case ConsentPending
     case RateLimited
     case Disabled
     case Error
@@ -2131,6 +2403,9 @@ object SupportResponder {
       // #2667 — kept distinct from `superseded`: that one is a benign race between two live
       // sessions, this one is an agent talking over the customer's consent decision.
       case ConsentExclusive => "consent_exclusive"
+      // #2709 — kept distinct from `consent_exclusive`: that one is a session talking over its own
+      // consent request, this one is a LATER session talking beneath a link that is still live.
+      case ConsentPending   => "consent_pending"
       case RateLimited      => "rate_limited"
       case Disabled         => "disabled"
       case Error            => "error"
@@ -2142,8 +2417,9 @@ object SupportResponder {
       // #2668 `Superseded` is FALSE here even though the caller is told 200: the volume panels this
       // set feeds ask "did the action happen", and a suppressed duplicate did not.
       // #2667 `ConsentExclusive` is likewise FALSE: the suppressed write did not happen.
-      case Denied | NoConsent | DataSession | Superseded | ConsentExclusive | RateLimited |
-          Disabled | Error =>
+      // #2709 `ConsentPending` the same — the server answered the customer, the agent did not.
+      case Denied | NoConsent | DataSession | Superseded | ConsentExclusive | ConsentPending |
+          RateLimited | Disabled | Error =>
         false
     }
 

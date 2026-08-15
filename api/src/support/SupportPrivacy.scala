@@ -123,11 +123,14 @@ object SupportPrivacy {
    * sees only server-authored text — because a prompt-injected agent can re-post the REAL, VALID
    * URL wrapped in a pretext of its own. The premise holds only if the agent never SEES the link.
    *
-   * The guarantee rests on THREE parts, none sufficient alone: the prompt is server-authored
-   * (#2419), the live link never reaches the agent (here), and no agent-authored message may share
-   * the TURN with the prompt (#2667's mutual exclusion at the two thread-write sites). A LATER turn
-   * still can, which is why this redaction matters on its own — it is what stops that turn
-   * re-posting the URL rather than merely referring to it (issue #2709).
+   * The guarantee rests on FOUR parts, none sufficient alone: the prompt is server-authored
+   * (#2419), the live link never reaches the agent (here), no agent-authored message may share the
+   * TURN with the prompt (#2667's mutual exclusion at the two thread-write sites), and no
+   * agent-authored message may reach the thread at all while an unredeemed link is outstanding on
+   * it (#2709's ledger-backed guard). This redaction still matters on its own and is not made
+   * redundant by #2709: that guard refuses agent text on the thread the link belongs to, while this
+   * one keeps the URL out of the agent's context entirely — so it cannot be carried to a different
+   * thread, or into a public GitHub issue.
    *
    * Deliberately NARROW, and deliberately not [[scrubForIssue]]: thread history must not be
    * blanket-URL-scrubbed, because a customer legitimately pastes links the agent needs to read.

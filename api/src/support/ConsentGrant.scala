@@ -34,6 +34,12 @@ import java.util.Base64
  *
  * Both are in the SIGNED payload, so neither can be edited by whoever holds the link.
  *
+ * #2709 — the `nonce` gained a second job without changing its first. It is now also the LEDGER KEY
+ * for the link's whole lifecycle: the row recording that a link is OUTSTANDING on a thread (and so
+ * that no agent-authored text may sit beneath it) is written at POST time, keyed by this value, and
+ * resolved when the link is redeemed, withdrawn, superseded, or lapses. Consumption is still
+ * decided by the same primary key inside the same transaction as the grant.
+ *
  * Wire shape mirrors [[ConsentToken]] — `g1.<b64url(payload)>.<hmacHex>` over
  * `householdId|threadId|iatEpochSeconds|expEpochSeconds|nonce` — but with a DISTINCT `g1` version
  * prefix, signed under the same agent-token secret. The prefix is domain separation and it is

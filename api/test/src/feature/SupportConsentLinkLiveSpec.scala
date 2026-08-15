@@ -4,7 +4,6 @@ import wifihaven.api.{JwtConfig, PlainConfig, SupportConfig}
 import wifihaven.api.auth.*
 import wifihaven.api.db.*
 import wifihaven.api.notify.Notifier
-import wifihaven.api.observability.AgentTokenRejection
 import wifihaven.api.routes.{SupportAgentRoutes, SupportConsentRoutes}
 import wifihaven.api.support.*
 import wifihaven.shared.Clock
@@ -104,7 +103,7 @@ object SupportConsentLinkLiveSpec
       dispRec     <- CloudAgentDispatcher.recorder
       tracker     <- DispatchTracker.make(
         DispatchTracker.deadAfterFor(liveCfg),
-        AgentTokenRejection.Channel.Support,
+        DispatchTracker.Channel.Support,
       )
       base      = SupportResponder(
         liveCfg,
@@ -297,7 +296,12 @@ object SupportConsentLinkLiveSpec
         phished == Status.Ok,
         // The one thing that matters: nothing the agent wrote is in front of the customer.
         adjacent.isEmpty,
-        !all.exists(_.contains("password")),
+        // The only message on this thread that mentions a password is the SERVER's, and it says we
+        // will never ask for one — the sentence that contradicts the framing rather than merely
+        // withholding it.
+        all.forall(m =>
+          m == SupportResponder.consentLinkExplainer || !m.toLowerCase.contains("password"),
+        ),
         // …and the server's own message is, intact and alone with its link.
         all.count(_.contains(LinkMarker)) == 1,
         // Loud, on bounded labels — never silently swallowed (#2265/#2266).

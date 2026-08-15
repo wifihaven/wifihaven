@@ -218,6 +218,11 @@ object SupportAgentRoutes {
     // OK for the same reason as `Superseded` — the turn is handled and a 4xx would make the run
     // retry a write it can never legitimately land. The `consent_exclusive` label carries the truth.
     case AgentActionResult.ConsentExclusive => ZIO.succeed(Response.json("""{"ok":true}"""))
+    // #2709: an unredeemed consent link is live on this thread, so no agent-authored text may sit
+    // beneath it — whichever session wrote it. OK for the same reason again, and with the same
+    // caveat: the customer is NOT left waiting, because the server posts its own explanation of the
+    // outstanding link in place of the refused reply.
+    case AgentActionResult.ConsentPending   => ZIO.succeed(Response.json("""{"ok":true}"""))
     case AgentActionResult.RateLimited      => ZIO.fail(ApiError.RateLimited("rate limited"))
     // Dark install: the endpoints don't exist as far as a caller can tell.
     case AgentActionResult.Disabled         => ZIO.fail(ApiError.NotFound("not found"))
