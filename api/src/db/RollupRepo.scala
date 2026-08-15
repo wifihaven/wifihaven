@@ -446,10 +446,12 @@ class RollupRepoLive(xa: Transactor[Task]) extends RollupRepo {
     // IN-list and keeps the same household semijoin), so the measurements above bound it too.
     //
     // Both reads still scan every tenant's rows in the window before the semijoin discards them —
-    // unchanged by this PR, and cheap today at the 2 households prod carries (`SELECT count(*) FROM
-    // households`, 2026-08-14). The discarded fraction grows with tenant count, so a
-    // `(router_id, bucket_start DESC)` index becomes the fix once that scan dominates; tracked with
-    // the measurements and the trigger condition in #2716, not pre-emptively added here.
+    // unchanged by this PR. These are seconds-scale reads, not cheap ones; what is true today is
+    // that the DISCARDED fraction is small at the 2 households prod carries (`SELECT count(*) FROM
+    // households`, 2026-08-14), so this is the fastest available shape and an index would buy
+    // little. That fraction grows with tenant count, so a `(router_id, bucket_start DESC)` index
+    // becomes the fix once the cross-tenant scan dominates; tracked with the measurements and the
+    // trigger condition in #2716, not pre-emptively added here.
     //
     // So no new index is needed, and no `household_id` column on these unbounded-growth tables is
     // justified — see `docs/design/multi-tenant-isolation.md` § "router_id-keyed tables".
@@ -558,7 +560,9 @@ class RollupRepoLive(xa: Transactor[Task]) extends RollupRepo {
     // the in-process fallback. On the fallback path that inner read is separately timed as
     // `rollup.listHourlyInRange`, so one wall-clock span is reported under two DIFFERENT ops
     // (outer = the operation, inner = its sub-read). That is nesting, not double-counting, but it
-    // does mean these series must never be SUMMED across `op` to get "time in the DB".
+    // does mean neither `db_query_duration_seconds` nor its sibling `db_queries_total{op,status}`
+    // may be SUMMED across `op` — the fallback path contributes one span and one count to each of
+    // two ops.
     DbMetrics.timed("rollup.aggregateByAppHourly") {
       for {
         stale <- staleSql.query[Long].unique.transact(xa)
