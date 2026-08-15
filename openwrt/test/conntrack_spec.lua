@@ -1994,13 +1994,20 @@ describe("is_wan_bound (#575)", function()
       conntrack.is_outbound({ src_ip = "192.168.1.42", dst_ip = "192.168.1.1" }, LAN))
   end)
 
-  -- #1688: v6 attribution. Without a v6 LAN prefix, every v6 flow MUST be
-  -- rejected so production routers that never authored a v6 LAN keep today's
-  -- behavior (no v6 events). With one, the same src∈LAN ∧ dst∉LAN predicate
-  -- applies — the helper is family-aware off the src address.
+  -- #1688: v6 attribution. With a v6 LAN prefix, the same src∈LAN ∧ dst∉LAN
+  -- predicate applies — the helper is family-aware off the src address.
+  --
+  -- #2719: the case below is "no prefix AND no neighbor set", NOT "no prefix".
+  -- The original wording here claimed every v6 flow is rejected whenever
+  -- lan_prefix_v6 is unset; #1796/#2368 made the br-lan NDP neighbor set an
+  -- independent path into src_lan, so a production router with no
+  -- lan_prefix_v6 (which is all of them — the option ships commented out)
+  -- classifies v6 flows through the neighbor set. Believing the old claim is
+  -- part of how a v6 multicast destination reached the slow path unnoticed.
+  -- The `v6 via NDP neighbor table` block below covers the live path.
   local LAN6 = "fdaa:bbbb:cccc:"
 
-  it("rejects every v6 flow when no v6 LAN prefix is configured", function()
+  it("rejects a v6 flow when there is neither a v6 prefix nor a neighbor set", function()
     assert.is_false(conntrack.is_wan_bound(
       { src_ip = "fdaa:bbbb:cccc::42", dst_ip = "2001:db8::10" }, LAN))
     assert.is_false(conntrack.is_wan_bound(
@@ -2325,7 +2332,9 @@ describe("slow-path bounding (#2719)", function()
     local ev = b.events[#b.events]
     assert.equal(false,            ev.allowed)
     assert.equal("category:adult", ev.reason)
-    assert.is_true(#calls <= #ids)
+    -- At most one probe per list, plus the carve-out check (global_allow, and
+    -- an ea_ set per extraAllowed host — none here).
+    assert.is_true(#calls <= #ids + 1, "unexpected probe count: " .. #calls)
   end)
 
   it("probes the bl6_<id> set for a v6 destination", function()
@@ -2340,7 +2349,9 @@ describe("slow-path bounding (#2719)", function()
     }), b)
     assert.equal(false,          b.events[#b.events].allowed)
     assert.equal("category:ads", b.events[#b.events].reason)
-    assert.equal(1, #calls)
+    -- bl6_ads (hit) + global_allow6 (carve-out check, misses). No ea_ hosts.
+    assert.equal(2, #calls)
+    assert.is_truthy(calls[2]:find("global_allow6", 1, true))
   end)
 
   -- ── (b) destinations that can never be in a resolved set are not probed ──
@@ -2436,6 +2447,149 @@ describe("slow-path bounding (#2719)", function()
     assert.equal(1, #metered)
     assert.equal("conntrack_slow_path_capped_total", metered[1].name)
     assert.equal("deadline", metered[1].labels.reason)
+  end)
+
+  -- ── the kernel's carve-out clauses apply on the slow path too ───────────
+  --
+  -- The kernel rule is `daddr @bl_<id> != @ea_<mac>_<host> != @global_allow`,
+  -- so a bl_ hit alone is not a drop. With no hostname to compare, the only
+  -- way to evaluate the exception clauses is to probe the same sets.
+
+  it("does not report blocked when the global_allow set covers the destination", function()
+    local calls, _e = counting_exec(nil)
+    local exec = function(cmd)
+      calls[#calls + 1] = cmd
+      if cmd:find("bl_ads", 1, true) then return 0 end
+      if cmd:find("global_allow", 1, true) then return 0 end
+      return 1
+    end
+    local b = collecting_batcher()
+    conntrack.handle_flow({ src_ip = SRC_IP, dst_ip = DST_IP }, ctx_with({
+      eb_hosts_by_mac = {},
+      ea_hosts_by_mac = {},
+      bl_hosts_by_mac = { [MAC] = { ["ad.doubleclick.net"] = "ads" } },
+      bl_ids_by_mac   = { [MAC] = bl_ids_set({ "ads" }) },
+      exec_fn         = exec,
+    }), b)
+    assert.equal(true, b.events[#b.events].allowed,
+      "the kernel forwards this flow via global_allow; the event must not say blocked")
+  end)
+
+  it("does not report blocked when a per-MAC ea_ set covers the destination", function()
+    local seen = {}
+    local exec = function(cmd)
+      seen[#seen + 1] = cmd
+      if cmd:find("bl_ads", 1, true) then return 0 end
+      if cmd:find("ea_aa_bb_cc_11_22_33_news_example", 1, true) then return 0 end
+      return 1
+    end
+    local b = collecting_batcher()
+    conntrack.handle_flow({ src_ip = SRC_IP, dst_ip = DST_IP }, ctx_with({
+      eb_hosts_by_mac = {},
+      ea_hosts_by_mac = { [MAC] = { ["news.example"] = true } },
+      bl_hosts_by_mac = { [MAC] = { ["ad.doubleclick.net"] = "ads" } },
+      bl_ids_by_mac   = { [MAC] = bl_ids_set({ "ads" }) },
+      exec_fn         = exec,
+    }), b)
+    assert.equal(true, b.events[#b.events].allowed,
+      "extraAllowed beats every block path — including a slow-path category hit")
+  end)
+
+  it("still reports blocked when neither carve-out set covers the destination", function()
+    -- Liveness anchor for the two tests above: with the same fixture and no
+    -- carve-out hit, the flow IS labelled blocked. Without this, an
+    -- always-allowed bug would pass both of them.
+    local exec = function(cmd)
+      if cmd:find("bl_ads", 1, true) then return 0 end
+      return 1
+    end
+    local b = collecting_batcher()
+    conntrack.handle_flow({ src_ip = SRC_IP, dst_ip = DST_IP }, ctx_with({
+      eb_hosts_by_mac = {},
+      ea_hosts_by_mac = { [MAC] = { ["news.example"] = true } },
+      bl_hosts_by_mac = { [MAC] = { ["ad.doubleclick.net"] = "ads" } },
+      bl_ids_by_mac   = { [MAC] = bl_ids_set({ "ads" }) },
+      exec_fn         = exec,
+    }), b)
+    assert.equal(false,          b.events[#b.events].allowed)
+    assert.equal("category:ads", b.events[#b.events].reason)
+  end)
+
+  it("does not claim a block it could not verify when the budget dies mid carve-check", function()
+    local ea_hosts = {}
+    for i = 1, 50 do ea_hosts[string.format("a%02d.example", i)] = true end
+    local exec = function(cmd)
+      if cmd:find("bl_ads", 1, true) then return 0 end
+      return 1  -- carve-out probes all miss, but the budget runs out first
+    end
+    local metered = {}
+    local b = collecting_batcher()
+    conntrack.handle_flow({ src_ip = SRC_IP, dst_ip = DST_IP }, ctx_with({
+      eb_hosts_by_mac      = {},
+      ea_hosts_by_mac      = { [MAC] = ea_hosts },
+      bl_hosts_by_mac      = { [MAC] = { ["ad.doubleclick.net"] = "ads" } },
+      bl_ids_by_mac        = { [MAC] = bl_ids_set({ "ads" }) },
+      exec_fn              = exec,
+      slow_path_max_probes = 4,
+      inc_counter_fn       = function(name, labels) metered[#metered + 1] = labels.reason end,
+    }), b)
+    assert.equal(true, b.events[#b.events].allowed,
+      "an unverifiable carve-out must not be reported as a category block")
+    assert.equal("probes", metered[1])
+  end)
+
+  it("a large extraBlocked set does not starve the category probes", function()
+    -- The budget is per stage, not one pool drawn in order: a profile with
+    -- enough Blocked-mode apps to exhaust the eb_ ceiling must not silently
+    -- switch category classification off for every DNS-miss flow.
+    local eb_hosts = {}
+    for i = 1, 200 do eb_hosts[string.format("b%03d.example", i)] = true end
+    local saw_bl = false
+    local exec = function(cmd)
+      if cmd:find("bl_ads", 1, true) then saw_bl = true; return 0 end
+      return 1
+    end
+    local b = collecting_batcher()
+    conntrack.handle_flow({ src_ip = SRC_IP, dst_ip = DST_IP }, ctx_with({
+      eb_hosts_by_mac      = { [MAC] = eb_hosts },
+      ea_hosts_by_mac      = {},
+      bl_hosts_by_mac      = { [MAC] = { ["ad.doubleclick.net"] = "ads" } },
+      bl_ids_by_mac        = { [MAC] = bl_ids_set({ "ads" }) },
+      exec_fn              = exec,
+      slow_path_max_probes = 8,
+    }), b)
+    assert.is_true(saw_bl, "the category probe must still run after the eb_ stage caps")
+    assert.equal(false,          b.events[#b.events].allowed)
+    assert.equal("category:ads", b.events[#b.events].reason)
+  end)
+
+  it("probes extraBlocked hosts in a deterministic order under a tripped ceiling", function()
+    local eb_hosts = {}
+    for i = 1, 50 do eb_hosts[string.format("h%02d.example", i)] = true end
+    local function probed()
+      local calls, exec = counting_exec(nil)
+      conntrack.handle_flow({ src_ip = SRC_IP, dst_ip = DST_IP }, ctx_with({
+        eb_hosts_by_mac      = { [MAC] = eb_hosts },
+        ea_hosts_by_mac      = {},
+        exec_fn              = exec,
+        slow_path_max_probes = 3,
+      }), collecting_batcher())
+      return table.concat(calls, "|")
+    end
+    assert.equal(probed(), probed(),
+      "the capped subset must not vary between runs for identical input")
+  end)
+
+  it("issues zero probes for the IPv4 limited broadcast (DHCPv4's ff02::1:2)", function()
+    local calls, exec = counting_exec(nil)
+    conntrack.handle_flow({ src_ip = SRC_IP, dst_ip = "255.255.255.255" }, ctx_with({
+      eb_hosts_by_mac = { [MAC] = { ["example.com"] = true } },
+      ea_hosts_by_mac = {},
+      exec_fn         = exec,
+    }), collecting_batcher())
+    assert.equal(0, #calls)
+    assert.is_false(conntrack.is_wan_bound(
+      { src_ip = SRC_IP, dst_ip = "255.255.255.255" }, "192.168.1."))
   end)
 
   it("bl_san agrees with render's bl_ set-name sanitizer for every id shape", function()
