@@ -108,10 +108,13 @@ intake paths. A self-hosted install has no account with us and no support
 widget, so it cannot open a thread; and mail to `support@` only reaches the
 agent when the From address matches a registered household admin
 ([`SupportResponder.scala` `emailIntakeGate` /
-`resolveAdminHousehold`](../api/src/support/SupportResponder.scala) — anyone
-else gets the fixed non-agent reject and no session runs). So treat the
-question as "what would I be giving up / gaining", never as a diagnostic, and
-don't ask which tier they're on.
+`resolveAdminHousehold`](../api/src/support/SupportResponder.scala) — for
+anyone else no agent session runs at all; an unregistered *new* thread also
+gets a fixed non-agent reject, continuations are skipped silently). So treat
+the question as "what would I be giving up / gaining", never as a diagnostic,
+and don't open by asking which tier they're on. What the gate does **not**
+establish is what the question is about: a Cloud customer asking "could I run
+this myself?" is a normal question, not a misread.
 
 **Moving between tiers** is not self-serve. Escalate rather than describing a
 migration path.

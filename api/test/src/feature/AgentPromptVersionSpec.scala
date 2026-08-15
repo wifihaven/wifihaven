@@ -125,22 +125,29 @@ object AgentPromptVersionSpec extends ZIOSpecDefault {
       // section and the agent fetches a 404, then answers from memory, which is #2718 itself. The
       // prompt is not compiled, so nothing else would notice. These pin the pointers.
       test("every repo doc a prompt links by raw URL actually exists") {
-        ZIO.succeed(
-          assertTrue(
-            Yamls.forall { case (_, rel) =>
-              val links = RawDocLinkRe.findAllMatchIn(readAll(rel)).map(_.group(1)).toList
-              links.nonEmpty && links.forall(p => Files.isRegularFile(repoRoot.resolve(p)))
-            },
-          ),
-        )
+        // Reported as the offending (yaml, path) pairs rather than a bare `false`: a broken pointer
+        // is fixed by knowing WHICH link rotted, and `forall` alone would print neither.
+        val broken = Yamls.flatMap { case (_, rel) =>
+          RawDocLinkRe
+            .findAllMatchIn(readAll(rel))
+            .map(_.group(1))
+            .filterNot(p => Files.isRegularFile(repoRoot.resolve(p)))
+            .map(rel -> _)
+            .toList
+        }
+        // A prompt that links NOTHING would satisfy `broken.isEmpty` vacuously — the count pins that
+        // the sources actually survived an edit, not merely that nothing is broken.
+        val linked = Yamls.map { case (_, rel) => RawDocLinkRe.findAllMatchIn(readAll(rel)).size }
+        ZIO.succeed(assertTrue(broken.isEmpty, linked.forall(_ > 0)))
       },
       test("the deployment-model section the prompts name by title is in architecture.md") {
         // Both prompts tell the agent to load this section BY NAME. A retitle would leave them
         // naming a heading that no longer exists in a doc that still does — the failure the path
-        // check above cannot see.
+        // check above cannot see. Matched WITH its `###` marker: a bare substring would also match
+        // a passing prose mention, so a retitled heading could pass on an unrelated sentence.
         ZIO.succeed(
           assertTrue(
-            readAll("docs/architecture.md").contains(DeploymentModelHeading),
+            readAll("docs/architecture.md").contains(s"### $DeploymentModelHeading"),
             Yamls.forall { case (_, rel) => readAll(rel).contains(DeploymentModelHeading) },
           ),
         )
