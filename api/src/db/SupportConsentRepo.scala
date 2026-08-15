@@ -301,9 +301,15 @@ class SupportConsentRepoLive(xa: Transactor[Task]) extends SupportConsentRepo {
       nonce: String,
       now: Instant,
   ): Task[Boolean] =
+    // Guarded on the SETTLED state as well as the key, matching `releaseExplainer` below. The
+    // customer can redeem or withdraw between the liveness read and this claim, and posting "there
+    // is a permission request open in this conversation" to someone who just answered it is wrong
+    // on its own terms. The race exists either way; refusing here is what makes the statement
+    // correct independently of its call site.
     sql"""UPDATE support_consent_link_use SET explained_at = $now
           WHERE nonce = $nonce AND household_id = $household AND thread_id = $threadId
-            AND explained_at IS NULL""".update.run
+            AND explained_at IS NULL
+            AND consumed_at IS NULL AND resolution IS NULL""".update.run
       .transact(xa)
       .map(_ == 1)
 
@@ -357,6 +363,12 @@ class SupportConsentRepoLive(xa: Transactor[Task]) extends SupportConsentRepo {
       // `resolution` is COALESCEd rather than overwritten: first resolution wins, so redeeming a
       // link that a later prompt had already superseded records what actually ended it. Either way
       // it is non-NULL, so the #2709 exclusion lifts.
+      //
+      // The DO UPDATE re-states the (household, thread) scope even though the nonce is the PK and
+      // the caller already refused a cross-household grant. This is the #2609 shape — a correctly
+      // scoped caller in front of an unscoped statement — and it is the one statement here that
+      // addressed a row by nonce alone. Scoped, a mismatch yields `rows == 0` → `spent = true` →
+      // refuse, rather than consuming a row belonging to another (household, thread).
       spent <- sql"""INSERT INTO support_consent_link_use
                       (nonce, household_id, thread_id, posted_at, consumed_at, link_expires_at,
                        resolution)
@@ -365,7 +377,9 @@ class SupportConsentRepoLive(xa: Transactor[Task]) extends SupportConsentRepo {
                       SET consumed_at = $now,
                           resolution  =
                             COALESCE(support_consent_link_use.resolution, 'redeemed')
-                      WHERE support_consent_link_use.consumed_at IS NULL""".update.run.map(_ == 0)
+                      WHERE support_consent_link_use.consumed_at IS NULL
+                        AND support_consent_link_use.household_id = $household
+                        AND support_consent_link_use.thread_id = $threadId""".update.run.map(_ == 0)
       out   <-
         if spent then
           // A re-presented link: benign while its own grant still stands (a page reload), a REPLAY

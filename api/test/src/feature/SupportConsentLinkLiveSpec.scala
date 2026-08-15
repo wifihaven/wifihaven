@@ -594,6 +594,35 @@ object SupportConsentLinkLiveSpec
         muted.isEmpty,
       )
     },
+    test("the exclusion is per HOUSEHOLD: a live link in one does not mute another") {
+      // `outstandingLink` scopes on (household_id, thread_id) and the thread test above pins the
+      // second half. This pins the first. It is not redundant: this repo has shipped the
+      // correctly-scoped-caller-in-front-of-an-unscoped-read leak repeatedly (#2603, #2609, #2630,
+      // #2708), and a guard whose failure mode is SILENCING the agent would surface as an
+      // unexplained outage in someone else's household rather than as a data leak.
+      for {
+        _        <- cleanDb
+        hhRepo   <- ZIO.service[HouseholdRepo]
+        h        <- makeHarness
+        hhA      <- hhRepo.create("Family J1", "family-j1")
+        hhB      <- hhRepo.create("Family J2", "family-j2")
+        // A live, unredeemed link in household A.
+        s1       <- inbound(h, hhA, "th_j1", "how many profiles do I have?")
+        _        <- requestConsent(h, s1)
+        // Household B, its own thread, no link anywhere near it.
+        other    <- inbound(h, hhB, "th_j2", "my iPad is blocked")
+        answered <- reply(h, other, "Here is the fix.")
+        sentB    <- agentAuthored(h, "th_j2")
+        mutedA   <- agentAuthored(h, "th_j1")
+        // B must not be answered by A's explainer either — the server's message is scoped too.
+        explainB <- explainers(h, "th_j2")
+      } yield assertTrue(
+        answered == Status.Ok,
+        sentB.size == 1,
+        mutedA.isEmpty,
+        explainB.isEmpty,
+      )
+    },
     test("the refusal is LOUD in the log, and names neither the customer nor the text") {
       {
         for {

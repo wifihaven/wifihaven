@@ -211,8 +211,10 @@ change raises its priority.
   link_explain_repeat | link_superseded | link_explain_error |
   link_explain_disabled | link_record_error | link_state_unknown}` plus
   `support_agent_action_total{op=reply,outcome=consent_pending}`, with the last
-  two of those an expect-zero pair: `link_record_error` means a posted link the
-  ledger never recorded (the exclusion is NOT in force for it) and
+  two of those an expect-zero pair, and BOTH mean a customer is waiting rather
+  than a link running unguarded: `link_record_error` means the ledger write
+  failed and the prompt was therefore not posted at all (the link is recorded
+  before it is posted, so one we cannot record is one we refuse to create), and
   `link_state_unknown` means the liveness read failed and the reply was refused
   rather than risked.
 - **The agent cannot post beside the prompt (#2667).** Until this, "the agent

@@ -791,9 +791,15 @@ final case class SupportResponder(
    *
    * FAIL-CLOSED on a lookup error, unlike [[consentGranted]]. There the fail-open direction is
    * "assume no consent", which is also the safe one; here "assume no link" would re-open the
-   * phishing window on a DB blip. Closing costs nothing extra in practice: the same database backs
-   * every other read this request makes, so a persistent failure is an outage the customer sees
-   * regardless — and the refusal is loud rather than silent.
+   * phishing window on a DB blip.
+   *
+   * Be straight about what that costs, because it is not free: before #2709 the reply path touched
+   * no database at all (the token is a stateless HMAC and the #2667 claim map is in-memory), so
+   * this read is the only thing standing between a Postgres blip and the agent going quiet on EVERY
+   * thread, not just threads with a live link. That is the trade taken deliberately — a transient
+   * mute is recoverable and loud (`link_state_unknown`, WARN with the thread and household ids), a
+   * phishing window is neither — but it is a real availability cost, not a no-op, and it should be
+   * argued again rather than assumed if this ever moves onto a hot path.
    */
   private def consentLinkGuard(claims: ConsentToken.Claims, now: Instant)(
       post: UIO[AgentActionResult],
@@ -1280,6 +1286,17 @@ final case class SupportResponder(
    * NOT relax the wording back to an unqualified "at the consent moment" — an unqualified version
    * is what let #2667 ship, and a session-scoped one is what left #2709 open.
    *
+   * AND DO NOT READ IT AS "THE FRAMING SURFACE IS CLOSED", because it is not. The exclusion is
+   * keyed on the link's LIVENESS; the thing an attacker frames is its VISIBILITY, and that is
+   * permanent — a withdrawn or lapsed link is still rendered one message up, indistinguishable to
+   * the reader from a live one, and the exclusion has by then correctly lifted. So the same pretext
+   * ("click the permission link above and sign in to verify your identity") remains available one
+   * turn after the customer declines. What defeats it is not the exclusion but
+   * [[consentLinkExplainer]] saying, in our own words, that we never ask for a password — which is
+   * why that sentence is load-bearing copy and not decoration. Widening the exclusion to cover dead
+   * links would mute the agent on the thread forever, which is why it is keyed this way; the
+   * residual is accepted with its mitigation named, not overlooked.
+   *
    * #2453 — that guarantee needs a second half, because the prompt is posted through the SAME
    * machine-user write path as every AI reply and therefore comes back on the timeline as an
    * `ai_assistant` turn. Closing the wording channel is worthless if the agent can read the LIVE
@@ -1428,8 +1445,17 @@ final case class SupportResponder(
    * outstanding before. This is what makes "is a link live here" answerable by a LATER session; the
    * #2667 claim map cannot be, since it is per-session and in-memory.
    *
-   * `linkExpiresAt` is recomputed as `now + ConsentLinkTtl` from the same `now` and the same
-   * constant the token was minted with, so the row and the signed `exp` describe one instant.
+   * `linkExpiresAt` is derived from the same `now` and the same constant the token was minted with,
+   * but it is deliberately NOT `now + ConsentLinkTtl` — that would expire the row BEFORE the token.
+   * [[ConsentGrant.mint]] stores `exp` as `now.plus(ttl).getEpochSecond`, truncated DOWN to a whole
+   * second, and [[ConsentGrant.verify]] rejects only once `now.getEpochSecond > exp` — so the token
+   * stays redeemable through the END of that second. A nanosecond-precise row would stop matching
+   * `link_expires_at > now` up to a second early, and in that sub-second window `outstandingLink`
+   * answers "nothing live here" while the link in front of the customer is still redeemable: the
+   * one gap where the exclusion would not cover a live link. So the row expires at the first
+   * instant the token is definitely dead, `floor(now + ttl) + 1s`, which is never earlier than the
+   * signed `exp` and at most a second later. Erring later only ever mutes; erring earlier is the
+   * phishing surface.
    *
    * The failure is DELIBERATELY not swallowed here — it propagates to the caller, which then does
    * not post the prompt at all. A recorded link that was never posted costs a briefly muted thread
@@ -1453,7 +1479,10 @@ final case class SupportResponder(
         claims.threadId,
         nonce,
         now,
-        now.plus(SupportResponder.ConsentLinkTtl),
+        now
+          .plus(SupportResponder.ConsentLinkTtl)
+          .truncatedTo(java.time.temporal.ChronoUnit.SECONDS)
+          .plusSeconds(1),
       )
       .tap(superseded =>
         ZIO
@@ -2190,8 +2219,10 @@ object SupportResponder {
   val LinkSuperseded: String = "link_superseded"
 
   /**
-   * EXPECT ZERO: a posted link the ledger never recorded, so the cross-turn exclusion is not in
-   * force for it.
+   * EXPECT ZERO: the ledger write failed, so the prompt was NOT posted at all. Since #2709 records
+   * the link BEFORE posting it, an unrecorded link is one we refuse to create rather than one we
+   * lost track of — so this counts a customer left waiting for a permission request, never a live
+   * link running outside the exclusion.
    */
   val LinkRecordError: String = "link_record_error"
 
