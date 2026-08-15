@@ -63,44 +63,54 @@ object UsageTrafficQuery {
     }
 
   /**
-   * Resolve a `(macs, profileIds)` filter to the device-mac set it selects, given the household's
+   * Resolve a `(macs, profileIds)` filter to the device set it selects, given the household's
    * devices. The single source of truth for "which devices does this traffic filter cover" — shared
    * by the `GET /api/usage/traffic` handler (which wraps it with per-mac `NotFound` + per-profile
    * `requireProfileReadAccess` auth) and the S4 `trafficUsage` live-edge aggregator (whose authz is
    * the upstream `visibleTo` role gate), so the two can't drift on the filter semantics. Pure:
    *   - `macs` non-empty → those devices, further narrowed to `profileIds` if also given;
    *   - else `profileIds` non-empty → devices in those profiles;
-   *   - else → all devices (the "no filter" set; callers gate who may request it).
+   *   - else → [[MacScope.AllInHousehold]] (the "no filter" set; callers gate who may request it).
+   *
+   * #2708: the return type is a [[MacScope]], not a `List`. A supplied filter that selects nothing
+   * is [[MacScope.NoDevices]] and a supplied-no-filter read is [[MacScope.AllInHousehold]] — two
+   * distinct constructors, where an empty `List` used to have to mean both. Every caller previously
+   * had to re-derive which one it was holding from the raw request; a household with zero devices
+   * is the case they all got wrong.
    */
   def resolveMacs(
       macs: List[MacAddress],
       profileIds: List[ProfileId],
       devices: List[Device],
-  ): List[MacAddress] =
+  ): MacScope =
     if (macs.nonEmpty) {
       val byMac = devices.filter(d => macs.contains(d.mac))
-      if (profileIds.isEmpty) byMac.map(_.mac)
-      else byMac.filter(d => d.profileId.exists(profileIds.contains)).map(_.mac)
+      MacScope.filtered(
+        if (profileIds.isEmpty) byMac.map(_.mac)
+        else byMac.filter(d => d.profileId.exists(profileIds.contains)).map(_.mac),
+      )
     } else if (profileIds.nonEmpty)
-      devices.filter(d => d.profileId.exists(profileIds.contains)).map(_.mac)
-    else devices.map(_.mac)
+      MacScope.filtered(devices.filter(d => d.profileId.exists(profileIds.contains)).map(_.mac))
+    else MacScope.AllInHousehold
 
   /**
-   * Fetch raw / rollup rows for `macs` over `[from, to)` at the tier the bucket+window selects,
+   * Fetch raw / rollup rows for `scope` over `[from, to)` at the tier the bucket+window selects,
    * then aggregate into `TrafficUsageAggregateRow`s (one per (window, grouped-column-values)).
-   * `macs = Nil` means "all macs" at the repo level — callers that resolved a NON-EMPTY filter down
-   * to zero devices must short-circuit to empty themselves (Nil here would otherwise widen to the
-   * whole household). Pure of cursor paging: the `GET` path layers its keyset cursor on top of this
-   * result; the S4 aggregator passes a head-bucket window and takes the rows as-is.
+   *
+   * #2708: `scope` carries whether a filter selected nothing ([[MacScope.NoDevices]] → empty, no
+   * query) or was never supplied ([[MacScope.AllInHousehold]] → every device in `household`), so
+   * callers no longer hand-roll that distinction and can't get it wrong. Pure of cursor paging: the
+   * `GET` path layers its keyset cursor on top of this result; the S4 aggregator passes a
+   * head-bucket window and takes the rows as-is.
    */
   def aggregate(
-      // #2313: scope the raw `traffic_reports` reads to the caller's household — `macs = Nil` means
-      // "all macs in `household`" (not all tenants), and a shared MAC never pulls another household's
-      // rows into this aggregation.
+      // #2313 (raw tier) / #2708 (rollup tiers): every tier is scoped to the caller's household —
+      // "all macs" means "all macs in `household`" (not all tenants), and a shared MAC never pulls
+      // another household's rows into this aggregation.
       household: HouseholdId,
       trafficRepo: TrafficReportRepo,
       rollupRepo: RollupRepo,
-      macs: List[MacAddress],
+      scope: MacScope,
       from: Instant,
       to: Instant,
       bucket: UsageTraffic.Bucket,
@@ -111,31 +121,37 @@ object UsageTrafficQuery {
       appsByHost: Map[String, List[AppMembership]],
   ): Task[List[TrafficUsageAggregateRow]] = {
     val tier                                 = pickTier(bucket, Duration.between(from, to))
-    val fetch: Task[List[TrafficUsageDbRow]] = tier match {
-      // #2174: a UTC-grid display bucket on the raw tier (1m / 10m / 1h) pre-aggregates in SQL —
-      // one row per (mac, host, bucket) instead of one per raw report period (755k rows / 24h at
-      // prod volume, ~24s). Restricted to exactly the buckets whose `floorTo` is pure UTC epoch
-      // math, so the SQL floor and the Scala floor cannot disagree; the downstream aggregation —
-      // groupBy fan-out, distinct counts, window assembly — is unchanged, just over far fewer
-      // rows. Excluded on purpose:
-      //   - `raw` has no fixed step — the row's real report period is the window (#2018);
-      //   - `12h` / `1d` / `1w` floor in the HOUSEHOLD zone (`floorTo`), which a UTC epoch floor
-      //     would break in non-UTC zones. They only land on the raw tier for short windows (the
-      //     picker's freshness preference; their cost cap routes wide windows to the rollups), so
-      //     the per-row fetch stays cheap there.
-      case SourceTier.Raw    =>
-        (bucket, UsageTraffic.stepOf(bucket)) match {
-          case (
-                UsageTraffic.Bucket.OneMin | UsageTraffic.Bucket.TenMin |
-                UsageTraffic.Bucket.OneHour,
-                Some(step),
-              ) =>
-            trafficRepo.listRawAggregatedInRange(household, macs, from, to, step.toSeconds)
-          case _ =>
-            trafficRepo.listRawInRange(household, macs, from, to)
-        }
-      case SourceTier.Hourly => rollupRepo.listHourlyInRange(macs, from, to).map(asDbRows)
-      case SourceTier.Daily  => rollupRepo.listDailyInRange(macs, from, to).map(asDbRows)
+    val fetch: Task[List[TrafficUsageDbRow]] = scope.fold(
+      ZIO.succeed(List.empty[TrafficUsageDbRow]),
+    ) { macs =>
+      tier match {
+        // #2174: a UTC-grid display bucket on the raw tier (1m / 10m / 1h) pre-aggregates in SQL —
+        // one row per (mac, host, bucket) instead of one per raw report period (755k rows / 24h at
+        // prod volume, ~24s). Restricted to exactly the buckets whose `floorTo` is pure UTC epoch
+        // math, so the SQL floor and the Scala floor cannot disagree; the downstream aggregation —
+        // groupBy fan-out, distinct counts, window assembly — is unchanged, just over far fewer
+        // rows. Excluded on purpose:
+        //   - `raw` has no fixed step — the row's real report period is the window (#2018);
+        //   - `12h` / `1d` / `1w` floor in the HOUSEHOLD zone (`floorTo`), which a UTC epoch floor
+        //     would break in non-UTC zones. They only land on the raw tier for short windows (the
+        //     picker's freshness preference; their cost cap routes wide windows to the rollups), so
+        //     the per-row fetch stays cheap there.
+        case SourceTier.Raw    =>
+          (bucket, UsageTraffic.stepOf(bucket)) match {
+            case (
+                  UsageTraffic.Bucket.OneMin | UsageTraffic.Bucket.TenMin |
+                  UsageTraffic.Bucket.OneHour,
+                  Some(step),
+                ) =>
+              trafficRepo.listRawAggregatedInRange(household, macs, from, to, step.toSeconds)
+            case _ =>
+              trafficRepo.listRawInRange(household, macs, from, to)
+          }
+        case SourceTier.Hourly =>
+          rollupRepo.listHourlyInRange(household, macs, from, to).map(asDbRows)
+        case SourceTier.Daily  =>
+          rollupRepo.listDailyInRange(household, macs, from, to).map(asDbRows)
+      }
     }
     fetch.map(rows =>
       UsageTraffic.buildAggregate(

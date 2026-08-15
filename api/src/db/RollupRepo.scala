@@ -133,21 +133,26 @@ trait RollupRepo {
   def recentRuns(limit: Int): Task[List[RollupRun]]
 
   /**
-   * Read hourly rollup rows for the supplied macs in `[from, to)`. `macs = Nil` returns all macs (
-   * unfiltered). Output shape mirrors `TrafficReportRepoLive.listRawInRange` so the in-app
-   * aggregator can consume the rows unchanged.
+   * Read hourly rollup rows for the supplied macs in `[from, to)`, scoped to `household`. `macs =
+   * Nil` means "all macs IN `household`" — the household predicate is what bounds that "all", so
+   * the widening can never reach another tenant's rows (#2708; the raw tier got the same treatment
+   * in #2313). Output shape mirrors `TrafficReportRepoLive.listRawInRange` so the in-app aggregator
+   * can consume the rows unchanged.
    */
   def listHourlyInRange(
+      household: HouseholdId,
       macs: List[MacAddress],
       from: Instant,
       to: Instant,
   ): Task[List[RollupRow]]
 
   /**
-   * Read daily rollup rows for the supplied macs in `[from, to)`. `bucketStart` is midnight UTC of
-   * the row's `date` column; `bucketEnd` is the following midnight UTC.
+   * Read daily rollup rows for the supplied macs in `[from, to)`, scoped to `household` exactly as
+   * [[listHourlyInRange]]. `bucketStart` is midnight UTC of the row's `date` column; `bucketEnd` is
+   * the following midnight UTC.
    */
   def listDailyInRange(
+      household: HouseholdId,
       macs: List[MacAddress],
       from: Instant,
       to: Instant,
@@ -164,8 +169,12 @@ trait RollupRepo {
    *
    * A host in multiple apps is attributed to the lowest app id (matching the read-time dedup in
    * `UsageRoutes`), so a row's seconds are never double-counted across apps.
+   *
+   * Scoped to `household` on the same terms as [[listHourlyInRange]] — both the SQL path and the
+   * in-process fallback (which reads through [[listHourlyInRange]]) see one tenant's rows.
    */
   def aggregateByAppHourly(
+      household: HouseholdId,
       macs: List[MacAddress],
       from: Instant,
       to: Instant,
@@ -175,6 +184,7 @@ trait RollupRepo {
 
   /** Daily-grain counterpart of [[aggregateByAppHourly]]. */
   def aggregateByAppDaily(
+      household: HouseholdId,
       macs: List[MacAddress],
       from: Instant,
       to: Instant,
@@ -398,22 +408,32 @@ class RollupRepoLive(xa: Transactor[Task]) extends RollupRepo {
   // wrap them as HostId.Fqdn so the downstream aggregator can keep treating
   // host as a HostId — `.value` round-trips the same string either way.
   def listHourlyInRange(
+      household: HouseholdId,
       macs: List[MacAddress],
       from: Instant,
       to: Instant,
   ): Task[List[RollupRow]] = {
+    // #2708: the tenancy predicate below. `traffic_hourly` carries no `household_id` of its own, so
+    // the scope is TRANSITIVE through `routers.household_id` (NOT NULL, V65) via the same shared
+    // fragment the raw `traffic_reports` reads compose (#2313/#2568). The MAC list is NOT scoping —
+    // post-V74 the same MAC can be a device in two households, and `macs = Nil` disables the filter
+    // outright.
+    //
+    // Plan, measured 2026-08-14 on prod (`traffic_hourly` 2,211,470 rows / `traffic_daily`
+    // 678,361), `EXPLAIN (ANALYZE, BUFFERS)` over the widest read each tier serves (14d hourly /
+    // 90d daily, `macs = Nil`): the predicate resolves to a `Materialize`d 1-row `routers`
+    // semijoin (5 shared buffers, `idx_routers_household` V65 on the subquery) and the outer scan
+    // stays an index scan on `idx_traffic_hourly_bucket_start` / `idx_traffic_daily_date`, the same
+    // plan class as before. Wall time went 3.48s → 2.65s (hourly) and 3.86s → 2.86s (daily),
+    // because the scoped read returns fewer rows. So no new index is needed, and no `household_id`
+    // column on these unbounded-growth tables is justified — see
+    // `docs/design/multi-tenant-isolation.md` § "router_id-keyed tables".
     type Row = (MacAddress, String, Instant, Int, Long, Long)
-    val base      =
-      fr"""SELECT mac, hostname, bucket_start, active_seconds, bytes_in, bytes_out
+    val base = fr"""SELECT mac, hostname, bucket_start, active_seconds, bytes_in, bytes_out
            FROM traffic_hourly
-           WHERE bucket_start >= $from AND bucket_start < $to """
-    val macFilter = macs match {
-      case Nil => fr""
-      case ms  =>
-        val nel = cats.data.NonEmptyList.fromListUnsafe(ms.map(_.value))
-        fr"AND " ++ Fragments.in(fr"mac", nel)
-    }
-    (base ++ macFilter ++ fr"ORDER BY bucket_start DESC, mac, hostname")
+           WHERE bucket_start >= $from AND bucket_start < $to """ ++
+      SqlFragments.householdRouterScope(household, "router_id") ++ fr" "
+    (base ++ macFilter(macs) ++ fr"ORDER BY bucket_start DESC, mac, hostname")
       .query[Row]
       .map { case (m, h, bs, secs, bi, bo) =>
         RollupRow(m, HostId.Fqdn(Hostname.unsafe(h)), bs, bs.plusSeconds(3600), secs, bi, bo)
@@ -423,6 +443,7 @@ class RollupRepoLive(xa: Transactor[Task]) extends RollupRepo {
   }
 
   def listDailyInRange(
+      household: HouseholdId,
       macs: List[MacAddress],
       from: Instant,
       to: Instant,
@@ -431,19 +452,14 @@ class RollupRepoLive(xa: Transactor[Task]) extends RollupRepo {
     // `date` is a calendar day with no zone; widen the band by one day on each
     // edge then filter in Scala so we don't accidentally drop edge rows under
     // non-UTC household zones. The caller's `from`/`to` are UTC instants.
-    val fromDate  = from.atZone(java.time.ZoneOffset.UTC).toLocalDate.minusDays(1)
-    val toDate    = to.atZone(java.time.ZoneOffset.UTC).toLocalDate.plusDays(1)
-    val base      =
-      fr"""SELECT mac, hostname, date, active_seconds, bytes_in, bytes_out
+    val fromDate = from.atZone(java.time.ZoneOffset.UTC).toLocalDate.minusDays(1)
+    val toDate   = to.atZone(java.time.ZoneOffset.UTC).toLocalDate.plusDays(1)
+    val base     = fr"""SELECT mac, hostname, date, active_seconds, bytes_in, bytes_out
            FROM traffic_daily
-           WHERE date >= $fromDate AND date <= $toDate """
-    val macFilter = macs match {
-      case Nil => fr""
-      case ms  =>
-        val nel = cats.data.NonEmptyList.fromListUnsafe(ms.map(_.value))
-        fr"AND " ++ Fragments.in(fr"mac", nel)
-    }
-    (base ++ macFilter ++ fr"ORDER BY date DESC, mac, hostname")
+           WHERE date >= $fromDate AND date <= $toDate """ ++
+      // #2708: same transitive tenancy predicate as `listHourlyInRange`.
+      SqlFragments.householdRouterScope(household, "router_id") ++ fr" "
+    (base ++ macFilter(macs) ++ fr"ORDER BY date DESC, mac, hostname")
       .query[Row]
       .map { case (m, h, d, secs, bi, bo) =>
         val bs = d.atStartOfDay(java.time.ZoneOffset.UTC).toInstant
@@ -463,16 +479,21 @@ class RollupRepoLive(xa: Transactor[Task]) extends RollupRepo {
     }
 
   def aggregateByAppHourly(
+      household: HouseholdId,
       macs: List[MacAddress],
       from: Instant,
       to: Instant,
       currentVersion: Long,
       appsByApex: Map[String, List[AppId]],
   ): Task[List[AppUsageAgg]] = {
+    // #2708: both the staleness probe and the aggregate read carry the tenancy predicate — a
+    // foreign stale row must not be able to flip this household's read onto the fallback path
+    // either.
     val staleSql =
       fr"""SELECT COUNT(*) FROM traffic_hourly
            WHERE bucket_start >= $from AND bucket_start < $to
              AND (app_hosts_version IS NULL OR app_hosts_version < $currentVersion) """ ++
+        SqlFragments.householdRouterScope(household, "router_id") ++ fr" " ++
         macFilter(macs)
     val freshSql =
       fr"""SELECT chosen.app_id,
@@ -489,6 +510,7 @@ class RollupRepoLive(xa: Transactor[Task]) extends RollupRepo {
                AND a.bucket_start = th.bucket_start
            ) chosen ON TRUE
            WHERE th.bucket_start >= $from AND th.bucket_start < $to """ ++
+        SqlFragments.householdRouterScope(household, "th.router_id") ++ fr" " ++
         macFilter(macs) ++
         fr"GROUP BY chosen.app_id"
 
@@ -503,11 +525,12 @@ class RollupRepoLive(xa: Transactor[Task]) extends RollupRepo {
       stale <- staleSql.query[Long].unique.transact(xa)
       aggs  <-
         if (stale == 0L) sqlPath
-        else listHourlyInRange(macs, from, to).map(aggregateInScala(_, appsByApex))
+        else listHourlyInRange(household, macs, from, to).map(aggregateInScala(_, appsByApex))
     } yield aggs
   }
 
   def aggregateByAppDaily(
+      household: HouseholdId,
       macs: List[MacAddress],
       from: Instant,
       to: Instant,
@@ -516,10 +539,12 @@ class RollupRepoLive(xa: Transactor[Task]) extends RollupRepo {
   ): Task[List[AppUsageAgg]] = {
     val fromDate = from.atZone(ZoneOffset.UTC).toLocalDate
     val toDate   = to.atZone(ZoneOffset.UTC).toLocalDate
+    // #2708: scoped on both the staleness probe and the aggregate, as in `aggregateByAppHourly`.
     val staleSql =
       fr"""SELECT COUNT(*) FROM traffic_daily
            WHERE date >= $fromDate AND date < $toDate
              AND (app_hosts_version IS NULL OR app_hosts_version < $currentVersion) """ ++
+        SqlFragments.householdRouterScope(household, "router_id") ++ fr" " ++
         macFilter(macs)
     val freshSql =
       fr"""SELECT chosen.app_id,
@@ -536,6 +561,7 @@ class RollupRepoLive(xa: Transactor[Task]) extends RollupRepo {
                AND a.date      = td.date
            ) chosen ON TRUE
            WHERE td.date >= $fromDate AND td.date < $toDate """ ++
+        SqlFragments.householdRouterScope(household, "td.router_id") ++ fr" " ++
         macFilter(macs) ++
         fr"GROUP BY chosen.app_id"
 
@@ -550,7 +576,7 @@ class RollupRepoLive(xa: Transactor[Task]) extends RollupRepo {
       stale <- staleSql.query[Long].unique.transact(xa)
       aggs  <-
         if (stale == 0L) sqlPath
-        else listDailyInRange(macs, from, to).map(aggregateInScala(_, appsByApex))
+        else listDailyInRange(household, macs, from, to).map(aggregateInScala(_, appsByApex))
     } yield aggs
   }
 

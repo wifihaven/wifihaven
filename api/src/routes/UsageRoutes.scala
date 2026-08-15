@@ -1082,7 +1082,11 @@ object UsageRoutes {
       // can't drift on filter semantics). This handler keeps the HTTP-only guards around it: a
       // requested mac that doesn't exist is a 404, the selected profiles must pass
       // `requireProfileReadAccess`, and the no-filter ("all devices") set is admin/adult-only.
-      macs       <- (macsRaw, profileIds) match {
+      // #2708: a `MacScope`, not a `List` — "the filter selected nothing" and "no filter was
+      // supplied" are distinct constructors, so the hand-rolled `macs.isEmpty && (macsRaw.nonEmpty
+      // || profileIds.nonEmpty)` short-circuits below are gone. A household with ZERO devices is
+      // the case those guards missed.
+      macScope   <- (macsRaw, profileIds) match {
         case (ms, _) if ms.nonEmpty     =>
           for {
             devs <- ZIO.foreach(ms) { mac =>
@@ -1169,13 +1173,13 @@ object UsageRoutes {
                     c => Some(RawTrafficCursorKey(c.ts, c.mac, c.host)),
                   )
             }
-            pagedRows <-
-              if (macs.isEmpty && (macsRaw.nonEmpty || profileIds.nonEmpty))
-                ZIO.succeed(List.empty[wifihaven.api.usage.TrafficUsageDbRow])
-              else
-                trafficRepo
-                  .listRawInRange(claims.hh, macs, fromI, toI, rawCursor, Some(rawLimit))
-                  .mapError(ApiError.Db(_))
+            pagedRows <- macScope.fold(
+              ZIO.succeed(List.empty[wifihaven.api.usage.TrafficUsageDbRow]),
+            )(macs =>
+              trafficRepo
+                .listRawInRange(claims.hh, macs, fromI, toI, rawCursor, Some(rawLimit))
+                .mapError(ApiError.Db(_)),
+            )
             built   = UsageTraffic.buildRaw(pagedRows, devByMac, profNames)
             nextCur =
               if (pagedRows.size < rawLimit) None
@@ -1210,26 +1214,22 @@ object UsageRoutes {
           // `trafficUsage` live-edge stream (SSOT — the stream and this GET
           // can't disagree). The keyset cursor paging stays here on top.
           for {
-            allAgg    <-
-              if (macs.isEmpty && (macsRaw.nonEmpty || profileIds.nonEmpty))
-                ZIO.succeed(List.empty[TrafficUsageAggregateRow])
-              else
-                UsageTrafficQuery
-                  .aggregate(
-                    claims.hh,
-                    trafficRepo,
-                    rollupRepo,
-                    macs,
-                    fromI,
-                    toI,
-                    bucket,
-                    effectiveGroupBy,
-                    zone,
-                    devByMac,
-                    profNames,
-                    appsByHost,
-                  )
-                  .mapError(ApiError.Db(_))
+            allAgg    <- UsageTrafficQuery
+              .aggregate(
+                claims.hh,
+                trafficRepo,
+                rollupRepo,
+                macScope,
+                fromI,
+                toI,
+                bucket,
+                effectiveGroupBy,
+                zone,
+                devByMac,
+                profNames,
+                appsByHost,
+              )
+              .mapError(ApiError.Db(_))
             cursorOpt <- req.url.queryParam("cursor") match {
               case None    => ZIO.succeed(Option.empty[wifihaven.api.db.Cursor.AggCursor])
               case Some(s) =>

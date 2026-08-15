@@ -463,8 +463,10 @@ object SpaPush {
         // carry the true interval.
         val (headStart, headEnd) =
           UsageTraffic.windowFor(periodStart, periodEnd, parsed.bucket, parsed.zone)
-        val resolvedMacs   = UsageTrafficQuery.resolveMacs(parsed.macs, parsed.profileIds, devices)
-        val filterEmpty    = parsed.filterRequested && resolvedMacs.isEmpty
+        // #2708: `resolveMacs` returns a `MacScope`, which already distinguishes "the filter
+        // selected nothing" from "no filter was supplied" — the pairing this call site used to
+        // reconstruct from `parsed.filterRequested && resolvedMacs.isEmpty`.
+        val scope          = UsageTrafficQuery.resolveMacs(parsed.macs, parsed.profileIds, devices)
         // #2048: `raw` WITHOUT a groupBy is the Traffic Usage page's per-host inspector (its DEFAULT
         // view) — it renders per-host `rawRows`, so its live edge must carry the NEW rawRows for the
         // ingest period (the rows the page prepends), NOT aggregated points. This mirrors the
@@ -479,9 +481,9 @@ object SpaPush {
             // exactly the just-ingested period's rows. No cursor/limit: a single ingest period is
             // naturally bounded by its distinct `(mac, host)` rows (the page pages OLDER history via
             // the GET; the push only delivers the fresh head). Built via the shared `buildRaw` (SSOT).
-            val rawZ =
-              if (filterEmpty) ZIO.succeed(List.empty[wifihaven.api.usage.TrafficUsageDbRow])
-              else trafficRepo.listRawInRange(household, resolvedMacs, headStart, headEnd)
+            val rawZ = scope.fold(
+              ZIO.succeed(List.empty[wifihaven.api.usage.TrafficUsageDbRow]),
+            )(macs => trafficRepo.listRawInRange(household, macs, headStart, headEnd))
             rawZ.map(rows =>
               TrafficUsageResponse(
                 bucket = parsed.bucket.code,
@@ -496,22 +498,20 @@ object SpaPush {
             )
           } else {
             val aggZ =
-              if (filterEmpty) ZIO.succeed(List.empty[wifihaven.shared.TrafficUsageAggregateRow])
-              else
-                UsageTrafficQuery.aggregate(
-                  household,
-                  trafficRepo,
-                  rollupRepo,
-                  resolvedMacs,
-                  headStart,
-                  headEnd,
-                  parsed.bucket,
-                  parsed.groupBySet,
-                  parsed.zone,
-                  devByMac,
-                  profNames,
-                  appsByHost,
-                )
+              UsageTrafficQuery.aggregate(
+                household,
+                trafficRepo,
+                rollupRepo,
+                scope,
+                headStart,
+                headEnd,
+                parsed.bucket,
+                parsed.groupBySet,
+                parsed.zone,
+                devByMac,
+                profNames,
+                appsByHost,
+              )
             aggZ.map(rows =>
               // `from`/`to` describe the head BUCKET window `[headStart, headEnd)` — not wall-clock
               // "live edge time". `to` is therefore the bucket end and can sit slightly ahead of
@@ -827,7 +827,6 @@ object SpaPush {
       macs: List[MacAddress],
       profileIds: List[ProfileId],
       zone: ZoneId,
-      filterRequested: Boolean,
   )
 
   /**
@@ -852,7 +851,6 @@ object SpaPush {
           macs = macAddrs,
           profileIds = pids,
           zone = zone,
-          filterRequested = macAddrs.nonEmpty || pids.nonEmpty,
         )
       }
     }

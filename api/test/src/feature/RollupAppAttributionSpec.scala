@@ -109,6 +109,7 @@ object RollupAppAttributionSpec
         sideN  <- countHourlyApps
         stamps <- hourlyVersions
         aggs   <- rollup.aggregateByAppHourly(
+          HouseholdId.Default,
           List(mac),
           start,
           start.plusSeconds(7200),
@@ -138,6 +139,7 @@ object RollupAppAttributionSpec
         v0      <- appRepo.currentHostsVersion
         _       <- rollup.rerollHourly(start.minusSeconds(3600), Map.empty, v0)
         aggs0   <- rollup.aggregateByAppHourly(
+          HouseholdId.Default,
           List(mac),
           start,
           start.plusSeconds(3600),
@@ -151,6 +153,7 @@ object RollupAppAttributionSpec
         appsByApex = Map(ytApex -> List(appId))
         // Read WITHOUT re-rolling: rows stamped v0 < v1 -> fallback to live match.
         aggs1 <- rollup.aggregateByAppHourly(
+          HouseholdId.Default,
           List(mac),
           start,
           start.plusSeconds(3600),
@@ -184,6 +187,7 @@ object RollupAppAttributionSpec
         _     <- rollup.rerollHourly(start.minusSeconds(3600), appsByApex, version)
         sideN <- countHourlyApps
         aggs  <- rollup.aggregateByAppHourly(
+          HouseholdId.Default,
           List(mac),
           start,
           start.plusSeconds(3600),
@@ -215,6 +219,7 @@ object RollupAppAttributionSpec
         _     <- rollup.rerollDaily(date.minusDays(1), appsByApex, version)
         sideN <- countDailyApps
         aggs  <- rollup.aggregateByAppDaily(
+          HouseholdId.Default,
           List(mac),
           dStart,
           dStart.plusSeconds(86400),
