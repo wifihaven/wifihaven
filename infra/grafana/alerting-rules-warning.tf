@@ -448,11 +448,13 @@ locals {
     #     talking and still pushing no metrics, that is precisely the failure. It
     #     self-clears with no bookkeeping: a decommissioned or unplugged router drops its
     #     socket and leaves the reference count on its own, which is the exact property
-    #     the enrolled gauge lacks. Measured at 2 in 3105 of 3106 samples across the 14-day
-    #     window (one single-sample dip to 1 on 2026-08-07T14:15Z, which LOWERS the reference
-    #     and so fails safe), through both outage episodes — 2 transitions against
-    #     agent_connected_routers' 64 over the same window, the stablest of the three by a
-    #     wide margin.
+    #     the enrolled gauge lacks. Replayed over the full retained window
+    #     (2026-08-01T19:01Z → 08-15T18:56Z, 4032 samples at 300s): 3966 at 2 and 66 at 1,
+    #     the latter in just two stretches — a 5.3h run at the very start of retention
+    #     (08-01 19:01 → 08-02 00:21, which reads as the second router joining rather than
+    #     a flap) and one single sample on 08-07 14:16. Both LOWER the reference, so both
+    #     fail safe. Three transitions across the fortnight against agent_connected_routers'
+    #     48 over the same window: the stablest of the three by an order of magnitude.
     #
     # WHAT IT DEPENDS ON, stated plainly because it is the fragile part. The gauge is
     # documented as a count of CHANNELS, not routers; it is only a router count because
@@ -485,25 +487,39 @@ locals {
     # fires. `< bool` rather than a bare `<` for the same reason: a bare comparison
     # returns the LEFT value, which is 0 in exactly that total-silence case, and gt = 0
     # would then filter out the one sample that matters most. `bool` yields a clean 1/0
-    # and gt = 0 is a true boolean test (the same `== bool` reasoning as W12). `max` and
-    # not `sum` over the reference gauge: the API is numInstances: 1 (render.yaml) so they
-    # are identical today, but under a scale-out or a lingering old instance during a
-    # rolling deploy `sum` would inflate the reference count and false-fire.
+    # and gt = 0 is a true boolean test (the same `== bool` reasoning as W12).
+    #
+    # `max` OVER THE REFERENCE GAUGE IS A NO-OP TODAY, and it is worth being exact about
+    # that rather than dressing it up as scale-out safety. deploy/alloy/config.alloy:15-25
+    # scrapes ONE target, `wifihaven-api-prod:8080`, with `instance` hard-coded to the
+    # literal "wifihaven-api-prod" — so there is exactly one series and max == sum ==
+    # the single sample. `max` is chosen only as the conservative aggregator over a gauge
+    # documented as channels; it buys nothing else.
+    # DO NOT READ IT AS MAKING W14 SCALE-OUT-CORRECT. Raising numInstances (render.yaml,
+    # 1 today) does NOT produce per-instance series, because Render's internal address
+    # round-robins behind that single fixed-`instance` scrape target: each 30s scrape
+    # returns whichever instance answered. So the reference becomes that instance's
+    # channel count while `agent_version` series from the OTHER instance are still inside
+    # the staleness window — the two operands flap against each other and the rule
+    # FALSE-FIRES. That is fail-unsafe, and no choice of aggregator fixes it: the scrape
+    # topology in config.alloy has to be reworked (per-instance targets, or a
+    # server-side aggregate) BEFORE numInstances is raised.
     # If the reference gauge itself is absent (the API is down), the comparison is empty
     # and the rule correctly lands in no_data → OK — an API outage is C-tier, not this.
     #
     # WHY for = 6h — CALIBRATED AGAINST 14 DAYS OF PROD, not picked. The expression was
-    # replayed over 2026-08-01→08-15 at 5-minute resolution. It went true in exactly three
-    # runs: 0.8h on 08-10, 17.2h from 08-14 16:38 to 08-15 09:53, and 3.7h from 08-15 15:03
-    # to 18:44 — the third never reached 6h, which corroborates the threshold rather than
-    # qualifying it. (An API restart also produces a sub-scrape transient — the
-    # agent-pushed gauges repopulate only on the next push, `metrics_report_interval` 60s
-    # — one of which showed as a single 5-minute sample in an earlier draft of the
-    # expression.) 6h clears
-    # the largest benign run by 7.5x and the metrics push interval by 360x, so no restart,
+    # replayed over the full retained window at 5-minute resolution (4032 samples). It went
+    # true in FOUR runs: one single sample on 08-08 00:56, 0.83h on 08-10, 17.25h from
+    # 08-14 16:36 to 08-15 09:51, and 3.67h from 08-15 15:06 to 18:46. The single sample is
+    # an API restart — the agent-pushed gauges repopulate only on the next push,
+    # `metrics_report_interval` 60s (openwrt/files/etc/config/wifihaven) — and it is present
+    # in the SHIPPING expression, not an artifact of an earlier draft. Neither it, the 0.83h
+    # run, nor the 3.67h one reaches 6h, which corroborates the threshold rather than
+    # qualifying it. 6h clears
+    # the largest benign run by 7.2x and the metrics push interval by 360x, so no restart,
     # reboot, agent upgrade or scrape gap can reach it; it would have fired ONCE in that
-    # fortnight, on the 17.2h event, which is the genuine failure. Shorter would page on
-    # the 0.8h dip. Longer (W10's 24h) would have missed the 17.2h outage entirely, and
+    # fortnight, on the 17.25h event, which is the genuine failure. Shorter would page on
+    # the 0.83h dip. Longer (W10's 24h) would have missed the 17.25h outage entirely, and
     # that is the difference in condition: W10 detects "stopped updating forever", which
     # is a days-scale fact, while this detects "stopped talking", where six hours of
     # silence from a box that is holding a socket open is already anomalous.

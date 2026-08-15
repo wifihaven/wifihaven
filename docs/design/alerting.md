@@ -665,11 +665,14 @@ the same failure and neither subsumes the other.
     talking, and pushing nothing is exactly the failure. It self-clears with no
     bookkeeping — a decommissioned or unplugged router drops its socket and
     leaves the reference count on its own, the property the enrolled gauge
-    lacks. Measured at 2 in 3105 of 3106 samples across the 14-day window —
-    one single-sample dip to 1 on 2026-08-07T14:15Z, which *lowers* the
-    reference and so fails safe — through both outage episodes, and 2
-    transitions against `agent_connected_routers`' 64 over the same window.
-    The stablest of the three by a wide margin.
+    lacks. Replayed over the full retained window (2026-08-01T19:01Z to
+    08-15T18:56Z, 4032 samples at 300s): 3966 at 2 and 66 at 1, the latter in
+    only two stretches — a 5.3h run at the very start of retention (08-01
+    19:01 to 08-02 00:21, which reads as the second router joining rather than
+    a flap) and one single sample on 08-07 14:16. Both *lower* the reference,
+    so both fail safe. Three transitions across the fortnight against
+    `agent_connected_routers`' 48 over the same window: the stablest of the
+    three by an order of magnitude.
 - **What it depends on**, stated plainly because it is the fragile part. The
   gauge is documented as a count of *channels*, not routers; it is a router
   count only because `RouterWsRegistry.register` **supersedes** — a reconnect
@@ -708,32 +711,40 @@ the same failure and neither subsumes the other.
   reason: a bare comparison returns the *left* value, which is 0 in exactly that
   total-silence case, and `gt = 0` would filter out the one sample that matters
   most. `bool` yields a clean 1/0 and makes `gt = 0` a true boolean test — the
-  same reasoning as W12's `== bool`. `max` and not `sum` over the reference
-  gauge: the API is `numInstances: 1` (`render.yaml`) so they are identical
-  today, but under a scale-out, or a lingering old instance during a rolling
-  deploy, `sum` would inflate the reference and false-fire. **`max` does not
-  make the rule scale-out-correct**, and nobody raising `numInstances` should
-  read it that way. The two sides are asymmetric: the reporting side dedupes
-  across instances (it groups by `router_id` only) while `max` takes one
-  instance's channel count, so a fleet split across N instances leaves
-  reporting at the full fleet and the reference at one instance's share, and
-  the comparison can never go true — W14 goes *silently blind*. Fail-safe
-  rather than noisy, which is why `max` is right at `numInstances: 1`, but a
-  scale-out disables this rule until the reference is reworked (the natural
-  rework is `sum` against a reporting side that is likewise per-instance). If
-  the reference
+  same reasoning as W12's `== bool`.
+- **`max` over the reference gauge is a no-op today**, and that is worth
+  stating exactly rather than dressing up as scale-out safety.
+  `deploy/alloy/config.alloy:15-25` scrapes *one* target,
+  `wifihaven-api-prod:8080`, with `instance` hard-coded to the literal
+  `"wifihaven-api-prod"`, so there is exactly one series and `max == sum ==`
+  the single sample. `max` is the conservative aggregator over a gauge
+  documented as channels; it buys nothing else. **Do not read it as making W14
+  scale-out-correct.** Raising `numInstances` (1 today, `render.yaml`) does not
+  produce per-instance series: Render's internal address round-robins behind
+  that single fixed-`instance` scrape target, so each 30s scrape returns
+  whichever instance answered. The reference becomes that instance's channel
+  count while `agent_version` series from the *other* instance are still inside
+  the staleness window, the two operands flap against each other, and the rule
+  **false-fires**. That is fail-*unsafe*, and no choice of aggregator fixes it:
+  the scrape topology in `config.alloy` has to be reworked (per-instance
+  targets, or a server-side aggregate) before `numInstances` is raised. If the
+  reference
   gauge is itself absent (the API is down) the comparison is empty and the rule
   lands in no-data → OK, which is right: an API outage is C-tier.
 - **`for: 6h` — calibrated against 14 days of prod, not picked.** The
-  expression was replayed over 2026-08-01→08-15 at 5-minute resolution and went
-  true in exactly three runs: 0.8h on 08-10, 17.2h from 08-14 16:38 to 08-15
-  09:53, and the run still open at 08-15 15:03. (An API restart also produces a
-  sub-scrape transient — the agent-pushed gauges repopulate only on the next
-  push, `metrics_report_interval` 60s.) 6h clears the largest benign run by 7.5×
-  and the push interval by 360×, so no restart, reboot, agent upgrade or scrape
-  gap reaches it, and it would have fired **once** in that fortnight, on the
-  17.2h event — the genuine failure. Shorter pages on the 0.8h dip. Longer
-  (W10's 24h) misses the 17.2h outage entirely, and that difference is the
+  expression was replayed over the full retained window at 5-minute resolution
+  (4032 samples) and went true in **four** runs: one single sample on 08-08
+  00:56, 0.83h on 08-10, 17.25h from 08-14 16:36 to 08-15 09:51, and 3.67h from
+  08-15 15:06 to 18:46. The single sample is an API restart — the agent-pushed
+  gauges repopulate only on the next push, `metrics_report_interval` 60s
+  (`openwrt/files/etc/config/wifihaven`) — and it is present in the *shipping*
+  expression, not an artifact of an earlier draft. None of the three short runs
+  reaches 6h, which corroborates the threshold rather than qualifying it. 6h
+  clears the largest benign run by 7.2× and the push interval by 360×, so no
+  restart, reboot, agent upgrade or scrape gap reaches it, and it would have
+  fired **once** in that fortnight, on the
+  17.25h event — the genuine failure. Shorter pages on the 0.83h dip. Longer
+  (W10's 24h) misses the 17.25h outage entirely, and that difference is the
   point: W10 detects "stopped updating forever", a days-scale fact, while this
   detects "stopped talking", where six hours of silence from a box holding a
   socket open is already anomalous.
