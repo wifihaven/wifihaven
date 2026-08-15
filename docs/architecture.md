@@ -1325,9 +1325,9 @@ not from memory.
 |---|---|---|
 | Whose hardware the API runs on | **The customer's own** — a small Linux box in their house | **Ours** — `api.wifihaven.net` |
 | Where the dashboard is served from | The **same** API image, which bundles `web/dist` and serves it on :8080 | `app.wifihaven.net`, a static Cloudflare Pages bundle deployed independently of the API |
-| Where household/account data lives | Their own machine; nothing in the install talks to a WifiHaven server | Our database |
-| Price | **Free forever**, stated publicly and permanently | **$10/month or $96/year** per household (unlimited profiles and devices, one router). Currently an invite-based free beta, no card; founding households keep $6/month ($57/year) while subscribed — see the pricing section of `web-marketing/site/index.html`, which is the live public statement |
-| Support | GitHub issues — a self-hosted install has no account with us and no support widget | The in-dashboard widget and `support@wifihaven.net` |
+| Where household/account data lives | Their own machine. Every byte of household data stays under their roof; the install reaches out only to fetch updates and blocklists, never to report household data | Our database |
+| Price | **Free forever**, stated publicly and permanently | Paid per household, currently an invite-based free beta. **This doc states no figures on purpose** — the live public statement is the pricing section of [`web-marketing/site/index.html`](../web-marketing/site/index.html), and it moves (beta → GA). Quote that, not a number remembered from here |
+| Support | GitHub issues — a self-hosted install has no account with us and no support widget | The in-dashboard widget (admin-only) and `support@wifihaven.net`, which admits registered household admins only |
 
 So: "run it yourself on a home box" is always the **customer's** hardware, and
 "cloud" is always **ours**. A sentence pairing self-hosting with our servers is

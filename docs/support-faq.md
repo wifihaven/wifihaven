@@ -103,11 +103,15 @@ journalist once ([#2718](https://github.com/wifihaven/wifihaven/issues/2718)),
 inside an answer that was otherwise correct, which is exactly why it went
 unnoticed.
 
-**Who asks this.** Everyone on a support thread is a Cloud customer — a
-self-hosted install has no account with us and no support widget, so it can't
-open one. Treat the question as "what would I be giving up / gaining", not as a
-diagnostic. Someone who emailed `support@` directly may be a self-hoster or not
-a customer at all; if it matters, ask.
+**Who asks this.** Everyone on a support thread is a Cloud customer, on both
+intake paths. A self-hosted install has no account with us and no support
+widget, so it cannot open a thread; and mail to `support@` only reaches the
+agent when the From address matches a registered household admin
+([`SupportResponder.scala` `emailIntakeGate` /
+`resolveAdminHousehold`](../api/src/support/SupportResponder.scala) — anyone
+else gets the fixed non-agent reject and no session runs). So treat the
+question as "what would I be giving up / gaining", never as a diagnostic, and
+don't ask which tier they're on.
 
 **Moving between tiers** is not self-serve. Escalate rather than describing a
 migration path.

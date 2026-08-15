@@ -71,6 +71,16 @@ object AgentPromptVersionSpec extends ZIOSpecDefault {
   private val AnyVersionRe = """(?:support|press)-\d{4}-\d{2}-\d{2}\.\d+""".r
 
   /**
+   * A raw.githubusercontent link to a file in THIS repo, as the prompts cite their sources (#2718).
+   * Group 1 is the repo-relative path, which is what [[repoRoot]] can check exists.
+   */
+  private val RawDocLinkRe =
+    """https://raw\.githubusercontent\.com/wifihaven/wifihaven/main/(\S+?)(?=[\s)]|$)""".r
+
+  /** The section title both prompts instruct the agent to load by name (#2718). */
+  private val DeploymentModelHeading = "Deployment model: self-hosted vs. cloud"
+
+  /**
    * An ALL-CAPS section heading, the shape these prompts use ("SECURITY —", "ABSOLUTE LIMITS —").
    */
   private val HeadingRe = """(?m)^\s{0,4}[A-Z]{2,}[A-Z ]* —""".r
@@ -109,6 +119,33 @@ object AgentPromptVersionSpec extends ZIOSpecDefault {
       .map(_.count)
 
   def spec = suite("AgentPromptVersionSpec")(
+    suite("the docs a prompt points at")(
+      // #2718 — the prompts no longer STATE the deployment model, they tell the agent to go READ it.
+      // That makes a set of repo paths load-bearing on the live path: rename a doc or retitle the
+      // section and the agent fetches a 404, then answers from memory, which is #2718 itself. The
+      // prompt is not compiled, so nothing else would notice. These pin the pointers.
+      test("every repo doc a prompt links by raw URL actually exists") {
+        ZIO.succeed(
+          assertTrue(
+            Yamls.forall { case (_, rel) =>
+              val links = RawDocLinkRe.findAllMatchIn(readAll(rel)).map(_.group(1)).toList
+              links.nonEmpty && links.forall(p => Files.isRegularFile(repoRoot.resolve(p)))
+            },
+          ),
+        )
+      },
+      test("the deployment-model section the prompts name by title is in architecture.md") {
+        // Both prompts tell the agent to load this section BY NAME. A retitle would leave them
+        // naming a heading that no longer exists in a doc that still does — the failure the path
+        // check above cannot see.
+        ZIO.succeed(
+          assertTrue(
+            readAll("docs/architecture.md").contains(DeploymentModelHeading),
+            Yamls.forall { case (_, rel) => readAll(rel).contains(DeploymentModelHeading) },
+          ),
+        )
+      },
+    ),
     suite("the yaml ↔ Scala mirror")(
       test("each agent.yaml carries a PROMPT_VERSION marker equal to the compiled constant") {
         ZIO.succeed(
