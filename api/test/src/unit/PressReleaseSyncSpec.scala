@@ -148,19 +148,33 @@ object PressReleaseSyncSpec extends ZIOSpecDefault {
       )
     },
     test("the published press page carries the release prose, and no unfilled slot") {
-      val page         = pageText(readAll(PagePath))
-      // Two paragraphs legitimately differ on the page and are checked separately below: the quote
-      // (attributed by role, so the page needs no operator input to publish) and the links line
-      // (real URLs on a page, tokens in the sendable copy). Everything else must appear verbatim.
+      val page = pageText(readAll(PagePath))
+
+      // The page carries a literal dateline where the sendable copy has `{{date}}` — the email's
+      // date is operator-supplied at send, the page's is edited by hand. Dropping that paragraph
+      // from the comparison would leave the release's LEDE, its largest paragraph, as the one place
+      // this gate cannot see. So substitute the page's own dateline into the token and compare the
+      // rest, which is what actually needs guarding.
+      val pageDateline =
+        """([A-Z][a-z]+ \d{1,2}, \d{4}) — WifiHaven today opened""".r
+          .findFirstMatchIn(page)
+          .map(_.group(1))
+
+      // Two paragraphs legitimately differ and are NOT compared: the quote (the page attributes by
+      // role so it needs no operator input to publish; the email keeps `{{founderName}}` because
+      // the unresolved-token refusal is the right gate there) and the links line (real URLs on a
+      // page, tokens in the sendable copy). Everything else must appear verbatim.
       val tokenBearing = Set("{{founderName}}", "{{betaSignupUrl}}", "{{pressKitUrl}}")
-      val mustAppear   =
-        sendableParagraphs
-          .filterNot(p => tokenBearing.exists(p.contains))
-          .filterNot(_.contains("{{date}}"))
+      val mustAppear   = sendableParagraphs
+        .filterNot(p => tokenBearing.exists(p.contains))
+        .map(p => pageDateline.fold(p)(d => p.replace("{{date}}", d)))
       val missing      = mustAppear.filterNot(page.contains)
       assertTrue(
         missing.isEmpty,
         mustAppear.size > 5, // liveness: if the extraction broke, this is what fails
+        // And the lede specifically — the paragraph the dateline substitution exists to keep in
+        // scope. Without this, a regex that stopped matching would silently drop it again.
+        pageDateline.isDefined,
         // The marketing CD job refuses to deploy a page carrying one of these; assert it here too
         // so the failure lands in the API suite on the PR rather than only at deploy time.
         BracketToken.findFirstIn(page).isEmpty,

@@ -50,15 +50,15 @@ jobs:
       # placeholder across two lines and the closing bracket landed on the next one — so the guard
       # was green while the page it guarded was not ready.
       #
-      # `-I` and the --include list keep it off the binary brand assets, where a chance byte match
-      # would fail the deploy with an unactionable "Binary file matches". If real copy ever needs a
-      # literal bracketed uppercase token (`[RFC1918]`, a CVE id), use the HTML entity for `[` or
-      # add an explicit exclusion here — do not loosen the pattern.
+      # `-I` keeps it off the binary brand assets, where a chance byte match would fail the deploy
+      # with an unactionable "Binary file matches". `-I` rather than an --include allowlist so the
+      # guard fails SAFE: a future .js/.json/.svg carrying copy is covered automatically instead of
+      # being silently unguarded. If real copy ever needs a literal bracketed uppercase token
+      # (`[RFC1918]`, a CVE id), use the HTML entity for `[` — do not loosen the pattern.
       - name: Guard — no unfilled [PLACEHOLDER] slots in the published site
         run: |
           set -euo pipefail
-          if grep -rnIE '\[[A-Z][A-Z0-9_ ]+' web-marketing/site \
-               --include='*.html' --include='*.css' --include='*.txt'; then
+          if grep -rnIE '\[[A-Z][A-Z0-9_ ]+' web-marketing/site; then
             echo "::error::Unfilled placeholder(s) above. Fill them (or remove the copy) before this deploys."
             exit 1
           fi

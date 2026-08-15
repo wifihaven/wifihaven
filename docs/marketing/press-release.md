@@ -5,7 +5,7 @@
 >
 > **Operator decisions folded in on 2026-08-15:** the dateline carries no city (this is
 > an internet product, not local news); the launch date is the announced send date,
-> Monday August 17, 2026; the founder quote is the operator's own words, lightly edited,
+> Monday August 17, 2026, supplied as the `date` fill at send time; the founder quote is the operator's own words, lightly edited,
 > and still needs a final read before it goes out.
 >
 > **This is the authored source of truth (human-readable, with the fact-check ledger
@@ -134,7 +134,10 @@ something the product does not do, the correction is called out.
    the marketing pipeline stays green. Swap in the name whenever you like — the
    marketing CD pipeline **fails the deploy** while any `[PLACEHOLDER]` remains in the
    published site, so an unfilled slot can never go live.
-5. **[DATE]** — `August 17, 2026` for the launch send. It stays a token deliberately:
+4. **[DATE]** — `August 17, 2026` for the launch send. It stays a token deliberately:
    it is the one field whose correctness is time-dependent, so a send that slips a day
    is stopped by the unresolved-token guard instead of carrying a stale dateline.
-4. **The founder quote** is the operator's own sentence, lightly edited. Final read before send.
+5. **The founder quote** is the operator's own sentence, lightly edited. Final read before send.
+6. **The published page's dateline is edited by hand.** `{{date}}` is a token in the emailed
+   release, but the page carries the literal date. If the send slips, change it on the page
+   too — the unresolved-token guard covers the email, not the site.
