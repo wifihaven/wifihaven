@@ -5,15 +5,12 @@ Companion to [`press-release.md`](press-release.md) and [`launch-plan.md`](launc
 Emails appear ONLY where actually published; nothing fabricated. Items marked
 UNVERIFIED need a check before sending.
 
-> **Machine-readable send manifest (#2233):** the operator-run press-outreach tool iterates
-> [`api/resources/press/media-contacts.yml`](../../api/resources/press/media-contacts.yml) — a
-> transcription of THIS table (id, outlet, person, priority, angle, contactUrl) plus the **authored
-> per-outlet pitch**, which is the actual email body and is required for every contact. Keep the two
-> in sync. Per the fabrication rule below, NO target has a verified direct email as of the 2026-08-15
-> pass — every outlet is form/tip-line only, so the tool's dry-run reports them all as "manual
-> submission" and a real email send reaches nobody until the operator supplies a verified address at
-> send time (the send request's `emailOverrides` map — no fabricated address ever lives in-repo).
-> See the [send runbook](press-outreach-runbook.md).
+> **How the outreach is actually done (#2233):** by hand, one contact form at a time. NO target on
+> this list has a publishable direct email address — every outlet is a form or tip line — so there
+> is no email send. The working sheet, with each outlet's form URL and the pitch written for it, is
+> [`press-submission-pack.md`](press-submission-pack.md). The API's press-outreach email sender was
+> removed on 2026-08-15 for the same reason; the #2203 press RESPONDER is untouched and still
+> handles inbound press mail at `press@wifihaven.net`.
 
 **Send order:** Priority 1 first (they set community tone and their coverage
 gives P2 outlets a reason to care), Show HN same day, Priority 2 with a
@@ -78,20 +75,17 @@ confirmed active.
 | Awesome-Selfhosted | PR per CONTRIBUTING.md; check age/commit-activity minimums and category taxonomy first. |
 | r/Parenting / r/ScreenTime | Stretch; only after mainstream coverage lands. |
 
-## Email send workflow (for when the operator says "send")
+## Submission workflow
 
-1. Operator confirms: press release final (tokens filled), press kit URL live,
-   beta signup live, send date.
-2. **Every target on this list is form/tip-line only today.** For each, submit
-   via the `contactUrl` with a shortened version of that outlet's authored pitch
-   plus a link to the release. The pitches live in
-   [`media-contacts.yml`](../../api/resources/press/media-contacts.yml) and are
-   already written per outlet — do not paste one outlet's pitch into another's form.
-3. For any target where an email is verified at send time: pass it in the send
-   request's `emailOverrides` map. The tool then emails that outlet's authored
-   pitch with the release below it, from `press@wifihaven.net`, Reply-To
-   `press@wifihaven.net` so the reply routes to the #2203 responder.
+The step-by-step is in [`press-submission-pack.md`](press-submission-pack.md), which
+carries each outlet's form URL and its own pitch. In short:
+
+1. Confirm `https://wifihaven.net/press` renders and `https://app.wifihaven.net/beta`
+   accepts a request — every submission links to the first.
+2. Submit each outlet's form with that outlet's pitch and a link to the release. Do not
+   paste one outlet's pitch into another's form.
+3. Log the outcome in the pack's status table as you go, so a resumed session never
+   double-submits.
 4. One follow-up after 4–5 business days, then stop.
-5. Log each send + response here (add a Status column) — and note that the tool's
-   own `press_messages` ledger already records real sends, so a re-run skips
-   anyone already contacted.
+5. If a journalist replies by email, it lands at `press@wifihaven.net` and routes to the
+   #2203 responder.

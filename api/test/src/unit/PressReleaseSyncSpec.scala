@@ -1,33 +1,29 @@
 package wifihaven.api.unit
 
-import wifihaven.api.press.PressOutreach
 import zio.test.*
 
 import java.nio.file.{Files, Path, Paths}
 
 /**
- * #2233 — the CI gate that keeps the THREE copies of the launch release in sync.
+ * #2233 — the CI gate that keeps the two copies of the launch release in sync.
  *
- * They exist for different readers:
- *   - `docs/marketing/press-release.md` — the AUTHORED source of truth a human edits. It carries a
- *     review note and an internal fact-check ledger, and spells the operator-input slots as
- *     `[DATE]`-style tokens so a reader sees at a glance what still needs filling.
- *   - `api/resources/press/release.md` — the MACHINE-SENDABLE copy `PressOutreach` pastes below
- *     each pitch, with `{{date}}`-style fill tokens the send request resolves.
- *   - `web-marketing/site/press/index.html` — the PUBLISHED copy on wifihaven.net/press.
+ *   - `docs/marketing/press-release.md` — the AUTHORED source of truth a human edits, carrying the
+ *     internal fact-check ledger.
+ *   - `web-marketing/site/press/index.html` — the PUBLISHED copy at `https://wifihaven.net/press`,
+ *     which is what every press submission links to.
  *
- * Same prose, three renderings. Nothing structural stopped them from drifting, and a drifted set is
- * the worst possible failure of this set specifically: the file a human reviews is not the file
- * that reaches a journalist, and neither is the page the journalist is pointed at.
+ * Same prose, two renderings. Nothing structural stopped them from drifting, and the drifted case
+ * is the bad one: the file a human reviews is not the page a journalist reads.
  *
- * ==The normalization is deliberately ONE-SIDED==
+ * ==Why this matters MORE now, not less==
  *
- * `[DATE]` → `{{date}}` is applied to the AUTHORED side only. Applying it to both — the first
- * version of this spec — means a literal `[DATE]` accidentally left in the SENDABLE resource is
- * rewritten to `{{date}}` and compares equal. Nothing downstream catches that either:
- * `PressOutreach.unresolvedTokens` matches `{{…}}` only, so the send-refusal never fires and the
- * brackets reach a journalist — #2677 one layer down. The sendable resource is therefore also
- * asserted to carry no bracket token at all.
+ * There used to be a third copy — a sendable resource with `{{token}}` fill slots — and a send-time
+ * refusal that would not transmit while any token was unresolved. That path is gone (2026-08-15: no
+ * target has a publishable email address, so the outreach is hand-submitted through each outlet's
+ * contact form). With it went the refusal. This spec is now the ONLY automated thing standing
+ * between an edit to one copy and a journalist reading the other, so it is deliberately strict:
+ * every paragraph of the authored release must appear on the page, and neither may carry a
+ * `[PLACEHOLDER]`.
  */
 object PressReleaseSyncSpec extends ZIOSpecDefault {
 
@@ -43,27 +39,16 @@ object PressReleaseSyncSpec extends ZIOSpecDefault {
     new String(Files.readAllBytes(repoRoot.resolve(rel)), "UTF-8")
 
   private val AuthoredPath = "docs/marketing/press-release.md"
-  private val SendablePath = "api/resources/press/release.md"
   private val PagePath     = "web-marketing/site/press/index.html"
 
   /**
-   * The authored doc's `[TOKEN]` spelling → the sendable resource's `{{token}}` spelling. This map
-   * is the whole allowed vocabulary of operator-input slots: a token added to one file and not
-   * listed here fails the comparison, which is the point.
+   * Any `[UPPERCASE…]` slot — an unfilled operator input, which must not survive into either copy.
    */
-  private val TokenSpellings: List[(String, String)] = List(
-    "[DATE]"            -> "{{date}}",
-    "[FOUNDER NAME]"    -> "{{founderName}}",
-    "[BETA SIGNUP URL]" -> "{{betaSignupUrl}}",
-    "[PRESS KIT URL]"   -> "{{pressKitUrl}}",
-  )
-
-  /** Any `[UPPERCASE…]` slot — what must never survive into a sendable or published copy. */
   private val BracketToken = """\[[A-Z][A-Z0-9_ ]+""".r
 
   /**
-   * The authored doc's sendable region: from the `FOR IMMEDIATE RELEASE` line (the first line of
-   * the release proper) up to, but not including, the internal fact-check ledger.
+   * The authored doc's release region: from `FOR IMMEDIATE RELEASE` up to, but not including, the
+   * internal fact-check ledger.
    *
    * Anchored on the release's own first line rather than on "the first `---`": a horizontal rule or
    * YAML front matter added above the review note would silently shift a fence-based anchor and
@@ -95,20 +80,11 @@ object PressReleaseSyncSpec extends ZIOSpecDefault {
       // internal ledger). It is decoration, not prose.
       .filter(p => p.nonEmpty && !p.forall(_ == '-'))
 
-  private def authoredParagraphs: List[String] = {
-    val translated = TokenSpellings.foldLeft(authoredBody(readAll(AuthoredPath))) {
-      case (acc, (bracket, mustache)) => acc.replace(bracket, mustache)
-    }
-    paragraphs(translated)
-  }
-
-  private def sendableParagraphs: List[String] =
-    paragraphs(PressOutreach.sendableBody(readAll(SendablePath)))
-
   /**
-   * The published page's visible text, tags stripped and entities unescaped. Crude on purpose: it
-   * only has to be good enough to ask "does this paragraph appear on the page", which is the
-   * question that catches drift.
+   * The published page's visible text, tags and comments stripped and entities unescaped. Crude on
+   * purpose: it only has to answer "does this paragraph appear on the page", which is the question
+   * that catches drift. Comments are stripped FIRST so nothing hidden from a reader can satisfy the
+   * comparison.
    */
   private def pageText(html: String): String =
     html
@@ -119,65 +95,36 @@ object PressReleaseSyncSpec extends ZIOSpecDefault {
       .replace("&nbsp;", " ")
       .replaceAll("\\s+", " ")
 
-  def spec = suite("press release — the authored, sendable and published copies stay in sync")(
-    test("authored and sendable carry the SAME prose, paragraph for paragraph") {
-      val authored  = authoredParagraphs
-      val sendable  = sendableParagraphs
-      // Report the first divergence rather than a wall of two lists — a drifted pair is usually one
-      // edited paragraph, and the reviewer needs to see WHICH.
-      val firstDiff = authored.zip(sendable).find { case (a, b) => a != b }
-      assertTrue(
-        firstDiff.isEmpty,
-        // zip() truncates to the shorter list, so the size check is what catches an added or
-        // deleted paragraph that the pairwise scan would otherwise never reach.
-        authored.size == sendable.size,
-        authored.nonEmpty,
-      )
-    },
-    test("the sendable resource carries the documented fill tokens and NO bracket slots") {
-      val sendableBody = PressOutreach.sendableBody(readAll(SendablePath))
-      assertTrue(
-        PressOutreach.unresolvedTokens(sendableBody).toSet ==
-          Set("date", "founderName", "betaSignupUrl", "pressKitUrl"),
-        // The one-sided normalization above is what makes this necessary: a stray `[DATE]` here
-        // would be invisible to the prose comparison AND to the send-time unresolved-token guard.
-        BracketToken.findFirstIn(sendableBody).isEmpty,
-        // And the authored doc's BODY uses the bracket spelling — a `{{…}}` there means someone
-        // pasted the sendable copy over the authored one.
-        !authoredBody(readAll(AuthoredPath)).contains("{{"),
-      )
-    },
-    test("the published press page carries the release prose, and no unfilled slot") {
-      val page = pageText(readAll(PagePath))
-
-      // The page carries a literal dateline where the sendable copy has `{{date}}` — the email's
-      // date is operator-supplied at send, the page's is edited by hand. Dropping that paragraph
-      // from the comparison would leave the release's LEDE, its largest paragraph, as the one place
-      // this gate cannot see. So substitute the page's own dateline into the token and compare the
-      // rest, which is what actually needs guarding.
-      val pageDateline =
-        """([A-Z][a-z]+ \d{1,2}, \d{4}) — WifiHaven today opened""".r
-          .findFirstMatchIn(page)
-          .map(_.group(1))
-
-      // Two paragraphs legitimately differ and are NOT compared: the quote (the page attributes by
-      // role so it needs no operator input to publish; the email keeps `{{founderName}}` because
-      // the unresolved-token refusal is the right gate there) and the links line (real URLs on a
-      // page, tokens in the sendable copy). Everything else must appear verbatim.
-      val tokenBearing = Set("{{founderName}}", "{{betaSignupUrl}}", "{{pressKitUrl}}")
-      val mustAppear   = sendableParagraphs
-        .filterNot(p => tokenBearing.exists(p.contains))
-        .map(p => pageDateline.fold(p)(d => p.replace("{{date}}", d)))
-      val missing      = mustAppear.filterNot(page.contains)
+  def spec = suite("press release — the authored copy and the published page stay in sync")(
+    test("every paragraph of the authored release appears on the published page") {
+      val authored = paragraphs(authoredBody(readAll(AuthoredPath)))
+      val page     = pageText(readAll(PagePath))
+      // The page legitimately carries ONE line the authored copy does not: it says "Press kit: this
+      // page." where the release names the URL, because on the page that URL is where you already
+      // are. Everything else must match.
+      val exempt   = (p: String) => p.startsWith("Press kit:") || p.contains("Press kit: ")
+      val expected = authored.filterNot(exempt)
+      val missing  = expected.filterNot(page.contains)
       assertTrue(
         missing.isEmpty,
-        mustAppear.size > 5, // liveness: if the extraction broke, this is what fails
-        // And the lede specifically — the paragraph the dateline substitution exists to keep in
-        // scope. Without this, a regex that stopped matching would silently drop it again.
-        pageDateline.isDefined,
-        // The marketing CD job refuses to deploy a page carrying one of these; assert it here too
-        // so the failure lands in the API suite on the PR rather than only at deploy time.
+        // Liveness: if the region anchors or the tag stripper broke, `expected` collapses and
+        // `missing.isEmpty` would pass for free. The release is 14 paragraphs; 10 is a floor well
+        // under that and well over anything a broken extractor would produce.
+        expected.size > 10,
+      )
+    },
+    test("neither copy carries an unfilled [PLACEHOLDER]") {
+      // The release is distributed BY HAND through contact forms, so there is no send-time
+      // unresolved-token refusal any more. This assertion is what replaced it.
+      val authored = authoredBody(readAll(AuthoredPath))
+      val page     = pageText(readAll(PagePath))
+      assertTrue(
+        BracketToken.findFirstIn(authored).isEmpty,
         BracketToken.findFirstIn(page).isEmpty,
+        // And the mustache spelling is gone too — its removal is the point of this change, so a
+        // reintroduced `{{token}}` means someone restored a fill step that no longer has a filler.
+        !authored.contains("{{"),
+        !page.contains("{{"),
       )
     },
   )

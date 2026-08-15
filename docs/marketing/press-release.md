@@ -1,20 +1,21 @@
-# Press release (draft)
+# Press release — WifiHaven beta launch
 
-> Draft for review. Bracketed items need operator input before send:
-> [DATE], [FOUNDER NAME], [BETA SIGNUP URL], [PRESS KIT URL].
+> **Final copy.** Every operator slot is filled: the dateline is Monday 2026-08-17, the
+> founder is Sameer Brenn, the beta link is `https://app.wifihaven.net/beta`, and the
+> press kit is `https://wifihaven.net/press`. There are no placeholders left, which is
+> deliberate — this release is DISTRIBUTED BY HAND via each outlet's contact form (see
+> [`press-submission-pack.md`](press-submission-pack.md)), so there is no send-time fill
+> step to catch an unfilled one.
 >
-> **Operator decisions folded in on 2026-08-15:** the dateline carries no city (this is
-> an internet product, not local news); the launch date is the announced send date,
-> Monday August 17, 2026, supplied as the `date` fill at send time; the founder quote is the operator's own words, lightly edited,
-> and still needs a final read before it goes out.
+> **Two copies, kept in sync by CI.** This is the authored source of truth, carrying the
+> fact-check ledger below. The PUBLISHED copy is
+> [`web-marketing/site/press/index.html`](../../web-marketing/site/press/index.html),
+> live at `https://wifihaven.net/press`. `PressReleaseSyncSpec` fails CI if the prose
+> drifts between them.
 >
-> **This is the authored source of truth (human-readable, with the fact-check ledger
-> below).** The MACHINE-SENDABLE copy the #2233 press-outreach tool actually emails lives at
-> [`api/resources/press/release.md`](../../api/resources/press/release.md) — same prose, stripped of
-> this note + the ledger, with `{{date}}` / `{{founderName}}` / `{{betaSignupUrl}}` /
-> `{{pressKitUrl}}` fill tokens the operator supplies at send time. `PressReleaseSyncSpec` fails CI if the two drift.
-> The send path is operator-gated and dry-run-by-default; see the
-> [send runbook](press-outreach-runbook.md).
+> The API's press-outreach EMAIL sender was removed on 2026-08-15 (operator decision):
+> no target has a publishable address, so every outlet is a form submission. The #2203
+> press RESPONDER is untouched and still handles inbound press mail.
 
 ---
 
@@ -24,7 +25,7 @@ FOR IMMEDIATE RELEASE
 
 **Invite-only cloud beta opens to founding households; the self-hosted version stays free forever**
 
-[DATE] — WifiHaven today opened the beta of its open-source, whole-home
+August 17, 2026 — WifiHaven today opened the beta of its open-source, whole-home
 parental control and screen-time system, built to run on the router a family
 already owns. Unlike the app-per-device suites and DNS filters that dominate the
 category, WifiHaven enforces rules at the network connection layer on OpenWrt
@@ -67,7 +68,7 @@ subscribed.
 
 "We went looking for something that would work for our own family, and nothing on
 the market gave us the coverage or the peace of mind we wanted. So we built it,"
-said [FOUNDER NAME] of WifiHaven.
+said Sameer Brenn of WifiHaven.
 
 WifiHaven runs on a router flashed with vanilla OpenWrt, the open-source router
 firmware supported on hundreds of consumer models. Vendor stock firmware is not a
@@ -82,8 +83,8 @@ One router per household is the plan limit for the beta rather than a limit of
 the software. Multi-router support is already built, and the cap is expected to
 rise as paid tiers roll out.
 
-Beta access: [BETA SIGNUP URL]. Source code, documentation and a self-hosting
-quickstart: github.com/wifihaven/wifihaven. Press kit: [PRESS KIT URL].
+Beta access: app.wifihaven.net/beta. Source code, documentation and a self-hosting
+quickstart: github.com/wifihaven/wifihaven. Press kit: wifihaven.net/press.
 
 ### About WifiHaven
 
@@ -120,24 +121,14 @@ something the product does not do, the correction is called out.
 | One router is a PLAN limit, not a technical ceiling | #2499; `households.router_cap INT NOT NULL DEFAULT 1` (V66) with the cap raisable per household | verified |
 | Media contact is `press@wifihaven.net` | **CHANGED** from the operator's personal address. `press@` is the monitored inbox that routes to the #2203 responder and matches the outreach Reply-To, so a journalist replying to the release lands in the same place as one replying to a pitch. **Operator to confirm.** | needs sign-off |
 
-### Open items for the operator
+### Open items
 
-1. **[PRESS KIT URL]** is now `https://wifihaven.net/press` — this PR adds
-   `web-marketing/site/press/index.html`, which carries quick facts, brand assets and
-   this release, and is linked from every page footer. It publishes when the PR merges
-   (Cloudflare Pages deploys `web-marketing/**` on push to `main`).
-2. **[BETA SIGNUP URL]** is live at `https://app.wifihaven.net/beta` (linked from the
-   marketing site). Supply it at send time.
-3. **[FOUNDER NAME]** — not invented here. Supply it in the send request's `fill` map.
-   The published press page carries no placeholder: it attributes the quote to
-   "WifiHaven's founder", which is true and needs no input, so the page can ship and
-   the marketing pipeline stays green. Swap in the name whenever you like — the
-   marketing CD pipeline **fails the deploy** while any `[PLACEHOLDER]` remains in the
-   published site, so an unfilled slot can never go live.
-4. **[DATE]** — `August 17, 2026` for the launch send. It stays a token deliberately:
-   it is the one field whose correctness is time-dependent, so a send that slips a day
-   is stopped by the unresolved-token guard instead of carrying a stale dateline.
-5. **The founder quote** is the operator's own sentence, lightly edited. Final read before send.
-6. **The published page's dateline is edited by hand.** `{{date}}` is a token in the emailed
-   release, but the page carries the literal date. If the send slips, change it on the page
-   too — the unresolved-token guard covers the email, not the site.
+None blocking. The copy is final and every slot is filled.
+
+Two things to re-check on launch morning, both cheap:
+
+1. **`https://wifihaven.net/press` renders** before the first form submission — every
+   submission links to it.
+2. **The dateline** says August 17, 2026. If the launch slips, it has to be changed in
+   BOTH copies; `PressReleaseSyncSpec` will fail CI if only one is edited, which is the
+   guard that replaced the send-time unresolved-token refusal.

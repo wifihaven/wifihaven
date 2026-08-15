@@ -158,21 +158,6 @@ object StartupFeatureReport {
           "wifihaven.press.responderEnabled=false — inbound press webhook no-ops, agent endpoint " +
             "404 (#2203/#2265)",
       ),
-      // #2233/#2265: the press-OUTREACH send capability — a named `enabled` flag, off by default.
-      // When ON, the admin /api/press/outreach/{preview,send} surface is mounted and its From +
-      // Reply-To are required + validated at boot; OFF, the endpoints 404. Observable so the
-      // deliberate off-state isn't mistaken for a silent no-op.
-      FeatureState(
-        "press-outreach",
-        cfg.pressOutreach.enabled,
-        if cfg.pressOutreach.enabled then
-          s"wifihaven.pressOutreach.enabled=true — admin /api/press/outreach/{preview,send} mounted " +
-            s"(from=${cfg.pressOutreach.fromTrimmed}, replyTo=${cfg.pressOutreach.replyToTrimmed}); each " +
-            "send needs confirm=true + all fill tokens resolved (#2233)"
-        else
-          "wifihaven.pressOutreach.enabled=false — press-outreach send endpoints 404; flip enabled=true " +
-            "(+ email.enabled) to stage/send (#2233/#2265)",
-      ),
       FeatureState(
         "metrics-endpoint",
         metrics.enabled,
