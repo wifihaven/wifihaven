@@ -107,11 +107,11 @@ object ReasonTextDualWriteSpec
       for {
         _     <- cleanDb
         rRepo <- ZIO.service[RouterRepo]
-        _     <- seedRouter(rRepo)
+        rid   <- seedRouter(rRepo)
         bRepo <- ZIO.service[BlockEventRepo]
         xa    <- ZIO.service[Transactor[Task]]
         inserts = cases.map { case (r, _) =>
-          BlockEventInsert(mac = Some(mac), host = host, reason = r)
+          BlockEventInsert(routerId = rid, mac = Some(mac), host = host, reason = r)
         }
         _    <- bRepo.insertBatch(inserts)
         rows <- sql"""SELECT reason_text

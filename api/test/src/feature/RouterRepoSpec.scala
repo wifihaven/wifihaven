@@ -253,30 +253,38 @@ object RouterRepoSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
     suite("BlockEventRepo")(
       test("insertBatch returns count and records appear in recent() ordered by ts desc") {
         for {
-          _    <- cleanDb
-          repo <- ZIO.service[BlockEventRepo]
-          n    <- repo.insertBatch(
+          _     <- cleanDb
+          repo  <- ZIO.service[BlockEventRepo]
+          rRepo <- ZIO.service[RouterRepo]
+          // #2572: block_events.router_id is a real FK to routers(id), so a row needs a router.
+          rid   <- rRepo.create("be-gw", Sha256Hex.unsafe("b" * 64))
+          n     <- repo.insertBatch(
             List(
               BlockEventInsert(
+                rid,
                 Some(MacAddress.unsafe("aa:bb:cc:00:00:01")),
                 HostId.Fqdn(Hostname.unsafe("ads.example.com")),
                 BlockReason.fromWire("category:ads"),
               ),
               BlockEventInsert(
+                rid,
                 Some(MacAddress.unsafe("aa:bb:cc:00:00:02")),
                 HostId.Fqdn(Hostname.unsafe("casino.example.com")),
                 BlockReason.fromWire("category:gambling"),
               ),
               BlockEventInsert(
+                rid,
                 None,
                 HostId.Fqdn(Hostname.unsafe("unknown.example.com")),
                 BlockReason.fromWire("category:adult"),
               ),
             ),
           )
-          rows <- repo.recent(10)
+          rows  <- repo.recent(10)
         } yield assertTrue(n == 3) && assertTrue(rows.size == 3) &&
-          assertTrue(rows.exists(_.mac.isEmpty))
+          assertTrue(rows.exists(_.mac.isEmpty)) &&
+          // The stamped key round-trips through the read.
+          assertTrue(rows.forall(_.routerId.contains(rid)))
       },
     ),
     suite("time_usage byte columns")(

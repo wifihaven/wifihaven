@@ -93,11 +93,20 @@ object RouterDecisionSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
   private def seedAndEnrollRouter(
       rr: RouterRepo,
       routes: Routes[Any, Response],
-  ): Task[RouterToken] = {
+  ): Task[RouterToken] = seedAndEnrollRouterWithId(rr, routes).map(_._2)
+
+  /**
+   * As [[seedAndEnrollRouter]], but also hands back the router's id — needed by the #2572 test,
+   * which asserts the recorded block_event is stamped with the router that recorded it.
+   */
+  private def seedAndEnrollRouterWithId(
+      rr: RouterRepo,
+      routes: Routes[Any, Response],
+  ): Task[(RouterId, RouterToken)] = {
     val et   = EnrollmentToken.unsafe("et_" + UUID.randomUUID().toString.replace("-", ""))
     val hash = PolicyService.hashToken(et.value)
     for {
-      _    <- rr.create("gw", hash)
+      rid  <- rr.create("gw", hash)
       reg  <- routes.runZIO(
         Request.post(
           URL.decode("/api/router/register").toOption.get,
@@ -108,7 +117,7 @@ object RouterDecisionSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
       resp <- ZIO
         .fromEither(body.fromJson[RegisterRouterResponse])
         .mapError(new RuntimeException(_))
-    } yield resp.routerToken
+    } yield (rid, resp.routerToken)
   }
 
   private def callDecide(
@@ -258,6 +267,49 @@ object RouterDecisionSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
             ) && e.reason == MacBlockReason.Paused,
           ),
         )
+    },
+    // ── #2572 gap 3: block_events had NO tenancy key at all ────────────────────
+    // V2 created `block_events(id, mac, hostname, reason, ts)`. Unlike every other growth table it
+    // carried neither `household_id` nor `router_id`, so there was not even a transitive route to a
+    // household — and V74 dropped `devices_mac_key`, so `mac` no longer identifies one either. The
+    // write path here authenticates a router and had it in hand, and discarded it. V87 added the
+    // column; this pins that the endpoint actually stamps it, which is what makes the tenancy key
+    // recoverable at read time (`routers.household_id`) for the first reader that needs it.
+    // Retro-fitting the key for rows written without it is impossible, which is why it is stamped
+    // ahead of any reader.
+    test("#2572: a recorded block_event carries the id of the router that recorded it") {
+      val mac = "aa:bb:cc:11:22:57"
+      for {
+        _   <- cleanDb
+        rr  <- ZIO.service[RouterRepo]
+        pr  <- ZIO.service[ProfileRepo]
+        dvr <- ZIO.service[DeviceRepo]
+        ber <- ZIO.service[BlockEventRepo]
+        kid <- TestLayers.seedKidsProfile(pr)
+        _   <- pr.setPaused(kid, true)
+        _   <- TestLayers.seedDevice(dvr, mac, "kid-ipad", kid)
+        ps  <- makePsDefault
+        routes = RouterRoutes.routes(
+          rr,
+          ps,
+          RouterAuthLive(rr),
+          ber,
+          TestLayers.TestBlockPageSecret,
+        )
+        // Two enrolled routers, so "stamped with the RIGHT router" is falsifiable rather than
+        // trivially true: only one of them makes the call.
+        recorder <- seedAndEnrollRouterWithId(rr, routes)
+        other    <- seedAndEnrollRouterWithId(rr, routes)
+        (rid, tok)    = recorder
+        (otherRid, _) = other
+        resp   <- callDecide(routes, tok, mac, "example.com")
+        rBody  <- resp.body.asString
+        dec    <- ZIO.fromEither(rBody.fromJson[RouterDecisionResponse])
+        events <- ber.recent(10)
+      } yield assertTrue(dec.decision == ConnectionDecision.Block) &&
+        assertTrue(events.size == 1) &&
+        assertTrue(events.head.routerId.contains(rid)) &&
+        assertTrue(!events.head.routerId.contains(otherRid))
     },
     test(
       "#1413: paused profile + AppMode.Allowed host → allow:extra_allowed (extraAllowed beats pause)",
