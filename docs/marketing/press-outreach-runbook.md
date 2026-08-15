@@ -6,8 +6,9 @@ the real send is a deliberate, operator-gated action taken AT beta launch, on th
 
 ## What it does
 
-Composes, per media-list contact, an email = a personalized pitch (from the contact's angle) +
-the launch release, and emails it **from the press address** with **Reply-To the press inbox** so a
+Composes, per media-list contact, an email = that outlet's **authored** pitch (the `pitch` field in
+the manifest, written for that outlet and no other — there is no generic template) + the launch
+release, and emails it **from the press address** with **Reply-To the press inbox** so a
 journalist's reply routes to the [#2203](https://github.com/wifihaven/wifihaven/issues/2203) Claude
 press responder (draft → autonomous reply). Sending is:
 
@@ -26,15 +27,27 @@ template) and [`api/resources/press/media-contacts.yml`](../../api/resources/pre
 
 ## One-time: turn the capability on
 
-Set in the API's HOCON/env (self-hosted leaves it off):
+**On a Render deploy, set the env var — not the HOCON.** `docker/entrypoint.sh` generates
+`/app/config/application.conf` from the environment, and until 2026-08-15 it had no
+`pressOutreach` block at all, so the flag could not be set from the environment and the
+endpoints 404'd everywhere. The keys now exist:
+
+| env var | prod default | meaning |
+|---|---|---|
+| `WIFIHAVEN_PRESS_OUTREACH_ENABLED` | `false` (declared in `render.yaml`) | mounts `/api/press/outreach/{preview,send}`. **This is the one value to flip.** |
+| `WIFIHAVEN_PRESS_OUTREACH_FROM_ADDRESS` | `WifiHaven Press <press@wifihaven.net>` | verified Resend sender |
+| `WIFIHAVEN_PRESS_OUTREACH_REPLY_TO` | `press@wifihaven.net` | → CF Email Worker → #2203 responder |
+| `WIFIHAVEN_PRESS_OUTREACH_PER_SEND_DELAY_MS` | `2000` | spacing between sends |
+
+Which produces:
 
 ```hocon
 wifihaven {
   email { enabled = true, resendApiKey = "re_…", fromAddress = "WifiHaven <alerts@wifihaven.net>" }
   pressOutreach {
     enabled     = true
-    fromAddress = "WifiHaven Press <press@wifihaven.net>"   # verified Resend sender
-    replyTo     = "press@wifihaven.net"                     # → CF Email Worker → #2203 responder
+    fromAddress = "WifiHaven Press <press@wifihaven.net>"
+    replyTo     = "press@wifihaven.net"
     perSendDelayMillis = 2000
   }
 }
@@ -43,13 +56,16 @@ wifihaven {
 Boot fails loud if `pressOutreach.enabled=true` without email configured (no dark-by-default). The
 resolved state is visible at boot and on the loopback `GET /api/debug/config`.
 
+Turning the flag on does not send anything on its own: a send additionally needs `confirm=true`
+in the request, every release fill token resolved, and an admin in the operator household.
+
 ## Endpoints
 
 Both are `POST`, admin + operator-household only. Body is JSON:
 
 | field | meaning |
 |---|---|
-| `fill` | the release fill tokens: `city`, `date`, `founderName`, `founderQuote`, `betaSignupUrl`, `pressKitUrl` |
+| `fill` | the release fill tokens. As of 2026-08-15 there are **three**: `founderName`, `betaSignupUrl`, `pressKitUrl`. The dateline carries no city, and the date and founder quote are literal in the copy. |
 | `emailOverrides` | `contactId -> verified address`, supplied at send time (nothing fabricated in-repo) |
 | `testRecipient` | redirect every real transmit to ONE safe address (validate a real send) |
 | `confirm` | must be `true` to actually send (ignored by preview) |
@@ -61,9 +77,9 @@ curl -sS -X POST https://api.wifihaven.net/api/press/outreach/preview \
   -H "Authorization: Bearer $ADMIN_JWT" -H 'Content-Type: application/json' \
   -d '{
         "fill": {
-          "city": "San Francisco", "date": "July 20, 2026",
-          "founderName": "Sameer", "founderQuote": "…approved quote…",
-          "betaSignupUrl": "https://wifihaven.net/beta", "pressKitUrl": "https://wifihaven.net/press"
+          "founderName": "…",
+          "betaSignupUrl": "https://app.wifihaven.net/beta",
+          "pressKitUrl": "https://wifihaven.net/press"
         }
       }' | jq
 ```
@@ -99,6 +115,22 @@ Re-running is safe: already-sent contacts return `skipped_already_sent`.
 
 - Replies land at `press@wifihaven.net` → the #2203 responder drafts/sends the reply.
 - Watch `press_outreach_total{outcome}` (Grafana "Press outreach" panel) — `sent` vs `failed`.
-- For form-only outlets, submit the 3-sentence pitch + release link via their `contactUrl`
+- For form-only outlets — which as of 2026-08-15 is ALL of them — submit that outlet's own pitch,
+  shortened, plus a release link via their `contactUrl`
   (see [`media-list.md`](media-list.md) "Email send workflow").
 - Post the community channels (Show HN, r/selfhosted, r/openwrt) directly — those are not emailed.
+
+## Stopping a batch mid-run
+
+The send loop is sequential and spaced by `perSendDelayMillis`, so there is real time between
+transmits. To stop:
+
+1. **Kill the request.** Ctrl-C the `curl`. The server-side fiber is tied to the request, so
+   interrupting the connection interrupts the loop.
+2. **If that doesn't take, flip the flag off** — set `WIFIHAVEN_PRESS_OUTREACH_ENABLED=false` in
+   Render and redeploy. The endpoint stops existing.
+3. **Then check what actually went out** before doing anything else: the `press_messages` ledger
+   records every real send, and `press_outreach_total{outcome}` counts them. Whatever is recorded
+   is what a journalist received.
+4. **Resuming is safe and is the intended repair.** Re-run the same send; already-contacted
+   addresses return `skipped_already_sent`, so nobody is mailed twice.
