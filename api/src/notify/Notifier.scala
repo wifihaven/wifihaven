@@ -511,7 +511,15 @@ object Notifier {
          |</div>""".stripMargin
     }
 
-    /** Minimal HTML escape for the user-controlled fields (kid note, profile/host names). */
+    /**
+     * Minimal HTML escape for the user-controlled fields (kid note, profile/host names).
+     *
+     * Deliberately NOT [[EmailMarkdown]], and not a duplicate of it (#2677): this one also escapes
+     * `"` and `'` because these fields land in ATTRIBUTE positions in the templates above (the
+     * `href` on the billing button), which `EmailMarkdown` never does — and it renders no markdown,
+     * because these are names and notes, not authored copy. Different contract, not a second copy;
+     * do not collapse the two.
+     */
     private def esc(s: String): String =
       s.replace("&", "&amp;")
         .replace("<", "&lt;")
