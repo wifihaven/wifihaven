@@ -2456,7 +2456,7 @@ describe("slow-path bounding (#2719)", function()
   -- way to evaluate the exception clauses is to probe the same sets.
 
   it("does not report blocked when the global_allow set covers the destination", function()
-    local calls, _e = counting_exec(nil)
+    local calls = {}
     local exec = function(cmd)
       calls[#calls + 1] = cmd
       if cmd:find("bl_ads", 1, true) then return 0 end
@@ -2566,8 +2566,9 @@ describe("slow-path bounding (#2719)", function()
   it("probes extraBlocked hosts in sorted order under a tripped ceiling", function()
     -- Asserting "two runs agree" would NOT catch a `pairs` regression: Lua's
     -- iteration order over an unmodified table is stable within a process, so
-    -- that test passes for free. Pin the actual order instead — the first N
-    -- hosts by sort — which fails the moment the loop stops sorting.
+    -- that test passes for free. Pin the actual order instead. The expected
+    -- list is the first `slow_path_max_probes` hosts in sort order, i.e. a
+    -- PREFIX of the sort — raising the cap here means extending it.
     local eb_hosts = {}
     for i = 1, 50 do eb_hosts[string.format("h%02d.example", i)] = true end
     local calls, exec = counting_exec(nil)
@@ -2584,7 +2585,7 @@ describe("slow-path bounding (#2719)", function()
     end
   end)
 
-  it("issues zero probes for the IPv4 limited broadcast (DHCPv4's ff02::1:2)", function()
+  it("issues zero probes for the IPv4 limited broadcast (DHCPv4's analogue of ff02::1:2)", function()
     local calls, exec = counting_exec(nil)
     conntrack.handle_flow({ src_ip = SRC_IP, dst_ip = "255.255.255.255" }, ctx_with({
       eb_hosts_by_mac = { [MAC] = { ["example.com"] = true } },
@@ -2594,6 +2595,44 @@ describe("slow-path bounding (#2719)", function()
     assert.equal(0, #calls)
     assert.is_false(conntrack.is_wan_bound(
       { src_ip = SRC_IP, dst_ip = "255.255.255.255" }, "192.168.1."))
+  end)
+
+  it("runs the carve-out check at most once per flow", function()
+    -- Both the extraBlocked and the category path reach the carve check for
+    -- this flow: the eb_ probe hits, the carve says "carved" so the eb_ block
+    -- is dropped, and the still-allowed flow then hits the bl_ probe and asks
+    -- again. The answer is a property of (dst_ip, mac) and each probe is a
+    -- fork on the watcher's foreground loop, so it must be computed once — the
+    -- cost formula on SLOW_PATH_MAX_PROBES depends on that.
+    local calls = {}
+    local exec = function(cmd)
+      calls[#calls + 1] = cmd
+      if cmd:find("eb_blocked_example", 1, true) then return 0 end
+      if cmd:find("bl_ads", 1, true) then return 0 end
+      if cmd:find("global_allow", 1, true) then return 0 end
+      return 1
+    end
+    local b = collecting_batcher()
+    conntrack.handle_flow({ src_ip = SRC_IP, dst_ip = DST_IP }, ctx_with({
+      eb_hosts_by_mac = { [MAC] = { ["blocked.example"] = true } },
+      ea_hosts_by_mac = {},
+      bl_hosts_by_mac = { [MAC] = { ["ad.doubleclick.net"] = "ads" } },
+      bl_ids_by_mac   = { [MAC] = bl_ids_set({ "ads" }) },
+      exec_fn         = exec,
+    }), b)
+    local ga, eb, bl = 0, 0, 0
+    for _, cmd in ipairs(calls) do
+      if cmd:find("global_allow", 1, true)       then ga = ga + 1 end
+      if cmd:find("eb_blocked_example", 1, true) then eb = eb + 1 end
+      if cmd:find("bl_ads", 1, true)             then bl = bl + 1 end
+    end
+    -- Liveness anchors: both classification probes really did run and hit, so
+    -- both really did ask for the carve state.
+    assert.equal(1, eb, "the eb_ probe must have run")
+    assert.equal(1, bl, "the bl_ probe must have run")
+    assert.equal(1, ga, "global_allow must be probed once per flow, not once per asking path")
+    assert.equal(true, b.events[#b.events].allowed,
+      "global_allow covers the destination, so the kernel forwarded it")
   end)
 
   it("bl_san agrees with render's bl_ set-name sanitizer for every id shape", function()

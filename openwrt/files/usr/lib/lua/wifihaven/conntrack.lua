@@ -13,13 +13,15 @@
 --     nftset suffix-match semantics (exact OR subdomain), NOT off nft_sets[host][ip].
 --   * Both allowed and blocked flows are batched.  Blocking state comes from the
 --     same policy tables that render.lua writes; we read them but never modify them.
---   * Reporting limitation: when DNS attribution is unavailable (hname=nil) and the
---     MAC is paused/time-limited, the agent cannot tell whether the kernel's ea_
---     carve-out fired.  In that case the flow is logged as blocked even if the
---     kernel actually allowed it (flows to extraAllowed hosts from a blocked MAC
---     with no DNS attribution are under-reported as blocked).  The same limitation
---     applies to per-host eb_ classification: without hname we cannot match against
---     eb_hosts_by_mac and the flow is left as allowed.
+--   * Reporting limitation, WHOLE-MAC BLOCK PATH ONLY: when DNS attribution is
+--     unavailable (hname=nil) and the MAC is paused/time-limited, the agent cannot
+--     tell whether the kernel's ea_ carve-out fired, so the flow is logged as
+--     blocked even if the kernel actually allowed it.  TODO(#2723): that branch
+--     can now call slow_path_carve_state() like the per-host paths do.
+--     The per-host eb_ and per-category bl_ paths NO LONGER share this gap
+--     (#2719): a DNS-miss flow probes the live eb_/bl_ sets and then probes the
+--     kernel's own carve-out sets (global_allow, the MAC's ea_ sets) before it
+--     may be labelled blocked.
 
 local M = {}
 
@@ -342,9 +344,9 @@ end
 -- Slow-path ceilings (#2719). These are a structural backstop, not a tuning
 -- knob: with the per-list category probe and the non-attributable-destination
 -- filter in place a real flow costs at most (extraBlocked hosts + assigned
--- blocklist ids + extraAllowed hosts + 1) probes, and the carve-out check runs
--- at most once per flow (memoized) — single-to-low-double digits
--- in production. The ceiling exists so that a candidate set nobody anticipated
+-- blocklist ids + extraAllowed hosts + 1) probes — single-to-low-double digits
+-- in production — because the carve-out check is memoized and so runs at most
+-- once per flow. The ceiling exists so that a candidate set nobody anticipated
 -- still cannot stop the agent, because every agent timer (policy apply, usage
 -- flush, event flush, metrics push, ws pending-apply) runs from the conntrack
 -- watcher's on_tick and therefore stops with it. They are code constants, not

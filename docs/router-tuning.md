@@ -94,10 +94,15 @@ regardless of traffic.
   the heartbeat necessary makes any unbounded work inside `handle_flow` fatal —
   an agent that never returns from classifying one flow stops every timer at
   once, and stays up while doing it, so nothing alerts. The conntrack
-  DNS-attribution-miss path is therefore capped per flow
-  (`conntrack.SLOW_PATH_MAX_PROBES` / `SLOW_PATH_MAX_SECONDS` — Lua constants,
-  deliberately **not** UCI options: a ceiling whose only job is to keep the
-  agent alive is not something an operator should be able to raise). When a cap
+  DNS-attribution-miss path is therefore capped by `SLOW_PATH_MAX_PROBES`
+  (`64`) nftables probes **per stage** — extraBlocked, category, carve-out —
+  under one shared `SLOW_PATH_MAX_SECONDS` (`0.5`) deadline, so the hard
+  per-flow ceiling is 3 × 64 = 192 probes. Per stage, not one shared pool: a
+  large extraBlocked set draining a single pool would silently switch category
+  classification off for every DNS-miss flow. Both are Lua constants in
+  `conntrack.lua`, deliberately **not** UCI options — a ceiling whose only job
+  is to keep the agent alive is not something an operator should raise. When a
+  cap
   trips, the flow is labelled without a full nftables membership check and
   `conntrack_slow_path_capped_total{reason}` increments — see the "Conntrack
   slow-path ceiling trips" panel. Flat 0 is healthy; a non-zero series means
