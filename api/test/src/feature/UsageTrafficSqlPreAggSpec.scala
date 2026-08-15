@@ -268,7 +268,7 @@ object UsageTrafficSqlPreAggSpec extends ZIOSpec[TestDatabase.AllRepos & Embedde
           HouseholdId.Default,
           tRepo,
           rRepo,
-          Nil,
+          wifihaven.api.usage.MacScope.AllInHousehold,
           dayStart,
           dayEnd,
           UsageTraffic.Bucket.TenMin,

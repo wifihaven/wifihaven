@@ -247,6 +247,7 @@ inventory (trait declarations in [`Repos.scala`](../../api/src/db/Repos.scala)):
 | ~~`DeviceRepo.listAll`~~ | — | **CLOSED (#2257).** Deleted; no cross-tenant successor. Two methods still take no `household`, for different reasons: `listForProfile(profileId)` ([`:729`](../../api/src/db/Repos.scala)) is scoped transitively through the profile FK, while `findOwningHousehold(mac)` ([`:769`](../../api/src/db/Repos.scala)) is the ONE deliberate cross-tenant read on devices (#2566/#2322) — the unauthenticated block-page **intake** (access-request) fallback for a redirect carrying no verifiable `bpt` — the block-page READ path deliberately falls back to `HouseholdId.Default` instead (#2569, [`BlockedRoutes.scala:105`](../../api/src/routes/BlockedRoutes.scala)), arbitrary for a shared MAC and off-limits to any authenticated path. |
 | ~~`AlertRepo.list(includeAll)`~~ | — | **CLOSED (#2571).** Deleted; `listForHousehold(includeAll, household)` is the only accessor. |
 | ~~`RouterRepo.listAll`~~ | — | **CLOSED (#2571).** Deleted; `listAllForHousehold(household)` is the only accessor. |
+| ~~`RollupRepo.listHourlyInRange` / `listDailyInRange` / `aggregateByApp{Hourly,Daily}`~~ | — | **CLOSED (#2708).** All four now take `household` and AND-compose `SqlFragments.householdRouterScope` — the same transitive `routers.household_id` predicate the raw `traffic_reports` reads got in #2313/#2568. They had no household parameter at all, and `macs = Nil` disabled their only filter, so a household with ZERO devices (whose no-filter read legitimately resolves to `Nil`) read every tenant's rollup rows. The `Nil`-means-all ambiguity that made that reachable is itself closed by `MacScope` ([`MacScope.scala`](../../api/src/usage/MacScope.scala)): "no filter supplied" and "filter selected nothing" are now distinct constructors, so no caller re-derives the distinction. |
 | `AppRepo.listAll` / `listAllHostMappings` | [`:4223`](../../api/src/db/Repos.scala),[`:4289`](../../api/src/db/Repos.scala) | apps are **template-global**; scope only *assignments*, not the catalog. Post-#2571 these are the ONLY unscoped `listAll`-family reads left on any repo. |
 
 Plus the global-sentinel profile (`isGlobal`,
@@ -367,9 +368,17 @@ join to another's rows.
 
 **Decision, split by how the table is keyed:**
 
-- **`router_id`-keyed tables** (`traffic_reports`, `connection_events`) need
+- **`router_id`-keyed tables** (`traffic_reports`, `connection_events`, and the
+  rollups derived from them — `traffic_hourly` / `traffic_daily`
+  ([`V38__rollup_tables.sql`](../../api/resources/db/migration/V38__rollup_tables.sql)),
+  `connection_events_{hourly,daily}`) need
   **no new column**: `router_id` → `routers.household_id` scopes them
-  transitively, and reads already filter by router. Where such a read ALSO
+  transitively, and reads already filter by router. The rollups inherit this
+  because the reroll writes `router_id` straight through from the source rows;
+  #2708 measured the predicate on prod (2.2M `traffic_hourly` rows) as a
+  1-row `Materialize` semijoin over `routers` — 5 shared buffers, no change to
+  the outer index scan's plan class — so the transitive scope costs nothing that
+  would justify denormalizing `household_id` onto an unbounded-growth table. Where such a read ALSO
   resolves a device or profile label from the row's MAC, that join must name the
   household too — filtering by router scopes the row set but not the labels, and
   the two are separate predicates (#2609; see the clause-(1) note below). Writes

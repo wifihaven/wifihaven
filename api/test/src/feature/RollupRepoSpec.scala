@@ -4,6 +4,7 @@ import doobie.*
 import doobie.implicits.*
 import io.zonky.test.db.postgres.embedded.EmbeddedPostgres
 import wifihaven.api.db.*
+import wifihaven.api.db.TypeMeta.given
 import wifihaven.api.policy.PolicyService
 import wifihaven.shared.types.*
 import wifihaven.testinfra.*
@@ -125,7 +126,12 @@ object RollupRepoSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         rollup <- ZIO.service[RollupRepo]
         rolled <- rollup.rerollHourly(start.minusSeconds(3600)).map(_.getOrElse(0))
         // Read back what landed
-        rows   <- rollup.listHourlyInRange(List(mac), start, start.plusSeconds(3600 * 2))
+        rows   <- rollup.listHourlyInRange(
+          HouseholdId.Default,
+          List(mac),
+          start,
+          start.plusSeconds(3600 * 2),
+        )
       } yield assertTrue(
         rows.size == 1,
         rows.head.bucketStart == start,
@@ -161,7 +167,12 @@ object RollupRepoSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         _      <- seedReports(rid, start, 288, bytesPerBucket = 10L)
         rollup <- ZIO.service[RollupRepo]
         _      <- rollup.rerollDaily(date.minusDays(1))
-        rows   <- rollup.listDailyInRange(List(mac), start, start.plusSeconds(86400))
+        rows   <- rollup.listDailyInRange(
+          HouseholdId.Default,
+          List(mac),
+          start,
+          start.plusSeconds(86400),
+        )
       } yield assertTrue(
         rows.size == 1,
         rows.head.activeSeconds == 288 * 300,
@@ -256,14 +267,50 @@ object RollupRepoSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         // Window covers only the middle 2 hours
         windowFrom = start.plusSeconds(3600)
         windowTo   = start.plusSeconds(3600 * 3)
-        rows  <- rollup.listHourlyInRange(List(mac), windowFrom, windowTo)
+        rows  <- rollup.listHourlyInRange(HouseholdId.Default, List(mac), windowFrom, windowTo)
         // Filter to a non-matching mac returns nothing
         other <- rollup.listHourlyInRange(
+          HouseholdId.Default,
           List(MacAddress.unsafe("ff:ff:ff:ff:ff:ff")),
           start,
           start.plusSeconds(86400),
         )
       } yield assertTrue(rows.size == 2, other.isEmpty)
+    },
+    // #2708: the tenancy predicate at the SQL level. `macs = Nil` is the "all macs" widening — it
+    // must widen only to the household's OWN rows. Both grains are pinned in both directions, so a
+    // predicate that resolved to the wrong household (returning nothing for everyone) can't pass.
+    test("listHourly/listDailyInRange scope to the household even with macs = Nil") {
+      for {
+        _    <- cleanDb
+        xa   <- ZIO.service[Transactor[Task]]
+        rid  <- seedRouter
+        // A second household with its own router and its own traffic on the SAME mac.
+        hhB  <- sql"INSERT INTO households(name, slug) VALUES ('B', 'hh-b') RETURNING id"
+          .query[HouseholdId]
+          .unique
+          .transact(xa)
+        ridB <- ZIO.serviceWithZIO[RouterRepo](
+          _.create("gwB", PolicyService.hashToken("et_b"), hhB),
+        )
+        start = LocalDate.of(2026, 3, 1).atStartOfDay(ZoneOffset.UTC).toInstant
+        _      <- seedReports(rid, start, 12, bytesPerBucket = 100L)
+        _      <- seedReports(ridB, start, 12, bytesPerBucket = 900L)
+        rollup <- ZIO.service[RollupRepo]
+        _      <- rollup.rerollHourly(start.minusSeconds(3600))
+        _      <- rollup.rerollDaily(start.atZone(ZoneOffset.UTC).toLocalDate.minusDays(1))
+        to = start.plusSeconds(86400)
+        hourlyA <- rollup.listHourlyInRange(HouseholdId.Default, Nil, start, to)
+        hourlyB <- rollup.listHourlyInRange(hhB, Nil, start, to)
+        dailyA  <- rollup.listDailyInRange(HouseholdId.Default, Nil, start, to)
+        dailyB  <- rollup.listDailyInRange(hhB, Nil, start, to)
+      } yield assertTrue(
+        // Each household reads exactly its own bytes — never the sum, never the other's.
+        hourlyA.map(_.bytesIn).sum == 12 * 100L,
+        hourlyB.map(_.bytesIn).sum == 12 * 900L,
+        dailyA.map(_.bytesIn).sum == 12 * 100L,
+        dailyB.map(_.bytesIn).sum == 12 * 900L,
+      )
     },
   ) @@ TestAspect.sequential
 }
