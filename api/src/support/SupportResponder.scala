@@ -1324,7 +1324,7 @@ final case class SupportResponder(
               "unrecorded link is one the #2709 exclusion cannot cover (#2709)",
           ) *> AppMetrics.supportConsent(SupportResponder.LinkRecordError) *>
             done(AgentAction.ConsentRequest, AgentActionResult.Error),
-        _ =>
+        superseded =>
           plain
             .writeThread(write)
             .flatMap {
@@ -1332,10 +1332,29 @@ final case class SupportResponder(
                 AppMetrics.supportConsent("requested") *>
                   done(AgentAction.ConsentRequest, AgentActionResult.Ok)
               case PlainOutcome.Disabled =>
-                // The write half is dark, so nothing was attempted and no link can be in front of the
-                // customer — the ONE outcome that proves non-delivery (see [[settleThreadWrite]]). So
-                // the row is DISCARDED: a link nobody was shown must not mute the agent for 24h.
-                discardPostedLink(claims, nonce) *>
+                // The write half is dark, so nothing was attempted and no link can be in front of
+                // the customer — the ONE outcome that proves non-delivery (see
+                // [[settleThreadWrite]]). So the row is DISCARDED: a link nobody was shown must not
+                // mute the agent for 24h.
+                //
+                // …UNLESS this record SUPERSEDED one, and that is the whole reason `superseded` is
+                // threaded down here. Discarding then would resolve the older row and remove the
+                // newer one, leaving a thread whose customer can still see (and still redeem) the
+                // EARLIER link with nothing outstanding in the ledger — the agent unmuted beneath a
+                // live genuine link, which is #2709 itself. Keeping the row instead mutes a thread
+                // that has a real link on it, which is the direction this control must fail in.
+                //
+                // Unreachable today: `Disabled` is decided once at layer construction from the
+                // explicit `plain.writeEnabled` flag (`PlainClient.scala`), so a process that ever
+                // posted a prompt cannot later report it. The guard is here so that stays a local
+                // property of this branch rather than an inference about another file.
+                (if superseded > 0 then
+                   ZIO.logWarning(
+                     s"support: a dark Plain write followed a prompt that SUPERSEDED " +
+                       s"$superseded link(s) on thread=${claims.threadId} — keeping the row, " +
+                       "because an earlier link may still be in front of the customer (#2709)",
+                   )
+                 else discardPostedLink(claims, nonce)) *>
                   AppMetrics.supportConsent("request_disabled") *>
                   done(AgentAction.ConsentRequest, AgentActionResult.Disabled)
               case PlainOutcome.Error    =>
@@ -1363,12 +1382,17 @@ final case class SupportResponder(
    * and is undone; a posted link that was never recorded is a live consent link the exclusion
    * cannot see, which is the phishing surface. `link_record_error` therefore counts prompts we
    * REFUSED to post, not links we lost track of, and is still an expect-zero series.
+   *
+   * Answers HOW MANY links this record superseded, because the caller needs it: a record that
+   * displaced a live link must not be discarded even when the write comes back dark, or the thread
+   * is left with a customer-visible link and nothing outstanding in the ledger. See the `Disabled`
+   * branch above.
    */
   private def recordPostedLink(
       claims: ConsentToken.Claims,
       nonce: String,
       now: Instant,
-  ): Task[Unit] =
+  ): Task[Int] =
     consentRepo
       .recordPrompt(
         claims.householdId,
@@ -1386,7 +1410,6 @@ final case class SupportResponder(
           .zipRight(AppMetrics.supportConsent(SupportResponder.LinkSuperseded))
           .when(superseded > 0),
       )
-      .unit
 
   /**
    * #2709 — undo [[recordPostedLink]] when the prompt was never posted, which is `Disabled` and
