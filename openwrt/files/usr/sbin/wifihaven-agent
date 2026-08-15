@@ -72,10 +72,17 @@ if lan_warn_msg then log.warn(lan_warn_msg) end
 local router_token  = uci_get("router_token",         "")
 local router_id     = uci_get("router_id",            "")
 local lan_prefix    = uci_get("lan_prefix",           "192.168.1.")
--- #1688: optional v6 LAN ULA prefix (e.g. "fdaa:bbbb:cccc:"). When unset the
--- conntrack watcher rejects v6 flows (preserving today's behaviour on prod
--- routers that have not authored a v6 LAN). The qemu e2e harness seeds this
--- to the test ULA prefix via scripts/vm/uci-defaults/99-wifihaven (#1680).
+-- #1688: optional v6 LAN ULA prefix (e.g. "fdaa:bbbb:cccc:"). The qemu e2e
+-- harness seeds this to the test ULA prefix via
+-- scripts/vm/uci-defaults/99-wifihaven (#1680).
+--
+-- #2719: this used to say "when unset the conntrack watcher rejects v6 flows".
+-- That stopped being true at #2368/#1796: is_wan_bound's v6 branch takes the
+-- UNION of this prefix and the br-lan NDP neighbor set, and the neighbor set is
+-- an independent path into src_lan. A router with no lan_prefix_v6 — which is
+-- every production router, the option ships commented out — classifies and
+-- reports v6 flows today. Trusting the old comment is how a v6 multicast
+-- destination reached the DNS-miss slow path unnoticed.
 local lan_prefix_v6 = uci_get("lan_prefix_v6",        "")
 -- #2368: LAN bridge dev (network.lan.device, falling back to br-lan) — scopes
 -- the conntrack watcher's v6 NDP neighbor set to LAN neighbors so the upstream
@@ -451,6 +458,11 @@ local blocked_reason = {}   -- { mac -> reason_string }
 local eb_hosts_by_mac = {}  -- { mac -> { hostname -> true } } (extraBlocked)
 local ea_hosts_by_mac = {}  -- { mac -> { hostname -> true } } (extraAllowed carve-outs)
 local bl_hosts_by_mac = {}  -- { mac -> { hostname -> blocklist_id } } (category blocklist) (#594)
+-- #2719: the blocklist ids assigned to each MAC, without their membership.
+-- conntrack's DNS-attribution-miss path probes one bl_<id>/bl6_<id> nft set per
+-- id here instead of one eb_-style set per member host (180,343 forks for a
+-- single unattributed flow wedged the prod agent for six hours).
+local bl_ids_by_mac   = {}  -- { mac -> { blocklist_id -> true } } (#2719)
 
 -- ── HTTP helpers (curl, available on all OpenWrt builds) ──────────────────────
 
@@ -978,7 +990,7 @@ local function apply_and_publish(snap, reason)
     local shared_snap = enf_disabled and { devices = {}, profiles = {} } or snap
     render.update_shared(shared_snap, nft_sets, blocked_macs, blocked_reason,
                          eb_hosts_by_mac, ea_hosts_by_mac, bl_hosts_by_mac,
-                         make_bl_member_iterator(shared_snap))
+                         make_bl_member_iterator(shared_snap), bl_ids_by_mac)
   end
   return applied
 end
@@ -1096,7 +1108,7 @@ do
                     clock.monotonic_seconds() - t0)
     if applied then
       local boot_shared = enf_boot and ts.empty_snapshot or cached
-      render.update_shared(boot_shared, nft_sets, blocked_macs, blocked_reason, eb_hosts_by_mac, ea_hosts_by_mac, bl_hosts_by_mac, make_bl_member_iterator(boot_shared))
+      render.update_shared(boot_shared, nft_sets, blocked_macs, blocked_reason, eb_hosts_by_mac, ea_hosts_by_mac, bl_hosts_by_mac, make_bl_member_iterator(boot_shared), bl_ids_by_mac)
       ts.last_snapshot = cached
       log.info("startup: applied cached policy from /etc/wifihaven/policy.json")
     else
@@ -1136,7 +1148,7 @@ do
                     clock.monotonic_seconds() - at0)
     if applied then
       local boot_shared = enf_boot and ts.empty_snapshot or snap
-      render.update_shared(boot_shared, nft_sets, blocked_macs, blocked_reason, eb_hosts_by_mac, ea_hosts_by_mac, bl_hosts_by_mac, make_bl_member_iterator(boot_shared))
+      render.update_shared(boot_shared, nft_sets, blocked_macs, blocked_reason, eb_hosts_by_mac, ea_hosts_by_mac, bl_hosts_by_mac, make_bl_member_iterator(boot_shared), bl_ids_by_mac)
       ts.current_etag = etag
       ts.last_snapshot = snap
       policy.mark_poll_success(os.time())
@@ -1314,6 +1326,7 @@ conntrack.watch({
   eb_hosts_by_mac   = eb_hosts_by_mac,
   ea_hosts_by_mac   = ea_hosts_by_mac,
   bl_hosts_by_mac   = bl_hosts_by_mac,
+  bl_ids_by_mac     = bl_ids_by_mac,
   lan_prefix      = lan_prefix,
   lan_prefix_v6   = lan_prefix_v6,
   lan_dev         = lan_dev,
@@ -1327,6 +1340,12 @@ conntrack.watch({
   -- else — ws off, or the sidecar down past ws_fallback_after — passes straight
   -- through to http_post unchanged.
   http_post       = usage_events_post,
+  -- #2719: metric sink for the conntrack slow-path ceiling. conntrack.lua has
+  -- no metrics registry of its own; the agent owns mreg and passes the same
+  -- inc_counter it uses at every other call site.
+  inc_counter_fn  = function(name, labels, by)
+    metrics.inc_counter(mreg, name, labels, by)
+  end,
   log             = log,
   register_batcher = function(b) ts.events_batcher = b end,
 

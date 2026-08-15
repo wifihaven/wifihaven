@@ -1466,6 +1466,51 @@ describe("render.update_shared", function()
     assert.is_nil(bl["tiktok.com"])
   end)
 
+  it("populates bl_ids_by_mac with the assigned list ids, membership or not (#2719)", function()
+    local s = snap_one()  -- profile 3 has blocklistIds = { "ads", "adult" }
+    -- Deliberately no _blocklist_hosts and no member iterator: the ids the
+    -- conntrack DNS-miss path probes come from blocklistIds, never from a
+    -- reduction over the (180k-entry) membership table.
+    local nft_sets, blocked_macs, blocked_reason = {}, {}, {}
+    local eb_hosts_by_mac, ea_hosts_by_mac, bl_hosts_by_mac, bl_ids_by_mac = {}, {}, {}, {}
+    render.update_shared(s, nft_sets, blocked_macs, blocked_reason,
+                         eb_hosts_by_mac, ea_hosts_by_mac, bl_hosts_by_mac,
+                         nil, bl_ids_by_mac)
+    local ids = bl_ids_by_mac["aa:bb:cc:11:22:33"]
+    assert.is_not_nil(ids)
+    assert.is_true(ids["ads"])
+    assert.is_true(ids["adult"])
+    assert.is_nil(bl_hosts_by_mac["aa:bb:cc:11:22:33"])
+  end)
+
+  it("keeps a list id whose only member was claimed by extraBlocked (#2719)", function()
+    -- The bl_ MEMBERSHIP table drops a host that extraBlocked already covers,
+    -- so deriving ids from it would lose the list entirely — and with it every
+    -- other member IP the kernel still drops via bl_<id>.
+    local s = snap_one()
+    s.profiles["3"].rules.extraBlocked  = { "shared.example" }
+    s.profiles["3"].rules.blocklistIds  = { "ads" }
+    s._blocklist_hosts = { ads = { "shared.example" } }
+    local nft_sets, blocked_macs, blocked_reason = {}, {}, {}
+    local eb_hosts_by_mac, ea_hosts_by_mac, bl_hosts_by_mac, bl_ids_by_mac = {}, {}, {}, {}
+    render.update_shared(s, nft_sets, blocked_macs, blocked_reason,
+                         eb_hosts_by_mac, ea_hosts_by_mac, bl_hosts_by_mac,
+                         nil, bl_ids_by_mac)
+    assert.is_nil((bl_hosts_by_mac["aa:bb:cc:11:22:33"] or {})["shared.example"])
+    assert.is_true(bl_ids_by_mac["aa:bb:cc:11:22:33"]["ads"])
+  end)
+
+  it("clears bl_ids_by_mac on every rebuild (#2719)", function()
+    local s = snap_one()
+    local nft_sets, blocked_macs, blocked_reason = {}, {}, {}
+    local eb_hosts_by_mac, ea_hosts_by_mac, bl_hosts_by_mac = {}, {}, {}
+    local bl_ids_by_mac = { ["stale:mac"] = { gone = true } }
+    render.update_shared(s, nft_sets, blocked_macs, blocked_reason,
+                         eb_hosts_by_mac, ea_hosts_by_mac, bl_hosts_by_mac,
+                         nil, bl_ids_by_mac)
+    assert.is_nil(bl_ids_by_mac["stale:mac"])
+  end)
+
   it("extraBlocked beats category when the same host appears in both (#594)", function()
     local s = snap_one()
     s.profiles["3"].rules.extraBlocked = { "shared.example" }

@@ -930,6 +930,36 @@
           }
         }
       ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "Conntrack slow-path ceiling trips (#2719)",
+      "description": "sum by (router_id, reason) (rate(conntrack_slow_path_capped_total[5m])) \u2014 the agent's DNS-attribution-miss path stopped probing nftables set membership before it had checked every candidate, because it hit the per-flow ceiling: reason=probes (iteration cap) or reason=deadline (wall clock). Every probe is a fork+exec inside the conntrack watcher's foreground loop, and every agent timer (policy apply, usage flush, event flush, metrics push, ws pending-apply) runs from that same loop \u2014 which is why the unbounded version of this loop stopped the prod family router's agent for six hours with the process alive and silent (#2719). Steady-state value MUST be 0. A non-zero series is not an outage \u2014 the ceiling did its job and the agent kept running \u2014 but that router is labelling connection_events without a full membership check, so find what grew its candidate set.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 112 },
+      "id": 29,
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "unit": "short",
+          "min": 0,
+          "custom": { "drawStyle": "line", "fillOpacity": 30, "showPoints": "always", "lineWidth": 2, "thresholdsStyle": { "mode": "line" } },
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "red", "value": 0.0000001 } ] }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (router_id, reason) (rate(conntrack_slow_path_capped_total{env=\"$env\"}[5m]))",
+          "legendFormat": "{{router_id}} {{reason}}",
+          "refId": "A"
+        }
+      ]
     }
   ],
   "refresh": "30s",

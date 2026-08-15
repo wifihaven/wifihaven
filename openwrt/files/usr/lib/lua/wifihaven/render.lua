@@ -1661,7 +1661,11 @@ end
 --       blocklist id that matched (used to surface a category-specific reason
 --       on the block page and in connection_event.reason — #594). If multiple
 --       blocklists contain the same host, the first by sorted id wins.
--- All three tables are cleared and rebuilt on every call. Callers that do not
+--   bl_ids_by_mac (#2719): { mac -> { blocklist_id -> true } }
+--     — the list ids assigned to this MAC, WITHOUT their membership. Feeds
+--       conntrack's DNS-attribution-miss path, which probes one bl_<id> nft
+--       set per assigned list instead of one eb_-style set per member host.
+-- All four tables are cleared and rebuilt on every call. Callers that do not
 -- need per-host block classification may omit them (pass nil).
 --
 -- bl_member_iterator (optional, #1782): a function `iterator(id)` that returns
@@ -1678,7 +1682,7 @@ end
 -- across the agent's lifetime.
 function M.update_shared(snapshot, nft_sets, blocked_macs, blocked_reason,
                          eb_hosts_by_mac, ea_hosts_by_mac, bl_hosts_by_mac,
-                         bl_member_iterator)
+                         bl_member_iterator, bl_ids_by_mac)
   if blocked_macs then
     for k in pairs(blocked_macs) do blocked_macs[k] = nil end
   end
@@ -1693,6 +1697,9 @@ function M.update_shared(snapshot, nft_sets, blocked_macs, blocked_reason,
   end
   if bl_hosts_by_mac then
     for k in pairs(bl_hosts_by_mac) do bl_hosts_by_mac[k] = nil end
+  end
+  if bl_ids_by_mac then
+    for k in pairs(bl_ids_by_mac) do bl_ids_by_mac[k] = nil end
   end
 
   -- Build a blocklist-id → [hosts] lookup so we can expand blocklistIds below.
@@ -1740,6 +1747,20 @@ function M.update_shared(snapshot, nft_sets, blocked_macs, blocked_reason,
       -- multiple lists. extraBlocked (eb_) takes precedence over category
       -- (bl_) when the same host is in both — populate bl_hosts_by_mac only
       -- if the host isn't already in eb_hosts_by_mac[mac].
+      -- #2719: the ASSIGNED list ids, independent of their membership. The
+      -- conntrack DNS-miss path probes one bl_<id>/bl6_<id> nft set per id;
+      -- deriving the id set by reducing over bl_hosts_by_mac would be a scan
+      -- of every member host (180,343 on the prod family router) and would
+      -- also lose an id whose members were suppressed by extraBlocked
+      -- precedence below. Source it from r.blocklistIds, same as the ipsets
+      -- the kernel actually holds.
+      if bl_ids_by_mac and type(r.blocklistIds) == "table" and #r.blocklistIds > 0 then
+        if not bl_ids_by_mac[mac] then bl_ids_by_mac[mac] = {} end
+        for _, id in ipairs(r.blocklistIds) do
+          bl_ids_by_mac[mac][id] = true
+        end
+      end
+
       if bl_hosts_by_mac and type(r.blocklistIds) == "table" and #r.blocklistIds > 0 then
         local ids = {}
         for _, id in ipairs(r.blocklistIds) do ids[#ids + 1] = id end

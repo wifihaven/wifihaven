@@ -90,6 +90,24 @@ regardless of traffic.
   the heartbeat failed to keep `on_tick` alive. A healthy fleet holds it flat
   at 0 (see the "Usage window stalls per router" panel on the router-fleet
   Grafana dashboard).
+- **Related failure mode (#2719)**: the same single-threaded property that makes
+  the heartbeat necessary makes any unbounded work inside `handle_flow` fatal —
+  an agent that never returns from classifying one flow stops every timer at
+  once, and stays up while doing it, so nothing alerts. The conntrack
+  DNS-attribution-miss path is therefore capped by `SLOW_PATH_MAX_PROBES`
+  (`64`) nftables probes **per stage** — extraBlocked, category, carve-out —
+  under one shared `SLOW_PATH_MAX_SECONDS` (`0.5`) deadline, so the hard
+  per-flow ceiling is 3 × 64 = 192 probes. Per stage, not one shared pool: a
+  large extraBlocked set draining a single pool would silently switch category
+  classification off for every DNS-miss flow. Both are Lua constants in
+  `conntrack.lua`, deliberately **not** UCI options — a ceiling whose only job
+  is to keep the agent alive is not something an operator should raise. When a
+  cap
+  trips, the flow is labelled without a full nftables membership check and
+  `conntrack_slow_path_capped_total{reason}` increments — see the "Conntrack
+  slow-path ceiling trips" panel. Flat 0 is healthy; a non-zero series means
+  that router's candidate set grew past what the slow path expects, which is a
+  labeling problem to investigate, not an outage.
 
 ### `event_batch_size` (default `50`)
 
