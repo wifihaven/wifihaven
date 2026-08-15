@@ -197,8 +197,14 @@ change raises its priority.
   no write and no sweeper: it falls out of the predicate against the injected
   Clock).
   **And it does not dead-end the customer**, which is the part that took a
-  product decision rather than a schema. A refusal POSTS
-  `SupportResponder.consentLinkExplainer` — fixed server copy carrying no link of
+  product decision rather than a schema. The server POSTS
+  `SupportResponder.consentLinkExplainer` when a customer message arrives on a
+  thread carrying a live link — at DISPATCH, before the agent gets a turn, not
+  as a side effect of the agent attempting a reply. That ordering is the point:
+  the agent's prompt tells it to end the turn rather than write beneath a live
+  link, so an answer that only fired on a reply attempt would be missing for
+  exactly the compliant agent, and the guarantee would hold only for one that
+  ignored its instructions. It is fixed server copy carrying no link of
   its own, stating what the request covers and that WifiHaven will never ask for
   a password, a card, or a code, and naming *Don't allow* as an equally fine
   answer. Withholding an answer would only leave the customer guessing; saying

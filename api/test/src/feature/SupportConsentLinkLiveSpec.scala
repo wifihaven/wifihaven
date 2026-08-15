@@ -600,27 +600,38 @@ object SupportConsentLinkLiveSpec
       // correctly-scoped-caller-in-front-of-an-unscoped-read leak repeatedly (#2603, #2609, #2630,
       // #2708), and a guard whose failure mode is SILENCING the agent would surface as an
       // unexplained outage in someone else's household rather than as a data leak.
+      //
+      // BOTH HOUSEHOLDS USE THE SAME THREAD ID, deliberately, and that is the whole test. With
+      // different ids the thread_id predicate alone separates the rows, so deleting
+      // `AND household_id = ?` from `outstandingLink` would still pass — the test could not fail on
+      // the property it names. Sharing the id makes household_id the ONLY thing standing between
+      // A's live link and B's thread. (Plain would not itself mint one id for two customers; the
+      // point is to pin the SQL predicate, not to model Plain.)
+      val shared = "th_shared_j"
       for {
         _        <- cleanDb
         hhRepo   <- ZIO.service[HouseholdRepo]
         h        <- makeHarness
         hhA      <- hhRepo.create("Family J1", "family-j1")
         hhB      <- hhRepo.create("Family J2", "family-j2")
-        // A live, unredeemed link in household A.
-        s1       <- inbound(h, hhA, "th_j1", "how many profiles do I have?")
+        // A live, unredeemed link in household A, on the shared thread id.
+        s1       <- inbound(h, hhA, shared, "how many profiles do I have?")
         _        <- requestConsent(h, s1)
-        // Household B, its own thread, no link anywhere near it.
-        other    <- inbound(h, hhB, "th_j2", "my iPad is blocked")
+        promptsA <- prompts(h, shared)
+        // Household B, same thread id, no link of its own.
+        other    <- inbound(h, hhB, shared, "my iPad is blocked")
         answered <- reply(h, other, "Here is the fix.")
-        sentB    <- agentAuthored(h, "th_j2")
-        mutedA   <- agentAuthored(h, "th_j1")
-        // B must not be answered by A's explainer either — the server's message is scoped too.
-        explainB <- explainers(h, "th_j2")
+        // Everything landed on one thread id, so count by content rather than by thread.
+        written  <- written(h, shared)
+        explains <- explainers(h, shared)
       } yield assertTrue(
+        // A's prompt posted, and is the only link on the thread.
+        promptsA.size == 1,
+        // B is NOT muted by A's link: its agent reply reached the customer.
         answered == Status.Ok,
-        sentB.size == 1,
-        mutedA.isEmpty,
-        explainB.isEmpty,
+        written.contains(s"${SupportResponder.AiReplyAttribution}\n\nHere is the fix."),
+        // …and B was not handed A's explainer, which would mean the read crossed households.
+        explains.isEmpty,
       )
     },
     test("the refusal is LOUD in the log, and names neither the customer nor the text") {

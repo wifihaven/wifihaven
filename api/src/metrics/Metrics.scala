@@ -1287,8 +1287,10 @@ object AppMetrics {
   //   dead-end. `link_superseded` is a later prompt replacing an outstanding link. The two
   //   expect-zero ones are the SECURITY ones: `link_record_error` (the V89 ledger write failed, so
   //   the prompt was NOT posted — an unrecorded link is one the exclusion cannot cover, so we
-  //   refuse to create it) and `link_state_unknown` (the liveness lookup failed and the reply was
-  //   refused rather than risked). The values are named on `SupportResponder.LinkLiveOutcomes` and
+  //   refuse to create it) and `link_state_unknown` (the liveness lookup failed — on the reply path
+  //   that means the reply was refused rather than risked, at dispatch it means the explanation was
+  //   skipped and the dispatch went ahead; the log severity tells them apart, ERROR vs WARN).
+  //   The values are named on `SupportResponder.LinkLiveOutcomes` and
   //   pinned against the panel by SupportMetricsContractSpec.
   def supportConsent(outcome: String): UIO[Unit]       =
     MetricGuard.counter("support_consent_total", Map("outcome" -> outcome))

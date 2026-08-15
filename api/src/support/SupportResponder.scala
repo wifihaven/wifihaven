@@ -1454,8 +1454,15 @@ final case class SupportResponder(
    * answers "nothing live here" while the link in front of the customer is still redeemable: the
    * one gap where the exclusion would not cover a live link. So the row expires at the first
    * instant the token is definitely dead, `floor(now + ttl) + 1s`, which is never earlier than the
-   * signed `exp` and at most a second later. Erring later only ever mutes; erring earlier is the
-   * phishing surface.
+   * signed `exp`. In fact the two predicates are COINCIDENT, not merely ordered: with `E =
+   * floor(now + ttl)`, the token is alive iff `now < E+1s` (`verify` rejects on `floor(now) > E`)
+   * and the row is outstanding iff `now < E+1s` (`link_expires_at > now`). They die on the same
+   * instant. Both derive from the SAME `now` binding, so no clock re-read can reintroduce skew.
+   *
+   * This is a hand-maintained mirror of [[ConsentGrant]]'s rounding, which is why
+   * `SupportConsentLinkExpirySpec` pins the boundary from both sides — change either rounding rule
+   * and that test fails rather than the skew coming back silently. If the mirror ever has to move,
+   * err LATER: erring late only mutes, erring early is the phishing surface.
    *
    * The failure is DELIBERATELY not swallowed here — it propagates to the caller, which then does
    * not post the prompt at all. A recorded link that was never posted costs a briefly muted thread
@@ -1479,10 +1486,7 @@ final case class SupportResponder(
         claims.threadId,
         nonce,
         now,
-        now
-          .plus(SupportResponder.ConsentLinkTtl)
-          .truncatedTo(java.time.temporal.ChronoUnit.SECONDS)
-          .plusSeconds(1),
+        SupportResponder.linkExpiryFor(now),
       )
       .tap(superseded =>
         ZIO
@@ -2119,6 +2123,27 @@ object SupportResponder {
   val ConsentLinkTtl: java.time.Duration = ConsentTtl
 
   /**
+   * #2709 — when the V89 ledger row for a link posted at `now` stops counting as outstanding.
+   *
+   * NOT `now + ConsentLinkTtl`, and the difference is a security property. [[ConsentGrant.mint]]
+   * signs `exp = now.plus(ttl).getEpochSecond`, FLOORING to a whole second, and
+   * [[ConsentGrant.verify]] rejects only once `now.getEpochSecond > exp` — so the token stays
+   * redeemable through the END of that second. A nanosecond-precise row would stop matching
+   * `link_expires_at > now` up to a second early, and in that window `outstandingLink` answers
+   * "nothing live here" about a link the customer can still redeem: the one gap where the exclusion
+   * would not cover a live link. Rounding UP to `floor(now + ttl) + 1s` makes the row's death and
+   * the token's death the same instant.
+   *
+   * It lives here, as one function, because it is a hand-maintained mirror of `ConsentGrant`'s
+   * rounding — `SupportConsentLinkExpirySpec` pins it from both sides, and it can only do that
+   * honestly if the spec and `recordPostedLink` call the SAME expression rather than each keeping a
+   * copy. If it ever has to move, err LATER: erring late only mutes, erring early is the phishing
+   * surface.
+   */
+  def linkExpiryFor(now: Instant): Instant =
+    now.plus(ConsentLinkTtl).truncatedTo(java.time.temporal.ChronoUnit.SECONDS).plusSeconds(1)
+
+  /**
    * #2419 — the FIXED, server-authored consent prompt posted into the thread when the agent asks
    * for data access. Never agent-authored: the agent supplies no text in it, so it cannot craft a
    * phishing message under our attribution. Names exactly what is shared, that it is read-only,
@@ -2227,7 +2252,16 @@ object SupportResponder {
   val LinkRecordError: String = "link_record_error"
 
   /**
-   * EXPECT ZERO: the liveness lookup itself failed, and the reply was refused rather than risked.
+   * EXPECT ZERO: the liveness lookup itself failed. Covers BOTH reads of the ledger, which fail in
+   * opposite directions by design, so read it with the log line rather than alone:
+   *   - on the REPLY path it is fail-CLOSED — the reply was refused rather than risked (ERROR);
+   *   - at DISPATCH it is fail-SOFT — the explanation was skipped but the dispatch went ahead
+   *     (WARN), because nothing downstream depends on it and the reply path re-reads and still
+   *     refuses.
+   *
+   * One label rather than two: both mean the same operational fact (the ledger is unreadable), the
+   * pair is expect-zero anyway, and splitting would add a series whose only consumer would be this
+   * sentence. If they ever need separating, the log severity already distinguishes them.
    */
   val LinkStateUnknown: String = "link_state_unknown"
 
