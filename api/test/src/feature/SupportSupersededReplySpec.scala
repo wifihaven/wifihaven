@@ -235,9 +235,23 @@ object SupportSupersededReplySpec
    * attribution header stripped — this suite is about HOW MANY answers the customer got, not how
    * they are framed (`SupportAttributionSpec` owns the header).
    */
+  /**
+   * The AGENT-authored replies on this thread — what "exactly one reply" is counting.
+   *
+   * Server-authored writes are excluded, which is why the consent prompt was already filtered out
+   * by its link. #2709 added a second one: when a customer message arrives while an unredeemed
+   * consent link is live, the server posts [[SupportResponder.consentLinkExplainer]] at dispatch so
+   * the customer is answered without an agent turn. It is the server's own fixed copy, not a reply,
+   * and counting it here would make these assertions weaker rather than stronger — the point is
+   * that exactly one AGENT reply survives the race, and that is unchanged.
+   */
   private def replies(h: Harness, thread: String): UIO[List[String]] =
     h.plain.threads.get.map(
-      _.filter(w => w.threadId == thread && !w.markdown.contains("/support/consent?g="))
+      _.filter(w =>
+        w.threadId == thread &&
+          !w.markdown.contains("/support/consent?g=") &&
+          w.markdown != SupportResponder.consentLinkExplainer,
+      )
         .map(w => w.markdown.replace(SupportResponder.AiReplyAttribution, "").trim),
     )
 
