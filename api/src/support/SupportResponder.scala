@@ -627,6 +627,14 @@ final case class SupportResponder(
       // error). Nothing on the inbound payload can set this (the parser no longer reads a
       // `dataConsent` flag at all).
       dataAccess <- consentGranted(hh, event.threadId, now)
+      // #2709: if an unredeemed consent link is live on this thread, the agent's replies will be
+      // refused — so ANSWER THE CUSTOMER HERE, before the session runs, rather than as a side
+      // effect of a reply attempt the agent is explicitly told not to make. See
+      // `explainOutstandingLinkAtDispatch`: this is what keeps the no-dead-end guarantee
+      // structural instead of prompt-dependent. Once per link, shared claim with the reply path.
+      // The dispatch still happens — `escalate` is outside `AgentAction.ThreadWrites`, so the
+      // handoff to a human must stay reachable while a link is live.
+      _          <- explainOutstandingLinkAtDispatch(hh, event.threadId, now)
       outcome    <- dispatchAgentSession(
         hh = hh,
         householdName = household.name,
@@ -811,7 +819,7 @@ final case class SupportResponder(
                 "agent-authored message may sit beneath an unredeemed consent link, whichever " +
                 "session wrote it (#2709)",
             ) *> AppMetrics.supportConsent(SupportResponder.ReplyBlockedLinkLive) *>
-              explainLinkOnce(claims, link, now) *>
+              explainLinkOnce(claims.householdId, claims.threadId, link, now) *>
               done(AgentAction.Reply, AgentActionResult.ConsentPending)
         },
       )
@@ -836,36 +844,82 @@ final case class SupportResponder(
    * the signal that it happened.
    */
   private def explainLinkOnce(
-      claims: ConsentToken.Claims,
+      hh: HouseholdId,
+      threadId: String,
       link: OutstandingConsentLink,
       now: Instant,
   ): UIO[Unit] =
+    // Already explained, and the row says so — skip the write entirely. The conditional UPDATE
+    // below is still the race-safe path when nobody has claimed it yet; this only spares the
+    // uncapped `reply` path an UPDATE per call that would match zero rows anyway.
+    if (link.explainedAt.isDefined) AppMetrics.supportConsent(SupportResponder.LinkExplainRepeat)
+    else
+      consentRepo
+        .claimExplainer(hh, threadId, link.nonce, now)
+        .foldZIO(
+          e =>
+            ZIO.logWarning(s"support: consent-link explainer claim failed: ${e.getMessage}") *>
+              AppMetrics.supportConsent(SupportResponder.LinkExplainError),
+          {
+            case false => AppMetrics.supportConsent(SupportResponder.LinkExplainRepeat)
+            case true  =>
+              plain
+                .writeThread(
+                  PlainThreadWrite(threadId, SupportResponder.consentLinkExplainer),
+                )
+                .flatMap {
+                  case PlainOutcome.Ok       =>
+                    AppMetrics.supportConsent(SupportResponder.LinkExplained)
+                  case PlainOutcome.Disabled =>
+                    // Provably not posted, so the claim goes back — otherwise one dark-install
+                    // refusal would silence the explanation for the rest of the link's life.
+                    consentRepo
+                      .releaseExplainer(hh, threadId, link.nonce)
+                      .ignoreLogged *>
+                      AppMetrics.supportConsent(SupportResponder.LinkExplainDisabled)
+                  case PlainOutcome.Error    =>
+                    AppMetrics.supportConsent(SupportResponder.LinkExplainError)
+                }
+          },
+        )
+
+  /**
+   * #2709 — answer the customer at DISPATCH time, before the agent gets a turn.
+   *
+   * WHY THIS EXISTS SEPARATELY FROM [[consentLinkGuard]]. The guard posts the explanation as the
+   * refusal's other half, so it fires only when the agent ATTEMPTS a reply. But
+   * `deploy/support-agent/agent.yaml` tells a compliant agent that when the thread already carries
+   * a permission prompt it did not resolve, the useful thing is to end the turn — on the premise
+   * that "the customer is being answered". If the answer rode the reply path alone that premise
+   * would be false, and an agent doing exactly what we asked would produce the #2419 silence.
+   *
+   * That would make the anti-dead-end half PROMPT-DEPENDENT — true only for an agent that ignores
+   * its instructions — while the security half is structural. #2709 requires both to be structural,
+   * so the answer is posted here, off the inbound webhook, whatever the agent then does or doesn't
+   * do. The per-link claim is shared with the guard, so the customer still sees exactly one copy no
+   * matter which path gets there first.
+   *
+   * Fail-SOFT, unlike the guard: this runs BEFORE the session and nothing downstream depends on it,
+   * so a lookup failure must not cost the customer their dispatch. The reply path's own read is the
+   * fail-CLOSED one, and it still refuses on error. Metered either way.
+   */
+  private def explainOutstandingLinkAtDispatch(
+      hh: HouseholdId,
+      threadId: String,
+      now: Instant,
+  ): UIO[Unit] =
     consentRepo
-      .claimExplainer(claims.householdId, claims.threadId, link.nonce, now)
+      .outstandingLink(hh, threadId, now)
       .foldZIO(
         e =>
-          ZIO.logWarning(s"support: consent-link explainer claim failed: ${e.getMessage}") *>
-            AppMetrics.supportConsent(SupportResponder.LinkExplainError),
+          ZIO.logWarning(
+            s"support: could not tell whether a consent link is live on thread=$threadId " +
+              s"household=${hh.value} at dispatch — the agent's own reply path re-reads this and " +
+              s"fails closed, so the exclusion still holds (#2709): ${e.getMessage}",
+          ) *> AppMetrics.supportConsent(SupportResponder.LinkStateUnknown),
         {
-          case false => AppMetrics.supportConsent(SupportResponder.LinkExplainRepeat)
-          case true  =>
-            plain
-              .writeThread(
-                PlainThreadWrite(claims.threadId, SupportResponder.consentLinkExplainer),
-              )
-              .flatMap {
-                case PlainOutcome.Ok       =>
-                  AppMetrics.supportConsent(SupportResponder.LinkExplained)
-                case PlainOutcome.Disabled =>
-                  // Provably not posted, so the claim goes back — otherwise one dark-install
-                  // refusal would silence the explanation for the rest of the link's life.
-                  consentRepo
-                    .releaseExplainer(claims.householdId, claims.threadId, link.nonce)
-                    .ignoreLogged *>
-                    AppMetrics.supportConsent(SupportResponder.LinkExplainDisabled)
-                case PlainOutcome.Error    =>
-                  AppMetrics.supportConsent(SupportResponder.LinkExplainError)
-              }
+          case None       => ZIO.unit
+          case Some(link) => explainLinkOnce(hh, threadId, link, now)
         },
       )
 
