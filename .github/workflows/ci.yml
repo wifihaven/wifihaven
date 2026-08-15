@@ -187,9 +187,13 @@ jobs:
               - 'infra/cloudflare/**'
             # #2442: the press Email Worker carries the auto-reply/DSN loop guard, and
             # master-press-worker.yml only DEPLOYS it — nothing ran its tests before merge.
+            # #2673 adds the bundle + Workers-Logs checks to the same job.
             press-worker:
               - '.github/workflows/ci.yml'
               - 'deploy/press-worker/**'
+              # A deploy-workflow-only edit changes how this Worker ships; without this glob it
+              # would skip the Worker's own tests entirely.
+              - '.github/workflows/master-press-worker.yml'
             migrations:
               - '.github/workflows/ci.yml'
               - '.github/scripts/check-migrations.sh'
@@ -913,6 +917,38 @@ jobs:
 
       - name: Vitest
         run: npm test
+
+      # #2673: `tsc` and vitest both pass a Worker that fails to BUNDLE. This runs the real esbuild
+      # bundle and needs no Cloudflare credentials. Both environments — it exercises each env's
+      # config resolution, but it CANNOT detect a missing per-env block, because an omission is
+      # valid config; the observability step below is what gates that.
+      - name: Bundle (wrangler dry-run)
+        run: |
+          npx wrangler deploy --env="" --dry-run --outdir=/tmp/press-worker-dry
+          npx wrangler deploy --env staging --dry-run --outdir=/tmp/press-worker-dry-staging
+
+      # #2673/#2676: Workers Logs are this Worker's only diagnostic, and #2346 is the trap — a named
+      # environment does NOT inherit `[observability]`, so dropping `[env.staging.observability]`
+      # deploys staging dark while every other check stays green. `wrangler --dry-run` accepts the
+      # omission, so it has to be asserted directly.
+      - name: Workers Logs declared for every environment
+        run: |
+          python3 - <<'EOF'
+          import sys, tomllib
+          cfg = tomllib.load(open('wrangler.toml', 'rb'))
+          # Derived from the file, not a hardcoded pair: a new [env.*] block is gated the moment it
+          # is added, rather than being silently exempt until someone remembers this step.
+          roots = [('top-level', cfg)] + [(f'env.{k}', v) for k, v in cfg.get('env', {}).items()]
+          bad = []
+          for label, root in roots:
+              obs = root.get('observability', {})
+              if not obs.get('enabled') or not obs.get('logs', {}).get('enabled'):
+                  bad.append(label)
+          if bad:
+              sys.exit(f"observability.logs not enabled for: {', '.join(bad)} — that environment "
+                       f"deploys undiagnosable (#2346 does not inherit the top-level block).")
+          print('Workers Logs declared for every environment.')
+          EOF
 
   # ── Umbrella gating job ──────────────────────────────────────────────────
   # Branch protection requires this single check. It depends on every

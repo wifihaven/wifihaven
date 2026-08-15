@@ -141,7 +141,7 @@ object AlertApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
         _     <- dRepo.upsertUnknown(mac2, "device-445566", None, now)
         _     <- env.alertRepo.raiseNewDevice(mac1, now)
         _     <- env.alertRepo.raiseNewDevice(mac2, now)
-        all   <- env.alertRepo.list(includeAll = false)
+        all   <- env.alertRepo.listForHousehold(includeAll = false, HouseholdId.Default)
         _     <- env.alertRepo.decide(all.head.id, AlertStatus.Approved, now, "admin", None)
         token <- adminToken(env.auth)
         resp  <- getAlerts(env.routes, token, "/api/alerts")
@@ -156,7 +156,7 @@ object AlertApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
         env <- setupWithKid
         _   <- env.alertRepo.raiseNewDevice(mac1, now)
         _   <- env.alertRepo.raiseNewDevice(mac1, now.plusSeconds(60))
-        xs  <- env.alertRepo.list(includeAll = true)
+        xs  <- env.alertRepo.listForHousehold(includeAll = true, HouseholdId.Default)
       } yield assertTrue(xs.size == 1) &&
         assertTrue(xs.head.kind == AlertKind.NewDevice)
     },
@@ -164,7 +164,7 @@ object AlertApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
       for {
         env       <- setupWithKid
         _         <- env.alertRepo.raiseNewDevice(mac1, now)
-        all       <- env.alertRepo.list(includeAll = false)
+        all       <- env.alertRepo.listForHousehold(includeAll = false, HouseholdId.Default)
         token     <- adminToken(env.auth)
         resp      <- postAlertAction(
           env.routes,

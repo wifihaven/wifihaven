@@ -145,7 +145,7 @@ object ReplyRedactionSpec
       emailRef    <- Ref.make(List.empty[EmailSender.Sent])
       tracker     <- DispatchTracker.make(
         DispatchTracker.deadAfterFor(supportCfg),
-        wifihaven.api.observability.AgentTokenRejection.Channel.Support,
+        DispatchTracker.Channel.Support,
       )
       responder = SupportResponder(
         supportCfg,
@@ -183,11 +183,15 @@ object ReplyRedactionSpec
 
   private def pressRig: ZIO[PressMessageRepo & HouseholdSettingsRepo & Clock, Nothing, PressRig] =
     for {
-      pressLog <- ZIO.service[PressMessageRepo]
-      hsRepo   <- ZIO.service[HouseholdSettingsRepo]
-      clock    <- ZIO.service[Clock]
-      emailRef <- Ref.make(List.empty[EmailSender.Sent])
-      dispRec  <- PressAgentDispatcher.recorder
+      pressLog     <- ZIO.service[PressMessageRepo]
+      hsRepo       <- ZIO.service[HouseholdSettingsRepo]
+      clock        <- ZIO.service[Clock]
+      emailRef     <- Ref.make(List.empty[EmailSender.Sent])
+      dispRec      <- PressAgentDispatcher.recorder
+      pressTracker <- DispatchTracker.make(
+        DispatchTracker.deadAfterFor(pressCfg),
+        DispatchTracker.Channel.Press,
+      )
       transport = EmailSender.recording(emailRef)
       responder = PressResponder(
         pressCfg,
@@ -199,6 +203,7 @@ object ReplyRedactionSpec
         RateLimiter.allowAll,
         new Notifier.EmailNotifier(hsRepo, transport, emailCfg),
         RateLimiter.allowAll,
+        pressTracker,
       )
     } yield PressRig(PressAgentRoutes.routes(responder), emailRef, pressLog, clock)
 

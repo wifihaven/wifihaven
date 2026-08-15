@@ -63,7 +63,7 @@ object PolicySnapshotGlobalProfileSpec
     )
 
   private def globalId: ZIO[ProfileRepo, Throwable, ProfileId] =
-    ZIO.serviceWithZIO[ProfileRepo](_.getGlobal.map(_.get.id))
+    ZIO.serviceWithZIO[ProfileRepo](_.getGlobalForHousehold(HouseholdId.Default).map(_.get.id))
 
   def spec = suite("PolicySnapshot — global sentinel profile (#1771)")(
     test("global profile's extraAllowed is unioned into every other profile's extraAllowed") {

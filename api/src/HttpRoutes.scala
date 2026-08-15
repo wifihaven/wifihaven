@@ -153,7 +153,9 @@ object HttpRoutes {
       // Main forks its sweep fiber against the SAME instance the responder records into — a second
       // instance would sweep an empty map and report nothing, which is exactly the silence this
       // change closes.
-      dispatchTracker       <- ZIO.service[wifihaven.api.support.DispatchTracker]
+      dispatchTracker       <- ZIO
+        .service[wifihaven.api.support.DispatchTracker.ForSupport]
+        .map(_.tracker)
       supportResponder = wifihaven.api.support.SupportResponder(
         cfg.support,
         householdRepo,
@@ -204,6 +206,12 @@ object HttpRoutes {
         RateLimiterLive.make(maxAttempts = 50, windowSeconds = 24 * 60 * 60)
       // #2437: the per-sender cap on operator pages from the press agent (3/hour), matching support's.
       pressEscalateLimiter       <- RateLimiterLive.make(maxAttempts = 3, windowSeconds = 60 * 60)
+      // #2517: the press dispatch→completion tracker. Taken from the environment for the same reason
+      // support's is — Main forks its sweep fiber against the SAME instance the responder records
+      // into, and a second instance would sweep an empty map and report nothing.
+      pressDispatchTracker       <- ZIO
+        .service[wifihaven.api.support.DispatchTracker.ForPress]
+        .map(_.tracker)
       pressResponder = wifihaven.api.press.PressResponder(
         cfg.press,
         pressEmailSender,
@@ -216,6 +224,7 @@ object HttpRoutes {
         // of one) reaches a human at all.
         notifier,
         pressEscalateLimiter,
+        pressDispatchTracker,
       )
       // #2233: the operator-run press-OUTREACH send capability. The media-contacts manifest + the
       // sendable release template load from bundled resources at boot (fail-fast if malformed), like

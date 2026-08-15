@@ -284,12 +284,11 @@ trait UserRepo {
   def updateUsername(id: UserId, u: String): Task[Unit]
   def updateRole(id: UserId, r: String): Task[Unit]
   def clearMustChangePassword(id: UserId): Task[Unit]
-  def listAll: Task[List[DbUser]]
 
   /**
-   * #2108 (multi-tenant sub-issue E): household-scoped [[listAll]] — users belonging to
-   * `household`. Backs `GET /api/users` so an admin enumerates only their own household's users
-   * (design §2 gap 4). Index-backed by V65's idx_users_household.
+   * #2108 (multi-tenant sub-issue E): users belonging to `household`. Backs `GET /api/users` so an
+   * admin enumerates only their own household's users (design §2 gap 4). Index-backed by V65's
+   * idx_users_household.
    */
   def listAllForHousehold(household: HouseholdId): Task[List[DbUser]]
 
@@ -442,15 +441,13 @@ trait ProfileRepo {
    */
   def distinctHouseholds: Task[List[HouseholdId]]
 
-  /** All profiles, including the global sentinel. Used by `PolicyService.snapshot` only. */
-  def listAllIncludingGlobal: Task[List[Profile]]
-
   /**
-   * #2107 (multi-tenant, epic #622): household-scoped [[listAllIncludingGlobal]] — all profiles
-   * (incl. the global sentinel) belonging to `household`. Used by the household-scoped
-   * `PolicyService.snapshot(household)` so a router only ever sees its own household's profiles.
-   * For the single backfill household (`HouseholdId.Default`) this returns exactly the same rows as
-   * the global variant.
+   * #2107 (multi-tenant, epic #622): all profiles (incl. the global sentinel) belonging to
+   * `household`. Used by the household-scoped `PolicyService.snapshot(household)` so a router only
+   * ever sees its own household's profiles.
+   *
+   * #2571: there is deliberately NO cross-tenant `listAllIncludingGlobal` — the unscoped twin was
+   * dead and removed, so a future snapshot-adjacent caller cannot reach for it by accident.
    */
   def listAllIncludingGlobalForHousehold(household: HouseholdId): Task[List[Profile]]
 
@@ -471,15 +468,12 @@ trait ProfileRepo {
    */
   def householdOf(id: ProfileId): Task[Option[HouseholdId]]
 
-  /** The single `is_global=TRUE` sentinel row, or None if not yet seeded. */
-  def getGlobal: Task[Option[Profile]]
-
   /**
-   * #2108 (multi-tenant sub-issue E): household-scoped [[getGlobal]] — the `is_global=TRUE`
-   * sentinel belonging to `household`, or None. Backs `GET /api/profiles/global` so an hh-A admin
-   * reads only their own household's sentinel (the global-policy layer is per-household, design §2
-   * gap 4). For the single backfill household this is the one existing sentinel; a household with
-   * no sentinel row yet gets None (404), never another household's.
+   * #2108 (multi-tenant sub-issue E): the `is_global=TRUE` sentinel belonging to `household`, or
+   * None. Backs `GET /api/profiles/global` so an hh-A admin reads only their own household's
+   * sentinel (the global-policy layer is per-household, design §2 gap 4). For the single backfill
+   * household this is the one existing sentinel; a household with no sentinel row yet gets None
+   * (404), never another household's.
    */
   def getGlobalForHousehold(household: HouseholdId): Task[Option[Profile]]
   def findById(id: ProfileId): Task[Option[Profile]]
@@ -669,13 +663,12 @@ trait TimeLimitRepo {
   def findForProfile(pid: ProfileId): Task[Option[TimeLimit]]
   def upsert(pid: ProfileId, mins: Int): Task[Unit]
   def delete(pid: ProfileId): Task[Unit]
-  def listAll: Task[List[TimeLimit]]
 
   /**
-   * #2108 (multi-tenant sub-issue E): household-scoped [[listAll]] — time limits for profiles in
-   * `household`. `time_limits` carries `profile_id` (FK to a now-scoped `profiles`), so it inherits
-   * the household transitively via the join (design §0.1 "scoped transitively") — no denormalized
-   * column. Backs `GET /api/time/status`.
+   * #2108 (multi-tenant sub-issue E): time limits for profiles in `household`. `time_limits`
+   * carries `profile_id` (FK to a now-scoped `profiles`), so it inherits the household transitively
+   * via the join (design §0.1 "scoped transitively") — no denormalized column. Backs `GET
+   * /api/time/status`.
    */
   def listAllForHousehold(household: HouseholdId): Task[List[TimeLimit]]
 }
@@ -938,12 +931,10 @@ trait AlertRepo {
    */
   def householdOf(id: AlertId): Task[Option[HouseholdId]]
 
-  /** Pending-only when `includeAll=false`. Ordered newest first. */
-  def list(includeAll: Boolean): Task[List[Alert]]
-
   /**
-   * #2108 (multi-tenant sub-issue E): household-scoped [[list]] — alerts belonging to `household`.
-   * Backs `GET /api/alerts` so an admin sees only their own household's alerts.
+   * #2108 (multi-tenant sub-issue E): alerts belonging to `household`, pending-only when
+   * `includeAll=false`, ordered newest first. Backs `GET /api/alerts` so an admin sees only their
+   * own household's alerts.
    *
    * Scoped on the alert's OWN `household_id` (V78), the same key [[householdOf]] reads. This
    * originally scoped transitively through a join to the household-scoped `devices` row, because
@@ -1036,9 +1027,6 @@ trait TimeUsageRepo {
       household: HouseholdId = HouseholdId.Default,
   ): Task[Unit]
 
-  /** Read seconds_used for a (mac, host, date) row. Returns 0 if no row. */
-  def getSecondsUsed(mac: MacAddress, host: HostId, date: LocalDate): Task[Long]
-
   /** Read (seconds_used, bytes_in, bytes_out) for a (mac, host, date) row. */
   def getSecondsAndBytes(
       mac: MacAddress,
@@ -1058,7 +1046,6 @@ trait TimeUsageRepo {
 }
 
 trait TimeExtensionRepo {
-  def getTotalExtension(mac: MacAddress, date: LocalDate): Task[Int]
   def grant(
       mac: MacAddress,
       date: LocalDate,
@@ -1067,7 +1054,6 @@ trait TimeExtensionRepo {
       note: Option[String],
       household: HouseholdId = HouseholdId.Default,
   ): Task[TimeExtensionId]
-  def listForDevice(mac: MacAddress, date: LocalDate): Task[List[TimeExtension]]
   def snapshotAll(date: LocalDate): Task[Map[MacAddress, Int]]
   // Profile-level extension methods (V5+)
   // #2130: `household` scopes the profile-keyed grant like [[grant]] does for
@@ -1168,12 +1154,11 @@ case class ConnectionEventInsert(
 )
 
 trait RouterRepo {
-  def listAll: Task[List[Router]]
 
   /**
-   * #2108 (multi-tenant sub-issue E): household-scoped [[listAll]] — routers belonging to
-   * `household`. Backs `GET /api/routers` so an admin enumerates only their own household's routers
-   * (design §2 gap 4). Index-backed by V65's idx_routers_household.
+   * #2108 (multi-tenant sub-issue E): routers belonging to `household`. Backs `GET /api/routers` so
+   * an admin enumerates only their own household's routers (design §2 gap 4). Index-backed by V65's
+   * idx_routers_household.
    */
   def listAllForHousehold(household: HouseholdId): Task[List[Router]]
   def findById(id: RouterId): Task[Option[Router]]
@@ -1341,12 +1326,6 @@ trait TrafficReportRepo {
   ): Task[List[wifihaven.api.usage.TrafficUsageDbRow]]
 
   /**
-   * #846: earliest `period_start` across all rows. Used by Traffic Usage page to reject `from`
-   * instants that fall outside the retention horizon — naïve until #809/#814 land.
-   */
-  def earliestPeriodStart: Task[Option[Instant]]
-
-  /**
    * #766: per-host aggregates for one device over `[from, to)`, restricted to FQDN-typed rows
    * (after the IP→FQDN LATERAL resolve). One row per resolved hostname, with total `bytes_in +
    * bytes_out` and the hit count (number of usage-report periods the host was observed in). Used by
@@ -1363,13 +1342,11 @@ trait TrafficReportRepo {
 trait BlockEventRepo {
   def insertBatch(events: List[BlockEventInsert]): Task[Int]
   def recent(limit: Int): Task[List[BlockEvent]]
-  def listForMac(mac: MacAddress, limit: Int): Task[List[BlockEvent]]
 }
 
 trait ConnectionEventRepo {
   def insertBatch(events: List[ConnectionEventInsert]): Task[Int]
   def recent(limit: Int): Task[List[ConnectionEvent]]
-  def listForMac(mac: MacAddress, limit: Int): Task[List[ConnectionEvent]]
   def listForRouter(routerId: RouterId, limit: Int): Task[List[ConnectionEvent]]
   def query(f: LogFilter): Task[List[QueryLog]]
   // #846: multi-column grouping. `groupBy` is the set of column names from
@@ -1564,13 +1541,7 @@ class UserRepoLive(xa: Transactor[Task]) extends UserRepo {
     sql"UPDATE users SET role=$r WHERE id=$id".update.run.transact(xa).unit
   def clearMustChangePassword(id: UserId)                                  =
     sql"UPDATE users SET must_change_password=false WHERE id=$id".update.run.transact(xa).unit
-  def listAll                                                              =
-    (fr"SELECT " ++ userCols ++ fr" FROM users ORDER BY id")
-      .query[UserRow]
-      .map(toUser)
-      .to[List]
-      .transact(xa)
-  // #2108: same projection as listAll, AND-scoped to one household. Index-backed by
+  // #2108: every user column, AND-scoped to one household. Index-backed by
   // V65's idx_users_household.
   def listAllForHousehold(household: HouseholdId)                          =
     (fr"SELECT " ++ userCols ++ fr" FROM users WHERE" ++ SqlFragments.householdEq(
@@ -1727,15 +1698,7 @@ class ProfileRepoLive(xa: Transactor[Task]) extends ProfileRepo {
         .to[List]
         .transact(xa),
     )
-  def listAllIncludingGlobal                                     =
-    DbMetrics.timed("profile.listAllIncludingGlobal")(
-      sql"SELECT id,name,blocked_categories,paused,failure_mode,block_ip_only,cross_device_overlap_mode,pause_mode,default_deny,is_global FROM profiles ORDER BY id"
-        .query[R]
-        .map(toP)
-        .to[List]
-        .transact(xa),
-    )
-  // #2107: same projection as listAllIncludingGlobal, AND-scoped to one household. Index-backed by
+  // #2107: all profiles incl. the global sentinel, AND-scoped to one household. Index-backed by
   // V65's idx_profiles_household.
   def listAllIncludingGlobalForHousehold(household: HouseholdId) =
     DbMetrics.timed("profile.listAllIncludingGlobalForHousehold")(
@@ -1762,14 +1725,6 @@ class ProfileRepoLive(xa: Transactor[Task]) extends ProfileRepo {
     DbMetrics.timed("profile.householdOf")(
       sql"SELECT household_id FROM profiles WHERE id=$id"
         .query[HouseholdId]
-        .option
-        .transact(xa),
-    )
-  def getGlobal                                                  =
-    DbMetrics.timed("profile.getGlobal")(
-      sql"SELECT id,name,blocked_categories,paused,failure_mode,block_ip_only,cross_device_overlap_mode,pause_mode,default_deny,is_global FROM profiles WHERE is_global=TRUE"
-        .query[R]
-        .map(toP)
         .option
         .transact(xa),
     )
@@ -2061,7 +2016,7 @@ class HouseholdSettingsRepoLive(xa: Transactor[Task]) extends HouseholdSettingsR
 }
 
 class TimeLimitRepoLive(xa: Transactor[Task]) extends TimeLimitRepo {
-  def findForProfile(pid: ProfileId)    =
+  def findForProfile(pid: ProfileId)              =
     DbMetrics.timed("timeLimit.findForProfile")(
       sql"SELECT id,profile_id,daily_minutes FROM time_limits WHERE profile_id=$pid"
         .query[(TimeLimitId, ProfileId, Int)]
@@ -2069,18 +2024,13 @@ class TimeLimitRepoLive(xa: Transactor[Task]) extends TimeLimitRepo {
         .option
         .transact(xa),
     )
-  def upsert(pid: ProfileId, mins: Int) =
+  def upsert(pid: ProfileId, mins: Int)           =
     sql"INSERT INTO time_limits(profile_id,daily_minutes) VALUES($pid,$mins) ON CONFLICT(profile_id) DO UPDATE SET daily_minutes=EXCLUDED.daily_minutes".update.run
       .transact(xa)
       .unit
-  def delete(pid: ProfileId)            =
+  def delete(pid: ProfileId)                      =
     sql"DELETE FROM time_limits WHERE profile_id=$pid".update.run.transact(xa).unit
-  def listAll                           = sql"SELECT id,profile_id,daily_minutes FROM time_limits"
-    .query[(TimeLimitId, ProfileId, Int)]
-    .map(TimeLimit.apply)
-    .to[List]
-    .transact(xa)
-  // #2108: same projection as listAll, AND-scoped through the profile FK to one household.
+  // #2108: (id, profile_id, daily_minutes), AND-scoped through the profile FK to one household.
   def listAllForHousehold(household: HouseholdId) =
     (fr"SELECT tl.id,tl.profile_id,tl.daily_minutes FROM time_limits tl JOIN profiles p ON p.id=tl.profile_id WHERE" ++
       SqlFragments.householdEq(household, "p.household_id"))
@@ -2508,15 +2458,6 @@ class AlertRepoLive(xa: Transactor[Task]) extends AlertRepo {
         .transact(xa),
     )
 
-  def list(includeAll: Boolean): Task[List[Alert]] = {
-    val filter = if includeAll then fr"" else fr"WHERE a.status = 'pending'"
-    (baseSelect ++ filter ++ fr"ORDER BY a.created_at DESC")
-      .query[R]
-      .map(toAlert)
-      .to[List]
-      .transact(xa)
-  }
-
   // #2283: scope on the alert's OWN `a.household_id` (V78), NOT the joined `d.household_id`. Once a
   // MAC can exist in two households (V74) the device join is ambiguous, so #2108's transitive scope
   // no longer isolates. `a.household_id = $hh` is the alert's authoritative tenancy key: it isolates
@@ -2705,12 +2646,6 @@ class TimeUsageRepoLive(xa: Transactor[Task]) extends TimeUsageRepo {
       .option
       .transact(xa)
       .map(_.getOrElse(0L))
-  def getSecondsUsed(mac: MacAddress, host: HostId, d: LocalDate): Task[Long]                   =
-    sql"SELECT COALESCE(seconds_used,0) FROM time_usage WHERE device_mac=$mac AND host_type=${host.kind} AND host_value=${host.value} AND date=$d"
-      .query[Long]
-      .option
-      .transact(xa)
-      .map(_.getOrElse(0L))
   def getSecondsAndBytes(mac: MacAddress, host: HostId, d: LocalDate): Task[(Long, Long, Long)] =
     sql"SELECT COALESCE(seconds_used,0),COALESCE(bytes_in,0),COALESCE(bytes_out,0) FROM time_usage WHERE device_mac=$mac AND host_type=${host.kind} AND host_value=${host.value} AND date=$d"
       .query[(Long, Long, Long)]
@@ -2808,11 +2743,6 @@ class TimeUsageRepoLive(xa: Transactor[Task]) extends TimeUsageRepo {
 }
 
 class TimeExtensionRepoLive(xa: Transactor[Task]) extends TimeExtensionRepo {
-  def getTotalExtension(mac: MacAddress, d: LocalDate)                    =
-    sql"SELECT COALESCE(SUM(extra_minutes),0)::INT FROM time_extensions WHERE device_mac=$mac AND date=$d"
-      .query[Int]
-      .unique
-      .transact(xa)
   def grant(
       mac: MacAddress,
       d: LocalDate,
@@ -2826,23 +2756,6 @@ class TimeExtensionRepoLive(xa: Transactor[Task]) extends TimeExtensionRepo {
     sql"INSERT INTO time_extensions(device_mac,date,extra_minutes,granted_by,note,household_id) VALUES($mac,$d,$mins,$by,$note,$household) RETURNING id"
       .query[TimeExtensionId]
       .unique
-      .transact(xa)
-  def listForDevice(mac: MacAddress, d: LocalDate)                        =
-    sql"SELECT id,profile_id,device_mac,date::TEXT,extra_minutes,granted_by,note,created_at::TEXT FROM time_extensions WHERE device_mac=$mac AND date=$d ORDER BY created_at"
-      .query[
-        (
-            TimeExtensionId,
-            Option[ProfileId],
-            Option[MacAddress],
-            String,
-            Int,
-            String,
-            Option[String],
-            String,
-        ),
-      ]
-      .map(TimeExtension.apply)
-      .to[List]
       .transact(xa)
   def snapshotAll(d: LocalDate)                                           =
     sql"SELECT device_mac,SUM(extra_minutes)::INT FROM time_extensions WHERE date=$d AND device_mac IS NOT NULL GROUP BY device_mac"
@@ -2934,13 +2847,7 @@ class RouterRepoLive(xa: Transactor[Task]) extends RouterRepo {
     fr"id,name,enrollment_token_hash,token_hash,last_seen_at,last_etag,created_at,agent_version,enrollment_expires_at,household_id"
   // #2083: default TTL for a freshly-created enrollment token.
   private val EnrollmentTtl                       = fr"INTERVAL '1 hour'"
-  def listAll                                     =
-    (fr"SELECT " ++ cols ++ fr" FROM routers ORDER BY created_at")
-      .query[R]
-      .map(toR)
-      .to[List]
-      .transact(xa)
-  // #2108: same projection as listAll, AND-scoped to one household. Index-backed by
+  // #2108: every router column, AND-scoped to one household. Index-backed by
   // V65's idx_routers_household.
   def listAllForHousehold(household: HouseholdId) =
     (fr"SELECT " ++ cols ++ fr" FROM routers WHERE" ++ SqlFragments.householdEq(
@@ -3323,12 +3230,6 @@ class TrafficReportRepoLive(xa: Transactor[Task]) extends TrafficReportRepo {
     )
   }
 
-  def earliestPeriodStart =
-    sql"SELECT MIN(period_start) FROM traffic_reports"
-      .query[Option[Instant]]
-      .unique
-      .transact(xa)
-
   // #766: per-device FQDN-only host aggregates. Bare-IP rows that fail the
   // LATERAL FQDN resolve are filtered (host IS NULL). Indexed by
   // (mac, period_start) — see V25.
@@ -3444,12 +3345,6 @@ class BlockEventRepoLive(xa: Transactor[Task]) extends BlockEventRepo {
       .map(toB)
       .to[List]
       .transact(xa)
-  def listForMac(mac: MacAddress, limit: Int)     =
-    sql"SELECT id,mac,host_type,host_value,reason,ts::TEXT FROM block_events WHERE mac=$mac ORDER BY ts DESC LIMIT $limit"
-      .query[R]
-      .map(toB)
-      .to[List]
-      .transact(xa)
 }
 
 class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo {
@@ -3504,13 +3399,6 @@ class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo 
 
   def recent(limit: Int) =
     (fr"SELECT" ++ selectCols ++ fr"FROM connection_events ORDER BY ts DESC LIMIT $limit")
-      .query[R]
-      .map(toC)
-      .to[List]
-      .transact(xa)
-
-  def listForMac(mac: MacAddress, limit: Int) =
-    (fr"SELECT" ++ selectCols ++ fr"FROM connection_events WHERE mac=$mac ORDER BY ts DESC LIMIT $limit")
       .query[R]
       .map(toC)
       .to[List]

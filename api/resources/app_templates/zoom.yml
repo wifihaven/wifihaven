@@ -1,0 +1,13 @@
+slug: zoom
+name: Zoom
+icon: "https://icons.duckduckgo.com/ip3/zoom.us.ico"
+icon_type: url
+# Added from prod evidence (#2699: 2026-08-14 app-catalog pass): 30d kid
+# traffic showed 213 MB / 95 hits on Kid Mac across cdn.zoom.us (web-client
+# assets + media) and us.telemetry.zoom.us — sustained video-call usage
+# (school/tutoring), not a one-off page load. Plain apex per the brave
+# precedent; the router's suffix match covers any future zoom.us subdomain
+# (e.g. a region-specific meeting-join host) without needing to enumerate
+# them.
+hosts:
+  - zoom.us

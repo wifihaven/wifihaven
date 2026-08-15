@@ -89,6 +89,21 @@ object PressAgentDispatcher {
     case ClaudeCodeCloud
   }
 
+  /**
+   * #2517 — the bounded metric/log LABEL for the selected transport, or `None` when the responder
+   * is off (no transport was selected, so there is nothing to label). Derived from [[transportFor]]
+   * and the [[wifihaven.api.support.CloudAgentObservability]] constants rather than re-spelling the
+   * strings, so a caller that needs the label outside the dispatch envelope (the
+   * dispatch→completion tracker, which learns the transport at record time and reports it at sweep
+   * time) cannot drift from the label `press_dispatch_total{transport}` already carries. The press
+   * twin of [[wifihaven.api.support.CloudAgentDispatcher.transportLabel]].
+   */
+  def transportLabel(cfg: PressConfig): Option[String] = transportFor(cfg) match {
+    case Transport.Disabled        => None
+    case Transport.ManagedAgents   => Some(CloudAgentObservability.ManagedAgents)
+    case Transport.ClaudeCodeCloud => Some(CloudAgentObservability.ClaudeCodeCloud)
+  }
+
   def transportFor(cfg: PressConfig): Transport =
     if !cfg.responderEnabled then Transport.Disabled
     else

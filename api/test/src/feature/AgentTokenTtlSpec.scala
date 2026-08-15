@@ -118,7 +118,7 @@ object AgentTokenTtlSpec
       dispRec            <- CloudAgentDispatcher.recorder
       tracker            <- DispatchTracker.make(
         DispatchTracker.deadAfterFor(supportCfg),
-        wifihaven.api.observability.AgentTokenRejection.Channel.Support,
+        DispatchTracker.Channel.Support,
       )
       responder = SupportResponder(
         supportCfg,
@@ -159,6 +159,10 @@ object AgentTokenTtlSpec
       (clock, testClock) <- TestClock.makeWithControl(TestClock.schoolDayAfternoon)
       emailRef           <- Ref.make(List.empty[EmailSender.Sent])
       dispRec            <- PressAgentDispatcher.recorder
+      pressTracker       <- DispatchTracker.make(
+        DispatchTracker.deadAfterFor(pressCfg),
+        DispatchTracker.Channel.Press,
+      )
       responder = PressResponder(
         pressCfg,
         EmailSender.recording(emailRef),
@@ -169,6 +173,7 @@ object AgentTokenTtlSpec
         RateLimiter.allowAll,
         Notifier.logOnly,
         RateLimiter.allowAll,
+        pressTracker,
       )
     } yield PressRig(PressAgentRoutes.routes(responder), emailRef, testClock)
 

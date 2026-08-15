@@ -172,6 +172,60 @@ above is now wrong, fix the step too — don't just log around it.
 
 ## Learnings log (newest first)
 
+- **2026-08-14 (#2699)** — A #1705-era "watch-item" deferral can graduate
+  years later on a plain re-check, not just a byte-growth trigger: `poki.com`
+  was explicitly deferred in the original `poki.yml` comment as "marketing
+  surface only... add it later if traffic shows otherwise" — this pass's 30d
+  window showed `games.poki.com`/`poki-auth.poki.com`/`devs-api.poki.com`
+  (real navigational + auth traffic), so it graduated along with two branded
+  Poki CDN/GDN domains (`poki-cdn.com`, `poki-gdn.com`). **Grep every existing
+  template's inline comments for "add it later" / "watch" / "if traffic
+  shows" language before starting the traffic sweep** — those are standing
+  TODOs the same as a skipped apex in a prior evidence doc.
+- **2026-08-14 (#2699)** — Multiplayer/relay support infra for an
+  already-templated browser game is a real host-set gap, not noise: three
+  near-identical-byte-pattern apexes (`lax1dude.net`, `deev.is`,
+  `shhnowisnottheti.me`, each ~69KB+23KB or similar paired hits) turned out to
+  be Eaglercraft's WebSocket LAN-world relay servers (web-confirmed —
+  `lax1dude` is the game's creator; the client tries its relay list in order,
+  producing the matched-pattern byte pairs). Treat a cluster of thin apexes
+  with matching byte/hit shapes as one signal, not N separate below-bar
+  apexes — and route relay/infra hosts like this into the app's `hosts:` (not
+  `games.yml`), same precedent as the existing account-scoped `workers.dev`
+  entry: support infra for an app you already time-limit, not a new
+  game-hosting mirror.
+- **2026-08-14 (#2699)** — A communications/utility app (not games/social/
+  entertainment) can still clear the app-catalog bar: `zoom.us` showed 213 MB
+  / 95 hits on one kid device across `cdn.zoom.us` + `us.telemetry.zoom.us`
+  only — no bare `zoom.us` or dated meeting-join subdomain. Byte volume
+  consistent with real video-call media plus a non-trivial, non-single-burst
+  hit count was read as genuine engagement (same "recurring shape over raw
+  volume" bar as `serato`/#2331) even without a page-load host to point to.
+  Don't require a literal "the kid navigated to this URL" host before
+  templating — CDN + telemetry alone can be the right signal for an app whose
+  UI is a native/embedded client, not a browser tab.
+- **2026-08-14 (#2699)** — Host attribution for a shared-Google-content apex
+  isn't just about GFE anycast IPs (the #1307/#1636 class): `ggpht.com`
+  (`yt3.ggpht.com`, YouTube avatar CDN) was held out of `youtube.yml` even
+  though the observed subdomain is YouTube-specific, because the bare
+  `ggpht.com` apex is also used for Blogger image hosting and legacy Google
+  Photos — the collateral risk is at the **apex** even when the **observed
+  subdomain** looks brand-specific. When the README's Class 1 check passes at
+  the subdomain level, still ask whether the apex itself is a shared Google
+  content-hosting pool before adding it.
+- **2026-08-14 (#2699)** — Local `mill api.test.testOnly` validation can be
+  blocked by host contention severe enough (load avg 300+, seen this run)
+  that a single-file compile takes an hour+ with near-zero CPU share. When
+  this happens: kill the stuck run, re-verify the YAML/Scala changes by hand
+  (no tabs, 2-space list indent matching sibling files, balanced quotes,
+  `_index.yml` slug present, pinned test's `expected` set updated), and open
+  the PR anyway rather than blocking indefinitely — CI runs on isolated
+  runners and is the real gate. Note the skipped local validation explicitly
+  in the PR description so the reviewer knows to lean on CI. (Also: if you
+  background a `mill` invocation with a literal `cd <repo-root> && mill ...`
+  inside a worktree session, double check the `cd` target is the **worktree**
+  path, not the main checkout — the main checkout has none of your changes
+  and the test would silently validate nothing.)
 - **2026-08-03 (#2596)** — A "watch-item" flagged in a prior pass's evidence
   doc can graduate into a real gap: #2331 noted `eaglercraft.ru` at 1 hit/40
   bytes as "extend the app if it grows" — this pass it was 17.5 MB/10 hits, a

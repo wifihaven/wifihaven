@@ -520,11 +520,12 @@ stated alongside.
   (expect empty)", the latter running the rule's own expression, on the
   router-fleet dashboard.
 
-**W11/W12. The dispatch watchdog**
-([#2477](https://github.com/wifihaven/wifihaven/issues/2477))
+**W11/W12/W13. The dispatch watchdog**
+([#2477](https://github.com/wifihaven/wifihaven/issues/2477),
+[#2517](https://github.com/wifihaven/wifihaven/issues/2517))
 
-Two rules, and they only make sense as a pair: W11 is the failure, W12 is the
-proof that W11 was in a position to fire.
+Three rules that only make sense together: W11 and W13 are the failure, one per
+responder, and W12 is the proof that either was in a position to fire.
 
 - **W11 — a support customer got no answer.**
   ```promql
@@ -547,18 +548,10 @@ proof that W11 was in a position to fire.
   That is also what makes the summary's "reply by hand" instruction safe: past
   the TTL a late agent reply cannot arrive on top of the operator's.
   `for = 15m` only debounces a scrape blip; the condition already waited a day.
-  **Support only, deliberately.** The press twin
-  `press_dispatch_total{outcome="no_callback"}` is not emitted:  press dispatch
-  is not paired with its callback until
-  [#2517](https://github.com/wifihaven/wifihaven/issues/2517) (its token binds a
-  reply-target address, not a Plain thread id). Authoring a press rule now would
-  break [§2](#2-principles)'s "alert only on series that exist" and sit
-  permanently in no-data. **Nothing alerts on a missing press watchdog until
-  #2517** — W12 does not cover it either (its `absent` arm names
-  `channel="support"`, and its first arm cannot produce a press instance when no
-  press sweep exists). Stated rather than left implicit, because an unwatched
-  gap that reads as a watched one is the failure this whole pair exists to
-  prevent.
+  **Support only** — press has its own rule, W13 below, rather than this one
+  being widened to a sum across both series. The RECOVERY differs (a Plain
+  thread vs an email from the `/press` correspondence log), and an alert whose
+  summary cannot name the recovery is one someone has to reason about at 2am.
 - **W12 — the watchdog stopped reporting.**
   ```promql
   (min by (channel) (increase(agent_dispatch_sweeps_total{env="prod"}[15m])) == bool 0)
@@ -587,16 +580,33 @@ proof that W11 was in a position to fire.
   they are identical, but a `sum` would let one live instance's increases hide
   a dead fiber on its sibling). The `absent` arm names `channel="support"`
   explicitly because it asserts which channels are *expected* to sweep — a
-  claim only the code can make and PromQL cannot infer from an empty result;
-  #2517 adds a press arm when it wires a press tracker.
+  claim only the code can make and PromQL cannot infer from an empty result.
+  Since #2517 there are **two** `absent` arms, one per channel, ORed. Not a
+  single `absent(...{channel=~"support|press"})`: the regex form goes quiet as
+  soon as *either* channel reports, which is precisely the masking this rule
+  exists to prevent.
+- **W13 — a journalist got no answer.**
+  ```promql
+  sum(increase(press_dispatch_total{env="prod",outcome="no_callback"}[1h]))
+  ```
+  `gt = 0`, `for = 15m`. W11's twin, with the same inherited threshold for the
+  same reason — `press.agentTokenTtlMinutes` shares the
+  `AgentTokenTtl.DefaultMinutes` default, since the sizing constraint is a
+  property of the shared cloud transport rather than of either audience.
+  **One press-only wrinkle the summary has to carry:** since #2517 this bucket
+  also holds a session that DID call back and was refused by the
+  [#2437](https://github.com/wifihaven/wifihaven/issues/2437) escalation cap,
+  which deliberately does not close the dispatch because nothing reached a human
+  either way. Check `press_agent_action_total{op="escalate",outcome="rate_limited"}`
+  before concluding the session died: there the agent is alive and the fix is to
+  answer the escalation, not to hand-reply as though it never ran.
 - Paired panels (per
   [`docs/process/instrumentation.md#metrics-need-a-dashboard`](../process/instrumentation.md#metrics-need-a-dashboard)):
   "Customers waiting on an unanswered dispatch" and "Watchdog heartbeat (10m)"
-  on the support dashboard. The press twins are deliberately NOT shipped here:
-  the press series has no producer until #2517, and
-  [`instrumentation.md`](../process/instrumentation.md) §2 says not to ship
-  no-data panels for metrics that are not emitted yet. They land with the
-  tracker, alongside W12's press arm.
+  on the support dashboard, and their press twins — "Journalists waiting on an
+  unanswered dispatch" and "Press watchdog heartbeat (10m)" — on the press
+  dashboard, shipped by #2517 in the same change that gave the press series a
+  producer.
 
 ## 8. Gaps — metrics not yet emitted
 
@@ -640,7 +650,8 @@ Filed under the **Alerting & Paging** epic, one per coherent chunk:
    [#2488](https://github.com/wifihaven/wifihaven/issues/2488) with W8, by
    [#2553](https://github.com/wifihaven/wifihaven/issues/2553) with W9, by
    [#2646](https://github.com/wifihaven/wifihaven/issues/2646) with W10, and by
-   [#2477](https://github.com/wifihaven/wifihaven/issues/2477) with W11–W12.
+   [#2477](https://github.com/wifihaven/wifihaven/issues/2477) with W11–W12, and by
+   [#2517](https://github.com/wifihaven/wifihaven/issues/2517) with W13.
 5. **[#1405](https://github.com/wifihaven/wifihaven/issues/1405) —
    Deploy-failure signal** ([§8](#8-gaps--metrics-not-yet-emitted)): extend
    `deploy-webhook` to emit `render_deploy_total{lifecycle}` (or adopt native
