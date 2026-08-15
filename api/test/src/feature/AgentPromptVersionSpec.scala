@@ -71,6 +71,16 @@ object AgentPromptVersionSpec extends ZIOSpecDefault {
   private val AnyVersionRe = """(?:support|press)-\d{4}-\d{2}-\d{2}\.\d+""".r
 
   /**
+   * A raw.githubusercontent link to a file in THIS repo, as the prompts cite their sources (#2718).
+   * Group 1 is the repo-relative path, which is what [[repoRoot]] can check exists.
+   */
+  private val RawDocLinkRe =
+    """https://raw\.githubusercontent\.com/wifihaven/wifihaven/main/(\S+?)(?=[\s)]|$)""".r
+
+  /** The section title both prompts instruct the agent to load by name (#2718). */
+  private val DeploymentModelHeading = "Deployment model: self-hosted vs. cloud"
+
+  /**
    * An ALL-CAPS section heading, the shape these prompts use ("SECURITY —", "ABSOLUTE LIMITS —").
    */
   private val HeadingRe = """(?m)^\s{0,4}[A-Z]{2,}[A-Z ]* —""".r
@@ -109,6 +119,40 @@ object AgentPromptVersionSpec extends ZIOSpecDefault {
       .map(_.count)
 
   def spec = suite("AgentPromptVersionSpec")(
+    suite("the docs a prompt points at")(
+      // #2718 — the prompts no longer STATE the deployment model, they tell the agent to go READ it.
+      // That makes a set of repo paths load-bearing on the live path: rename a doc or retitle the
+      // section and the agent fetches a 404, then answers from memory, which is #2718 itself. The
+      // prompt is not compiled, so nothing else would notice. These pin the pointers.
+      test("every repo doc a prompt links by raw URL actually exists") {
+        // Reported as the offending (yaml, path) pairs rather than a bare `false`: a broken pointer
+        // is fixed by knowing WHICH link rotted, and `forall` alone would print neither.
+        val broken = Yamls.flatMap { case (_, rel) =>
+          RawDocLinkRe
+            .findAllMatchIn(readAll(rel))
+            .map(_.group(1))
+            .filterNot(p => Files.isRegularFile(repoRoot.resolve(p)))
+            .map(rel -> _)
+            .toList
+        }
+        // A prompt that links NOTHING would satisfy `broken.isEmpty` vacuously — the count pins that
+        // the sources actually survived an edit, not merely that nothing is broken.
+        val linked = Yamls.map { case (_, rel) => RawDocLinkRe.findAllMatchIn(readAll(rel)).size }
+        ZIO.succeed(assertTrue(broken.isEmpty, linked.forall(_ > 0)))
+      },
+      test("the deployment-model section the prompts name by title is in architecture.md") {
+        // Both prompts tell the agent to load this section BY NAME. A retitle would leave them
+        // naming a heading that no longer exists in a doc that still does — the failure the path
+        // check above cannot see. Matched WITH its `###` marker: a bare substring would also match
+        // a passing prose mention, so a retitled heading could pass on an unrelated sentence.
+        ZIO.succeed(
+          assertTrue(
+            readAll("docs/architecture.md").contains(s"### $DeploymentModelHeading"),
+            Yamls.forall { case (_, rel) => readAll(rel).contains(DeploymentModelHeading) },
+          ),
+        )
+      },
+    ),
     suite("the yaml ↔ Scala mirror")(
       test("each agent.yaml carries a PROMPT_VERSION marker equal to the compiled constant") {
         ZIO.succeed(
