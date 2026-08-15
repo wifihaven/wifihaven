@@ -278,15 +278,32 @@ Nothing to do before or after the deploy. Watch
 | `granted_at` / `expires_at` / `revoked_at` | the grant window |
 | `UNIQUE (household_id, thread_id)` | one record per thread; a re-grant UPSERTs |
 
-`support_consent_link_use` (V85, #2453) — the SINGLE-USE ledger for consent
-links:
+`support_consent_link_use` (V85, #2453; widened to the whole link LIFECYCLE by
+V89, #2709) — one row per consent link, written when the prompt is posted and
+resolved when the link dies:
 
 | Column | Notes |
 | --- | --- |
-| `nonce` | PRIMARY KEY — the random nonce minted into the link's `g1.…` token. The uniqueness constraint IS the single-use enforcement: a second redemption is a unique violation, not a read-then-write race |
-| `household_id` / `thread_id` | audit trail + cascade only; the decision keys on `nonce` alone |
-| `consumed_at` | when the link was redeemed (injected Clock) |
-| `link_expires_at` | the `exp` the spent link carried — when it would have lapsed anyway |
+| `nonce` | PRIMARY KEY — the random nonce minted into the link's `g1.…` token. The uniqueness constraint IS the single-use enforcement: redemption is one atomic upsert decided by the PK, not a read-then-write race |
+| `household_id` / `thread_id` | the pair the outstanding-link lookup keys on (V89); also the audit trail + cascade |
+| `posted_at` | when the server posted the prompt carrying this link (V89, injected Clock). The column's `DEFAULT NOW()` is a back-compat scaffold for the pre-#2709 image and nothing in the source relies on it |
+| `consumed_at` | when the link was redeemed (injected Clock). NULLABLE since V89 — a row exists from the moment the prompt is posted, so `consumed_at IS NULL` is exactly "not yet redeemed" |
+| `resolution` | how the link DIED: `redeemed` \| `withdrawn` \| `superseded`, CHECK-bounded. NULL = still outstanding. Written once — first resolution wins |
+| `explained_at` | when the server posted its fixed explanation of this link (V89). Stamped by a conditional `WHERE explained_at IS NULL` UPDATE, which is what makes the explanation fire exactly once per link |
+| `link_expires_at` | the `exp` the link carried — when it lapses (or would have lapsed) anyway |
+
+A link is OUTSTANDING iff
+`resolution IS NULL AND consumed_at IS NULL AND link_expires_at > now`, served by
+the partial index `support_consent_link_use_outstanding_idx`. Note that EXPIRY —
+the fourth way a link dies — is the absence of a write rather than a fourth
+`resolution` value: it falls out of the predicate against the injected Clock, so
+no sweeper has to run for an expired link to stop counting as live.
+
+Why V89 widened it rather than adding a table: this table already IS the per-link
+record, it was simply only ever written at the END of a link's life. A separate
+"a prompt is outstanding" store would be a second place deciding whether one link
+is live (docs/process/single-source-of-truth.md). The source side that reads the
+predicate lands in the stacked follow-up PR (#2709).
 
 Why it exists: the consent link is a stateless signed capability, and since
 #2430/#2441 the thread transcript re-enters the support agent's own prompt — so a
