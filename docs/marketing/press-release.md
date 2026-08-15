@@ -120,10 +120,14 @@ something the product does not do, the correction is called out.
 
 ### Open items for the operator
 
-1. **[PRESS KIT URL] has nothing behind it.** `web-marketing/site/` has no `/press`
-   page — only `/` and `/install/`. Either stand one up before Monday or cut the
-   press-kit line from the release.
+1. **[PRESS KIT URL]** is now `https://wifihaven.net/press` — this PR adds
+   `web-marketing/site/press/index.html`, which carries quick facts, brand assets and
+   this release, and is linked from every page footer. It publishes when the PR merges
+   (Cloudflare Pages deploys `web-marketing/**` on push to `main`).
 2. **[BETA SIGNUP URL]** is live at `https://app.wifihaven.net/beta` (linked from the
    marketing site). Supply it at send time.
-3. **[FOUNDER NAME]** — not invented here.
+3. **[FOUNDER NAME]** — not invented here. It appears in **two** places now: the send
+   request's `fill` map, and `[FOUNDER_NAME]` on the press page. The marketing CD
+   pipeline **fails the deploy** while any `[PLACEHOLDER]` remains in the published
+   site, so the page cannot go live with an unfilled name.
 4. **The founder quote** is the operator's own sentence, lightly edited. Final read before send.

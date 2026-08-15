@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#3A5A6C" />
+    <title>Press — wifihaven</title>
+    <meta
+      name="description"
+      content="wifihaven press kit and launch release: open-source parental controls enforced at the connection layer on OpenWrt routers, not by DNS filtering. Free to self-host forever; invite-only cloud beta."
+    />
+    <link rel="icon" type="image/svg+xml" href="/brand/favicon.svg" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/brand/favicon-32.png" />
+    <link rel="shortcut icon" href="/brand/favicon.ico" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <!-- Reuses the install-guide stylesheet: same brand tokens as the landing page, no build step. -->
+    <link rel="stylesheet" href="/install/guide.css" />
+  </head>
+  <body>
+    <header>
+      <nav class="nav">
+        <a href="/" aria-label="wifihaven home">
+          <img src="/brand/lockup-horizontal.svg" alt="wifihaven" />
+        </a>
+        <div class="nav-actions">
+          <a class="ghost" href="https://app.wifihaven.net">Open the app</a>
+          <a class="cta" href="https://app.wifihaven.net/beta">Request beta access</a>
+        </div>
+      </nav>
+    </header>
+
+    <main>
+      <div class="wrap">
+        <p class="crumbs"><a href="/">wifihaven</a> → Press</p>
+        <h1>Press</h1>
+        <p class="lede">
+          The launch release is below. For interviews, review hardware, or anything the release
+          doesn't answer, write to
+          <a href="mailto:press@wifihaven.net">press@wifihaven.net</a>.
+        </p>
+
+        <h2>Quick facts</h2>
+        <ul>
+          <li>
+            <strong>What it is.</strong> An open-source, whole-home parental control and screen-time
+            system that runs on the family's own router.
+          </li>
+          <li>
+            <strong>How it blocks.</strong> At the network connection layer, with nftables on the
+            gateway. DNS still resolves normally; the connection to the blocked address never leaves
+            the house. It is not a DNS filter, so the encrypted-DNS setting in modern browsers does
+            not get around it.
+          </li>
+          <li>
+            <strong>Hardware.</strong> A router flashed with vanilla OpenWrt. Vendor stock firmware
+            is not a supported target. The documented lineup starts with the GL.iNet Flint
+            (GL-AX1800, around $80); the Flint 2 (GL-MT6000, around $150) is the reference hardware.
+            <a href="/install/">Install guides</a>.
+          </li>
+          <li>
+            <strong>Price.</strong> Self-hosted is free forever. The cloud beta is free, invite-only,
+            and takes no credit card. General pricing is $10/month or $96/year per household;
+            households that join during the beta keep $6/month or $57/year for as long as they stay
+            subscribed.
+          </li>
+          <li>
+            <strong>Source.</strong>
+            <a href="https://github.com/wifihaven/wifihaven">github.com/wifihaven/wifihaven</a>
+          </li>
+          <li>
+            <strong>Brand assets.</strong>
+            <a href="/brand/lockup-horizontal.svg">Horizontal lockup (SVG)</a>,
+            <a href="/brand/mascot.svg">mascot (SVG)</a>,
+            <a href="/brand/og-card-1200x630.png">social card (PNG)</a>.
+          </li>
+        </ul>
+
+        <h2>Launch release</h2>
+
+        <p><strong>FOR IMMEDIATE RELEASE</strong></p>
+
+        <h3>
+          WifiHaven opens the beta of open-source parental controls that run on the family's own
+          router — nothing to install on a kid's phone, free to self-host forever
+        </h3>
+
+        <p>
+          <strong
+            >Invite-only cloud beta opens to founding households; the self-hosted version stays free
+            forever</strong
+          >
+        </p>
+
+        <p>
+          August 17, 2026 — WifiHaven today opened the beta of its open-source, whole-home parental
+          control and screen-time system, built to run on the router a family already owns. Unlike
+          the app-per-device suites and DNS filters that dominate the category, WifiHaven enforces
+          rules at the network connection layer on OpenWrt routers, so there is nothing to install on
+          a child's phone, nothing to delete, and no DNS workaround that gets past it.
+        </p>
+
+        <p>
+          Today's parental controls fall into two camps, and kids know how to beat both. Per-device
+          apps such as Bark, Qustodio and Net Nanny stop working the moment a child deletes the app,
+          factory-resets the phone, or borrows a friend's device. DNS-based filters, including most
+          router vendors' built-in controls, are bypassed by the encrypted-DNS setting now built into
+          every major browser and phone OS. WifiHaven takes a third approach: it drops disallowed
+          connections at the home's gateway using the Linux kernel's nftables firewall. DNS still
+          resolves normally, so the lookup succeeds and the answer comes back, but the connection to
+          that address never leaves the house. Destinations the router cannot attribute to an
+          approved hostname can be dropped outright, which closes the encrypted-DNS and hard-coded-IP
+          routes around it.
+        </p>
+
+        <p>
+          On top of that enforcement layer, WifiHaven gives parents per-child profiles that follow
+          every device a child uses: bedtime and school-hours schedules, daily time limits, per-app
+          limits, category blocklists, and one-tap pause, all evaluated centrally and applied across
+          the whole network at once.
+        </p>
+
+        <p>
+          <strong>Free forever if you run it yourself.</strong> WifiHaven's entire stack is open
+          source. Families comfortable running a small server can self-host all of it at no cost,
+          permanently. That is an explicit commitment from the company, following the model of
+          projects like Home Assistant and Tailscale.
+        </p>
+
+        <p>
+          <strong>Cloud beta for everyone else.</strong> For families who want the same control
+          without running a server, WifiHaven is opening a hosted tier to a founding cohort. The beta
+          is invite-based: a household requests access, each request is reviewed by hand, and
+          approved households get an invite link. It is free and takes no credit card. Once 25 active
+          households are in, a 60-day countdown to general pricing begins and runs to the end; every
+          household is shown its cohort's date when it signs up. General pricing is $10/month or
+          $96/year per household, covering unlimited profiles and devices on one router. Households
+          that join during the beta keep a founding price of $6/month or $57/year for as long as they
+          stay subscribed.
+        </p>
+
+        <p>
+          "We went looking for something that would work for our own family, and nothing on the
+          market gave us the coverage or the peace of mind we wanted. So we built it," said
+          [FOUNDER_NAME] of WifiHaven.
+        </p>
+
+        <p>
+          WifiHaven runs on a router flashed with vanilla OpenWrt, the open-source router firmware
+          supported on hundreds of consumer models. Vendor stock firmware is not a supported target,
+          including the OpenWrt-derived firmware some router makers ship, so flashing is part of the
+          setup. The documented lineup starts with the GL.iNet Flint (GL-AX1800, around $80) and
+          treats the Flint 2 (GL-MT6000, around $150) as reference hardware. The company is
+          deliberately starting with the technical-family audience, the households already running
+          Pi-hole or Home Assistant, before broadening router support.
+        </p>
+
+        <p>
+          One router per household is the plan limit for the beta rather than a limit of the
+          software. Multi-router support is already built, and the cap is expected to rise as paid
+          tiers roll out.
+        </p>
+
+        <p>
+          Beta access: <a href="https://app.wifihaven.net/beta">app.wifihaven.net/beta</a>. Source
+          code, documentation and a self-hosting quickstart:
+          <a href="https://github.com/wifihaven/wifihaven">github.com/wifihaven/wifihaven</a>. Press
+          kit: this page.
+        </p>
+
+        <h3>About WifiHaven</h3>
+
+        <p>
+          WifiHaven is an open-source, router-level parental control and screen-time system for
+          families. It enforces per-child schedules, time limits and content rules at the network
+          gateway on OpenWrt routers, with a free self-hosted option and a hosted cloud tier. More at
+          wifihaven.net.
+        </p>
+
+        <p>
+          <strong>Media contact:</strong>
+          <a href="mailto:press@wifihaven.net">press@wifihaven.net</a>
+        </p>
+      </div>
+    </main>
+
+    <footer>
+      <p>
+        wifihaven — a haven for the household network. ·
+        <a href="/press/">Press</a> ·
+        <a href="https://github.com/wifihaven/wifihaven">Source on GitHub</a>
+      </p>
+    </footer>
+  </body>
+</html>

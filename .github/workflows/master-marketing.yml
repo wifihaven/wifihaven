@@ -39,6 +39,26 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      # #2233: the press page carries the launch release, and the release has operator-input slots
+      # spelled `[LIKE_THIS]` in the authored copy. Merging this site is what publishes it, so an
+      # unfilled slot would go live on wifihaven.net the moment the PR lands. Fail the deploy
+      # instead — the placeholder is a "not ready yet" marker and it should behave like one, rather
+      # than reaching readers as literal brackets (the #2677 lesson, one layer up).
+      #
+      # The pattern matches the OPENING `[ABC` only, never the closing bracket. An earlier version
+      # required `[...]` intact and passed for free, because the HTML formatter had wrapped the one
+      # real placeholder across two lines and the closing bracket was on the next one. Underscores,
+      # not spaces, inside the placeholder for the same reason: a token a formatter can split is a
+      # token this guard can miss.
+      - name: Guard — no unfilled [PLACEHOLDER] slots in the published site
+        run: |
+          set -euo pipefail
+          if grep -rnE '\[[A-Z][A-Z0-9_]+' web-marketing/site; then
+            echo "::error::Unfilled placeholder(s) above. Fill them (or remove the copy) before this deploys."
+            exit 1
+          fi
+          echo "no unfilled placeholders"
+
       - name: Deploy to Cloudflare Pages (wifihaven-www)
         uses: cloudflare/wrangler-action@v3
         with:
