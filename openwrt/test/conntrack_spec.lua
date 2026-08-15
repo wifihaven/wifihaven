@@ -2221,3 +2221,231 @@ describe("kill_orphan_watchers (#1716)", function()
     assert.same({}, killed)
   end)
 end)
+
+-- ---------------------------------------------------------------------------
+-- #2719: the DNS-attribution-miss slow path must be bounded
+--
+-- The prod family router's agent wedged for six hours inside handle_flow: a
+-- DHCPv6 solicit to ff02::1:2 reached the `match_hname == nil` fallback, which
+-- forked one `nft get element` per *member host* of every category blocklist
+-- assigned to that MAC (180,343 hosts). Every agent timer runs from the
+-- conntrack watcher's on_tick, so one flow stopping means the whole agent
+-- stops: no events, no usage, no metrics, and no pushed-policy apply.
+--
+-- Three independent properties are pinned here. Each must be able to fail on
+-- its own — 1 and 2 are the fixes, 3 is the structural backstop that holds even
+-- if a future candidate set escapes them.
+-- ---------------------------------------------------------------------------
+
+describe("slow-path bounding (#2719)", function()
+  local MAC    = "aa:bb:cc:11:22:33"
+  local SRC_IP = "192.168.1.42"
+  local DST_IP = "1.2.3.4"
+
+  local function collecting_batcher()
+    local b = { events = {} }
+    b.add = function(e) b.events[#b.events + 1] = e end
+    return b
+  end
+
+  local function counting_exec(hit_pattern)
+    local calls = {}
+    return calls, function(cmd)
+      calls[#calls + 1] = cmd
+      if hit_pattern and cmd:find(hit_pattern, 1, true) then return 0 end
+      return 1
+    end
+  end
+
+  -- A blocklist membership table of the prod shape: many member hosts, few ids.
+  local function big_bl_hosts(per_id, ids)
+    local hosts = {}
+    for _, id in ipairs(ids) do
+      for i = 1, per_id do
+        hosts[string.format("h%d.%s.example", i, id)] = id
+      end
+    end
+    return hosts
+  end
+
+  local function bl_ids_set(ids)
+    local t = {}
+    for _, id in ipairs(ids) do t[id] = true end
+    return t
+  end
+
+  local function ctx_with(overrides)
+    local base = {
+      arp_table      = { [SRC_IP] = MAC },
+      nft_sets       = {},
+      blocked_macs   = {},
+      blocked_reason = {},
+      reported_macs  = { [MAC] = true },
+      leases         = {},
+      ts             = "2026-08-15T12:34:12Z",
+    }
+    for k, v in pairs(overrides or {}) do base[k] = v end
+    return base
+  end
+
+  -- ── (a) probe count is O(blocklist ids), not O(member hosts) ─────────────
+
+  it("issues one probe per blocklist id, not one per member host", function()
+    local ids = { "ads", "adult", "games" }
+    local calls, exec = counting_exec(nil)  -- every probe misses
+    local b = collecting_batcher()
+    conntrack.handle_flow({ src_ip = SRC_IP, dst_ip = DST_IP }, ctx_with({
+      eb_hosts_by_mac = {},
+      ea_hosts_by_mac = {},
+      bl_hosts_by_mac = { [MAC] = big_bl_hosts(2000, ids) },
+      bl_ids_by_mac   = { [MAC] = bl_ids_set(ids) },
+      exec_fn         = exec,
+    }), b)
+    assert.equal(#ids, #calls,
+      "a DNS-miss flow must probe the per-list bl_ sets, not each of the 6000 member hosts")
+    for _, cmd in ipairs(calls) do
+      assert.is_truthy(cmd:find("bl_", 1, true),
+        "slow-path probes must target bl_<id> sets: " .. cmd)
+    end
+    assert.equal(true, b.events[#b.events].allowed)
+  end)
+
+  it("still names the category when a per-list probe hits", function()
+    local ids = { "ads", "adult" }
+    local calls, exec = counting_exec("bl_adult")
+    local b = collecting_batcher()
+    conntrack.handle_flow({ src_ip = SRC_IP, dst_ip = DST_IP }, ctx_with({
+      eb_hosts_by_mac = {},
+      ea_hosts_by_mac = {},
+      bl_hosts_by_mac = { [MAC] = big_bl_hosts(500, ids) },
+      bl_ids_by_mac   = { [MAC] = bl_ids_set(ids) },
+      exec_fn         = exec,
+    }), b)
+    local ev = b.events[#b.events]
+    assert.equal(false,            ev.allowed)
+    assert.equal("category:adult", ev.reason)
+    assert.is_true(#calls <= #ids)
+  end)
+
+  it("probes the bl6_<id> set for a v6 destination", function()
+    local calls, exec = counting_exec("bl6_ads")
+    local b = collecting_batcher()
+    conntrack.handle_flow({ src_ip = SRC_IP, dst_ip = "2001:db8::1" }, ctx_with({
+      eb_hosts_by_mac = {},
+      ea_hosts_by_mac = {},
+      bl_hosts_by_mac = { [MAC] = { ["ad.doubleclick.net"] = "ads" } },
+      bl_ids_by_mac   = { [MAC] = bl_ids_set({ "ads" }) },
+      exec_fn         = exec,
+    }), b)
+    assert.equal(false,          b.events[#b.events].allowed)
+    assert.equal("category:ads", b.events[#b.events].reason)
+    assert.equal(1, #calls)
+  end)
+
+  -- ── (b) destinations that can never be in a resolved set are not probed ──
+  --
+  -- The liveness anchor is the first assertion: the SAME ctx with a routable
+  -- destination must still probe, so a zero-probe result below is the filter
+  -- firing and not a dead fixture.
+
+  it("issues zero probes for destinations that cannot be in a resolved set", function()
+    local function probes_for(dst)
+      local calls, exec = counting_exec(nil)
+      conntrack.handle_flow({ src_ip = SRC_IP, dst_ip = dst }, ctx_with({
+        eb_hosts_by_mac = { [MAC] = { ["example.com"] = true } },
+        ea_hosts_by_mac = {},
+        bl_hosts_by_mac = { [MAC] = { ["ad.doubleclick.net"] = "ads" } },
+        bl_ids_by_mac   = { [MAC] = bl_ids_set({ "ads" }) },
+        exec_fn         = exec,
+      }), collecting_batcher())
+      return #calls
+    end
+    -- Liveness anchor: a routable dst DOES reach the slow path.
+    assert.is_true(probes_for("2001:db8::1") > 0,
+      "fixture must be able to probe, otherwise the zero-probe assertions are vacuous")
+    assert.equal(0, probes_for("ff02::1:2"),      "IPv6 multicast (the #2719 flow)")
+    assert.equal(0, probes_for("fe80::1"),        "IPv6 link-local")
+    assert.equal(0, probes_for("224.0.0.251"),    "IPv4 multicast (mDNS)")
+    assert.equal(0, probes_for("169.254.10.4"),   "IPv4 link-local")
+  end)
+
+  it("is_wan_bound rejects multicast and link-local destinations", function()
+    local LAN   = "192.168.1."
+    local NEIGH = { ["fe80::42"] = MAC, ["2601:280::42"] = MAC }
+    -- Liveness anchor: the same neighbor-sourced v6 flow to a routable dst passes.
+    assert.is_true(conntrack.is_wan_bound(
+      { src_ip = "2601:280::42", dst_ip = "2606:4700::1" }, LAN, "", NEIGH))
+    assert.is_false(conntrack.is_wan_bound(
+      { src_ip = "fe80::42", dst_ip = "ff02::1:2" }, LAN, "", NEIGH),
+      "the DHCPv6 solicit that wedged prod must never become a connection_event")
+    assert.is_false(conntrack.is_wan_bound(
+      { src_ip = "2601:280::42", dst_ip = "fe80::9999" }, LAN, "", NEIGH))
+    assert.is_false(conntrack.is_wan_bound(
+      { src_ip = "192.168.1.42", dst_ip = "224.0.0.251" }, LAN))
+    assert.is_false(conntrack.is_wan_bound(
+      { src_ip = "192.168.1.42", dst_ip = "169.254.10.4" }, LAN))
+  end)
+
+  -- ── (c) the ceiling trips and returns control ───────────────────────────
+
+  it("stops probing at the iteration ceiling, emits the event, and meters the trip", function()
+    local eb_hosts = {}
+    for i = 1, 500 do eb_hosts[string.format("h%d.example", i)] = true end
+    local calls, exec = counting_exec(nil)  -- never hits: would run to exhaustion
+    local metered = {}
+    local b = collecting_batcher()
+    conntrack.handle_flow({ src_ip = SRC_IP, dst_ip = DST_IP }, ctx_with({
+      eb_hosts_by_mac       = { [MAC] = eb_hosts },
+      ea_hosts_by_mac       = {},
+      exec_fn               = exec,
+      slow_path_max_probes  = 7,
+      inc_counter_fn        = function(name, labels, by)
+        metered[#metered + 1] = { name = name, labels = labels, by = by }
+      end,
+    }), b)
+    assert.equal(7, #calls, "the probe budget must cap the loop")
+    assert.equal(1, #b.events, "the flow must still be reported after the cap trips")
+    assert.equal("connection_attempt", b.events[1]["type"])
+    assert.equal(1, #metered)
+    assert.equal("conntrack_slow_path_capped_total", metered[1].name)
+    assert.equal("probes", metered[1].labels.reason)
+  end)
+
+  it("stops probing at the wall-clock ceiling", function()
+    local eb_hosts = {}
+    for i = 1, 500 do eb_hosts[string.format("h%d.example", i)] = true end
+    local calls, exec = counting_exec(nil)
+    local now = 0
+    local metered = {}
+    local b = collecting_batcher()
+    conntrack.handle_flow({ src_ip = SRC_IP, dst_ip = DST_IP }, ctx_with({
+      eb_hosts_by_mac        = { [MAC] = eb_hosts },
+      ea_hosts_by_mac        = {},
+      exec_fn                = function(cmd) now = now + 0.1; return exec(cmd) end,
+      slow_path_max_probes   = 1000,
+      slow_path_max_seconds  = 0.5,
+      now_fn                 = function() return now end,
+      inc_counter_fn         = function(name, labels, by)
+        metered[#metered + 1] = { name = name, labels = labels, by = by }
+      end,
+    }), b)
+    assert.is_true(#calls >= 5 and #calls <= 6,
+      "expected the 0.5 s deadline to stop the loop after ~5 probes, got " .. #calls)
+    assert.equal(1, #b.events)
+    assert.equal(1, #metered)
+    assert.equal("conntrack_slow_path_capped_total", metered[1].name)
+    assert.equal("deadline", metered[1].labels.reason)
+  end)
+
+  it("does not meter anything when the slow path completes inside its budget", function()
+    local metered = {}
+    local _calls, exec = counting_exec(nil)
+    conntrack.handle_flow({ src_ip = SRC_IP, dst_ip = DST_IP }, ctx_with({
+      eb_hosts_by_mac = { [MAC] = { ["example.com"] = true } },
+      ea_hosts_by_mac = {},
+      exec_fn         = exec,
+      inc_counter_fn  = function(name) metered[#metered + 1] = name end,
+    }), collecting_batcher())
+    assert.equal(0, #metered)
+  end)
+end)
