@@ -32,15 +32,24 @@
 # that stopped updating) rather than on an error being counted. Read its own
 # comment block below before changing it.
 #
-# All twelve carry severity=warning + env=prod labels, which the notification
+# W14 (#2646 follow-up) is W10's ABSENCE ARM and the two must be read together.
+# W10 keys off the PRESENCE of an `agent_version` series per router, so it is
+# structurally blind to a router that reports nothing at all — the laggard just
+# vanishes from both sides of its comparison and the rule goes quiet. W14 covers
+# exactly that door: it compares how many routers are REPORTING against how many
+# are CONNECTED. Do not fold them into one rule; they need different reference
+# signals and different `for` durations.
+#
+# All fourteen carry severity=warning + env=prod labels, which the notification
 # policy in alerting.tf routes to the wifihaven-warning (email) contact point.
 # None of these are ratio queries, so unlike the critical set (§7.1) they need
 # no zero-traffic guard — a counter that never increments is simply absent
-# (no_data_state = OK), which must not fire. W12 (#2477) is the ONE deliberate
-# inversion of that reading: it is a detector-liveness rule, so for it absence is
-# the FAILURE, and it therefore turns absence into a value inside its own
-# expression (`absent(...)`) rather than relying on a no_data verdict the group
-# template does not — and for W10's sake must not — provide.
+# (no_data_state = OK), which must not fire. W12 (#2477) and W14 are the TWO
+# deliberate inversions of that reading: both are liveness rules, so for them
+# absence is the FAILURE, and each therefore turns absence into a value inside
+# its own expression (`absent(...)` for W12, `or vector(0)` + `< bool` for W14)
+# rather than relying on a no_data verdict the group template does not — and for
+# W10's sake must not — provide.
 #
 # Threshold model: each rule is a two-node Grafana managed condition — an
 # instant Prometheus query (ref A) feeding a threshold expression (ref C, the
@@ -48,9 +57,10 @@
 # and the rate/increase window come straight from §7.2.
 
 locals {
-  # Keyed w1..w13 (stable resource addressing). `window_s` bounds the data fetch
+  # Keyed w1..w14 (stable resource addressing). `window_s` bounds the data fetch
   # and must cover the rate/increase window in `expr` (for W10, its
-  # `last_over_time` lookback). `paused` ships W5 off.
+  # `last_over_time` lookback; W14 has no range selector at all and takes the
+  # file minimum). `paused` ships W5 off.
   warning_rules = {
     w1 = {
       title    = "W1 Rollup failures"
@@ -395,6 +405,119 @@ locals {
       for      = "30m"
       paused   = false
       summary  = "The #2477 dispatch watchdog has stopped ticking, so NOTHING is watching for a customer left unanswered by a dead cloud-agent session — and because the unreplied count is a gauge, its dashboard panel is still showing you the last value it ever wrote, which is probably a reassuring 0. Treat W11 as unable to fire until this clears. Rule out the benign causes first: the support responder is flag-off in this environment (Main.scala forks the sweep only when support.responderEnabled is true), or the API is down (C5 would also be firing). Otherwise the sweep fiber died inside a live process — grep the API log for a failure in the DispatchTracker loop and redeploy. This rule covers BOTH responders since #2517 — the alert instance's channel label says which one stopped, and each channel's dashboard has its own heartbeat panel. A press instance firing while support is healthy usually means press.responderEnabled is false in this environment, which is a legitimate state to be in but NOT one you should discover from an alert: check render.yaml before hunting a dead fiber."
+    }
+    # W14 (#2646 follow-up) — W10's ABSENCE ARM. A router that is CONNECTED to us and
+    # pushing nothing. Read this with W10's block above; the two cover opposite failure
+    # doors and neither subsumes the other.
+    #
+    # THE GAP W10 CANNOT SEE. W10 compares a router's remembered version history against
+    # the fleet's live version set, so every term on both sides is derived from
+    # `agent_version` — a series only present for a router that is PUSHING. A router that
+    # stops pushing does not become a laggard in W10's eyes; it disappears from the
+    # comparison entirely and W10 goes quiet. That is not hypothetical. On 2026-08-15,
+    # prod held `router_ws_connections_active = 2` (both routers with a live socket, and
+    # `router ws: connected router=f04dd490-…` in Loki at 18:03:33Z) while
+    # `agent_version{env="prod"}` had exactly ONE series (3498967e, 0.3.29). The router
+    # W10 was written to protect was invisible to it.
+    #
+    # CHOOSING THE REFERENCE SIGNAL — this is the whole design, and it is not obvious.
+    # Prometheus cannot alert on the absence of a series it has never seen: `absent()`
+    # needs a nameable label set, and router ids are not knowable in a static rule. So the
+    # rule needs some OTHER series that enumerates the routers which SHOULD be reporting.
+    # Three candidates were measured against 14 days of real prod data:
+    #   - `agent_connected_routers` — REJECTED, it shares the blind spot. It counts
+    #     routers whose `routers.last_seen_at` is inside a 10-minute window
+    #     (RouterPresenceMetrics.DefaultWindow, api/src/metrics/Metrics.scala), and
+    #     `last_seen_at` is written by the snapshot poll, usage/event ingest and the ws
+    #     heartbeat — the same agent-liveness paths that die together with the metrics
+    #     push. It read 1, exactly equal to the reporting count, at the moment the failure
+    #     was live: it CANNOT distinguish the broken state from the healthy one. It is
+    #     also the noisiest of the three — over 14d it flapped between 1 and 2 repeatedly
+    #     while both routers were reporting normally.
+    #   - A new server-side ENROLLED-router gauge off the `routers` table — REJECTED, and
+    #     this is the close call. It would be authoritative about who should report, and
+    #     it is unlabelled so it costs no cardinality. But an enrollment row outlives the
+    #     hardware: a decommissioned-but-undeleted router, or a household whose box is
+    #     simply unplugged for a week, would hold this rule firing forever with no action
+    #     available. An alert that cannot be resolved by fixing something is an alert the
+    #     operator learns to close. It also fails the "express it with a signal that
+    #     already exists" bar — a new metric is warranted when nothing else can carry the
+    #     meaning, and here something can.
+    #   - `router_ws_connections_active` — CHOSEN. A router holding an open websocket is a
+    #     router we have direct, live evidence is up and talking to us; if it is up and
+    #     talking and still pushing no metrics, that is precisely the failure. It
+    #     self-clears with no bookkeeping: a decommissioned or unplugged router drops its
+    #     socket and leaves the reference count on its own, which is the exact property
+    #     the enrolled gauge lacks. Measured flat at 2 for the whole 14-day window,
+    #     through both outage episodes — the stablest of the three by a wide margin.
+    #
+    # WHAT IT DEPENDS ON, stated plainly because it is the fragile part. The gauge is
+    # documented as a count of CHANNELS, not routers; it is only a router count because
+    # RouterWsRegistry.register SUPERSEDES — a reconnect evicts and shuts down the channel
+    # already held for that id (#2561), so a router holds at most one. If that invariant
+    # is ever relaxed the reference count inflates and this rule false-fires. Anyone
+    # changing the registry's channel-per-router bound must revisit this rule.
+    # Second dependency: a router on the REST transport holds no channel at all, so it
+    # contributes to the reporting side and not the reference side. That direction fails
+    # SAFE (the comparison cannot go true from it) but it does mean a REST-only router is
+    # not covered here. ws is the fleet default since #2608, which is what makes this
+    # acceptable rather than a hole.
+    #
+    # WHY COUNTS AND NOT IDENTITIES. The rule fires without naming the silent router. That
+    # is deliberate: naming it would need a per-router server-derived series, which
+    # docs/process/instrumentation.md forbids as an unbounded label dimension.
+    # (`agent_version`'s own `router_id` is the documented exception because it is
+    # AGENT-pushed, not server-derived — see W10's cardinality note; that exception does
+    # not extend to inventing a new server-side per-router gauge.) "One router is silent"
+    # is enough to act on, and the operator identifies which one in two clicks from the
+    # paired panel on the router-ws-transport dashboard. A count-comparison that fires is
+    # worth far more than an identity-precise rule that does not exist.
+    #
+    # HOW IT READS. `count by (router_id)` collapses a router's version label so an
+    # in-flight upgrade cannot double-count it; the outer `count` is then the number of
+    # routers with a live `agent_version`. `or vector(0)` is load-bearing and NOT
+    # defensive padding: `count()` over an empty vector returns EMPTY, not 0, so without
+    # it the total-silence case (every router stops) produces no sample and reads as
+    # healthy — the #2546 shape, and the same hole #2654 is filed for. With it, 0 < 2
+    # fires. `< bool` rather than a bare `<` for the same reason: a bare comparison
+    # returns the LEFT value, which is 0 in exactly that total-silence case, and gt = 0
+    # would then filter out the one sample that matters most. `bool` yields a clean 1/0
+    # and gt = 0 is a true boolean test (the same `== bool` reasoning as W12). `max` and
+    # not `sum` over the reference gauge: the API is numInstances: 1 (render.yaml) so they
+    # are identical today, but under a scale-out or a lingering old instance during a
+    # rolling deploy `sum` would inflate the reference count and false-fire.
+    # If the reference gauge itself is absent (the API is down), the comparison is empty
+    # and the rule correctly lands in no_data → OK — an API outage is C-tier, not this.
+    #
+    # WHY for = 6h — CALIBRATED AGAINST 14 DAYS OF PROD, not picked. The expression was
+    # replayed over 2026-08-01→08-15 at 5-minute resolution. It went true in exactly three
+    # runs: 0.8h on 08-10, 17.2h from 08-14 16:38 to 08-15 09:53, and the ongoing run that
+    # began 08-15 15:03. (An API restart also produces a sub-scrape transient — the
+    # agent-pushed gauges repopulate only on the next push, `metrics_report_interval` 60s
+    # — one of which showed as a single 5-minute sample in an earlier draft of the
+    # expression.) 6h clears
+    # the largest benign run by 7.5x and the metrics push interval by 360x, so no restart,
+    # reboot, agent upgrade or scrape gap can reach it; it would have fired ONCE in that
+    # fortnight, on the 17.2h event, which is the genuine failure. Shorter would page on
+    # the 0.8h dip. Longer (W10's 24h) would have missed the 17.2h outage entirely, and
+    # that is the difference in condition: W10 detects "stopped updating forever", which
+    # is a days-scale fact, while this detects "stopped talking", where six hours of
+    # silence from a box that is holding a socket open is already anomalous.
+    #
+    # QUERY COST — unlike W10 this has no range selector at all: two instant gauge reads
+    # per evaluation, so `window_s` takes the file minimum and the #2650 recording-rule
+    # concern does not apply here.
+    w14 = {
+      title    = "W14 A connected router has stopped reporting metrics"
+      expr     = "((count(count by (router_id) (agent_version{env=\"prod\"})) or vector(0)) < bool max(router_ws_connections_active{env=\"prod\"}))"
+      window_s = 300
+      # gt = 0 against a `< bool` comparison: the expression is 1 when fewer routers are
+      # reporting than are connected and 0 otherwise, so this is a boolean test and there
+      # is no knob to tune here — tune `for`.
+      gt      = 0
+      for     = "6h"
+      paused  = false
+      summary = "Fewer routers are pushing metrics than are holding a live websocket to us — at least one router is CONNECTED and silent, and has been for 6h. This is the door W10 cannot watch: W10 keys off the presence of an agent_version series, so a router that reports nothing vanishes from its comparison instead of being flagged by it, and the stuck-agent detector is silently off for that box. Observed live on prod 2026-08-15 (2 connected, 1 reporting). WHICH ROUTER: the rule cannot name it (a per-router server-derived label is forbidden by docs/process/instrumentation.md) — open the router-ws-transport dashboard's \"Routers connected vs reporting metrics\" panel, then the router-fleet dashboard's version-distribution panel, which lists the router_ids that ARE reporting; the silent one is the enrolled router missing from that list. THEN: the box is up (it is holding a socket), so this is the metrics push specifically, not the agent. Check POST /api/router/metrics in the API log for that router, and on the box check the agent's metrics reporter and `logread | grep wifihaven`. If instead ALL routers went silent at once (the panel shows reporting at 0), suspect the ingest route or the metrics pipeline rather than any single router."
     }
   }
 }
