@@ -1428,7 +1428,18 @@ final case class SupportResponder(
             s"support: could not discard the unposted consent link on thread=${claims.threadId} " +
               s"— the thread stays muted until it lapses: ${e.getMessage}",
           ),
-        _ => ZIO.unit,
+        // The Boolean is the repo's answer to "did a row actually go", and a `false` is not nothing:
+        // it means the row was consumed or resolved between the insert and here, so the thread stays
+        // muted for a prompt we believe was never posted. Rare enough to be worth a line, never
+        // frequent enough to be noise.
+        removed =>
+          ZIO
+            .logInfo(
+              s"support: the unposted consent link on thread=${claims.threadId} was already " +
+                "consumed or resolved, so nothing was discarded — the thread stays muted (#2709)",
+            )
+            .unless(removed)
+            .unit,
       )
 
   /** `<appBaseUrl>/support/consent?g=<grant token>` — the customer-facing consent link. */

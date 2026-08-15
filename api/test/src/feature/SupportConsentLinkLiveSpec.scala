@@ -368,6 +368,10 @@ object SupportConsentLinkLiveSpec
         repeat >= 2.0,
         !explain.contains(LinkMarker),
         explain.toLowerCase.contains("never ask"),
+        // It must not refer to the prompt BY POSITION. "the link above" resolves by where a message
+        // sits in a thread the agent can partly author, so it names the request instead.
+        !explain.toLowerCase.contains("above"),
+        explain.contains("permission request in this conversation"),
       )
     },
     test("RESOLVED — redeemed: once the customer allows it, the agent speaks again") {
@@ -505,6 +509,7 @@ object SupportConsentLinkLiveSpec
         // The customer withdraws, then the SAME link is presented again — the replay #2453 exists
         // to refuse. It must not restore access.
         _        <- consentAction(h, jwtTok, grant, allow = false)
+        before   <- consentCounter("link_spent")
         replay   <- consentAction(h, jwtTok, grant, allow = true)
         spent    <- consentCounter("link_spent")
         now      <- ZIO.serviceWithZIO[Clock](_.instant)
@@ -513,7 +518,9 @@ object SupportConsentLinkLiveSpec
       } yield assertTrue(
         first == Status.Ok,
         replay != Status.Ok,
-        spent >= 1.0,
+        // A DELTA, not the process-global count: this must distinguish "refused as spent" from
+        // "refused as stale", and any other spec in the JVM can move the absolute counter.
+        spent == before + 1,
         // The withdrawal stands: the replayed link did not re-grant.
         !live,
       )
