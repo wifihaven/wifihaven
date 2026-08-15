@@ -4,6 +4,7 @@ import doobie.*
 import doobie.implicits.*
 import io.zonky.test.db.postgres.embedded.EmbeddedPostgres
 import wifihaven.api.db.*
+import wifihaven.api.db.TypeMeta.given
 import wifihaven.api.policy.PolicyService
 import wifihaven.shared.types.*
 import wifihaven.testinfra.*
@@ -229,6 +230,51 @@ object RollupAppAttributionSpec
       } yield assertTrue(
         sideN == 1L,
         aggs.find(_.appId.contains(appId)).exists(_.activeSeconds == 288 * 300),
+      )
+    },
+    // #2708: the per-app aggregates are household-scoped on BOTH grains. These have no production
+    // caller today, which is exactly why they need a pin — an unpinned scope is the one a future
+    // caller inherits broken. `macs = Nil` is the widening input; each household must see only its
+    // own seconds, and (the liveness half) must still see them.
+    test("aggregateByApp{Hourly,Daily} scope to the household even with macs = Nil") {
+      for {
+        _       <- cleanDb
+        xa      <- ZIO.service[Transactor[Task]]
+        ridA    <- seedRouter
+        hhB     <- sql"INSERT INTO households(name, slug) VALUES ('B', 'hh-b') RETURNING id"
+          .query[HouseholdId]
+          .unique
+          .transact(xa)
+        ridB    <- ZIO.serviceWithZIO[RouterRepo](
+          _.create("gwB", PolicyService.hashToken("et_b"), hhB),
+        )
+        // The SAME mac and the SAME app host under each household's router, different volumes.
+        _       <- seedReports(ridA, start, 12, ytHost, bytesPerBucket = 100L)
+        _       <- seedReports(ridB, start, 12, ytHost, bytesPerBucket = 900L)
+        appRepo <- ZIO.service[AppRepo]
+        appId   <- createApp("YouTube", "youtube")
+        _       <- appRepo.setHosts(appId, List(Hostname.unsafe(ytApex)))
+        version <- appRepo.currentHostsVersion
+        appsByApex = Map(ytApex -> List(appId))
+        rollup <- ZIO.service[RollupRepo]
+        _      <- rollup.rerollHourly(start.minusSeconds(3600), appsByApex, version)
+        _      <- rollup.rerollDaily(
+          start.atZone(ZoneOffset.UTC).toLocalDate.minusDays(1),
+          appsByApex,
+          version,
+        )
+        to = start.plusSeconds(86400)
+        hA <- rollup.aggregateByAppHourly(HouseholdId.Default, Nil, start, to, version, appsByApex)
+        hB <- rollup.aggregateByAppHourly(hhB, Nil, start, to, version, appsByApex)
+        dA <- rollup.aggregateByAppDaily(HouseholdId.Default, Nil, start, to, version, appsByApex)
+        dB <- rollup.aggregateByAppDaily(hhB, Nil, start, to, version, appsByApex)
+        bytesFor = (aggs: List[AppUsageAgg]) =>
+          aggs.filter(_.appId.contains(appId)).map(_.bytesIn).sum
+      } yield assertTrue(
+        bytesFor(hA) == 12 * 100L,
+        bytesFor(hB) == 12 * 900L,
+        bytesFor(dA) == 12 * 100L,
+        bytesFor(dB) == 12 * 900L,
       )
     },
   ) @@ TestAspect.sequential

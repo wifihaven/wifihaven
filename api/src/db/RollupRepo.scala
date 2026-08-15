@@ -5,6 +5,7 @@ import doobie.*
 import doobie.implicits.*
 import doobie.postgres.implicits.*
 import wifihaven.api.db.TypeMeta.given
+import wifihaven.api.metrics.DbMetrics
 import wifihaven.shared.types.*
 import zio.*
 import zio.interop.catz.*
@@ -420,26 +421,46 @@ class RollupRepoLive(xa: Transactor[Task]) extends RollupRepo {
     // outright.
     //
     // Plan, measured 2026-08-14 on prod (`traffic_hourly` 2,211,470 rows / `traffic_daily`
-    // 678,361), `EXPLAIN (ANALYZE, BUFFERS)` over the widest read each tier serves (14d hourly /
-    // 90d daily, `macs = Nil`): the predicate resolves to a `Materialize`d 1-row `routers`
-    // semijoin (5 shared buffers, `idx_routers_household` V65 on the subquery) and the outer scan
-    // stays an index scan on `idx_traffic_hourly_bucket_start` / `idx_traffic_daily_date`, the same
-    // plan class as before. Wall time went 3.48s → 2.65s (hourly) and 3.86s → 2.86s (daily),
-    // because the scoped read returns fewer rows. So no new index is needed, and no `household_id`
-    // column on these unbounded-growth tables is justified — see
-    // `docs/design/multi-tenant-isolation.md` § "router_id-keyed tables".
+    // 678,361, household 1 = 26 devices), `EXPLAIN (ANALYZE, BUFFERS)` over the widest read each
+    // tier serves — 14d hourly / 90d daily. The baseline that matters is what the SPA's default
+    // no-filter view ACTUALLY issued before #2708: unscoped, but with `mac IN (<the household's 26
+    // device MACs>)`, because `resolveMacs` resolved the no-filter case to the device list. Against
+    // that real baseline:
+    //
+    //   hourly 14d:  pre-#2708 (unscoped + 26 macs) 2,949 ms  →  scoped, no mac filter 2,655 ms
+    //   daily  90d:  pre-#2708 (unscoped + 26 macs) 3,721 ms  →  scoped, no mac filter 2,859 ms
+    //
+    // Both tiers keep their index scan (`idx_traffic_hourly_bucket_start` /
+    // `idx_traffic_daily_date`); the predicate adds a `Materialize`d 1-row `routers` semijoin
+    // (5 shared buffers, `idx_routers_household` V65 on the subquery). It is FASTER than the
+    // baseline because the household predicate is a cheaper way to express the same restriction
+    // than a 26-element `mac IN (…)` — and, unlike that IN-list, it is also CORRECT for a MAC
+    // shared across households (#2125/#2313), which the mac list alone cannot exclude.
+    //
+    // Do NOT "restore" the mac filter on top of this as a perf measure: measured on the same data,
+    // scoped + 26 macs is 3,329 ms hourly and 8,387 ms daily — on the daily tier the planner flips
+    // to `traffic_daily_pkey` and it lands 2.3x WORSE than the pre-#2708 baseline.
+    //
+    // So no new index is needed, and no `household_id` column on these unbounded-growth tables is
+    // justified — see `docs/design/multi-tenant-isolation.md` § "router_id-keyed tables".
     type Row = (MacAddress, String, Instant, Int, Long, Long)
     val base = fr"""SELECT mac, hostname, bucket_start, active_seconds, bytes_in, bytes_out
            FROM traffic_hourly
            WHERE bucket_start >= $from AND bucket_start < $to """ ++
       SqlFragments.householdRouterScope(household, "router_id") ++ fr" "
-    (base ++ macFilter(macs) ++ fr"ORDER BY bucket_start DESC, mac, hostname")
-      .query[Row]
-      .map { case (m, h, bs, secs, bi, bo) =>
-        RollupRow(m, HostId.Fqdn(Hostname.unsafe(h)), bs, bs.plusSeconds(3600), secs, bi, bo)
-      }
-      .to[List]
-      .transact(xa)
+    // #2708: these are the widest queries the traffic page issues and this PR changed their plan
+    // shape, so instrument them — the change is then visible on the existing
+    // `db_query_duration_seconds{op}` panel (`api-self-metrics.json`, already sliced by `op`)
+    // instead of being inferred.
+    DbMetrics.timed("rollup.listHourlyInRange") {
+      (base ++ macFilter(macs) ++ fr"ORDER BY bucket_start DESC, mac, hostname")
+        .query[Row]
+        .map { case (m, h, bs, secs, bi, bo) =>
+          RollupRow(m, HostId.Fqdn(Hostname.unsafe(h)), bs, bs.plusSeconds(3600), secs, bi, bo)
+        }
+        .to[List]
+        .transact(xa)
+    }
   }
 
   def listDailyInRange(
@@ -459,15 +480,17 @@ class RollupRepoLive(xa: Transactor[Task]) extends RollupRepo {
            WHERE date >= $fromDate AND date <= $toDate """ ++
       // #2708: same transitive tenancy predicate as `listHourlyInRange`.
       SqlFragments.householdRouterScope(household, "router_id") ++ fr" "
-    (base ++ macFilter(macs) ++ fr"ORDER BY date DESC, mac, hostname")
-      .query[Row]
-      .map { case (m, h, d, secs, bi, bo) =>
-        val bs = d.atStartOfDay(java.time.ZoneOffset.UTC).toInstant
-        RollupRow(m, HostId.Fqdn(Hostname.unsafe(h)), bs, bs.plusSeconds(86400), secs, bi, bo)
-      }
-      .to[List]
-      .transact(xa)
-      .map(_.filter(r => !r.bucketStart.isBefore(from) && r.bucketStart.isBefore(to)))
+    DbMetrics.timed("rollup.listDailyInRange") {
+      (base ++ macFilter(macs) ++ fr"ORDER BY date DESC, mac, hostname")
+        .query[Row]
+        .map { case (m, h, d, secs, bi, bo) =>
+          val bs = d.atStartOfDay(java.time.ZoneOffset.UTC).toInstant
+          RollupRow(m, HostId.Fqdn(Hostname.unsafe(h)), bs, bs.plusSeconds(86400), secs, bi, bo)
+        }
+        .to[List]
+        .transact(xa)
+        .map(_.filter(r => !r.bucketStart.isBefore(from) && r.bucketStart.isBefore(to)))
+    }
   }
 
   private def macFilter(macs: List[MacAddress]): Fragment =

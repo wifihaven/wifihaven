@@ -205,5 +205,58 @@ object RollupHouseholdScopeSpec
       dailyFrom,
       dailyTo,
     ),
+    // The OTHER `MacScope` constructor. `NoDevices` replaced the two hand-rolled
+    // `macs.isEmpty && (macsRaw.nonEmpty || profileIds.nonEmpty)` short-circuits, so it needs its
+    // own pin: a filter that WAS supplied and selected nothing must read nothing — distinct from
+    // the no-filter case above, which reads the whole household.
+    test("a supplied filter that selects no device reads nothing (MacScope.NoDevices)") {
+      for {
+        _      <- cleanDb
+        two    <- seedFixture
+        auth   <- makeAuth
+        routes <- buildRoutes(auth)
+        tokenB <- login(auth, two.adminB, two.password, two.slugB)
+        // B DOES own rows (the liveness anchor below proves it), but this MAC is not its device.
+        unknown = "aa:bb:cc:00:00:ff"
+        (stFiltered, filtered) <- getJson(
+          routes,
+          trafficPath("1h", hourlyFrom, hourlyTo) + s"&mac=$unknown",
+          tokenB,
+        )
+        (stAll, all)           <- getJson(routes, trafficPath("1h", hourlyFrom, hourlyTo), tokenB)
+        rowsAll                <- rowsOf(all)
+      } yield
+      // A MAC with no device row in this household is a 404 (the handler's per-mac guard) — it
+      // never reaches the read at all. Either way it must not return another household's rows.
+      assertTrue(stFiltered == Status.NotFound, !filtered.contains(hostB)) &&
+        // Liveness anchor: the same token over the same window with NO filter does read rows, so
+        // the empty/404 above is the filter's doing, not an inert fixture.
+        assertTrue(stAll == Status.Ok, rowsAll.nonEmpty, all.contains(hostB))
+    },
+    // #2708 deliberately widened the no-filter case WITHIN a household: it now restricts by
+    // household rather than by the current `devices` list, so traffic whose device row was deleted
+    // is still the household's own traffic and still reported. Pre-#2708 it silently vanished.
+    // Pinned in both directions — the orphaned rows appear for their OWN household and for no other.
+    test("traffic whose device row was deleted still reads back — for its own household only") {
+      for {
+        _      <- cleanDb
+        two    <- seedFixture
+        xa     <- ZIO.service[Transactor[Task]]
+        // Delete B's device row, leaving its already-rolled traffic orphaned.
+        _      <- sql"DELETE FROM devices WHERE household_id = ${two.hhB}".update.run.transact(xa)
+        auth   <- makeAuth
+        routes <- buildRoutes(auth)
+        tokenA <- login(auth, two.adminA, two.password, two.slugA)
+        tokenB <- login(auth, two.adminB, two.password, two.slugB)
+        (stB, bodyB) <- getJson(routes, trafficPath("1h", hourlyFrom, hourlyTo), tokenB)
+        (stA, bodyA) <- getJson(routes, trafficPath("1h", hourlyFrom, hourlyTo), tokenA)
+        rowsB        <- rowsOf(bodyB)
+        rowsA        <- rowsOf(bodyA)
+      } yield assertTrue(stA == Status.Ok, stB == Status.Ok) &&
+        // Own household still sees the orphaned rows (labelled by bare MAC).
+        assertTrue(rowsB.nonEmpty, bodyB.contains(hostB)) &&
+        // And the widening stops at the tenant boundary: A, which owns nothing, still reads nothing.
+        assertTrue(rowsA.isEmpty, !bodyA.contains(hostB))
+    },
   ) @@ TestAspect.sequential
 }

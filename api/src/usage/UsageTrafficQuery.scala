@@ -77,6 +77,17 @@ object UsageTrafficQuery {
    * distinct constructors, where an empty `List` used to have to mean both. Every caller previously
    * had to re-derive which one it was holding from the raw request; a household with zero devices
    * is the case they all got wrong.
+   *
+   * '''Deliberate behaviour change in the no-filter case (#2708).''' Pre-#2708 this branch returned
+   * `devices.map(_.mac)`, so the read was restricted to MACs with a CURRENT `devices` row; traffic
+   * whose device row had since been deleted silently vanished from the household's own usage view
+   * and under-reported its totals. [[MacScope.AllInHousehold]] restricts by household instead, so
+   * those rows are now included and render under the bare MAC (`UsageTraffic.buildAggregate` falls
+   * back to `mac.value` / "(unassigned)"). This is a widening WITHIN one tenant and never across
+   * tenants — the household predicate on every tier is what bounds it (#2313 raw, #2708 rollups),
+   * and it is strictly more correct than the device-list restriction, which cannot exclude a MAC
+   * shared with ANOTHER household (#2125) and so was never the isolation mechanism it looked like.
+   * Pinned by `RollupHouseholdScopeSpec`'s deleted-device test.
    */
   def resolveMacs(
       macs: List[MacAddress],
