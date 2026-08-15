@@ -1313,6 +1313,36 @@ wifihaven/
 One JVM process runs in production:
 1. `api` — REST API on :8080, handles auth (JWT), owns the DB, runs `PolicyService` (the only place decision logic lives).
 
+### Deployment model: self-hosted vs. cloud
+
+**This is the canonical statement of the two tiers.** It is the source the
+support and press agents are pointed at (`deploy/{support,press}-agent/
+agent.yaml`), because the direction is easy to get backwards and has been
+stated backwards to a journalist in production (#2718). State it from here,
+not from memory.
+
+| | **Self-hosted** | **Cloud** |
+|---|---|---|
+| Whose hardware the API runs on | **The customer's own** — a small Linux box in their house | **Ours** — `api.wifihaven.net` |
+| Where the dashboard is served from | The **same** API image, which bundles `web/dist` and serves it on :8080 | `app.wifihaven.net`, a static Cloudflare Pages bundle deployed independently of the API |
+| Where household/account data lives | Their own machine; nothing in the install talks to a WifiHaven server | Our database |
+| Price | **Free forever**, stated publicly and permanently | **$10/month or $96/year** per household (unlimited profiles and devices, one router). Currently an invite-based free beta, no card; founding households keep $6/month ($57/year) while subscribed — see the pricing section of `web-marketing/site/index.html`, which is the live public statement |
+| Support | GitHub issues — a self-hosted install has no account with us and no support widget | The in-dashboard widget and `support@wifihaven.net` |
+
+So: "run it yourself on a home box" is always the **customer's** hardware, and
+"cloud" is always **ours**. A sentence pairing self-hosting with our servers is
+inverted.
+
+**What does not differ: enforcement.** On *both* tiers the blocking happens
+locally, in real time, on the household's own router via nftables. The API —
+wherever it is hosted — is only the control plane that ships the policy
+snapshot down; it is never in the path of the family's traffic. Self-hosted vs.
+cloud is a question of where the dashboard and account data live, **not** where
+the blocking happens. (That distinction is the one a technical reader actually
+wants, and it is worth volunteering.)
+
+The rest of this section is the hosting mechanics behind the table.
+
 SPA hosting differs by environment:
 
 - **Self-hosted (local / dev / `deploy/install.sh`)**: the SPA is bundled
