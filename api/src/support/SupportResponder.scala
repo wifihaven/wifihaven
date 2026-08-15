@@ -768,14 +768,18 @@ final case class SupportResponder(
    * once already. So the refusal POSTS — [[SupportResponder.consentLinkExplainer]], the server's
    * own fixed words, carrying no link of its own and stating plainly that we never ask for a
    * password, which is what defeats a framing rather than merely withholding one. Exactly once per
-   * link, claimed with a conditional UPDATE, so a looping agent cannot turn our own message into
-   * spam.
+   * LINK, claimed with a conditional UPDATE. Per link, not per thread: a fresh prompt mints a fresh
+   * nonce and re-arms the explanation, so the real ceiling on server-authored noise is
+   * `consentThreadLimiter` (3 consent requests per thread per hour, `HttpRoutes`), not one message.
    *
-   * The residual cost is stated rather than hidden: a customer whose question is unrelated to the
-   * link gets the explanation instead of an answer until they act on the prompt (or it lapses at
-   * 24h). That is the price of the guarantee, and it is bounded, visible on
-   * `support_consent_total{outcome="reply_blocked_link_live"}`, and self-clearing — every
-   * resolution path lifts it, including the customer simply declining.
+   * The residual cost is stated rather than hidden, in both its shapes. A customer whose question
+   * is unrelated to the link gets the explanation instead of an answer until they act on the prompt
+   * or it lapses. And the mute is RENEWABLE, not capped at one link's 24h: an agent that keeps
+   * asking for consent keeps a link outstanding, bounded only by that same rate limit. Both are
+   * visible on `support_consent_total{outcome="reply_blocked_link_live"}`, both clear on any
+   * resolution path including the customer simply declining, and neither can strand the customer —
+   * `escalate` is deliberately outside [[AgentAction.ThreadWrites]], so the handoff to a human is
+   * never gated on this.
    *
    * FAIL-CLOSED on a lookup error, unlike [[consentGranted]]. There the fail-open direction is
    * "assume no consent", which is also the safe one; here "assume no link" would re-open the
@@ -819,9 +823,17 @@ final case class SupportResponder(
    * itself is the untrusted one: an agent firing `reply` twice concurrently would pass two reads
    * and put two copies of our own message in front of the customer.
    *
-   * Every outcome is metered. A Plain failure here leaves the customer with the original prompt and
-   * no explanation — worth seeing, and not worth un-claiming for: re-claiming on failure would let
-   * a `reply` loop retry the write until one landed, which is the spam this exists to prevent.
+   * The claim is GIVEN BACK on `Disabled` and only on `Disabled`, the same split every other write
+   * in this flow makes: a dark Plain client proves nothing was posted, so holding the claim would
+   * silence the explanation for the rest of the link's life over a write that never happened. An
+   * `Error` keeps it, because that value collapses a refusal, a transport failure and a timeout,
+   * and releasing on a write that timed out (and may have landed) would let a `reply` loop retry
+   * until it produced a second copy — the spam this claim exists to prevent.
+   *
+   * So a transient Plain error does cost this link its explanation, and that is the deliberate
+   * direction: the customer still has the server's consent prompt, which #2419 keeps
+   * self-sufficient precisely so it can stand alone, and `link_explain_error` is on the panel as
+   * the signal that it happened.
    */
   private def explainLinkOnce(
       claims: ConsentToken.Claims,
@@ -829,7 +841,7 @@ final case class SupportResponder(
       now: Instant,
   ): UIO[Unit] =
     consentRepo
-      .claimExplainer(link.nonce, now)
+      .claimExplainer(claims.householdId, claims.threadId, link.nonce, now)
       .foldZIO(
         e =>
           ZIO.logWarning(s"support: consent-link explainer claim failed: ${e.getMessage}") *>
@@ -845,7 +857,12 @@ final case class SupportResponder(
                 case PlainOutcome.Ok       =>
                   AppMetrics.supportConsent(SupportResponder.LinkExplained)
                 case PlainOutcome.Disabled =>
-                  AppMetrics.supportConsent(SupportResponder.LinkExplainDisabled)
+                  // Provably not posted, so the claim goes back — otherwise one dark-install
+                  // refusal would silence the explanation for the rest of the link's life.
+                  consentRepo
+                    .releaseExplainer(claims.householdId, claims.threadId, link.nonce)
+                    .ignoreLogged *>
+                    AppMetrics.supportConsent(SupportResponder.LinkExplainDisabled)
                 case PlainOutcome.Error    =>
                   AppMetrics.supportConsent(SupportResponder.LinkExplainError)
               }
@@ -1284,26 +1301,53 @@ final case class SupportResponder(
     ZIO.logInfo(
       s"support: consent requested for household=${claims.householdId.value} thread=${claims.threadId}",
     ) *>
-      plain.writeThread(write).flatMap {
-        case PlainOutcome.Ok       =>
-          recordPostedLink(claims, nonce, now) *>
-            AppMetrics
-              .supportConsent("requested") *> done(AgentAction.ConsentRequest, AgentActionResult.Ok)
-        case PlainOutcome.Disabled =>
-          // The write half is dark, so nothing was attempted and no link can be in front of the
-          // customer — the ONE outcome that proves non-delivery (see [[settleThreadWrite]]). No row
-          // is recorded, because a link nobody was shown must not mute the agent for 24h.
-          AppMetrics.supportConsent("request_disabled") *>
-            done(AgentAction.ConsentRequest, AgentActionResult.Disabled)
-        case PlainOutcome.Error    =>
-          // Recorded anyway, and on purpose: `PlainOutcome.Error` collapses a refusal, a transport
-          // failure and a timeout into one value, and a write that timed out may well have been
-          // applied. Treating that as "no link exists" is how agent text ends up beneath a link
-          // that IS there. Same direction #2667's settle policy fails in.
-          recordPostedLink(claims, nonce, now) *>
-            AppMetrics.supportConsent("request_error") *>
-            done(AgentAction.ConsentRequest, AgentActionResult.Error)
-      }
+      // #2709 — RECORD BEFORE POSTING, and refuse to post at all if the record fails.
+      //
+      // The reverse order leaves a window with a live link on the customer's screen and no ledger
+      // row: for the length of a Plain round trip the exclusion silently does not apply to it, and
+      // a second dispatch arriving in that window (the customer's next message) reads "no link
+      // outstanding" and posts beneath one that is already there. That window is exactly the state
+      // this guard exists to make impossible, and it was the one place the guard fell back on
+      // #2667's in-memory claim map — which fails OPEN across a restart.
+      //
+      // So the row goes first, and a failure to write it ABORTS the prompt rather than posting an
+      // unguarded link. This is the whole reason the ordering matters: a row with no link mutes the
+      // agent briefly and is undone below; a link with no row is the phishing surface. There is no
+      // longer any path that puts a consent link in front of a customer without the exclusion
+      // covering it — including a TRANSIENT database blip, which the reverse order would have left
+      // uncovered for the link's full 24h.
+      recordPostedLink(claims, nonce, now).foldZIO(
+        _ =>
+          ZIO.logError(
+            s"support: NOT posting a consent prompt for thread=${claims.threadId} " +
+              s"household=${claims.householdId.value} — the link could not be recorded, and an " +
+              "unrecorded link is one the #2709 exclusion cannot cover (#2709)",
+          ) *> AppMetrics.supportConsent(SupportResponder.LinkRecordError) *>
+            done(AgentAction.ConsentRequest, AgentActionResult.Error),
+        _ =>
+          plain
+            .writeThread(write)
+            .flatMap {
+              case PlainOutcome.Ok       =>
+                AppMetrics.supportConsent("requested") *>
+                  done(AgentAction.ConsentRequest, AgentActionResult.Ok)
+              case PlainOutcome.Disabled =>
+                // The write half is dark, so nothing was attempted and no link can be in front of the
+                // customer — the ONE outcome that proves non-delivery (see [[settleThreadWrite]]). So
+                // the row is DISCARDED: a link nobody was shown must not mute the agent for 24h.
+                discardPostedLink(claims, nonce) *>
+                  AppMetrics.supportConsent("request_disabled") *>
+                  done(AgentAction.ConsentRequest, AgentActionResult.Disabled)
+              case PlainOutcome.Error    =>
+                // The row STAYS, and on purpose: `PlainOutcome.Error` collapses a refusal, a
+                // transport failure and a timeout into one value, and a write that timed out may well
+                // have been applied. Treating that as "no link exists" is how agent text ends up
+                // beneath a link that IS there. Same direction #2667's settle policy fails in — the
+                // cost is a thread muted until the link lapses, which is loud on `request_error`.
+                AppMetrics.supportConsent("request_error") *>
+                  done(AgentAction.ConsentRequest, AgentActionResult.Error)
+            },
+      )
   }
 
   /**
@@ -1314,18 +1358,17 @@ final case class SupportResponder(
    * `linkExpiresAt` is recomputed as `now + ConsentLinkTtl` from the same `now` and the same
    * constant the token was minted with, so the row and the signed `exp` describe one instant.
    *
-   * A failure here is LOUD (ERROR + its own metric) and does not fail the request: the prompt is
-   * already in front of the customer and answering the agent with a 500 would neither unpost it nor
-   * make the guard work. What it does mean is stated plainly rather than hidden — for THAT link the
-   * cross-turn exclusion is not in force, so `link_record_error` is an expect-zero series. A
-   * PERSISTENT database failure does not leave a hole: the guard's own read fails closed, so
-   * replies on that thread are refused anyway.
+   * The failure is DELIBERATELY not swallowed here — it propagates to the caller, which then does
+   * not post the prompt at all. A recorded link that was never posted costs a briefly muted thread
+   * and is undone; a posted link that was never recorded is a live consent link the exclusion
+   * cannot see, which is the phishing surface. `link_record_error` therefore counts prompts we
+   * REFUSED to post, not links we lost track of, and is still an expect-zero series.
    */
   private def recordPostedLink(
       claims: ConsentToken.Claims,
       nonce: String,
       now: Instant,
-  ): UIO[Unit] =
+  ): Task[Unit] =
     consentRepo
       .recordPrompt(
         claims.householdId,
@@ -1334,22 +1377,34 @@ final case class SupportResponder(
         now,
         now.plus(SupportResponder.ConsentLinkTtl),
       )
+      .tap(superseded =>
+        ZIO
+          .logInfo(
+            s"support: a new consent prompt SUPERSEDED $superseded outstanding link(s) on " +
+              s"thread=${claims.threadId} — exactly one link is live per thread (#2709)",
+          )
+          .zipRight(AppMetrics.supportConsent(SupportResponder.LinkSuperseded))
+          .when(superseded > 0),
+      )
+      .unit
+
+  /**
+   * #2709 — undo [[recordPostedLink]] when the prompt was never posted, which is `Disabled` and
+   * nothing else. Best-effort: if the delete fails the row simply stands, and a link nobody was
+   * shown mutes that thread until it lapses. That is the safe direction to fail in, and it is loud
+   * (`request_disabled` alongside a WARN) — but it is a real cost, so a dark Plain install left in
+   * that state deserves the operator's attention rather than a shrug.
+   */
+  private def discardPostedLink(claims: ConsentToken.Claims, nonce: String): UIO[Unit] =
+    consentRepo
+      .discardPrompt(claims.householdId, claims.threadId, nonce)
       .foldZIO(
         e =>
-          ZIO.logError(
-            s"support: FAILED to record the posted consent link for thread=${claims.threadId} " +
-              s"household=${claims.householdId.value} — the #2709 cross-turn exclusion cannot see " +
-              s"this link: ${e.getMessage}",
-          ) *> AppMetrics.supportConsent(SupportResponder.LinkRecordError),
-        superseded =>
-          ZIO
-            .logInfo(
-              s"support: a new consent prompt SUPERSEDED $superseded outstanding link(s) on " +
-                s"thread=${claims.threadId} — exactly one link is live per thread (#2709)",
-            )
-            .zipRight(AppMetrics.supportConsent(SupportResponder.LinkSuperseded))
-            .when(superseded > 0)
-            .unit,
+          ZIO.logWarning(
+            s"support: could not discard the unposted consent link on thread=${claims.threadId} " +
+              s"— the thread stays muted until it lapses: ${e.getMessage}",
+          ),
+        _ => ZIO.unit,
       )
 
   /** `<appBaseUrl>/support/consent?g=<grant token>` — the customer-facing consent link. */
@@ -2012,8 +2067,9 @@ object SupportResponder {
        |password, your card details, or a security code** — if any message asks you for those, it
        |didn't come from us.
        |
-       |Open the link above and choose Allow or Don't allow. Either answer is fine, and either one
-       |lets us carry on. If you do nothing, it lapses on its own.""".stripMargin
+       |Open the WifiHaven permission request in this conversation and choose Allow or Don't allow.
+       |Either answer is fine, and either one lets us carry on. If you do nothing, it lapses on its
+       |own.""".stripMargin
 
   /**
    * #2709 — the `support_consent_total{outcome}` values the live-link exclusion emits. Named in ONE

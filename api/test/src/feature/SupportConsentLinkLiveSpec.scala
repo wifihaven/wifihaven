@@ -51,6 +51,15 @@ import zio.test.*
  *
  * Every way the link can die lifts the exclusion, and each is covered below: redeemed, withdrawn,
  * expired at the TTL, superseded by a later prompt.
+ *
+ * WHAT IS DELIBERATELY NOT COVERED HERE, so the gap is stated rather than discovered. The two
+ * EXPECT-ZERO outcomes — `link_state_unknown` (the liveness read failed, so the reply was refused
+ * rather than risked) and `link_record_error` (the ledger write failed, so the prompt was not
+ * posted at all) — are the fail-CLOSED branches, and reaching either needs the repo to fail. Making
+ * it fail means substituting a broken `SupportConsentRepo`, which docs/process/testing.md forbids:
+ * a mocked repo is exactly how a feature test stops testing the thing it names. Both branches are
+ * one `foldZIO` around a call whose success path IS covered here, and both fail towards refusing,
+ * so the untested direction is the safe one.
  */
 object SupportConsentLinkLiveSpec
     extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clock & Transactor[Task]] {
@@ -474,6 +483,39 @@ object SupportConsentLinkLiveSpec
         allowed == Status.Ok,
         answered == Status.Ok,
         sent.exists(_.contains("You have 1 profile.")),
+      )
+    },
+    test("#2453 still holds on the NEW path: a link redeemed twice grants only once") {
+      // The single-use check moved from "did the INSERT conflict" to "did the upsert find
+      // consumed_at IS NULL", because the row now exists from the moment the prompt is POSTED. The
+      // #2453 spec pins the legacy shape — grant() with no prior row — which after this change is
+      // only the pre-#2709 deploy-window path. This pins the shape that is now normal: recorded at
+      // post time, redeemed, then replayed.
+      for {
+        _        <- cleanDb
+        hhRepo   <- ZIO.service[HouseholdRepo]
+        userRepo <- ZIO.service[UserRepo]
+        h        <- makeHarness
+        hh       <- hhRepo.create("Family K", "family-k")
+        jwtTok   <- seedAdmin(h, userRepo, hh, "family-k")
+        s1       <- inbound(h, hh, "th_k", "how many profiles do I have?")
+        _        <- requestConsent(h, s1)
+        grant    <- latestGrantToken(h)
+        first    <- consentAction(h, jwtTok, grant, allow = true)
+        // The customer withdraws, then the SAME link is presented again — the replay #2453 exists
+        // to refuse. It must not restore access.
+        _        <- consentAction(h, jwtTok, grant, allow = false)
+        replay   <- consentAction(h, jwtTok, grant, allow = true)
+        spent    <- consentCounter("link_spent")
+        now      <- ZIO.serviceWithZIO[Clock](_.instant)
+        cRepo    <- ZIO.service[SupportConsentRepo]
+        live     <- cRepo.isGranted(hh, "th_k", now)
+      } yield assertTrue(
+        first == Status.Ok,
+        replay != Status.Ok,
+        spent >= 1.0,
+        // The withdrawal stands: the replayed link did not re-grant.
+        !live,
       )
     },
     test("an ORDINARY thread is untouched: no prompt, no ledger row, replies land as before") {

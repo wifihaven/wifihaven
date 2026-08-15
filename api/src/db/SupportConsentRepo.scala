@@ -116,13 +116,47 @@ trait SupportConsentRepo {
   ): Task[Option[OutstandingConsentLink]]
 
   /**
+   * #2709 — DISCARD the row [[recordPrompt]] wrote, because the prompt was never posted. The only
+   * caller is the `PlainOutcome.Disabled` branch: our own write half is off, so nothing was
+   * attempted and no link can be in front of the customer. Answers whether a row was actually
+   * removed.
+   *
+   * A DELETE and not a resolution, because there is no honest `resolution` for it — the link never
+   * existed for the customer, so recording it as redeemed / withdrawn / superseded would each be a
+   * false statement in the ledger. Refuses to touch a row that is consumed or already resolved, so
+   * it can never erase a live link's history. Scoped by household + thread like every other
+   * statement here.
+   */
+  def discardPrompt(household: HouseholdId, threadId: String, nonce: String): Task[Boolean]
+
+  /**
    * #2709 — claim the right to post the server's fixed explanation of `nonce`, exactly once. True
    * iff THIS call won it. A conditional `WHERE explained_at IS NULL` update rather than a
    * read-then-write, because the caller racing itself is the untrusted one: an agent firing `reply`
    * in a loop (or twice concurrently) would otherwise pass a read and spam the customer with copies
    * of our own message.
+   *
+   * Scoped by household + thread as well as the nonce. The nonce is a 128-bit PK and always comes
+   * from an [[outstandingLink]] read already scoped by the verified token, so the scoping is
+   * redundant TODAY — it is here so the statement is safe on its own terms rather than by virtue of
+   * its one call site, which is the #2630 lesson.
    */
-  def claimExplainer(nonce: String, now: Instant): Task[Boolean]
+  def claimExplainer(
+      household: HouseholdId,
+      threadId: String,
+      nonce: String,
+      now: Instant,
+  ): Task[Boolean]
+
+  /**
+   * #2709 — give the explainer claim BACK, because the write provably never happened. Only the
+   * `PlainOutcome.Disabled` branch calls it, on the same reasoning as everywhere else in this flow:
+   * a dark Plain client is the one outcome that proves non-delivery, while an `Error` collapses a
+   * refusal, a transport failure and a timeout — and a write that timed out may well have landed.
+   * Releasing on `Error` would let a `reply` loop retry until one landed, which is the duplicate
+   * this claim exists to prevent.
+   */
+  def releaseExplainer(household: HouseholdId, threadId: String, nonce: String): Task[Unit]
 
   /**
    * Record (or refresh) the customer's grant for `(household, thread)`, live until `expiresAt`.
@@ -236,11 +270,30 @@ class SupportConsentRepoLive(xa: Transactor[Task]) extends SupportConsentRepo {
       .transact(xa)
       .map(_.map(OutstandingConsentLink.apply.tupled))
 
-  def claimExplainer(nonce: String, now: Instant): Task[Boolean] =
-    sql"""UPDATE support_consent_link_use SET explained_at = $now
-          WHERE nonce = $nonce AND explained_at IS NULL""".update.run
+  def discardPrompt(household: HouseholdId, threadId: String, nonce: String): Task[Boolean] =
+    sql"""DELETE FROM support_consent_link_use
+          WHERE nonce = $nonce AND household_id = $household AND thread_id = $threadId
+            AND consumed_at IS NULL AND resolution IS NULL""".update.run
       .transact(xa)
       .map(_ == 1)
+
+  def claimExplainer(
+      household: HouseholdId,
+      threadId: String,
+      nonce: String,
+      now: Instant,
+  ): Task[Boolean] =
+    sql"""UPDATE support_consent_link_use SET explained_at = $now
+          WHERE nonce = $nonce AND household_id = $household AND thread_id = $threadId
+            AND explained_at IS NULL""".update.run
+      .transact(xa)
+      .map(_ == 1)
+
+  def releaseExplainer(household: HouseholdId, threadId: String, nonce: String): Task[Unit] =
+    sql"""UPDATE support_consent_link_use SET explained_at = NULL
+          WHERE nonce = $nonce AND household_id = $household AND thread_id = $threadId""".update.run
+      .transact(xa)
+      .unit
 
   def grant(
       household: HouseholdId,
