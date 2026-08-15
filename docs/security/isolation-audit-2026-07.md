@@ -400,9 +400,9 @@ the shapes that render with `{}` in the census key). A route that names its row 
 
 [`api/test/src/feature/MultiTenantScopedReadGuardSpec.scala`](../../api/test/src/feature/MultiTenantScopedReadGuardSpec.scala)
 — five tests over list reads (Layer A, #2176, widened to all of `api/src` by #2571) and
-twelve over single-row reads (Layer B, #2589).
+eleven over single-row reads (Layer B, #2589).
 
-**Layer A — unscoped list reads.** Greps `api/src/routes` for `listAll` /
+**Layer A — unscoped list reads.** Greps all of `api/src` for `listAll` /
 `listAllIncludingGlobal` / `listAllMappings` — reads that return *every* household's rows — and
 asserts each is in a tracked, shrink-only allowlist. That allowlist is now **empty**: #2257 / #2532
 / #2568 scoped or removed every one.
@@ -433,11 +433,12 @@ appear in `RowReadCensus` with an explicit verdict:
 - `Write(why)` — matched the read shape but is a write returning a success `Boolean`. Declared
   rather than filtered out by name, because deciding "is this a read?" from the method name is the
   same name-keyed judgement that produced the gap.
-- `Tracked(issue)` — known-unscoped, shrink-only. Opened at two entries, both #2571's dead reads
-  (`ProfileRepo.getGlobal`, `TrafficReportRepo.earliestPeriodStart`). **#2571 has since landed and
-  deleted both methods, so B1 reported the leftover verdicts as ghosts and they came out with them
-  — the set is now empty.** That is the mechanism working as designed: the guard would not let the
-  fix delete the method and quietly leave a stale verdict behind claiming it was still tracked.
+There is deliberately **no `Tracked` escape hatch**. It existed while this PR was in review, holding
+#2571's two dead reads; #2571 then landed and deleted both methods, B1 reported the leftover
+verdicts as ghosts, and the case was removed with them — following the rule
+`MultiTenantRouteCensusSpec` states for its own `ScopedTracked`: *when it reaches zero, delete the
+case rather than leave a dead escape hatch.* A genuinely-broken read found later re-adds the case
+with its issue number, which is a visible line in the diff rather than a pre-authorised slot.
 
 **Why the repo layer.** Extending §7a to "routes that read by a body key" is not decidable by a
 source scan — the key lives in a JSON schema the scanner does not parse, and any name-based
@@ -464,14 +465,20 @@ is only for tests" is enforced rather than asserted.
 what made the last gap invisible:
 
 - **Return types outside `Task[Option[_]]` / `Task[Boolean]`.** A single-row read returning a scalar
-  or a tuple is not censused — `TimeUsageRepo.getSecondsUsed(mac, host, date): Task[Long]` and three
-  siblings are MAC-keyed reads of exactly the banned shape that the scanner does not see. Tracked by
-  [#2707](https://github.com/wifihaven/wifihaven/issues/2707).
+  or a tuple is not censused. Live examples, MAC-keyed and of exactly the banned shape:
+  `TimeUsageRepo.getProportionalSeconds(mac, host, date): Task[Long]` (`Repos.scala:1042`) and
+  `getSecondsAndBytes(mac, host, date): Task[(Long, Long, Long)]` (`:1031`). Tracked by
+  [#2707](https://github.com/wifihaven/wifihaven/issues/2707). (`getSecondsUsed` and
+  `getTotalExtension`, cited here when this section was written, were deleted by #2571 — §F8.)
 - **`Task[List[_]]` reads keyed on a natural key.** Layer A covers the `listAll*` *names*, not the
-  shape. The live example is `RollupRepo.listHourlyInRange` / `listDailyInRange`, which take no
-  household at all and treat an empty MAC list as "every row in the install" —
-  [#2708](https://github.com/wifihaven/wifihaven/issues/2708), found by the security review of the
-  PR that added this section.
+  shape, so a list read under any other name is uncovered by both layers.
+  `TimeUsageRepo.listForDeviceMacs(macs, date)` (`Repos.scala:1044`) is one. The worked example was
+  `RollupRepo.listHourlyInRange` / `listDailyInRange`, which took no household at all and treated an
+  empty MAC list as "every row in the install" — found by the security review of the PR that added
+  this section, and **since fixed and CLOSED by
+  [#2708](https://github.com/wifihaven/wifihaven/issues/2708)**: both now take a required leading
+  `household: HouseholdId` (`RollupRepo.scala:143-148`, `:155-160`). The instance is closed; the
+  SHAPE remains outside Layer B's reach, which is what #2707 covers.
 - **Whether the SQL uses the household it accepts.** B2 checks the *signature*. A read that takes a
   `HouseholdId` and ignores it in its `WHERE` clause still passes; that residual belongs to review
   and to `MultiTenantIsolationSpec`'s behavioural assertions.
@@ -498,7 +505,7 @@ branch:
   ceasing to match cannot read as "all clear".
 
 **Red → green** is visible in this PR's history: commit 1 lands the scanner with the census empty
-and B1 fails naming all 56 declarations; commit 2 writes the verdicts.
+and B1 fails naming all 59 declarations; commit 2 writes the verdicts.
 
 ---
 

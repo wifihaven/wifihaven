@@ -295,8 +295,6 @@ object MultiTenantScopedReadGuardSpec extends ZIOSpecDefault {
      */
     case Write(reason: String)
 
-    /** Known-unscoped and tracked by `issue`, fixed by its own chip. Shrink-only (test B5). */
-    case Tracked(issue: Int)
   }
 
   import RowRead.*
@@ -629,8 +627,16 @@ object MultiTenantScopedReadGuardSpec extends ZIOSpecDefault {
     ),
 
     // ── support ────────────────────────────────────────────────────────────────────────────────
-    "SupportConsentRepo.isGranted" -> Scoped,
-    "SupportConsentRepo.revoke"    -> Scoped,
+    "SupportConsentRepo.isGranted"       -> Scoped,
+    "SupportConsentRepo.revoke"          -> Scoped,
+    // #2709's consent-link lifecycle reads. All three lead with a REQUIRED household and filter on
+    // `household_id` in their SQL, so they are plainly Scoped — B2 re-derives that from the
+    // signature rather than taking this line's word for it. They arrived on main while this branch
+    // was in review and B1 caught all three undeclared on the merge commit, which is the census
+    // doing its job: a new single-row read cannot land without someone writing down its tenancy.
+    "SupportConsentRepo.outstandingLink" -> Scoped,
+    "SupportConsentRepo.discardPrompt"   -> Scoped,
+    "SupportConsentRepo.claimExplainer"  -> Scoped,
   )
 
   /** Reads the scan sees that the census does not declare (and vice versa). */
@@ -690,13 +696,6 @@ object MultiTenantScopedReadGuardSpec extends ZIOSpecDefault {
 
   /** Floor for an exemption's reason, same threshold and same rationale as the route census. */
   private val MinReasonChars = 10
-
-  /**
-   * The issues [[RowRead.Tracked]] entries may cite. A closed set rather than `issue > 0`, so a
-   * typo'd number fails instead of silently reading as tracked. #2571 deletes the dead unscoped
-   * repo methods.
-   */
-  private val TrackingIssues: Set[Int] = Set(2571)
 
   /**
    * Declaration shapes the [[SingleRowRead]] scanner CANNOT see, guarded so that reaching for one
@@ -844,31 +843,6 @@ object MultiTenantScopedReadGuardSpec extends ZIOSpecDefault {
           "these reads take an exemption with an empty or placeholder reason — say why the key " +
             "names exactly one row across every household, or give the read a HouseholdId"
         ),
-      )
-    },
-    test("B5 — the tracked-unscoped set is explicit, shrink-only, and names real issues") {
-      val tracked = RowReadCensus.collect { case (k, Tracked(n)) => k -> n }
-      // Opened at 2 — `ProfileRepo.getGlobal` and `TrafficReportRepo.earliestPeriodStart`, both of
-      // #2571's dead unscoped reads. #2571 landed and DELETED both methods, so B1 reported them as
-      // ghosts and the entries came out with them; the set is now EMPTY. That is the mechanism
-      // working: the guard would not let the fix delete the method and leave the verdict behind.
-      //
-      // Empty means the three assertions below are all trivially true today. They are kept, and the
-      // bound stays shrink-only rather than `nonEmpty`, because the protection that matters is that
-      // ADDING a tracked entry requires an edit here — a reviewer then sees the issue number in the
-      // diff. Deliberately not `nonEmpty`: the last fix, the one that empties the set, must not read
-      // as a red build.
-      assertTrue(tracked.size <= 2) &&
-      // Against the KNOWN issue ids, not `> 0` — a typo'd number is exactly the failure a
-      // "names a real issue" assertion is supposed to prevent, and `> 0` accepts one.
-      assert(tracked.values.filterNot(TrackingIssues.contains).toList)(
-        Assertion.isEmpty ?? s"Tracked entries must name a real tracking issue (known: ${TrackingIssues.toList.sorted
-            .mkString(", ")})",
-      ) &&
-      assert(
-        tracked.keys.toList.sorted.filter(k => repoReads.exists(r => r.key == k && r.isScoped)),
-      )(
-        Assertion.isEmpty ?? "these reads are now scoped — delete their Tracked entry",
       )
     },
     test("B6 — the scan is non-vacuous: it sees the live repo surface and its scoped reads") {
