@@ -65,7 +65,7 @@ Both are `POST`, admin + operator-household only. Body is JSON:
 
 | field | meaning |
 |---|---|
-| `fill` | the release fill tokens. As of 2026-08-15 there are **three**: `founderName`, `betaSignupUrl`, `pressKitUrl`. The dateline carries no city, and the date and founder quote are literal in the copy. |
+| `fill` | the release fill tokens. As of 2026-08-15 there are **four**: `date`, `founderName`, `betaSignupUrl`, `pressKitUrl`. The dateline carries no city, and the founder quote is literal in the copy. The DATE stays a token deliberately — it is the one field whose correctness is time-dependent, so a send that slips a day is stopped by the unresolved-token guard rather than carrying a stale dateline. |
 | `emailOverrides` | `contactId -> verified address`, supplied at send time (nothing fabricated in-repo) |
 | `testRecipient` | redirect every real transmit to ONE safe address (validate a real send) |
 | `confirm` | must be `true` to actually send (ignored by preview) |
@@ -77,6 +77,7 @@ curl -sS -X POST https://api.wifihaven.net/api/press/outreach/preview \
   -H "Authorization: Bearer $ADMIN_JWT" -H 'Content-Type: application/json' \
   -d '{
         "fill": {
+          "date": "August 17, 2026",
           "founderName": "…",
           "betaSignupUrl": "https://app.wifihaven.net/beta",
           "pressKitUrl": "https://wifihaven.net/press"

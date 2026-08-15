@@ -58,6 +58,7 @@ object PressDryRunArtifact extends ZIOAppDefault {
    * article, and the unresolved-token guard is exercised with them present.
    */
   private val fill = Map(
+    "date"          -> "August 17, 2026",
     "founderName"   -> "[FOUNDER NAME — operator supplies at send]",
     "betaSignupUrl" -> "https://app.wifihaven.net/beta",
     "pressKitUrl"   -> "[PRESS KIT URL — operator supplies at send]",

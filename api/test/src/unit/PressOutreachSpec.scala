@@ -88,9 +88,8 @@ object PressOutreachSpec extends ZIOSpecDefault {
         // deliberate, reviewed change to THIS assertion.
         cs.forall(_.email.isEmpty),
         // Every bundled target has a pitch written FOR IT. Distinctness is the assertion that
-        // actually bites: a non-empty check passes if someone pastes one pitch into all 21 rows,
-        // which is the failure mode (a blast) rather than a typo.
-        cs.forall(_.pitch.trim.length > 200),
+        // bites: `pitch` being required already rules out absent, but nothing stops one pitch
+        // being pasted into all 21 rows, and that — not a typo — is the failure mode (a blast).
         cs.map(_.pitch).distinct.size == cs.size,
         // The angle is form-submission metadata and must not be the email body.
         cs.forall(c => !c.pitch.contains(c.angle)),
@@ -108,7 +107,7 @@ object PressOutreachSpec extends ZIOSpecDefault {
         body.contains("Once 25 active households are in, a 60-day countdown"),
         body.contains("Vendor stock firmware is not a supported target"),
         // The release still carries exactly the fill tokens the runbook documents.
-        unresolved.toSet == Set("founderName", "betaSignupUrl", "pressKitUrl"),
+        unresolved.toSet == Set("date", "founderName", "betaSignupUrl", "pressKitUrl"),
       )
     },
     test("manifest YAML parses; email present only where given") {

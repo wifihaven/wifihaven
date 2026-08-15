@@ -352,6 +352,11 @@ services:
       # RESPONDER_ENABLED=true.
       - key: WIFIHAVEN_PRESS_REPLY_TO_ADDRESS
         value: press@staging.wifihaven.net
+      # #2233: the press-OUTREACH send capability, declared EXPLICITLY OFF on staging as well as
+      # prod. Naming the off-state in BOTH environments is the point of #2265 — an absent key is a
+      # compiled default nobody reviewed, and "it's only staging" is how the two drift.
+      - key: WIFIHAVEN_PRESS_OUTREACH_ENABLED
+        value: "false"
 
   # ── Production API ─────────────────────────────────────────────────────────
   - type: web

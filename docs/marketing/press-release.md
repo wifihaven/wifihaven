@@ -1,7 +1,7 @@
 # Press release (draft)
 
 > Draft for review. Bracketed items need operator input before send:
-> [FOUNDER NAME], [BETA SIGNUP URL], [PRESS KIT URL].
+> [DATE], [FOUNDER NAME], [BETA SIGNUP URL], [PRESS KIT URL].
 >
 > **Operator decisions folded in on 2026-08-15:** the dateline carries no city (this is
 > an internet product, not local news); the launch date is the announced send date,
@@ -11,8 +11,8 @@
 > **This is the authored source of truth (human-readable, with the fact-check ledger
 > below).** The MACHINE-SENDABLE copy the #2233 press-outreach tool actually emails lives at
 > [`api/resources/press/release.md`](../../api/resources/press/release.md) — same prose, stripped of
-> this note + the ledger, with `{{founderName}}` / `{{betaSignupUrl}}` / `{{pressKitUrl}}` fill
-> tokens the operator supplies at send time. `PressReleaseSyncSpec` fails CI if the two drift.
+> this note + the ledger, with `{{date}}` / `{{founderName}}` / `{{betaSignupUrl}}` /
+> `{{pressKitUrl}}` fill tokens the operator supplies at send time. `PressReleaseSyncSpec` fails CI if the two drift.
 > The send path is operator-gated and dry-run-by-default; see the
 > [send runbook](press-outreach-runbook.md).
 
@@ -24,7 +24,7 @@ FOR IMMEDIATE RELEASE
 
 **Invite-only cloud beta opens to founding households; the self-hosted version stays free forever**
 
-August 17, 2026 — WifiHaven today opened the beta of its open-source, whole-home
+[DATE] — WifiHaven today opened the beta of its open-source, whole-home
 parental control and screen-time system, built to run on the router a family
 already owns. Unlike the app-per-device suites and DNS filters that dominate the
 category, WifiHaven enforces rules at the network connection layer on OpenWrt
@@ -58,9 +58,10 @@ running a server, WifiHaven is opening a hosted tier to a founding cohort. The
 beta is invite-based: a household requests access, each request is reviewed by
 hand, and approved households get an invite link. It is free and takes no credit
 card. Once 25 active households are in, a 60-day countdown to general pricing
-begins and runs to the end; every household is shown its cohort's date when it
-signs up. General pricing is $10/month or $96/year per household, covering
-unlimited profiles and devices on one router. Households that join during the
+begins and runs to the end. Households see that end date in their dashboard as
+soon as the countdown starts, and are told before anything changes. General
+pricing is $10/month or $96/year per household, covering unlimited profiles and
+devices on one router. Households that join during the
 beta keep a founding price of $6/month or $57/year for as long as they stay
 subscribed.
 
@@ -112,6 +113,7 @@ something the product does not do, the correction is called out.
 | "Once 25 active households are in, a 60-day countdown begins and runs to the end" | `FlipConfig` defaults — `thresholdHouseholds = 25`, `windowDays = 60`; `FlipService` starts the clock at the threshold and the window is measured from the persisted start, so a later dip never resets it (#2137) | verified |
 | ~~"a founding cohort of 25 households" / "the 25-household beta"~~ | **CORRECTED.** 25 is the flip TRIGGER, not an enforced signup cap — nothing in `FlipService` or the beta-request path rejects household 26, and the founding price is reserved for beta households generally, not the first 25. The old wording promised a cap the product does not enforce. | corrected |
 | ~~"General availability begins two months after the beta cohort fills"~~ | **SHARPENED** to the mechanism above: the clock starts at 25 active households and latches for 60 days. | corrected |
+| ~~"every household is shown its cohort's date when it signs up"~~ | **CORRECTED.** `FlipService.windowOf` returns no flip date while `beta_cohort.clock_started_at` is null, and `BillingPage.tsx` renders the date only when non-null — so households 1–24, the whole founding cohort on launch day, see no date at signup. Restated to when the date actually appears. | corrected |
 | Self-hosted free forever, stated explicitly | `docs/design/pricing-analysis.md` §1, §3; marketing site | verified |
 | Vanilla OpenWrt only; vendor stock firmware unsupported | #2334 (beta hardware validation: stock GL.iNet cannot install — #2363/#2304) and #2364 (per-router flash guides; "the supported path is flashed vanilla OpenWrt") | verified |
 | Flint (GL-AX1800) ~$80 low tier; Flint 2 (GL-MT6000) ~$150 reference | `README.md` hardware lineup; `web/src/pages/RouterInstallPage.tsx` | verified |
@@ -126,8 +128,13 @@ something the product does not do, the correction is called out.
    (Cloudflare Pages deploys `web-marketing/**` on push to `main`).
 2. **[BETA SIGNUP URL]** is live at `https://app.wifihaven.net/beta` (linked from the
    marketing site). Supply it at send time.
-3. **[FOUNDER NAME]** — not invented here. It appears in **two** places now: the send
-   request's `fill` map, and `[FOUNDER_NAME]` on the press page. The marketing CD
-   pipeline **fails the deploy** while any `[PLACEHOLDER]` remains in the published
-   site, so the page cannot go live with an unfilled name.
+3. **[FOUNDER NAME]** — not invented here. Supply it in the send request's `fill` map.
+   The published press page carries no placeholder: it attributes the quote to
+   "WifiHaven's founder", which is true and needs no input, so the page can ship and
+   the marketing pipeline stays green. Swap in the name whenever you like — the
+   marketing CD pipeline **fails the deploy** while any `[PLACEHOLDER]` remains in the
+   published site, so an unfilled slot can never go live.
+5. **[DATE]** — `August 17, 2026` for the launch send. It stays a token deliberately:
+   it is the one field whose correctness is time-dependent, so a send that slips a day
+   is stopped by the unresolved-token guard instead of carrying a stale dateline.
 4. **The founder quote** is the operator's own sentence, lightly edited. Final read before send.
