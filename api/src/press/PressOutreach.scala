@@ -50,6 +50,7 @@ object PressOutreach {
       person: String,
       priority: Int,
       angle: String,
+      pitch: String,
       email: Option[String],
       contactUrl: Option[String],
   ) derives JsonCodec
@@ -169,6 +170,9 @@ object PressOutreach {
       outlet <- reqStr("outlet")
       person <- reqStr("person")
       angle  <- reqStr("angle")
+      // REQUIRED, deliberately: see `pitchText` — there is no generic body to fall back to, so a
+      // contact added without an authored pitch fails to load rather than getting boilerplate.
+      pitch  <- reqStr("pitch")
       priority = Option(m.get("priority")).map(_.toString.trim.toIntOption).flatten.getOrElse(3)
     } yield Contact(
       id = id,
@@ -176,6 +180,7 @@ object PressOutreach {
       person = person,
       priority = priority,
       angle = angle,
+      pitch = pitch,
       email = str("email"),
       contactUrl = str("contactUrl"),
     )
@@ -220,18 +225,26 @@ object PressOutreach {
   def subjectFor(c: Contact): String =
     s"WifiHaven: open-source parental controls enforced at the router (for ${c.outlet})"
 
-  /** The personalized pitch that precedes the release, referencing the outlet + its angle. */
+  /**
+   * The personalized pitch that precedes the release.
+   *
+   * Only the greeting and the sign-off live here. The BODY is `c.pitch`, authored per outlet in
+   * media-contacts.yml — there is deliberately no template to interpolate the outlet name into and
+   * no fallback if the field is absent (`parseContact` rejects it). The previous version built the
+   * body from `outlet` + `angle`, which meant twenty-one journalists would have received the same
+   * three paragraphs with two nouns swapped; from the receiving end that is a blast, and a blast is
+   * the outcome this whole file exists to avoid.
+   */
   private def pitchText(c: Contact): String =
     s"""Hi ${c.person},
        |
-       |I'm reaching out from WifiHaven, an open-source, router-level parental-control and screen-time system. Given your work at ${c.outlet}, this felt like a fit: ${c.angle}
+       |${c.pitch}
        |
-       |The short version: WifiHaven enforces at the network connection layer on OpenWRT — nftables forward-drop on the gateway, with DNS still resolving normally — rather than as a per-device app or a DNS filter. So there is nothing on a kid's phone to delete, and the encrypted-DNS (DoH) and hard-coded-IP workarounds that walk past DNS filters are closed. We're opening a free 25-household founding beta now, and the whole stack is open source and free to self-host forever.
-       |
-       |The full release is below. I'd be glad to set up a demo, share the press kit, or answer anything.
+       |The full release is below. We'd be glad to set up a demo, share the press kit, or answer anything.
        |
        |Best,
-       |Sameer — WifiHaven""".stripMargin
+       |Sameer
+       |WifiHaven""".stripMargin
 
   /**
    * Render a blank-line-separated plain-text/markdown block into escaped paragraphs.

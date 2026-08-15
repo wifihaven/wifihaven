@@ -168,6 +168,17 @@ set -euo pipefail
 : "${WIFIHAVEN_PRESS_DEPLOYMENT_ENV:=}"
 : "${WIFIHAVEN_PRESS_FROM_ADDRESS:=}"
 : "${WIFIHAVEN_PRESS_REPLY_TO_ADDRESS:=}"
+# #2233: the operator-run press-OUTREACH send capability (`wifihaven.pressOutreach`). This block was
+# missing from the generated config entirely, which meant PressOutreachConfig always took its
+# compiled defaults and the ENABLED flag could not be set from the environment at all — the endpoints
+# 404'd in every deployed environment with no env var that could change it. The flag stays FALSE by
+# default (#2265: an explicit, named off-state, logged at boot and visible on /api/debug/config); a
+# real send is the operator turning it on deliberately, and it additionally requires `confirm=true`
+# per request and every release fill token resolved. See docs/marketing/press-outreach-runbook.md.
+: "${WIFIHAVEN_PRESS_OUTREACH_ENABLED:=false}"
+: "${WIFIHAVEN_PRESS_OUTREACH_FROM_ADDRESS:=WifiHaven Press <press@wifihaven.net>}"
+: "${WIFIHAVEN_PRESS_OUTREACH_REPLY_TO:=press@wifihaven.net}"
+: "${WIFIHAVEN_PRESS_OUTREACH_PER_SEND_DELAY_MS:=2000}"
 
 export WIFIHAVEN_LOG_LEVEL WIFIHAVEN_DEBUG
 
@@ -272,6 +283,12 @@ wifihaven {
     deploymentEnv          = "${WIFIHAVEN_PRESS_DEPLOYMENT_ENV}"
     fromAddress            = "${WIFIHAVEN_PRESS_FROM_ADDRESS}"
     replyToAddress         = "${WIFIHAVEN_PRESS_REPLY_TO_ADDRESS}"
+  }
+  pressOutreach {
+    enabled            = ${WIFIHAVEN_PRESS_OUTREACH_ENABLED}
+    fromAddress        = "${WIFIHAVEN_PRESS_OUTREACH_FROM_ADDRESS}"
+    replyTo            = "${WIFIHAVEN_PRESS_OUTREACH_REPLY_TO}"
+    perSendDelayMillis = ${WIFIHAVEN_PRESS_OUTREACH_PER_SEND_DELAY_MS}
   }
 }
 EOF

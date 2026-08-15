@@ -45,10 +45,7 @@ object PressReleaseSyncSpec extends ZIOSpecDefault {
    * listed here fails the comparison, which is the point.
    */
   private val TokenSpellings: List[(String, String)] = List(
-    "[CITY]"            -> "{{city}}",
-    "[DATE]"            -> "{{date}}",
     "[FOUNDER NAME]"    -> "{{founderName}}",
-    "[FOUNDER QUOTE]"   -> "{{founderQuote}}",
     "[BETA SIGNUP URL]" -> "{{betaSignupUrl}}",
     "[PRESS KIT URL]"   -> "{{pressKitUrl}}",
   )
@@ -80,7 +77,9 @@ object PressReleaseSyncSpec extends ZIOSpecDefault {
           .replaceAll("\\s+", " ")
           .trim,
       )
-      .filter(_.nonEmpty)
+      // A bare `---` is a markdown horizontal rule (the authored doc uses one to fence off the
+      // internal ledger). It is decoration, not prose.
+      .filter(p => p.nonEmpty && !p.forall(_ == '-'))
 
   def spec = suite("press release — authored doc and sendable resource stay in sync (#2233)")(
     test("the two files carry the SAME prose, paragraph for paragraph") {
@@ -92,7 +91,7 @@ object PressReleaseSyncSpec extends ZIOSpecDefault {
         authored.zip(sendable).find { case (a, b) => a != b }
       assertTrue(
         firstDiff.isEmpty,
-        authored.sizeIs == sendable.size,
+        authored.size == sendable.size,
         authored.nonEmpty,
       )
     },
@@ -103,14 +102,10 @@ object PressReleaseSyncSpec extends ZIOSpecDefault {
       val authoredRaw = readAll(AuthoredPath)
       val tokens = PressOutreach.unresolvedTokens(PressOutreach.sendableBody(sendableRaw)).toSet
       assertTrue(
-        tokens == Set(
-          "city",
-          "date",
-          "founderName",
-          "founderQuote",
-          "betaSignupUrl",
-          "pressKitUrl",
-        ),
+        // #2233 staging pass: `city` is gone (the dateline carries no city — this is an internet
+        // product, not local news), and `date` + `founderQuote` are now literal in the copy because
+        // the operator supplied both. What remains is what only the operator can fill.
+        tokens == Set("founderName", "betaSignupUrl", "pressKitUrl"),
         // The authored doc uses the bracket spelling in its BODY; a stray `{{…}}` there means
         // someone pasted the sendable copy over the authored one.
         !authoredBody(authoredRaw).contains("{{"),

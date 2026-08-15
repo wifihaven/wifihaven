@@ -60,8 +60,26 @@ object PressOutreachRouteSpec
       |""".stripMargin
 
   private val contacts = List(
-    Contact("alpha", "Outlet Alpha", "Alice", 1, "your OpenWRT beat", None, Some("https://a/tip")),
-    Contact("bravo", "Outlet Bravo", "Bob", 2, "your firewall videos", None, Some("https://b/tip")),
+    Contact(
+      "alpha",
+      "Outlet Alpha",
+      "Alice",
+      1,
+      "your OpenWRT beat",
+      "Alpha's authored pitch.",
+      None,
+      Some("https://a/tip"),
+    ),
+    Contact(
+      "bravo",
+      "Outlet Bravo",
+      "Bob",
+      2,
+      "your firewall videos",
+      "Bravo's authored pitch.",
+      None,
+      Some("https://b/tip"),
+    ),
   )
   private val fullFill = """{"date":"July 20, 2026","betaSignupUrl":"https://wifihaven.net/beta"}"""
   private val overrides =

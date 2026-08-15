@@ -691,6 +691,20 @@ services:
       # follow-up threads back into the responder pipeline. Both required when RESPONDER_ENABLED=true.
       - key: WIFIHAVEN_PRESS_REPLY_TO_ADDRESS
         value: press@wifihaven.net
+      # #2233: the operator-run press-OUTREACH send capability. Declared here EXPLICITLY OFF rather
+      # than left absent, so the off-state is a named, reviewable value instead of a compiled default
+      # (#2265), and so turning it on for the beta announcement is a one-line, auditable change.
+      # Turning it on does NOT send anything by itself: every send request must also carry
+      # `confirm=true`, must resolve every release fill token, and must be made by an admin in the
+      # operator household. See docs/marketing/press-outreach-runbook.md.
+      - key: WIFIHAVEN_PRESS_OUTREACH_ENABLED
+        value: "false"
+      # The press envelope the outreach is sent FROM, and where a journalist's reply lands (the
+      # mailbox the CF Email Worker watches → the #2203 responder). Required when ENABLED=true.
+      - key: WIFIHAVEN_PRESS_OUTREACH_FROM_ADDRESS
+        value: "WifiHaven Press <press@wifihaven.net>"
+      - key: WIFIHAVEN_PRESS_OUTREACH_REPLY_TO
+        value: press@wifihaven.net
 
   # ── Metrics collector: Grafana Alloy → Grafana Cloud ─────────────────────────
   # #1208: the cloud APP-metrics path. Alloy (Prometheus agent-mode) scrapes

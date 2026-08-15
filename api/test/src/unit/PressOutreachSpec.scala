@@ -49,10 +49,26 @@ object PressOutreachSpec extends ZIOSpecDefault {
   )
 
   // Two Priority-1 form-only contacts (no verified email — the real manifest's posture) + one P2.
-  private val cForm1   =
-    Contact("alpha", "Outlet Alpha", "Alice", 1, "your OpenWRT beat", None, Some("https://a/tip"))
-  private val cForm2   =
-    Contact("bravo", "Outlet Bravo", "Bob", 2, "your firewall videos", None, Some("https://b/tip"))
+  private val cForm1   = Contact(
+    "alpha",
+    "Outlet Alpha",
+    "Alice",
+    1,
+    "your OpenWRT beat",
+    "Alpha's authored pitch about the nftables drop.",
+    None,
+    Some("https://a/tip"),
+  )
+  private val cForm2   = Contact(
+    "bravo",
+    "Outlet Bravo",
+    "Bob",
+    2,
+    "your firewall videos",
+    "Bravo's authored pitch about DNS never being the enforcer.",
+    None,
+    Some("https://b/tip"),
+  )
   private val contacts = List(cForm2, cForm1) // deliberately out of order to test sorting
 
   private def recorder = Ref.make(List.empty[EmailSender.Sent])
@@ -71,23 +87,28 @@ object PressOutreachSpec extends ZIOSpecDefault {
         // operator supplies addresses at send time. A future PR adding a real address must be a
         // deliberate, reviewed change to THIS assertion.
         cs.forall(_.email.isEmpty),
+        // Every bundled target has a pitch written FOR IT. Distinctness is the assertion that
+        // actually bites: a non-empty check passes if someone pastes one pitch into all 21 rows,
+        // which is the failure mode (a blast) rather than a typo.
+        cs.forall(_.pitch.trim.length > 200),
+        cs.map(_.pitch).distinct.size == cs.size,
+        // The angle is form-submission metadata and must not be the email body.
+        cs.forall(c => !c.pitch.contains(c.angle)),
         body.contains("FOR IMMEDIATE RELEASE"),
         // Pin the load-bearing pricing/positioning claims IN THE SENDABLE RESOURCE so a bad edit to
         // the copy (or drift from the authored docs/marketing/press-release.md) is caught in CI —
         // these are the facts a journalist quotes (SHOULD-FIX from the #2233 review).
-        body.contains("$6/month (or $57/year)"),
+        body.contains("$6/month or $57/year"),
         body.contains("$10/month or $96/year"),
         body.contains("self-host"),
         body.contains("connection layer"),
+        // #2233 staging pass — the two claims most likely to be quoted wrong, and the ones the
+        // previous draft got wrong: 25 is the flip TRIGGER (nothing caps signups at 25), and the
+        // supported substrate is FLASHED vanilla OpenWrt, not vendor stock firmware.
+        body.contains("Once 25 active households are in, a 60-day countdown"),
+        body.contains("Vendor stock firmware is not a supported target"),
         // The release still carries exactly the fill tokens the runbook documents.
-        unresolved.toSet == Set(
-          "city",
-          "date",
-          "founderName",
-          "founderQuote",
-          "betaSignupUrl",
-          "pressKitUrl",
-        ),
+        unresolved.toSet == Set("founderName", "betaSignupUrl", "pressKitUrl"),
       )
     },
     test("manifest YAML parses; email present only where given") {
@@ -98,12 +119,14 @@ object PressOutreachSpec extends ZIOSpecDefault {
           |    person: Pat
           |    priority: 1
           |    angle: their beat
+          |    pitch: Pat's authored pitch.
           |    email: pat@outlet.example
           |  - id: formonly
           |    outlet: Form Outlet
           |    person: Fin
           |    priority: 2
           |    angle: their other beat
+          |    pitch: Fin's authored pitch.
           |    contactUrl: https://form
           |""".stripMargin
       val parsed = PressOutreach.parseContactsYaml(yaml)
@@ -161,9 +184,11 @@ object PressOutreachSpec extends ZIOSpecDefault {
         email.subject.contains("Outlet Alpha"),
         email.from == "WifiHaven Press <press@wifihaven.net>",
         email.replyTo == "press@wifihaven.net",
-        email.htmlBody.contains("Alice"),                // pitch greets the person
-        email.htmlBody.contains("your OpenWRT beat"),    // the angle
-        email.htmlBody.contains("FOR IMMEDIATE RELEASE"),// the release below
+        email.htmlBody.contains("Alice"),                  // pitch greets the person
+        email.htmlBody.contains("Alpha's authored pitch"), // the AUTHORED body, not a template
+        // `angle` is editorial metadata for form submissions — it must NOT leak into the email.
+        !email.htmlBody.contains("your OpenWRT beat"),
+        email.htmlBody.contains("FOR IMMEDIATE RELEASE"),  // the release below
       )
     },
     test("DEFAULT (confirmed=false) is a dry-run — nothing is transmitted") {
