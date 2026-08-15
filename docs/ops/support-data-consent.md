@@ -221,8 +221,13 @@ change raises its priority.
   than a link running unguarded: `link_record_error` means the ledger write
   failed and the prompt was therefore not posted at all (the link is recorded
   before it is posted, so one we cannot record is one we refuse to create), and
-  `link_state_unknown` means the liveness read failed and the reply was refused
-  rather than risked.
+  `link_state_unknown` means the liveness read failed — and it covers BOTH reads
+  of the ledger, which fail in opposite directions on purpose: on the reply path
+  it is fail-CLOSED (the reply was refused rather than risked, logged ERROR),
+  and at dispatch it is fail-SOFT (the explanation was skipped but the dispatch
+  went ahead, logged WARN). Read the log severity before deciding which
+  happened: the dispatch case means the customer was never told what the link
+  is, which is the dead-end signal rather than a refusal.
 - **The agent cannot post beside the prompt (#2667).** Until this, "the agent
   supplies no text *here*" was true of the consent *message* and false of the
   consent *moment*: nothing stopped the agent calling `reply` in the same turn,

@@ -89,13 +89,15 @@ object SupportConsentLinkExpirySpec extends ZIOSpecDefault {
     test("the row NEVER expires before the token, across a whole second of postings") {
       // The property, not just its boundaries: for every millisecond offset within a second, the
       // row must outlive the token. Erring late only mutes; erring early is the phishing surface.
+      // Report the offsets that broke it, not just that something did — a bare `forall` gives you
+      // "false" and leaves you bisecting by hand.
       val offsets = (0 until 1000 by 37).toList
-      val holds   = offsets.forall { ms =>
+      val broken  = offsets.filter { ms =>
         val p    = Instant.parse("2026-08-15T12:34:56Z").plusMillis(ms.toLong)
         val last = p.plus(ttl).truncatedTo(ChronoUnit.SECONDS).plusMillis(999)
-        tokenAliveAt(p, last) && rowOutstandingAt(p, last)
+        !(tokenAliveAt(p, last) && rowOutstandingAt(p, last))
       }
-      assertTrue(holds, offsets.nonEmpty)
+      assertTrue(broken == List.empty[Int])
     },
   )
 }
