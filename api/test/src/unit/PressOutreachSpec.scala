@@ -114,6 +114,27 @@ object PressOutreachSpec extends ZIOSpecDefault {
         parsed.exists(_.exists(c => c.id == "formonly" && c.email.isEmpty)),
       )
     },
+    test("a contact with no AUTHORED pitch is a parse error — there is no generic fallback") {
+      // #2233 staging pass: the pitch a journalist reads used to be one template with the outlet
+      // name and angle interpolated into it, which is what a blast looks like from the receiving
+      // end. The per-outlet pitch is now authored in the manifest and REQUIRED, so the composer has
+      // no way to fall back to a generic body — a contact added without one fails to load rather
+      // than quietly getting boilerplate.
+      val missingPitch = PressOutreach.parseContactsYaml(
+        """contacts:
+          |  - id: nopitch
+          |    outlet: Outlet
+          |    person: Pat
+          |    priority: 1
+          |    angle: their beat
+          |    contactUrl: https://form
+          |""".stripMargin,
+      )
+      assertTrue(
+        missingPitch.isLeft,
+        missingPitch.swap.exists(_.contains("pitch")),
+      )
+    },
     test("sendableBody strips the comment header before the --- fence") {
       val body = PressOutreach.sendableBody(template)
       assertTrue(
