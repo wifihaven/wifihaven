@@ -1275,6 +1275,23 @@ object AppMetrics {
   // `household_mismatch` is the security-relevant one (a consent link redeemed by another
   // household's session, which writes nothing) — it should be flat zero in normal operation, as
   // should `link_spent` (a replay) and `issue_refused_data_session`.
+  //   reply_blocked_link_live | link_explained | link_explain_repeat | link_explain_error |
+  //   link_explain_disabled | link_superseded | link_record_error | link_state_unknown   — #2709,
+  //   the THREAD-scoped consent-moment guard. #2667's exclusion was per SESSION, and the link stays
+  //   redeemable for 24h, so the customer's next message dispatched a fresh session that could
+  //   reply directly beneath a live genuine link and frame it. `reply_blocked_link_live` is a
+  //   refusal, and is expected SMALL AND NON-ZERO (a customer asking "what is this link?" is the
+  //   ordinary shape). `link_explained` is the server's own fixed explanation posted in place of
+  //   that reply — once per link, so `link_explain_repeat` is the later refusals staying silent;
+  //   refusals with NO explanations means customers are muted without being told why, the #2419
+  //   dead-end. `link_superseded` is a later prompt replacing an outstanding link. The two
+  //   expect-zero ones are the SECURITY ones: `link_record_error` (the V89 ledger write failed, so
+  //   the prompt was NOT posted — an unrecorded link is one the exclusion cannot cover, so we
+  //   refuse to create it) and `link_state_unknown` (the liveness lookup failed — on the reply path
+  //   that means the reply was refused rather than risked, at dispatch it means the explanation was
+  //   skipped and the dispatch went ahead; the log severity tells them apart, ERROR vs WARN).
+  //   The values are named on `SupportResponder.LinkLiveOutcomes` and
+  //   pinned against the panel by SupportMetricsContractSpec.
   def supportConsent(outcome: String): UIO[Unit]       =
     MetricGuard.counter("support_consent_total", Map("outcome" -> outcome))
   // #2430 — the per-dispatch Plain thread-history read (the responder's conversation context).

@@ -51,6 +51,11 @@ object SupportMetricsContractSpec extends ZIOSpecDefault {
   private val ExclusionPanelTitlePrefix = "Agent text suppressed beside a consent prompt"
 
   /**
+   * #2709 — the panel for the THREAD-scoped half: agent text refused while a link is still live.
+   */
+  private val LiveLinkPanelTitlePrefix = "A live consent link muted the agent"
+
+  /**
    * Mill's cwd at test time is not the repo root, so walk up to find the checked-in dashboard — but
    * STOP at the first checkout root (`build.mill`). Worktrees live at
    * `<repo>/.claude/worktrees/<name>`, so the PARENT checkout also contains this path; without the
@@ -241,6 +246,31 @@ object SupportMetricsContractSpec extends ZIOSpecDefault {
         // thread-writing action would widen it here rather than quietly going unpanelled.
         SupportResponder.ExclusionOutcomes ==
           Set("reply_after_consent_prompt", "consent_prompt_after_reply"),
+      )
+    },
+    test("#2709: the live-link panel selects every outcome the guard can emit") {
+      // Same drift class again, and the same expect-0-security-panel hazard on two of the values:
+      // `link_record_error` (a posted link the ledger never recorded, so the cross-turn exclusion
+      // is NOT in force for it) and `link_state_unknown` (the liveness lookup failed). A panel that
+      // dropped either would read a reassuring zero for the two states that mean the guard is not
+      // working — which is exactly the failure a metric is supposed to prevent.
+      //
+      // EQUALITY, so a NEW outcome added to the guard fails here rather than going unpanelled.
+      val matcher                             = "outcome=~\"([^\"]+)\"".r
+      def labelsIn(expr: String): Set[String] =
+        matcher.findAllMatchIn(expr).flatMap(_.group(1).split('|')).toSet
+
+      val exprs = panelExprs(_.startsWith(LiveLinkPanelTitlePrefix))
+      assertTrue(
+        exprs.nonEmpty,
+        exprs.forall(_.contains("support_consent_total")),
+        exprs.forall(labelsIn(_) == SupportResponder.LinkLiveOutcomes),
+        // The refusal itself and the anti-dead-end answer are BOTH on the panel: a refusal rate
+        // read without the explanation rate cannot tell "guard working" from "customers muted".
+        SupportResponder.LinkLiveOutcomes.contains(SupportResponder.ReplyBlockedLinkLive),
+        SupportResponder.LinkLiveOutcomes.contains(SupportResponder.LinkExplained),
+        SupportResponder.LinkLiveOutcomes.contains(SupportResponder.LinkRecordError),
+        SupportResponder.LinkLiveOutcomes.contains(SupportResponder.LinkStateUnknown),
       )
     },
   )

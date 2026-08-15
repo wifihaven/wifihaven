@@ -174,14 +174,60 @@ change raises its priority.
   (household + thread, never the token) and metered on
   `support_consent_total{outcome}`. A withdrawal of a grant that was not live
   meters as `revoke_noop`, so the panel counts real withdrawals.
-- **In the turn that posts the prompt, the customer sees only server-authored
-  text.** That is the guarantee, and it rests on three parts, none sufficient
-  alone: the prompt is server-authored (#2419), the live link never re-enters the
-  agent's context (#2453, below), and no agent-authored message may share the
-  turn with the prompt (#2667). It is scoped to the TURN: the link stays
-  redeemable for 24h, and a later turn can still post text beneath a live prompt
-  and frame the link the customer can already see. That is
-  [#2709](https://github.com/wifihaven/wifihaven/issues/2709), open.
+- **From the moment the prompt is posted until the link is resolved, everything
+  the customer sees on that thread is server-authored.** That is the guarantee,
+  and it rests on four parts, none sufficient alone: the prompt is
+  server-authored (#2419), the live link never re-enters the agent's context
+  (#2453, below), no agent-authored message may share the turn with the prompt
+  (#2667), and no agent-authored message may reach the thread at all while an
+  unredeemed link is outstanding on it (#2709). State it with BOTH qualifiers —
+  the thread and the link's lifetime — or not at all: the unqualified version is
+  what let #2667 ship, and the session-scoped version is what left #2709 open.
+- **The agent cannot post beneath a live link, in any later turn (#2709).**
+  #2667's exclusion was keyed on the agent SESSION, and every inbound customer
+  message dispatches a fresh one. So the customer asking the natural question
+  ("what is this link?") dispatched a session that had claimed nothing, whose
+  reply landed under the same banner directly beneath a live genuine link — and a
+  prompt-injected one could frame the link already on screen without ever needing
+  to see its URL. The rule is now keyed on the THREAD and the LINK'S LIFETIME:
+  while an unredeemed link is outstanding, `reply` is refused there whichever
+  session asks, decided by a durable read of the V89 ledger rather than by
+  in-memory per-session state. It lifts on every way a link can die — redeemed,
+  withdrawn, superseded by a later prompt, or lapsed at the 24h TTL (expiry needs
+  no write and no sweeper: it falls out of the predicate against the injected
+  Clock).
+  **And it does not dead-end the customer**, which is the part that took a
+  product decision rather than a schema. The server POSTS
+  `SupportResponder.consentLinkExplainer` when a customer message arrives on a
+  thread carrying a live link — at DISPATCH, before the agent gets a turn, not
+  as a side effect of the agent attempting a reply. That ordering is the point:
+  the agent's prompt tells it to end the turn rather than write beneath a live
+  link, so an answer that only fired on a reply attempt would be missing for
+  exactly the compliant agent, and the guarantee would hold only for one that
+  ignored its instructions. It is fixed server copy carrying no link of
+  its own, stating what the request covers and that WifiHaven will never ask for
+  a password, a card, or a code, and naming *Don't allow* as an equally fine
+  answer. Withholding an answer would only leave the customer guessing; saying
+  what we never ask for contradicts a hostile framing outright. It posts exactly
+  once per link (a conditional `explained_at` UPDATE), so a looping agent cannot
+  spam our own message. The residual cost is real and bounded: a customer whose
+  question is unrelated to the link gets the explanation rather than an answer
+  until the link resolves. Loud on
+  `support_consent_total{outcome=reply_blocked_link_live | link_explained |
+  link_explain_repeat | link_superseded | link_explain_error |
+  link_explain_disabled | link_record_error | link_state_unknown}` plus
+  `support_agent_action_total{op=reply,outcome=consent_pending}`, with the last
+  two of those an expect-zero pair, and BOTH mean a customer is waiting rather
+  than a link running unguarded: `link_record_error` means the ledger write
+  failed and the prompt was therefore not posted at all (the link is recorded
+  before it is posted, so one we cannot record is one we refuse to create), and
+  `link_state_unknown` means the liveness read failed — and it covers BOTH reads
+  of the ledger, which fail in opposite directions on purpose: on the reply path
+  it is fail-CLOSED (the reply was refused rather than risked, logged ERROR),
+  and at dispatch it is fail-SOFT (the explanation was skipped but the dispatch
+  went ahead, logged WARN). Read the log severity before deciding which
+  happened: the dispatch case means the customer was never told what the link
+  is, which is the dead-end signal rather than a refusal.
 - **The agent cannot post beside the prompt (#2667).** Until this, "the agent
   supplies no text *here*" was true of the consent *message* and false of the
   consent *moment*: nothing stopped the agent calling `reply` in the same turn,
