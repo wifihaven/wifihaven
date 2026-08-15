@@ -486,6 +486,12 @@ stated alongside.
   [#2546](https://github.com/wifihaven/wifihaven/issues/2546) shape. Fixing it
   wants a separate `absent(agent_version)` liveness rule, tracked in
   [#2654](https://github.com/wifihaven/wifihaven/issues/2654).
+  **W14 below now covers most of that slice** — it compares the reporting-router
+  count against the connected-router count, so a router that goes silent while
+  holding a websocket fires there even though W10 is blind to it, and the
+  `or vector(0)` arm catches the fleet-wide stop too. What W14 does *not* cover
+  is a fleet whose routers all lose their sockets at the same moment they stop
+  reporting, which is what leaves #2654 open.
 - **Query cost — the one axis that does not scale**, and a different axis from
   the cardinality note above. The scrape interval is 30s
   (`deploy/alloy/config.alloy`), so a `[30d]` lookback fetches ~86,400 samples
@@ -608,6 +614,167 @@ responder, and W12 is the proof that either was in a position to fire.
   dashboard, shipped by #2517 in the same change that gave the press series a
   producer.
 
+**W14. A connected router has stopped reporting metrics**
+([#2646](https://github.com/wifihaven/wifihaven/issues/2646) follow-up)
+
+W10's **absence arm**. Read the two together — they cover opposite doors into
+the same failure and neither subsumes the other.
+
+- Query:
+  ```promql
+  (
+    (count(count by (router_id) (agent_version{env="prod"})) or vector(0))
+      < bool
+    max(router_ws_connections_active{env="prod"})
+  )
+  ```
+- `gt = 0`, `for = 6h`.
+- **The gap W10 cannot see.** Every term on both sides of W10's comparison is
+  derived from `agent_version`, a series that exists only for a router that is
+  *pushing*. A router that stops pushing does not become a laggard in W10's
+  eyes — it drops out of the comparison entirely and W10 goes quiet, for
+  precisely the box it was written to protect. Live on prod 2026-08-15:
+  `router_ws_connections_active = 2` (both routers holding a socket, with
+  `router ws: connected router=f04dd490-…` in Loki at 18:03:33Z) while
+  `agent_version{env="prod"}` had a single series (`3498967e`, `0.3.29`).
+- **Choosing the reference signal is the whole design.** Prometheus cannot
+  alert on the absence of a series it has never seen — `absent()` needs a
+  nameable label set, and router ids are not knowable in a static rule. So the
+  rule needs some *other* series that enumerates who should be reporting. Three
+  candidates, all measured against 14 days of real prod data:
+  - `agent_connected_routers` — **rejected, it shares the blind spot.** It
+    counts routers whose `routers.last_seen_at` falls inside a 10-minute window
+    (`RouterPresenceMetrics.DefaultWindow`), and `last_seen_at` is written by
+    the snapshot poll, usage/event ingest and the ws heartbeat — the same
+    agent-liveness paths that die alongside the metrics push. It read **1** at
+    the moment the failure was live, exactly equal to the reporting count, so it
+    cannot distinguish the broken state from the healthy one. It is also the
+    noisiest of the three: over 14d it flapped between 1 and 2 repeatedly while
+    both routers were reporting normally.
+  - **A new server-side enrolled-router gauge** off the `routers` table —
+    rejected, and this is the close call. It would be authoritative about who
+    *should* report, and unlabelled, so it costs no cardinality. But an
+    enrollment row outlives the hardware: a decommissioned-but-undeleted router,
+    or a household whose box is unplugged for a week, holds the rule firing
+    forever with no action available, and an alert that cannot be resolved by
+    fixing something is one the operator learns to close. It also fails the §2
+    "alert on a series that already exists" bar — a new metric earns its place
+    when nothing else can carry the meaning, and here something can.
+  - `router_ws_connections_active` — **chosen.** A router holding an open
+    websocket is one we have direct live evidence is up and talking to us; up,
+    talking, and pushing nothing is exactly the failure. It self-clears with no
+    bookkeeping — a decommissioned or unplugged router drops its socket and
+    leaves the reference count on its own, the property the enrolled gauge
+    lacks. Replayed over the full retained window (2026-08-01T19:01Z to
+    08-15T18:56Z, 4032 samples at 300s — both integers below are phase-sensitive
+    at this step, since a 30s dip lands on a 300s grid point only about a tenth
+    of the time): 3966 at 2 and 66 at 1, the latter in
+    only two stretches — a 5.3h run at the very start of retention (08-01
+    19:01 to 08-02 00:21, which reads as the second router joining rather than
+    a flap) and one single sample on 08-07 14:16. Both *lower* the reference,
+    so both fail safe. Three transitions across the fortnight against
+    `agent_connected_routers`' 48 over the same window — same phase caveat, the
+    `48` moves if you re-query at a different step phase, the order-of-magnitude
+    gap does not. The stablest of the three by an order of magnitude.
+- **What it depends on**, stated plainly because it is the fragile part. The
+  gauge is documented as a count of *channels*, not routers; it is a router
+  count only because `RouterWsRegistry.register` **supersedes** — a reconnect
+  evicts and shuts down the channel already held for that id
+  ([#2561](https://github.com/wifihaven/wifihaven/issues/2561)), so a router
+  holds at most one. Relax that invariant and the reference count inflates and
+  this rule false-fires; anyone changing the registry's channel-per-router bound
+  must revisit it. Second dependency: a router on the REST transport holds no
+  channel, so it counts on the reporting side and not the reference side. That
+  direction fails **safe** — the comparison cannot go true from it — but a
+  REST-only router is not covered here. ws is the fleet default since
+  [#2608](https://github.com/wifihaven/wifihaven/issues/2608), which is what
+  makes that acceptable rather than a hole.
+- **Counts, not identities — deliberately.** The rule fires without naming the
+  silent router, because naming it would need a per-router *server-derived*
+  series, which is out of bounds under the cardinality firewall in
+  [`docs/process/instrumentation.md`](../process/instrumentation.md). (`agent_version`'s own `router_id` is the
+  documented exception because it is agent-pushed; that exception does not
+  extend to inventing a new server-side per-router gauge.) "One router is
+  silent" is enough to act on, and the operator identifies which one in two
+  clicks from the paired panel. A count comparison that fires beats an
+  identity-precise rule that does not exist. The two clicks land on the
+  router-fleet dashboard's **"Agent versions across the fleet"** panel, which
+  is the one whose query carries `router_id` — *not* "Fleet agent-version
+  distribution" beside it, which counts by version only and cannot identify a
+  router.
+- **How it reads.** `count by (router_id)` collapses the version label so an
+  in-flight upgrade cannot double-count a router; the outer `count` is then the
+  number of routers with a live `agent_version`. `or vector(0)` is load-bearing,
+  not defensive padding: `count()` over an empty vector returns **empty, not
+  0**, so without it the total-silence case (every router stops) produces no
+  sample and reads as healthy — the
+  [#2546](https://github.com/wifihaven/wifihaven/issues/2546) shape, and the
+  same hole [#2654](https://github.com/wifihaven/wifihaven/issues/2654) is filed
+  for. With it, `0 < 2` fires. `< bool` rather than a bare `<` for the same
+  reason: a bare comparison returns the *left* value, which is 0 in exactly that
+  total-silence case, and `gt = 0` would filter out the one sample that matters
+  most. `bool` yields a clean 1/0 and makes `gt = 0` a true boolean test — the
+  same reasoning as W12's `== bool`.
+- **`max` over the reference gauge is a no-op today**, and that is worth
+  stating exactly rather than dressing up as scale-out safety.
+  `deploy/alloy/config.alloy:15-25` scrapes *one* target,
+  `wifihaven-api-prod:8080`, with `instance` hard-coded to the literal
+  `"wifihaven-api-prod"`, so there is exactly one series and `max == sum ==`
+  the single sample. `max` is the conservative aggregator over a gauge
+  documented as channels; it buys nothing else. **Do not read it as making W14
+  scale-out-correct.** Raising `numInstances` (1 today, `render.yaml`) does not
+  produce per-instance series: Render's internal address round-robins behind
+  that single fixed-`instance` scrape target, so each 30s scrape returns
+  whichever instance answered, and *both* operands are then sampled from that
+  one arbitrary instance. No choice of aggregator fixes that. **Which way the
+  comparison then breaks is deliberately not predicted here.** Earlier drafts of
+  this section did predict a direction and could not support it from the scrape
+  config; it is not determinable without running a two-instance deploy. What
+  *is* certain is that
+  the reference stops meaning "the fleet's connected routers", which is the
+  property the rule rests on. So rework the scrape topology in `config.alloy`
+  (per-instance targets, or a server-side aggregate) before raising
+  `numInstances`, and re-derive this rule against whatever that produces rather
+  than reasoning about it in advance. If the reference
+  gauge is itself absent (the API is down) the comparison is empty and the rule
+  lands in no-data → OK, which is right: an API outage is C-tier.
+- **`for: 6h` — calibrated against 14 days of prod, not picked.** The
+  expression was replayed over the full retained window at 5-minute resolution
+  (4032 samples) and went true in **four** runs: one single sample on 08-08
+  00:56, 0.83h on 08-10, 17.25h from 08-14 16:36 to 08-15 09:51, and 3.67h from
+  08-15 15:06 to 18:46. The single sample is an API restart — the agent-pushed
+  gauges repopulate only on the next push, `metrics_report_interval` 60s
+  (`openwrt/files/etc/config/wifihaven`) — and it is present in the *shipping*
+  expression, not an artifact of an earlier draft. None of the three short runs
+  reaches 6h, which corroborates the threshold rather than qualifying it. 6h
+  clears the largest benign run by 7.2× and the push interval by 360×, so no
+  restart, reboot, agent upgrade or scrape gap reaches it, and it would have
+  fired **once** in that fortnight, on the
+  17.25h event — the genuine failure. Shorter pages on the 0.83h dip. Longer
+  (W10's 24h) misses the 17.25h outage entirely, and that difference is the
+  point: W10 detects "stopped updating forever", a days-scale fact, while this
+  detects "stopped talking", where six hours of silence from a box holding a
+  socket open is already anomalous.
+- **Query cost.** Unlike W10 there is no range selector at all — two instant
+  gauge reads per evaluation — so `window_s` takes the file minimum and
+  [#2650](https://github.com/wifihaven/wifihaven/issues/2650)'s recording-rule
+  concern does not apply.
+- **Known limits, both accepted.** (1) A router that is entirely gone — powered
+  off, socket dropped — leaves both sides of the comparison together and does
+  not fire here. That is a different condition ("the fleet shrank") from the one
+  this rule detects ("a connected router went quiet"), and covering it wants the
+  enrolled-router reference rejected above, with the unresolvable-alert problem
+  that comes with it. C7 (`agent_connected_routers < 1`) covers only the
+  fleet-to-zero case, so one-of-N disappearing remains uncovered.
+  (2) The rule cannot name the silent router (see above).
+- Paired panel (per
+  [`docs/process/instrumentation.md#metrics-need-a-dashboard`](../process/instrumentation.md#metrics-need-a-dashboard)):
+  "Routers connected vs reporting metrics" on the router-ws-transport
+  dashboard, plotting both sides of the comparison so the gap is the thing you
+  see. Cross-reference the router-fleet dashboard's "Agent versions across the
+  fleet" panel — the one that carries `router_id` — to identify which router is
+  missing.
+
 ## 8. Gaps — metrics not yet emitted
 
 These are alerts worth having whose metric does not (reliably) exist yet. They
@@ -619,7 +786,8 @@ it (per the "alert only on emitted series" rule).
 | Deploy failure (pairs with #1245 annotations) | No alertable series. `deploy-webhook` writes **Grafana annotations only** — by design it "does not scaffold any notification/alerting transport." Annotations are not PromQL-alertable. | [#1405](https://github.com/wifihaven/wifihaven/issues/1405): have `deploy-webhook` *also* emit a Prometheus counter (e.g. `render_deploy_total{lifecycle}`) scraped by Alloy, then alert `increase(...{lifecycle="failed"}[10m]) > 0`. Or use Grafana Cloud's native Render-integration deploy events if/when available. |
 | Blocklist fetch failures (W5) | `blocklist_fetch_failures_total` router-pushed but unreliable in prod | [#1382](https://github.com/wifihaven/wifihaven/issues/1382) + agent counters [#1301](https://github.com/wifihaven/wifihaven/issues/1301)/[#1302](https://github.com/wifihaven/wifihaven/issues/1302)/[#1325](https://github.com/wifihaven/wifihaven/issues/1325) |
 | Agent restart / uptime regression | `agent_uptime_seconds`, `dnsmasq_restarts_total` router-pushed, unreliable in prod | same as above — fleet roll-forward + #1382 |
-| Per-router liveness (which router dropped, not just "fleet → 0") | Would need a per-`router_id` series; `agent_connected_routers` is a single aggregate gauge | acceptable for now (household = ~1 router); revisit if the fleet grows |
+| Per-router liveness (which router dropped, not just "fleet → 0") | Would need a per-`router_id` **server-derived** series, which the bounded-label-enum rule forbids; `agent_connected_routers` is a single aggregate gauge. W14 detects that *some* router went quiet by comparing counts, and its summary routes the operator to the version-distribution panel to identify which — but the alert itself cannot name it. | acceptable for now (household = ~1 router); revisit if the fleet grows |
+| A router that disappeared entirely (one of N powered off, not the whole fleet) | No reference series survives it: the router leaves `router_ws_connections_active` and `agent_version` together, so W14's comparison stays balanced and C7 only covers fleet → 0. Would need an enrolled-router gauge off the `routers` table, which fires unresolvably for a decommissioned-but-undeleted row (see W14's rejected candidates). | unfiled; wants the enrollment-lifecycle question answered first (what marks a router retired?) |
 
 ## 9. Implementation sub-issues
 
@@ -650,8 +818,10 @@ Filed under the **Alerting & Paging** epic, one per coherent chunk:
    [#2488](https://github.com/wifihaven/wifihaven/issues/2488) with W8, by
    [#2553](https://github.com/wifihaven/wifihaven/issues/2553) with W9, by
    [#2646](https://github.com/wifihaven/wifihaven/issues/2646) with W10, and by
-   [#2477](https://github.com/wifihaven/wifihaven/issues/2477) with W11–W12, and by
-   [#2517](https://github.com/wifihaven/wifihaven/issues/2517) with W13.
+   [#2477](https://github.com/wifihaven/wifihaven/issues/2477) with W11–W12, by
+   [#2517](https://github.com/wifihaven/wifihaven/issues/2517) with W13, and by
+   [#2646](https://github.com/wifihaven/wifihaven/issues/2646)'s follow-up with
+   W14 (W10's absence arm).
 5. **[#1405](https://github.com/wifihaven/wifihaven/issues/1405) —
    Deploy-failure signal** ([§8](#8-gaps--metrics-not-yet-emitted)): extend
    `deploy-webhook` to emit `render_deploy_total{lifecycle}` (or adopt native

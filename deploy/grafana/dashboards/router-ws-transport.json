@@ -1126,6 +1126,106 @@
           "refId": "A"
         }
       ]
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "title": "Routers connected vs reporting metrics (#2646)",
+      "description": "The absence arm of the stuck-agent alert (W14), made visible. GREEN (`connected`) is router_ws_connections_active — routers holding a live websocket, i.e. boxes we have direct evidence are up and talking. YELLOW (`reporting metrics`) counts DISTINCT router_ids with a live agent_version series, i.e. boxes whose metrics push is actually landing. In a healthy fleet the two lines sit on top of each other.\n\nA GAP between them is the failure W10 structurally cannot see: W10 keys off the presence of an agent_version series, so a router that reports nothing disappears from its comparison rather than being flagged by it, and the stuck-agent detector is silently off for exactly that box. Observed live on prod 2026-08-15 — connected 2, reporting 1, for hours. W14 (infra/grafana/alerting-rules-warning.tf) fires on this gap after 6h.\n\nWHICH ROUTER is silent is deliberately not on this panel: naming it needs a per-router server-derived label, which docs/process/instrumentation.md forbids. Cross-reference the router-fleet dashboard's \"Agent versions across the fleet\" panel, which is the one that carries router_id — the silent box is the enrolled router missing from that list. Do NOT use \"Fleet agent-version distribution\" next to it: it counts by version only and cannot identify a router.\n\nREAD THE LINES IN THE RIGHT DIRECTION. `reporting` above `connected` is NOT a fault: a router on the REST transport holds no channel, so it reports without being counted as connected. Only reporting BELOW connected is alertable.",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 72
+      },
+      "id": 19,
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "short",
+          "min": 0,
+          "decimals": 0,
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "lineWidth": 2,
+            "lineInterpolation": "stepAfter"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "connected (ws channels)"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "green"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "reporting metrics"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "yellow"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "min",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max(router_ws_connections_active{env=\"$env\"})",
+          "legendFormat": "connected (ws channels)",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "count(count by (router_id) (agent_version{env=\"$env\"})) or vector(0)",
+          "legendFormat": "reporting metrics",
+          "refId": "B"
+        }
+      ]
     }
   ],
   "refresh": "30s",
