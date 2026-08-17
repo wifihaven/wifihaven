@@ -61,8 +61,8 @@ outlet, which is the whole point of doing this by hand.
 | 9 | XDA (self-hosting) | P1 | 2026-08-17 sent | |
 | 10 | Ars Technica | P2 | SKIPPED — premise stale | see note |
 | 11 | Dong Knows Tech | P2 | 2026-08-17 (Review request) | |
-| 12 | NetworkChuck (YouTube) | P2 | | |
-| 13 | PCMag | P2 | | |
+| 12 | NetworkChuck (YouTube) | P2 | 2026-08-17 | |
+| 13 | PCMag | P2 | drafted (Gmail) | |
 | 14 | TechRadar Pro | P2 | | |
 | 15 | Tom's Guide | P2 | | |
 | 16 | Wirecutter (NYT) | P2 | | |
@@ -228,7 +228,13 @@ Your Pi-hole videos are how a lot of people first learn that the network can enf
 ## 13. PCMag — Kim Key
 
 - **Priority:** 2
-- **Form:** https://www.pcmag.com/about/contact-us
+- **Email:** `<address held by the operator, not recorded here>` — **operator-supplied 2026-08-17**, not independently
+  verified here. (Ziff Davis owns PCMag, so the domain is consistent, but consistency is not
+  verification.)
+- **The listed form URL is DEAD.** https://www.pcmag.com/about/contact-us 404s. pcmag.com is
+  unfetchable from this environment, so the live contact path could not be found. A third-party
+  directory reports the address format as `first_last@pcmag.com` — **do not use that**; a format
+  inferred from an aggregator is a guess, and the fabrication rule covers guesses.
 - **id:** `pcmag`
 
 ```
