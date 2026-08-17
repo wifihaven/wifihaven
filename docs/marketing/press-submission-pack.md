@@ -107,7 +107,8 @@ You've spent a lot of airtime explaining why DNS filtering doesn't hold, which i
 ## 4. selfh.st / Self-Host Weekly — Ethan Sholly
 
 - **Priority:** 1
-- **Form:** https://selfh.st/about/
+- **Form:** https://selfh.st/submit/ — choose **"Self-Host Weekly (Newsletter)"** of the three options
+- **Also:** https://selfh.st/contact/ has an "E-mail Me" button if the form is unusable
 - **id:** `selfhst`
 
 ```
@@ -323,3 +324,23 @@ Request access: app.wifihaven.net/beta
 The release: wifihaven.net/press
 Source: github.com/wifihaven/wifihaven
 ```
+
+---
+
+## Tooling note (2026-08-17)
+
+Browser automation could not drive these forms. Two sites were attempted — selfh.st and
+It's FOSS — and both fail the same way: the page never reaches `document_idle`, so
+`read_page`, `find`, screenshots and JavaScript evaluation all time out. Ad, consent and
+analytics scripts on modern publisher sites keep the renderer busy indefinitely.
+`get_page_text` sometimes still works, which is how the selfh.st routes below were found.
+
+Assume the submissions are **manual**. This pack is the working copy for a human doing
+them by hand: each block already carries the form URL, the outlet's own pitch, and the
+field mapping.
+
+Corrections found while trying:
+
+- **selfh.st** — the real submission route is `/submit/` (a Formbricks form offering
+  Self-Host Weekly / apps directory / icon request), not `/about/` as originally listed.
+  `/contact/` also exposes an "E-mail Me" button.
