@@ -73,8 +73,8 @@ object Main extends ZIOAppDefault {
         // #2517: the same sweep for the #2203 PRESS responder, on its OWN tracker instance (own
         // pending map, own `press_dispatch_total` sink). Forked only when the press responder is
         // ENABLED, for the same reason: a dark responder dispatches nothing, so there is nothing to
-        // sweep. Press outreach (#2233) makes this launch-critical — a dead press session currently
-        // reads as a served journalist.
+        // sweep. Launch-critical for the beta announcement: a dead press session reads as a
+        // served journalist.
         _         <- ZIO
           .serviceWithZIO[wifihaven.api.support.DispatchTracker.ForPress](t =>
             ZIO.serviceWithZIO[wifihaven.shared.Clock](t.tracker.loop),

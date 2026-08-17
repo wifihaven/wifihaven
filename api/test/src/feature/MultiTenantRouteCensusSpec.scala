@@ -264,18 +264,16 @@ object MultiTenantRouteCensusSpec extends ZIOSpecDefault {
     ),
 
     // ── Press ──────────────────────────────────────────────────────────────────────────────────
-    "POST /api/press/inbound"          -> Unauthenticated(
+    "POST /api/press/inbound"        -> Unauthenticated(
       "CF Email Worker shared secret; press has no household dimension",
     ),
-    "POST /api/press/agent/reply"      -> AgentToken(
+    "POST /api/press/agent/reply"    -> AgentToken(
       "signed PressToken; press has no household dimension",
     ),
-    "POST /api/press/agent/escalate"   -> AgentToken(
+    "POST /api/press/agent/escalate" -> AgentToken(
       "signed PressToken; press has no household dimension",
     ),
-    "POST /api/press/outreach/preview" -> Operator("operator-only outreach console"),
-    "POST /api/press/outreach/send"    -> Operator("operator-only outreach console"),
-    "GET /api/press/messages"          -> Operator("operator-only press inbox (admin AND hh1)"),
+    "GET /api/press/messages"        -> Operator("operator-only press inbox (admin AND hh1)"),
 
     // ── RollupAdminRoutes ──────────────────────────────────────────────────────────────────────
     "GET /api/admin/rollup-status" -> NoTenancy(

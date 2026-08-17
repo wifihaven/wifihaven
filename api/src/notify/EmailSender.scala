@@ -23,10 +23,12 @@ trait EmailSender {
   def send(to: String, subject: String, htmlBody: String): UIO[EmailOutcome]
 
   /**
-   * #2233 — send one email with an explicit envelope FROM override and an optional Reply-To. Used
-   * by the press-OUTREACH path, where the release must be FROM the press address (not the alerts@
-   * notification sender [[EmailConfig.fromAddress]] this trait's other callers use) and REPLY-TO
-   * must point at the press inbox so a journalist's reply routes to the #2203 responder.
+   * Send one email with an explicit envelope FROM override and an optional Reply-To. Used by the
+   * #2203 press RESPONDER, whose reply must be FROM the press address (not the alerts@ notification
+   * sender [[EmailConfig.fromAddress]] this trait's other callers use) and whose REPLY-TO must
+   * point at the press inbox so a journalist's follow-up threads back into the responder.
+   * Introduced for #2233's outreach sender, which was removed on 2026-08-15 — the envelope split it
+   * needed is the responder's requirement too (#2407), so the seam stays.
    *
    * #2451 — `inReplyTo` is the RFC 5322 `Message-ID` of the message being replied to. When set, the
    * transport emits `In-Reply-To` with that value, so the reply threads under the original in any
@@ -247,8 +249,8 @@ object EmailSender {
       to: List[String],
       subject: String,
       html: String,
-      // #2233 — Resend's `reply_to` field (snake_case on the wire). Only set for the outreach path
-      // via `sendAs`; `None` for the notification path so the JSON is byte-identical to before.
+      // Resend's `reply_to` field (snake_case on the wire). Only set via `sendAs` (the press
+      // responder); `None` for the notification path so the JSON is byte-identical to before.
       reply_to: Option[List[String]] = None,
       // #2451 — Resend's custom-header escape hatch: `headers`, an object, documented as "Custom
       // headers to add to the email" at https://resend.com/docs/api-reference/emails/send-email.
@@ -256,7 +258,7 @@ object EmailSender {
       // specifically — so the field itself is verified, its acceptance of this particular pair is
       // confirmed by the staging send (the operator's step) before prod. Only set for the
       // press-RESPONDER path; `None` everywhere else, so the JSON stays byte-identical for the
-      // notification and outreach paths.
+      // notification path.
       headers: Option[Map[String, String]] = None,
   )
   private object ResendRequest {
@@ -277,7 +279,7 @@ object EmailSender {
     def send(to: String, subject: String, htmlBody: String): UIO[EmailOutcome] =
       post(ResendRequest(cfg.fromTrimmed, List(to), subject, htmlBody))
 
-    // #2233 — the outreach envelope: FROM the press address, REPLY-TO the press inbox. A blank
+    // The press envelope: FROM the press address, REPLY-TO the press inbox. A blank
     // `from` falls back to the configured notification sender so a misconfig can't send with an
     // empty From header. `replyTo` is set only when non-blank.
     override def sendAs(
@@ -341,7 +343,7 @@ object EmailSender {
       to: String,
       subject: String,
       htmlBody: String,
-      // #2233 — the envelope override captured on the `sendAs` path (press outreach). `None` on the
+      // The envelope override captured on the `sendAs` path (the press responder). `None` on the
       // plain `send` path, so existing recorders/assertions are unaffected.
       from: Option[String] = None,
       replyTo: Option[String] = None,
@@ -369,8 +371,8 @@ object EmailSender {
     def send(to: String, subject: String, htmlBody: String): UIO[EmailOutcome] =
       ref.update(_ :+ Sent(to, subject, htmlBody)).as(EmailOutcome.Sent)
 
-    // #2233 — record the FROM + Reply-To so the outreach specs can assert the release goes out FROM
-    // the press address and REPLIES route to the press inbox. #2451 adds the threading pair.
+    // Record the FROM + Reply-To so the press specs can assert the reply goes out FROM the press
+    // address and REPLIES route to the press inbox. #2451 adds the threading pair.
     override def sendAs(
         from: String,
         replyTo: Option[String],

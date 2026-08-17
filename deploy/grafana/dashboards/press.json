@@ -177,71 +177,9 @@
         }
       ]
     },
-    {
-      "datasource": { "type": "prometheus", "uid": "${datasource}" },
-      "title": "Outreach send outcomes",
-      "description": "sum by (outcome) (rate(press_outreach_total{env=\"$env\"}[5m])) — #2233 the operator-run press-OUTREACH send. One series per bounded outcome: sent / failed (Resend transport) / skipped_already_sent (idempotency) / skipped_no_email (form-only contact) / skipped_disabled (email off) / dry_run (preview or unconfirmed — never transmitted). Emitted by PressOutreachRoutes once per per-contact result. A `failed` series is a Resend delivery problem to investigate; `dry_run` reflects preview activity.",
-      "type": "timeseries",
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 14 },
-      "id": 7,
-      "fieldConfig": {
-        "defaults": {
-          "color": { "mode": "palette-classic" },
-          "unit": "reqps",
-          "min": 0,
-          "custom": { "drawStyle": "line", "fillOpacity": 10, "showPoints": "never", "lineWidth": 1, "stacking": { "mode": "normal", "group": "A" } }
-        },
-        "overrides": [
-          {
-            "matcher": { "id": "byRegexp", "options": ".*failed.*" },
-            "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } }]
-          }
-        ]
-      },
-      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
-      "targets": [
-        {
-          "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "sum by (outcome) (rate(press_outreach_total{env=\"$env\"}[5m]))",
-          "legendFormat": "{{outcome}}",
-          "refId": "A"
-        }
-      ]
-    },
-    {
-      "datasource": { "type": "prometheus", "uid": "${datasource}" },
-      "title": "Outreach emails sent (24h)",
-      "description": "sum(increase(press_outreach_total{env=\"$env\",outcome=\"sent\"}[24h])) — #2233 real press emails transmitted in the last 24h.",
-      "type": "stat",
-      "gridPos": { "h": 8, "w": 6, "x": 12, "y": 14 },
-      "id": 8,
-      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "unit": "short", "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] } } },
-      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "colorMode": "value", "graphMode": "area", "textMode": "auto" },
-      "targets": [
-        {
-          "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "sum(increase(press_outreach_total{env=\"$env\",outcome=\"sent\"}[24h]))",
-          "refId": "A"
-        }
-      ]
-    },
-    {
-      "datasource": { "type": "prometheus", "uid": "${datasource}" },
-      "title": "Outreach sends failed (24h) — delivery watch",
-      "description": "sum(increase(press_outreach_total{env=\"$env\",outcome=\"failed\"}[24h])) — #2233 press emails Resend rejected in the last 24h. Non-zero = investigate the transport; a re-run retries failed contacts.",
-      "type": "stat",
-      "gridPos": { "h": 8, "w": 6, "x": 18, "y": 14 },
-      "id": 9,
-      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "unit": "short", "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] } } },
-      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "colorMode": "value", "graphMode": "area", "textMode": "auto" },
-      "targets": [
-        {
-          "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "sum(increase(press_outreach_total{env=\"$env\",outcome=\"failed\"}[24h]))",
-          "refId": "A"
-        }
-      ]
-    },
+    
+    
+    
     {
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "title": "Cloud-agent dispatch outcomes (#2438)",

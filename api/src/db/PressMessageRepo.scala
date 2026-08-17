@@ -77,17 +77,6 @@ trait PressMessageRepo {
   def listRecent(limit: Int): Task[List[PressMessage]]
 
   /**
-   * #2233 — the set of distinct `peer_email`s we have any SUCCESSFUL outbound correspondence with
-   * (`direction='outbound'` and `outcome <> 'failed'` — a failed send is NOT "already reached", so
-   * a re-run retries it). The press-outreach send path reads this as its cross-invocation
-   * idempotency ledger: a peer already here is skipped, so re-running a partially-completed batch
-   * never double-blasts a journalist. Reuses the #2296 `press_messages` log (no new table), which
-   * is correct semantically — a peer we've already emailed the release to (or already replied to)
-   * is a peer we don't re-outreach.
-   */
-  def outboundPeers(): Task[Set[String]]
-
-  /**
    * #2437 — one row by primary key, for the escalation notice: the press responder re-reads the
    * ORIGINAL inquiry (by the id carried on the signed session token) so the operator email quotes
    * what the journalist actually wrote, not something the agent could have rewritten. `None` when
@@ -140,11 +129,4 @@ class PressMessageRepoLive(xa: Transactor[Task]) extends PressMessageRepo {
       .option
       .transact(xa)
 
-  def outboundPeers(): Task[Set[String]] =
-    sql"""SELECT DISTINCT peer_email FROM press_messages
-          WHERE direction = 'outbound' AND (outcome IS NULL OR outcome <> 'failed')"""
-      .query[String]
-      .to[List]
-      .map(_.toSet)
-      .transact(xa)
 }

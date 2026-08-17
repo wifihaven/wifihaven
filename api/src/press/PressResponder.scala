@@ -649,8 +649,8 @@ object PressResponder {
    * journalist as literal asterisks. [[wifihaven.api.notify.EmailMarkdown]] now renders a closed
    * allowlist of markdown constructs OVER the same escape — the escape still runs first and is
    * still what keeps agent-authored (and therefore journalist-influenced, #2667) text from becoming
-   * markup in the outgoing email. It is the shared renderer, so the outreach path (#2233) cannot
-   * drift back into the second copy this fix collapsed.
+   * markup in the outgoing email. It is the one renderer, so a second caller cannot drift back into
+   * the second copy this fix collapsed.
    */
   def htmlBody(markdown: String): String = EmailMarkdown.render(markdown)
 

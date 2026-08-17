@@ -39,6 +39,31 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      # #2233: the press page carries the launch release, and the authored copy spells
+      # operator-input slots `[LIKE THIS]`. Merging this site is what publishes it, so an unfilled
+      # slot would go live on wifihaven.net the moment a PR lands. Fail the deploy instead — the
+      # placeholder is a "not ready yet" marker and it should behave like one, rather than reaching
+      # readers as literal brackets (the #2677 lesson, one layer up).
+      #
+      # The pattern matches the OPENING `[ABC` only, never the closing bracket. An earlier version
+      # required `[...]` intact and passed for free, because the HTML formatter had wrapped a
+      # placeholder across two lines and the closing bracket landed on the next one — so the guard
+      # was green while the page it guarded was not ready.
+      #
+      # `-I` keeps it off the binary brand assets, where a chance byte match would fail the deploy
+      # with an unactionable "Binary file matches". `-I` rather than an --include allowlist so the
+      # guard fails SAFE: a future .js/.json/.svg carrying copy is covered automatically instead of
+      # being silently unguarded. If real copy ever needs a literal bracketed uppercase token
+      # (`[RFC1918]`, a CVE id), use the HTML entity for `[` — do not loosen the pattern.
+      - name: Guard — no unfilled [PLACEHOLDER] slots in the published site
+        run: |
+          set -euo pipefail
+          if grep -rnIE '\[[A-Z][A-Z0-9_ ]+' web-marketing/site; then
+            echo "::error::Unfilled placeholder(s) above. Fill them (or remove the copy) before this deploys."
+            exit 1
+          fi
+          echo "no unfilled placeholders"
+
       - name: Deploy to Cloudflare Pages (wifihaven-www)
         uses: cloudflare/wrangler-action@v3
         with:
