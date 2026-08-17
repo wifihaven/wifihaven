@@ -213,3 +213,18 @@ from step 2 exported: `terraform plan`.
 `terraform plan` with no local edits should report "No changes". If it proposes
 deletions you didn't intend (e.g. somebody added a record via the dash),
 reconcile by adding the resource here, not by applying around it.
+
+## Email Address Obfuscation stays ON (2026-08-16)
+
+Cloudflare's Email Address Obfuscation is a zone default and is **deliberately not disabled**,
+so it is not declared in `main.tf`. It rewrites the `mailto:press@wifihaven.net` links on
+`wifihaven.net/press` into `/cdn-cgi/l/email-protection` spans that decode client-side.
+
+Keep it. `press@wifihaven.net` feeds the [#2203](https://github.com/wifihaven/wifihaven/issues/2203)
+press responder, which dispatches a cloud agent for every inbound message — so an address
+harvested off the press page costs API tokens per spam mail, not just inbox clutter. The known
+cost is that a no-JS fetch of the press page renders `[email protected]` rather than the address;
+that was weighed against the spam exposure and accepted.
+
+If a future change needs the literal address in the HTML, solve it without turning obfuscation
+off zone-wide.
