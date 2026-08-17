@@ -119,21 +119,18 @@ something the product does not do, the correction is called out.
 | Vanilla OpenWrt only; vendor stock firmware unsupported | #2334 (beta hardware validation: stock GL.iNet cannot install — #2363/#2304) and #2364 (per-router flash guides; "the supported path is flashed vanilla OpenWrt") | verified |
 | Flint (GL-AX1800) ~$80 low tier; Flint 2 (GL-MT6000) ~$150 reference | `README.md` hardware lineup; `web/src/pages/RouterInstallPage.tsx` | verified |
 | One router is a PLAN limit, not a technical ceiling | #2499; `households.router_cap INT NOT NULL DEFAULT 1` (V66) with the cap raisable per household | verified |
-| Media contact is `press@wifihaven.net` | **CHANGED** from the operator's personal address. `press@` is the monitored inbox that routes to the #2203 responder, validated end-to-end in prod by #2527, and it is the address every form submission gives — so a journalist replying to the release lands where one replying to a submission does. **Operator to confirm.** | needs sign-off |
+| Media contact is `press@wifihaven.net` | **CHANGED** from the operator's personal address. `press@` is the monitored inbox that routes to the #2203 responder, validated end-to-end in prod by #2527, and it is the address every form submission gives — so a journalist replying to the release lands where one replying to a submission does. **Approved by the operator 2026-08-16.** | approved |
 | Founder named as Sameer Brenn | Operator, 2026-08-15. Not derivable from the code — the one claim in the release with no in-repo source, which is why it gets a row of its own. | operator-supplied |
-| The founder quote | Operator's own sentence, lightly edited for length. Same status: operator-supplied, not verifiable here. | operator-supplied |
+| The founder quote | Operator's own sentence, lightly edited for length. Operator-supplied, so not verifiable here — **read and approved by the operator 2026-08-16**, which is the only check this claim can get. | approved |
 | Dateline August 17, 2026 | The announced launch date. Now literal in both copies rather than a fill token, because the hand-submission path has no send-time fill step to resolve one. If the launch slips, edit BOTH copies — `PressReleaseSyncSpec` fails if only one is changed. | operator-supplied |
 
 ### Open items
 
-The copy has no unfilled placeholders. Two things still want the operator's eye:
+None outstanding. The copy has no unfilled placeholders, and the two claims that could
+not be checked against the repo — the media contact address and the founder quote — were
+both read and approved by the operator on 2026-08-16 (ledger rows above).
 
-1. **Media contact.** The release prints `press@wifihaven.net` rather than the operator's
-   personal address (ledger row above, `needs sign-off`). Revert if that is wrong.
-2. **The founder quote** is the operator's sentence, lightly edited — worth one read
-   before it is public, since it is quoted verbatim on the page.
-
-And two to re-check on launch morning, both cheap:
+Two things to re-check on launch morning, both cheap:
 
 1. **`https://wifihaven.net/press` renders** before the first form submission — every
    submission links to it.
