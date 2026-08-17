@@ -148,8 +148,9 @@ WifiHaven might make a good build video: whole-network screen time and content p
 ## 7. The Register (FOSS desk) — Liam Proven
 
 - **Priority:** 1
-- **Email:** `<address held by the operator, not recorded here>` — **operator-supplied 2026-08-17**, not independently
-  verified here. Recorded because the operator asserted it, not because it was found published.
+- **Email:** the operator holds a direct address for him. **Deliberately not recorded here** —
+  it is not published anywhere we could find, and an unpublished address for a named individual
+  does not belong in a public repo (see the note at the end of this file). Ask the operator.
 - **Forms, if email is not used:** https://www.theregister.com/Author/Email/Liam-Proven (per-author
   mail form) or https://www.theregister.com/Profile/contact/ (site contact page). Neither could be
   checked from here — theregister.com returns 404 to automated fetches for every path, including
@@ -230,9 +231,8 @@ Your Pi-hole videos are how a lot of people first learn that the network can enf
 ## 13. PCMag — Kim Key
 
 - **Priority:** 2
-- **Email:** `<address held by the operator, not recorded here>` — **operator-supplied 2026-08-17**, not independently
-  verified here. (Ziff Davis owns PCMag, so the domain is consistent, but consistency is not
-  verification.)
+- **Email:** the operator holds a direct address for her. **Deliberately not recorded here** —
+  same reason as The Register above: unpublished, and this repo is public. Ask the operator.
 - **The listed form URL could not be reached — UNVERIFIED, not confirmed dead.**
   https://www.pcmag.com/about/contact-us returned 404, but pcmag.com is unfetchable from this
   environment for every path, so that 404 is evidence about the fetch and not about the page —
@@ -466,3 +466,22 @@ The 2026-07-12 research was confident and thin. Of 21 entries:
 Every correction is recorded against its entry with what was checked and when. A future
 pass should verify the route before writing the pitch, not after — that ordering is what
 caught all of the above.
+
+---
+
+## Why two addresses are missing from this file
+
+Two targets — The Register's Liam Proven and PCMag's Kim Key — were reached by email during the
+2026-08-17 wave using addresses the operator supplied. Those addresses are **deliberately absent
+from this repo**, and removing them was a decision (operator, 2026-08-17), not an oversight.
+
+The rule at the top of [`media-list.md`](media-list.md) reads: *"Emails appear ONLY where actually
+published; nothing fabricated."* Both halves matter. An operator-supplied address is not
+fabricated — but neither is it published, and this repository is public. Writing down a named
+journalist's working address that they have not put in public is a disclosure we would be making
+on their behalf.
+
+The three addresses this file DOES record — Techno Tim, Wolfgang, Adam Conway — are different in
+kind: each is published by that person on a page they control, and each entry cites the page and
+the date it was read. That is the test. If a future address passes it, record it with its source;
+if it only reaches us privately, keep it with the operator and note that it exists.
