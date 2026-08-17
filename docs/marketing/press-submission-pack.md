@@ -3,7 +3,7 @@
 **Every target on the media list is a contact FORM or tip line. None has a publishable
 direct email address.** So the outreach is done by submitting each outlet's form by hand
 on launch day — Monday 2026-08-17 — not by sending email. The API's press-outreach email
-sender was removed for that reason (operator decision, 2026-08-16); the #2203 press
+sender was removed for that reason (operator decision, 2026-08-15); the #2203 press
 RESPONDER is untouched and still handles inbound press mail at `press@wifihaven.net`.
 
 This file is the working sheet for that session. One block per outlet, in send order:

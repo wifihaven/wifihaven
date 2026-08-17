@@ -13,7 +13,7 @@
 > live at `https://wifihaven.net/press`. `PressReleaseSyncSpec` fails CI if the prose
 > drifts between them.
 >
-> The API's press-outreach EMAIL sender was removed on 2026-08-16 (operator decision):
+> The API's press-outreach EMAIL sender was removed on 2026-08-15 (operator decision):
 > no target has a publishable address, so every outlet is a form submission. The #2203
 > press RESPONDER is untouched and still handles inbound press mail.
 
@@ -99,7 +99,7 @@ hosted cloud tier. More at wifihaven.net.
 
 ## Fact-check ledger (internal — do not send)
 
-Every claim below was re-verified against the code/config on 2026-08-16 for the #2233
+Every claim below was re-verified against the code/config on 2026-08-15 for the #2233
 staging pass (`docs/process/verify-and-cite.md`). Where the previous draft asserted
 something the product does not do, the correction is called out.
 
@@ -120,7 +120,7 @@ something the product does not do, the correction is called out.
 | Flint (GL-AX1800) ~$80 low tier; Flint 2 (GL-MT6000) ~$150 reference | `README.md` hardware lineup; `web/src/pages/RouterInstallPage.tsx` | verified |
 | One router is a PLAN limit, not a technical ceiling | #2499; `households.router_cap INT NOT NULL DEFAULT 1` (V66) with the cap raisable per household | verified |
 | Media contact is `press@wifihaven.net` | **CHANGED** from the operator's personal address. `press@` is the monitored inbox that routes to the #2203 responder, validated end-to-end in prod by #2527, and it is the address every form submission gives — so a journalist replying to the release lands where one replying to a submission does. **Operator to confirm.** | needs sign-off |
-| Founder named as Sameer Brenn | Operator, 2026-08-16. Not derivable from the code — the one claim in the release with no in-repo source, which is why it gets a row of its own. | operator-supplied |
+| Founder named as Sameer Brenn | Operator, 2026-08-15. Not derivable from the code — the one claim in the release with no in-repo source, which is why it gets a row of its own. | operator-supplied |
 | The founder quote | Operator's own sentence, lightly edited for length. Same status: operator-supplied, not verifiable here. | operator-supplied |
 | Dateline August 17, 2026 | The announced launch date. Now literal in both copies rather than a fill token, because the hand-submission path has no send-time fill step to resolve one. If the launch slips, edit BOTH copies — `PressReleaseSyncSpec` fails if only one is changed. | operator-supplied |
 

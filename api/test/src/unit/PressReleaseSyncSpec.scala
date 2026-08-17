@@ -18,7 +18,7 @@ import java.nio.file.{Files, Path, Paths}
  * ==Why this matters MORE now, not less==
  *
  * There used to be a third copy — a sendable resource with `{{token}}` fill slots — and a send-time
- * refusal that would not transmit while any token was unresolved. That path is gone (2026-08-16: no
+ * refusal that would not transmit while any token was unresolved. That path is gone (2026-08-15: no
  * target has a publishable email address, so the outreach is hand-submitted through each outlet's
  * contact form). With it went the refusal. This spec is now the ONLY automated thing standing
  * between an edit to one copy and a journalist reading the other, so it is deliberately strict:
