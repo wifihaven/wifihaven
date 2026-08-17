@@ -50,10 +50,10 @@ outlet, which is the whole point of doing this by hand.
 
 | # | Outlet | Priority | Submitted | Response |
 |---|--------|----------|-----------|----------|
-| 1 | Hackaday | P1 | | |
+| 1 | Hackaday | P1 | 2026-08-17 | |
 | 2 | It's FOSS | P1 | | |
 | 3 | Lawrence Systems (YouTube) | P1 | | |
-| 4 | selfh.st / Self-Host Weekly | P1 | | |
+| 4 | selfh.st / Self-Host Weekly | P1 | 2026-08-17 (short form, 200-char limit) | |
 | 5 | ServeTheHome | P1 | | |
 | 6 | Techno Tim (YouTube) | P1 | | |
 | 7 | The Register (FOSS desk) | P1 | | |
@@ -91,7 +91,7 @@ Your June piece on building your own router in 2026 is roughly the audience we b
 - **id:** `itsfoss`
 
 ```
-WifiHaven has just opened its beta: an open-source parental-control and screen-time system for OpenWrt routers, free to self-host and stays that way, with an optional hosted tier. Readers who know Pi-hole or AdGuard Home will recognise the shape but not the mechanism — WifiHaven blocks at the connection layer with nftables rather than answering a DNS query differently, so it holds when a device uses encrypted DNS. It adds the family half those tools don't have: per-child profiles, schedules, daily and per-app time limits, and a pause button. Full release below if it suits a project-launch brief.
+WifiHaven has just opened its beta: an open-source parental-control and screen-time system for OpenWrt routers, free to self-host and stays that way, with an optional hosted tier. Readers who know Pi-hole or AdGuard Home will recognise the shape but not the mechanism — WifiHaven blocks at the connection layer with nftables rather than answering a DNS query differently, so it holds when a device uses encrypted DNS. It adds the family half those tools don't have: per-child profiles, schedules, daily and per-app time limits, and a pause button. Full release at wifihaven.net/press if it suits a project-launch brief.
 ```
 
 ## 3. Lawrence Systems (YouTube) — Tom Lawrence
@@ -242,7 +242,7 @@ This is a long shot for Wirecutter but we'd rather you hear it from us: WifiHave
 - **id:** `howtogeek`
 
 ```
-For How-To Geek's self-hosting coverage: WifiHaven is a free, open-source, self-hosted alternative to the Circle- and Bark-style subscriptions, running on an OpenWrt router. Per-child profiles, bedtime and school-hours schedules, daily and per-app time limits, category blocking and a pause button, applied to every device a child uses. The mechanism is worth a line in any writeup — it blocks at the connection layer with nftables rather than filtering DNS, so it isn't undone by a browser turning on encrypted DNS. Full release below, and we're around if the setup raises questions.
+For How-To Geek's self-hosting coverage: WifiHaven is a free, open-source, self-hosted alternative to the Circle- and Bark-style subscriptions, running on an OpenWrt router. Per-child profiles, bedtime and school-hours schedules, daily and per-app time limits, category blocking and a pause button, applied to every device a child uses. The mechanism is worth a line in any writeup — it blocks at the connection layer with nftables rather than filtering DNS, so it isn't undone by a browser turning on encrypted DNS. Full release at wifihaven.net/press, and we're around if the setup raises questions.
 ```
 
 ## 18. Jupiter Broadcasting (Linux Unplugged) — Chris Fisher / Alex Kretzschmar
@@ -262,7 +262,7 @@ Possible Linux Unplugged segment: WifiHaven is open-source parental controls and
 - **id:** `omgubuntu`
 
 ```
-Sending this as a FOSS launch note: WifiHaven, an open-source parental-control and screen-time system for OpenWrt routers, has opened its beta. The whole stack is open, and self-hosting it stays free indefinitely, with a hosted tier for people who'd rather not run the server themselves. The interesting technical detail for a Linux audience is that enforcement is nftables on the gateway rather than DNS filtering, so it holds when a device switches on encrypted DNS. Release below if it's worth a news brief.
+Sending this as a FOSS launch note: WifiHaven, an open-source parental-control and screen-time system for OpenWrt routers, has opened its beta. The whole stack is open, and self-hosting it stays free indefinitely, with a hosted tier for people who'd rather not run the server themselves. The interesting technical detail for a Linux audience is that enforcement is nftables on the gateway rather than DNS filtering, so it holds when a device switches on encrypted DNS. Release at wifihaven.net/press if it's worth a news brief.
 ```
 
 ## 20. TechRadar Pro (security desk) — Security desk
@@ -272,7 +272,7 @@ Sending this as a FOSS launch note: WifiHaven, an open-source parental-control a
 - **id:** `techradarpro_security`
 
 ```
-You covered the OpenWrt One launch, and WifiHaven fits right alongside it: family screen-time and content policy enforced as nftables drops on an OpenWrt gateway, open source and free to self-host. The security-relevant part is that it doesn't rely on DNS. DNS resolves normally and the drop happens on the connection, so encrypted DNS doesn't bypass it, and destinations that can't be attributed to a hostname the router resolved for that device can be dropped outright. Release below; happy to answer technical questions.
+You covered the OpenWrt One launch, and WifiHaven fits right alongside it: family screen-time and content policy enforced as nftables drops on an OpenWrt gateway, open source and free to self-host. The security-relevant part is that it doesn't rely on DNS. DNS resolves normally and the drop happens on the connection, so encrypted DNS doesn't bypass it, and destinations that can't be attributed to a hostname the router resolved for that device can be dropped outright. Release at wifihaven.net/press; happy to answer technical questions.
 ```
 
 ## 21. Tom's Hardware — Brandon Hill
