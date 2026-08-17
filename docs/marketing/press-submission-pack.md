@@ -64,7 +64,7 @@ outlet, which is the whole point of doing this by hand.
 | 12 | NetworkChuck (YouTube) | P2 | 2026-08-17 | |
 | 13 | PCMag | P2 | 2026-08-17 sent | |
 | 14 | TechRadar Pro | P2 | PARKED — no editorial route | see note |
-| 15 | Tom's Guide | P2 | | |
+| 15 | Tom's Guide | P2 | PARKED — no editorial route | Future plc |
 | 16 | Wirecutter (NYT) | P2 | | |
 | 17 | How-To Geek | P3 | | |
 | 18 | Jupiter Broadcasting (Linux Unplugged) | P3 | | |
@@ -257,7 +257,10 @@ Your Firewalla Gold reviews cover the ground WifiHaven sits on: network-level co
 ## 15. Tom's Guide — Brian Nadel
 
 - **Priority:** 2
-- **Form:** https://www.tomsguide.com/author/brian-nadel
+- **Form:** NONE FOUND. Brian Nadel's author page publishes no contact route (checked
+  2026-08-17), and Tom's Guide publishes no editorial/tips contact page. Only third-party
+  aggregators report an address format — not to be used to construct an address. **Parked**
+  with the other Future plc titles.
 - **id:** `tomsguide`
 
 ```
@@ -388,8 +391,9 @@ Corrections found while trying:
 
 ### Future plc titles — parked 2026-08-17
 
-TechRadar Pro, TechRadar Pro (security desk) and Tom's Hardware are all Future plc, and the
-media list routed all three at futureplc.com/contact/. That page carries no editorial or press
+FOUR of the 21 targets are Future plc: TechRadar Pro, TechRadar Pro (security desk),
+Tom's Hardware and Tom's Guide. None of them has a reachable editorial contact.
+The media list routed the first three at futureplc.com/contact/. That page carries no editorial or press
 contact whatsoever — it is advertising, licensing, ecommerce, finance and investor relations.
 
 TechRadar does publish a "how to pitch" guide (techradar.com/how-to/how-to-pitch-your-ideas-to-techradar)
@@ -398,5 +402,15 @@ retrieved from this environment. Third-party directories report Future's address
 first.last@futurenet.com. **That format is not to be used to construct an address** — same rule
 as PCMag: a pattern from an aggregator is a guess.
 
-To unpark: read the pitch guide in a browser, identify the editor who actually covers network
-security or home networking, and use the address published there.
+`team@techradar.com` is published, but the guide around it is a FREELANCE CONTRIBUTOR process —
+it asks for your writing samples, a proposed headline, a 100–200 word synopsis, a word count
+(features run 1,000–2,000 words) and original imagery you own. It commissions writers; it does
+not take product pitches. Sending the product pitch there misreads the page.
+
+The legitimate route into TechRadar is therefore to pitch a FEATURE the founder writes — the
+"why parental controls keep failing" story, with WifiHaven as the author's context rather than
+the subject. That is a real writing commitment and an operator decision, not a form submission.
+
+Tom's Guide is the biggest loss of the four: Brian Nadel reviewed the Gryphon, which makes it
+the single best-matched pitch on the list. If any Future title is worth chasing by another
+route, it is that one.
