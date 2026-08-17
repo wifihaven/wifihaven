@@ -38,6 +38,14 @@
       <div class="wrap">
         <p class="crumbs"><a href="/">wifihaven</a> → Press</p>
         <h1>Press</h1>
+        <!-- Cloudflare Email Address Obfuscation rewrites both mailto: links on this page into
+             /cdn-cgi/l/email-protection and a "[email protected]" span, decoded client-side. That
+             is INTENTIONAL and must stay on (operator decision 2026-08-16). press@wifihaven.net
+             feeds the #2203 press responder, which dispatches a cloud agent per inbound message,
+             so a scraped address costs real tokens per spam mail rather than just inbox noise.
+             The trade-off is that a no-JS fetch of this page shows "[email protected]" instead of
+             the address; that was weighed and accepted. Do not disable email_obfuscation on the
+             zone, and do not work around it by encoding the address some other way. -->
         <p class="lede">
           The launch release is below. For interviews, review hardware, or anything the release
           doesn't answer, write to

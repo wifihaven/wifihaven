@@ -6,11 +6,20 @@ Emails appear ONLY where actually published; nothing fabricated. Items marked
 UNVERIFIED need a check before sending.
 
 > **How the outreach is actually done (#2233):** by hand, one contact form at a time. NO target on
-> this list has a publishable direct email address — every outlet is a form or tip line — so there
+> this list has a publishable direct email address EXCEPT THREE, each found by reading a page the
+> person controls and each verified 2026-08-17: Techno Tim (`tim@technotim.com`, his links hub),
+> Wolfgang (`wolfgangschannel@mailbox.org`, notthebe.ee's contact link) and Adam Conway
+> (`adam@xda-developers.com`, stated in his XDA author bio). The rest are forms or tip lines — so there
 > is no email send. The working sheet, with each outlet's form URL and the pitch written for it, is
 > [`press-submission-pack.md`](press-submission-pack.md). The API's press-outreach email sender was
 > removed on 2026-08-15 for the same reason; the #2203 press RESPONDER is untouched and still
 > handles inbound press mail at `press@wifihaven.net`.
+
+> **The submission pack is authoritative for ROUTES.** This file exists for the *target* rationale —
+> who, why, and what they cover. Where the Contact column and
+> [`press-submission-pack.md`](press-submission-pack.md) disagree, the pack wins: it is the file
+> worked from during a send, so it gets corrected first. This banner exists because they did
+> disagree, on four entries, during the 2026-08-17 wave.
 
 **Send order:** Priority 1 first (they set community tone and their coverage
 gives P2 outlets a reason to care), Show HN same day, Priority 2 with a
@@ -27,33 +36,33 @@ confirmed active.
 
 ## Priority 1 — Core audience (self-hosting / OpenWRT / homelab)
 
-| # | id | Outlet | Person | Why (relevant coverage) | Contact | Verified 2026-08-15 |
+| # | id | Outlet | Person | Why (relevant coverage) | Contact | Verified (2026-08-15, with 2026-08-17 route checks) |
 |---|----|--------|--------|-------------------------|---------|---------------------|
-| 1 | `selfhst` | selfh.st / Self-Host Weekly | Ethan Sholly | Weekly self-hosted news roundup featuring new launches | [selfh.st/about](https://selfh.st/about/) contact route; @shollyethan on Fosstodon | **Active.** Newsletter still publishing weekly through [7 Aug 2026](https://selfh.st/weekly/2026-08-07/). |
+| 1 | `selfhst` | selfh.st / Self-Host Weekly | Ethan Sholly | Weekly self-hosted news roundup featuring new launches | **[selfh.st/submit/](https://selfh.st/submit/)** — pick "Self-Host Weekly (Newsletter)". (`/about/`, listed here until 2026-08-17, is just the publication's description.) | **Active.** Newsletter still publishing weekly through [7 Aug 2026](https://selfh.st/weekly/2026-08-07/). |
 | 2 | `hackaday` | Hackaday | Maya Posch | "[Revisiting Making Your Own Internet Router In 2026](https://hackaday.com/2026/06/01/revisiting-making-your-own-internet-router-in-2026/)"; also [Banana Pi BPI-R4 Pro / OpenWRT](https://hackaday.com/2026/05/22/how-the-banana-pi-bpi-r4-pro-violates-the-first-rule-of-openwrt-club/) (May 2026) | Tip line: https://hackaday.com/submit-a-tip/ | **Active, hottest fit on the list.** Three OpenWrt-router pieces Mar–Jun 2026. |
-| 3 | `xda` | XDA (self-hosting) | Adam Conway (Lead Technical Editor) | [Self-Hosting section](https://www.xda-developers.com/self-hosting/); "[Almost everyone self-hosts for the same 4 reasons](https://www.xda-developers.com/almost-everyone-selfhosts-same-reasons-hexos-covers-all/)" (Jul 2026) | [Author page](https://www.xda-developers.com/author/adamconway-xda/) / XDA contact form | **Active.** Still Lead Technical Editor, still on the self-hosting beat as of Jul 2026. |
+| 3 | `xda` | XDA (self-hosting) | Adam Conway (Lead Technical Editor) | [Self-Hosting section](https://www.xda-developers.com/self-hosting/); "[Almost everyone self-hosts for the same 4 reasons](https://www.xda-developers.com/almost-everyone-selfhosts-same-reasons-hexos-covers-all/)" (Jul 2026) | **`adam@xda-developers.com` — published + verified** in his XDA author bio | **Active.** Still Lead Technical Editor, still on the self-hosting beat as of Jul 2026. |
 | 4 | `theregister` | The Register (FOSS desk) | Liam Proven | FOSS/OS correspondent; covers OpenWRT releases | Per-author mail form: https://www.theregister.com/Author/Email/Liam-Proven | **Active.** Publishing on the FOSS desk in 2026; per-author mail form still live. |
-| 5 | `lawrencesystems` | Lawrence Systems (YouTube ~1M) | Tom Lawrence | pfSense/firewall/network-filtering content; explains DNS-filter bypassability | https://lawrencesystems.com/hire-us/ | Not re-checked in depth; channel and business contact route unchanged. |
-| 6 | `servethehome` | ServeTheHome | Patrick Kennedy (EIC) | Networking + open-source for home/SMB | https://www.servethehome.com/contact/ (no published email) | Not re-checked in depth; contact form unchanged. |
-| 7 | `technotim` | Techno Tim (YouTube) | Tim Stewart | Homelab/self-hosting tutorials ([technotim.com](https://technotim.com/)) | https://links.technotim.com/ business links | Not re-checked in depth. |
-| 8 | `wolfgang` | Wolfgang's Channel (YouTube) | Wolfgang (notthebee) | Privacy-focused self-hosting, DIY routers ([notthebe.ee](https://notthebe.ee/)) | https://linktr.ee/wolfgangschannel — **business email on the YouTube About page is login-gated and stays UNVERIFIED**; use the linktree | Contact route unchanged; email still not publishable. |
+| 5 | `lawrencesystems` | Lawrence Systems (YouTube ~1M) | Tom Lawrence | pfSense/firewall/network-filtering content; explains DNS-filter bypassability | **No press route.** Verified 2026-08-17: only Hire Us (sales), Advertise with Us (paid), forums, social | **Corrected.** The `/hire-us/` entry was an assumption, not a verified contact route — it is a business-enquiry form. Skipped for the form wave. |
+| 6 | `servethehome` | ServeTheHome | Patrick Kennedy (EIC) | Networking + open-source for home/SMB | **[forums.servethehome.com contact](https://forums.servethehome.com/index.php?misc/contact)** | **Corrected 2026-08-17.** The main site's /contact/ carries no form — it points here. No login needed. |
+| 7 | `technotim` | Techno Tim (YouTube) | Tim Stewart | Homelab/self-hosting tutorials ([technotim.com](https://technotim.com/)) | **`tim@technotim.com` — published + verified** | **Publishes a direct address** (one of three on this list). The Email entry on links.technotim.com redirects to a `mailto:`; resolved 2026-08-17. Not fabricated — published by him. |
+| 8 | `wolfgang` | Wolfgang's Channel (YouTube) | Wolfgang (notthebee) | Privacy-focused self-hosting, DIY routers ([notthebe.ee](https://notthebe.ee/)) | **`wolfgangschannel@mailbox.org` — published + verified** on notthebe.ee's contact link | **Corrected 2026-08-17.** The linktr.ee hub carries no contact route at all; his own site publishes the address. |
 | 9 | `itsfoss` | It's FOSS | News desk (Abhishek Prakash, ed.) | Self-hosting starter-pack style roundups | https://itsfoss.com/community-submission/ | Not re-checked in depth; community-submission route unchanged. |
 
 ## Priority 2 — Mainstream tech review press (competitor reviewers)
 
-| # | id | Outlet | Person | Why | Contact | Verified 2026-08-15 |
+| # | id | Outlet | Person | Why | Contact | Verified (2026-08-15, with 2026-08-17 route checks) |
 |---|----|--------|--------|-----|---------|---------------------|
 | 10 | `tomsguide` | Tom's Guide | Brian Nadel | Reviewed the [Gryphon Secure Mesh Router](https://www.tomsguide.com/us/gryphon-secure-mesh-router,review-6042.html); still their working router reviewer | [Author page](https://www.tomsguide.com/author/brian-nadel) — no published email; Future plc editorial otherwise | **Active and current.** Bylined on Tom's Guide's 2026 Wi-Fi 7, mesh and gaming-router roundups. Author page is now the contact route (was "not published"). |
 | 11 | `techradarpro` | TechRadar Pro | Mike Williams (**byline still UNVERIFIED**) | [Firewalla Gold](https://www.techradar.com/reviews/firewalla) / [Gold Pro](https://www.techradar.com/pro/firewalla-gold-pro-review) reviews | https://www.futureplc.com/contact/ | **Not confirmed.** Treat the person as unverified — the pitch is written to the Firewalla coverage, which is solid, not to the byline. Confirm before a direct email. |
-| 12 | `pcmag` | PCMag | Kim Key (security analyst; parental-control beat) | PCMag "Best Parental Control" franchise | https://www.pcmag.com/about/contact-us | **Active on the beat.** Still PCMag's security analyst and still the parental-controls voice; the specific current-roundup byline remains unverified. |
-| 13 | `wirecutter` | Wirecutter (NYT) | Joel Santo Domingo (senior writer, networking) | Best Wi-Fi Router guides; 250+ routers tested | https://www.nytimes.com/wirecutter/contact-us/ | **Active.** Still Wirecutter's networking writer. Longest shot on the list; pitched as such. |
+| 12 | `pcmag` | PCMag | Kim Key (security analyst; parental-control beat) | PCMag "Best Parental Control" franchise | Listed URL 404s; pcmag.com unfetchable from here so a replacement could not be verified | **Active on the beat.** Still PCMag's security analyst and still the parental-controls voice; the specific current-roundup byline remains unverified. |
+| 13 | `wirecutter` | Wirecutter (NYT) | Joel Santo Domingo (senior writer, networking) | Best Wi-Fi Router guides; 250+ routers tested | https://www.nytimes.com/wirecutter/contact-us/ | **DROPPED 2026-08-17 (operator).** Per the operator, Wirecutter states outright that they do not accept pitches from creators/makers. No route by policy. Joel Santo Domingo is still their networking writer, so the target was sound — the channel does not exist. |
 | 14 | `dongknows` | Dong Knows Tech | Dong Ngo (ex-CNET, independent) | "[Firewalla Gold Review](https://dongknows.com/firewalla-gold-review/)" — exactly this category | https://dongknows.com/contact/ | **Active.** Publishing router roundups through 2026. |
-| 15 | `networkchuck` | NetworkChuck (YouTube 4M+) | Chuck Keith | Pi-hole videos with millions of views; home-network security | https://store.networkchuck.com/pages/contact-us — **circulating emails UNVERIFIED, do not use** | Contact route unchanged. |
-| 16 | `arstechnica` | Ars Technica | Kevin Purdy / Lee Hutchinson | Ars covers Home Assistant / self-hosted infra regularly | https://arstechnica.com/contact-us/ | **Recency not confirmed.** Could not verify a 2026 self-hosting byline for Purdy; the entry keeps both names and routes through the general contact page rather than an individual. |
+| 15 | `networkchuck` | NetworkChuck (YouTube 4M+) | Chuck Keith | Pi-hole videos with millions of views; home-network security | **[networkchuck.com/contact-us/](https://networkchuck.com/contact-us/)** — NOT the merch store form previously listed. Do not use `sponsor@networkchuck.com` (ads/sponsorship only) | **Corrected 2026-08-17.** |
+| 16 | `arstechnica` | Ars Technica | ~~Kevin Purdy~~ / Lee Hutchinson | Ars covered Home Assistant / self-hosted infra — **that beat was Purdy's** | https://arstechnica.com/contact-us/ (unfetchable from here; get the tips route off the site) | **CORRECTED 2026-08-17,** from web search rather than from Ars itself (arstechnica.com is unfetchable from this environment, so neither claim was read on a first-party page and both should be re-checked before acting): **Purdy appears to have LEFT Ars** for a Technical Content Manager role at Tailscale; Hutchinson appears to be still Senior Technology Editor but covers gadgets/cars/IT/culture and spaceflight, not self-hosting. The entry's premise left with Purdy. |
 
 ## Priority 3 — Secondary
 
-| # | id | Outlet | Person | Why | Contact | Verified 2026-08-15 |
+| # | id | Outlet | Person | Why | Contact | Verified (2026-08-15, with 2026-08-17 route checks) |
 |---|----|--------|--------|-----|---------|---------------------|
 | 17 | `tomshardware` | Tom's Hardware | Brandon Hill (**UNVERIFIED as router lead**) | [Router reviews section](https://www.tomshardware.com/networking/routers/reviews) | https://www.tomshardware.com/about-us (Future plc tips form) | Not confirmed. Pitch is written to the outlet's firmware coverage, not to the individual. |
 | 18 | `howtogeek` | How-To Geek | Homelab desk (no writer verified) | Frequent self-hosting/Pi-hole listicles | https://www.howtogeek.com/contact/ | Desk-level; no individual to verify. |

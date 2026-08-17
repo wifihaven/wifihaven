@@ -50,27 +50,27 @@ outlet, which is the whole point of doing this by hand.
 
 | # | Outlet | Priority | Submitted | Response |
 |---|--------|----------|-----------|----------|
-| 1 | Hackaday | P1 | | |
-| 2 | It's FOSS | P1 | | |
-| 3 | Lawrence Systems (YouTube) | P1 | | |
-| 4 | selfh.st / Self-Host Weekly | P1 | | |
-| 5 | ServeTheHome | P1 | | |
-| 6 | Techno Tim (YouTube) | P1 | | |
-| 7 | The Register (FOSS desk) | P1 | | |
-| 8 | Wolfgang's Channel (YouTube) | P1 | | |
-| 9 | XDA (self-hosting) | P1 | | |
-| 10 | Ars Technica | P2 | | |
-| 11 | Dong Knows Tech | P2 | | |
-| 12 | NetworkChuck (YouTube) | P2 | | |
-| 13 | PCMag | P2 | | |
-| 14 | TechRadar Pro | P2 | | |
-| 15 | Tom's Guide | P2 | | |
-| 16 | Wirecutter (NYT) | P2 | | |
-| 17 | How-To Geek | P3 | | |
-| 18 | Jupiter Broadcasting (Linux Unplugged) | P3 | | |
-| 19 | OMG Ubuntu | P3 | | |
-| 20 | TechRadar Pro (security desk) | P3 | | |
-| 21 | Tom's Hardware | P3 | | |
+| 1 | Hackaday | P1 | 2026-08-17 | |
+| 2 | It's FOSS | P1 | 2026-08-17 | |
+| 3 | Lawrence Systems (YouTube) | P1 | SKIPPED — no press route | see note |
+| 4 | selfh.st / Self-Host Weekly | P1 | 2026-08-17 (short form, 200-char limit) | |
+| 5 | ServeTheHome | P1 | 2026-08-17 | |
+| 6 | Techno Tim (YouTube) | P1 | 2026-08-17 sent | |
+| 7 | The Register (FOSS desk) | P1 | 2026-08-17 sent | |
+| 8 | Wolfgang's Channel (YouTube) | P1 | 2026-08-17 sent | |
+| 9 | XDA (self-hosting) | P1 | 2026-08-17 sent | |
+| 10 | Ars Technica | P2 | SKIPPED — premise stale | see note |
+| 11 | Dong Knows Tech | P2 | 2026-08-17 (Review request) | |
+| 12 | NetworkChuck (YouTube) | P2 | 2026-08-17 | |
+| 13 | PCMag | P2 | 2026-08-17 sent | |
+| 14 | TechRadar Pro | P2 | 2026-08-17 sent — FEATURE pitch | see note |
+| 15 | Tom's Guide | P2 | PARKED — no editorial route | Future plc |
+| 16 | Wirecutter (NYT) | P2 | DROPPED — they don't take creator pitches | operator, 2026-08-17 |
+| 17 | How-To Geek | P3 | 2026-08-17 sent | |
+| 18 | Jupiter Broadcasting (Linux Unplugged) | P3 | 2026-08-17 | |
+| 19 | OMG Ubuntu | P3 | 2026-08-17 sent | |
+| 20 | TechRadar Pro (security desk) | P3 | PARKED — no editorial route | see note |
+| 21 | Tom's Hardware | P3 | PARKED — no editorial route | see note |
 
 ---
 
@@ -91,13 +91,18 @@ Your June piece on building your own router in 2026 is roughly the audience we b
 - **id:** `itsfoss`
 
 ```
-WifiHaven has just opened its beta: an open-source parental-control and screen-time system for OpenWrt routers, free to self-host and stays that way, with an optional hosted tier. Readers who know Pi-hole or AdGuard Home will recognise the shape but not the mechanism — WifiHaven blocks at the connection layer with nftables rather than answering a DNS query differently, so it holds when a device uses encrypted DNS. It adds the family half those tools don't have: per-child profiles, schedules, daily and per-app time limits, and a pause button. Full release below if it suits a project-launch brief.
+WifiHaven has just opened its beta: an open-source parental-control and screen-time system for OpenWrt routers, free to self-host and stays that way, with an optional hosted tier. Readers who know Pi-hole or AdGuard Home will recognise the shape but not the mechanism — WifiHaven blocks at the connection layer with nftables rather than answering a DNS query differently, so it holds when a device uses encrypted DNS. It adds the family half those tools don't have: per-child profiles, schedules, daily and per-app time limits, and a pause button. Full release at wifihaven.net/press if it suits a project-launch brief.
 ```
 
 ## 3. Lawrence Systems (YouTube) — Tom Lawrence
 
 - **Priority:** 1
-- **Form:** https://lawrencesystems.com/hire-us/
+- **Form:** NONE. Verified 2026-08-17: lawrencesystems.com publishes no press or tips route.
+  The only contacts are "Hire Us" (a sales queue — the wrong door for a story), "Advertise
+  with Us" (paid placement, a different thing entirely), the community forums, and social.
+  **Skipped for the form wave.** If revisited, the honest routes are a forum post
+  (forums.lawrencesystems.com, needs an account) or a public mention to @TomLawrenceTech —
+  neither is a press submission, and a launch post from a stranger reads badly on a forum.
 - **id:** `lawrencesystems`
 
 ```
@@ -107,7 +112,8 @@ You've spent a lot of airtime explaining why DNS filtering doesn't hold, which i
 ## 4. selfh.st / Self-Host Weekly — Ethan Sholly
 
 - **Priority:** 1
-- **Form:** https://selfh.st/about/
+- **Form:** https://selfh.st/submit/ — choose **"Self-Host Weekly (Newsletter)"** of the three options
+- **Also:** https://selfh.st/contact/ has an "E-mail Me" button if the form is unusable
 - **id:** `selfhst`
 
 ```
@@ -117,7 +123,9 @@ We've just opened the beta of WifiHaven, an open-source parental-control and scr
 ## 5. ServeTheHome — Patrick Kennedy
 
 - **Priority:** 1
-- **Form:** https://www.servethehome.com/contact/
+- **Form:** https://forums.servethehome.com/index.php?misc/contact — verified 2026-08-17.
+  The main site's /contact/ page is only a pointer to this. No login required; fields are
+  name / email / subject / message plus an anti-spam Verification field.
 - **id:** `servethehome`
 
 ```
@@ -127,7 +135,10 @@ WifiHaven is a family-policy layer for hardware people already have: an agent on
 ## 6. Techno Tim (YouTube) — Tim Stewart
 
 - **Priority:** 1
-- **Form:** https://links.technotim.com/
+- **Email:** `tim@technotim.com` — a VERIFIED published address, not a form. The "Email"
+  entry on his own links hub (links.technotim.com) redirects to
+  `mailto:tim@technotim.com?Subject=Contact%20Request`. Resolved and confirmed 2026-08-17.
+  Send the full pitch by email with the release URL; there is no form to fit.
 - **id:** `technotim`
 
 ```
@@ -137,7 +148,13 @@ WifiHaven might make a good build video: whole-network screen time and content p
 ## 7. The Register (FOSS desk) — Liam Proven
 
 - **Priority:** 1
-- **Form:** https://www.theregister.com/Author/Email/Liam-Proven
+- **Email:** the operator holds a direct address for him. **Deliberately not recorded here** —
+  it is not published anywhere we could find, and an unpublished address for a named individual
+  does not belong in a public repo (see the note at the end of this file). Ask the operator.
+- **Forms, if email is not used:** https://www.theregister.com/Author/Email/Liam-Proven (per-author
+  mail form) or https://www.theregister.com/Profile/contact/ (site contact page). Neither could be
+  checked from here — theregister.com returns 404 to automated fetches for every path, including
+  ones that certainly exist, so a 404 there proves nothing.
 - **id:** `theregister`
 
 ```
@@ -147,7 +164,9 @@ The Register's readers have sat through enough "open-core" launches to be skepti
 ## 8. Wolfgang's Channel (YouTube) — Wolfgang (notthebee)
 
 - **Priority:** 1
-- **Form:** https://linktr.ee/wolfgangschannel
+- **Email:** `wolfgangschannel@mailbox.org` — VERIFIED published, found under the contact link
+  on his own site notthebe.ee (2026-08-17). The linktr.ee hub listed in the media list carries
+  NO contact route at all — only YouTube, Patreon, GitHub and Twitch — so it was the wrong door.
 - **id:** `wolfgang`
 
 ```
@@ -157,7 +176,9 @@ Your channel's angle on self-hosting for privacy is the reason we're sending thi
 ## 9. XDA (self-hosting) — Adam Conway
 
 - **Priority:** 1
-- **Form:** https://www.xda-developers.com/author/adamconway-xda/
+- **Email:** `adam@xda-developers.com` — VERIFIED published, stated in his own XDA author bio
+  ("you can reach out to me at adam@xda-developers.com"). Read 2026-08-17. Also public:
+  @AdamConwayIE on X/Instagram/Reddit, adamconway.ie.
 - **id:** `xda`
 
 ```
@@ -167,7 +188,16 @@ Your July piece on the four reasons people self-host lines up with what we've ju
 ## 10. Ars Technica — Kevin Purdy / Lee Hutchinson
 
 - **Priority:** 2
-- **Form:** https://arstechnica.com/contact-us/
+- **Form:** https://arstechnica.com/contact-us/ — could not be checked; arstechnica.com is
+  unfetchable from this environment entirely, so the tips address must be read off the site.
+- **SKIPPED for this wave (2026-08-17).** The pitch was written to Ars's self-hosting coverage,
+  and that beat was Kevin Purdy's. Per web search — NOT read on a first-party page, since
+  arstechnica.com is unfetchable from here — he appears to have left for a Technical Content
+  Manager role at Tailscale. Re-check before acting on it. Lee Hutchinson is still
+  Senior Technology Editor but covers gadgets, cars, IT, culture and spaceflight. Pitching him
+  cold on self-hosting is a worse shot than waiting until there is coverage elsewhere to cite.
+  Aside, not press: Purdy now writes Tailscale's technical content, and our own release cites
+  Tailscale as a model for the free-forever commitment — a warm contact, but not a journalist one.
 - **id:** `arstechnica`
 
 ```
@@ -187,7 +217,11 @@ You've put a Firewalla Gold through its paces about as thoroughly as anyone writ
 ## 12. NetworkChuck (YouTube) — Chuck Keith
 
 - **Priority:** 2
-- **Form:** https://store.networkchuck.com/pages/contact-us
+- **Form:** https://networkchuck.com/contact-us/ — general contact (Name / Email / Message).
+  Verified 2026-08-17. The media list pointed at store.networkchuck.com, which is the MERCH
+  store's form and routes to store ops.
+- **Do NOT use `sponsor@networkchuck.com`.** It is published on that page but is explicitly for
+  sponsorships and advertising — writing there frames a story pitch as a paid-placement request.
 - **id:** `networkchuck`
 
 ```
@@ -197,7 +231,14 @@ Your Pi-hole videos are how a lot of people first learn that the network can enf
 ## 13. PCMag — Kim Key
 
 - **Priority:** 2
-- **Form:** https://www.pcmag.com/about/contact-us
+- **Email:** the operator holds a direct address for her. **Deliberately not recorded here** —
+  same reason as The Register above: unpublished, and this repo is public. Ask the operator.
+- **The listed form URL could not be reached — UNVERIFIED, not confirmed dead.**
+  https://www.pcmag.com/about/contact-us returned 404, but pcmag.com is unfetchable from this
+  environment for every path, so that 404 is evidence about the fetch and not about the page —
+  the same caveat recorded for theregister.com above. It may well be live in a browser. A third-party
+  directory reports the address format as `first_last@pcmag.com` — **do not use that**; a format
+  inferred from an aggregator is a guess, and the fabrication rule covers guesses.
 - **id:** `pcmag`
 
 ```
@@ -207,7 +248,10 @@ For PCMag's parental-control coverage, WifiHaven is a category outlier worth kno
 ## 14. TechRadar Pro — Mike Williams
 
 - **Priority:** 2
-- **Form:** https://www.futureplc.com/contact/
+- **Form:** NONE USABLE. Verified 2026-08-17: futureplc.com/contact/ is CORPORATE ONLY —
+  advertising@, licensing@, ecommerce@, invoices, credit control, investor relations. There is
+  no editorial, press or tips route on it. `advertising@futurenet.com` is the closest thing and
+  sending a story pitch there frames it as buying ad space. **Parked, not submitted.**
 - **id:** `techradarpro`
 
 ```
@@ -217,7 +261,10 @@ Your Firewalla Gold reviews cover the ground WifiHaven sits on: network-level co
 ## 15. Tom's Guide — Brian Nadel
 
 - **Priority:** 2
-- **Form:** https://www.tomsguide.com/author/brian-nadel
+- **Form:** NONE FOUND. Brian Nadel's author page publishes no contact route (checked
+  2026-08-17), and Tom's Guide publishes no editorial/tips contact page. Only third-party
+  aggregators report an address format — not to be used to construct an address. **Parked**
+  with the other Future plc titles.
 - **id:** `tomsguide`
 
 ```
@@ -227,7 +274,12 @@ You reviewed the Gryphon, so you know the pitch for a router that does parental 
 ## 16. Wirecutter (NYT) — Joel Santo Domingo
 
 - **Priority:** 2
-- **Form:** https://www.nytimes.com/wirecutter/contact-us/
+- **DROPPED 2026-08-17 (operator).** Wirecutter states explicitly that they do not take contacts
+  from creators/makers. There is no route, by policy rather than by omission — do not re-add this
+  entry on the assumption that the contact page was simply hard to find.
+
+  Removing it does not weaken the list much: it was always flagged as the longest shot, since
+  Wirecutter reviews finished consumer products and WifiHaven requires flashing a router.
 - **id:** `wirecutter`
 
 ```
@@ -237,17 +289,21 @@ This is a long shot for Wirecutter but we'd rather you hear it from us: WifiHave
 ## 17. How-To Geek — Homelab desk
 
 - **Priority:** 3
-- **Form:** https://www.howtogeek.com/contact/
+- **Form:** https://www.howtogeek.com/contact/ — verified 2026-08-17. No form on the page
+  itself: it lists CATEGORIES that link through to submission routes. Use **"Events & PR —
+  Media Inquiries"** (the honest one; this is PR). Fallback: "Editorial Inquiries — Topic Ideas".
 - **id:** `howtogeek`
 
 ```
-For How-To Geek's self-hosting coverage: WifiHaven is a free, open-source, self-hosted alternative to the Circle- and Bark-style subscriptions, running on an OpenWrt router. Per-child profiles, bedtime and school-hours schedules, daily and per-app time limits, category blocking and a pause button, applied to every device a child uses. The mechanism is worth a line in any writeup — it blocks at the connection layer with nftables rather than filtering DNS, so it isn't undone by a browser turning on encrypted DNS. Full release below, and we're around if the setup raises questions.
+For How-To Geek's self-hosting coverage: WifiHaven is a free, open-source, self-hosted alternative to the Circle- and Bark-style subscriptions, running on an OpenWrt router. Per-child profiles, bedtime and school-hours schedules, daily and per-app time limits, category blocking and a pause button, applied to every device a child uses. The mechanism is worth a line in any writeup — it blocks at the connection layer with nftables rather than filtering DNS, so it isn't undone by a browser turning on encrypted DNS. Full release at wifihaven.net/press, and we're around if the setup raises questions.
 ```
 
 ## 18. Jupiter Broadcasting (Linux Unplugged) — Chris Fisher / Alex Kretzschmar
 
 - **Priority:** 3
-- **Form:** https://www.jupiterbroadcasting.com/contact/
+- **Form:** https://linuxunplugged.com/contact — verified 2026-08-17. Fields: Name, Email,
+  Website, Message. The show's OWN form. jupiterbroadcasting.com/contact/ (as listed) has no
+  form or address at all — only Discord, IRC, Matrix and Twitch links.
 - **id:** `jupiterbroadcasting`
 
 ```
@@ -257,11 +313,16 @@ Possible Linux Unplugged segment: WifiHaven is open-source parental controls and
 ## 19. OMG Ubuntu — Joey Sneddon
 
 - **Priority:** 3
-- **Form:** https://www.omgubuntu.co.uk/tip
+- **Form:** https://www.omgubuntu.co.uk/tip — verified 2026-08-17. Fields: Your Name (required),
+  Email (optional), Your Message (required). No published email address; the `contact@omgubuntu.co.uk`
+  the media list saw in a search snippet is NOT on the page — submissions go through the form.
+  It is a READER TIP form, not a press desk: he asks for a link, a name for credit, and an email
+  only if you agree to be contacted. Pitch in that register, and disclose that we built it —
+  submitting your own project to a reader-tips form without saying so trades on the wrong premise.
 - **id:** `omgubuntu`
 
 ```
-Sending this as a FOSS launch note: WifiHaven, an open-source parental-control and screen-time system for OpenWrt routers, has opened its beta. The whole stack is open, and self-hosting it stays free indefinitely, with a hosted tier for people who'd rather not run the server themselves. The interesting technical detail for a Linux audience is that enforcement is nftables on the gateway rather than DNS filtering, so it holds when a device switches on encrypted DNS. Release below if it's worth a news brief.
+Sending this as a FOSS launch note: WifiHaven, an open-source parental-control and screen-time system for OpenWrt routers, has opened its beta. The whole stack is open, and self-hosting it stays free indefinitely, with a hosted tier for people who'd rather not run the server themselves. The interesting technical detail for a Linux audience is that enforcement is nftables on the gateway rather than DNS filtering, so it holds when a device switches on encrypted DNS. Release at wifihaven.net/press if it's worth a news brief.
 ```
 
 ## 20. TechRadar Pro (security desk) — Security desk
@@ -271,13 +332,15 @@ Sending this as a FOSS launch note: WifiHaven, an open-source parental-control a
 - **id:** `techradarpro_security`
 
 ```
-You covered the OpenWrt One launch, and WifiHaven fits right alongside it: family screen-time and content policy enforced as nftables drops on an OpenWrt gateway, open source and free to self-host. The security-relevant part is that it doesn't rely on DNS. DNS resolves normally and the drop happens on the connection, so encrypted DNS doesn't bypass it, and destinations that can't be attributed to a hostname the router resolved for that device can be dropped outright. Release below; happy to answer technical questions.
+You covered the OpenWrt One launch, and WifiHaven fits right alongside it: family screen-time and content policy enforced as nftables drops on an OpenWrt gateway, open source and free to self-host. The security-relevant part is that it doesn't rely on DNS. DNS resolves normally and the drop happens on the connection, so encrypted DNS doesn't bypass it, and destinations that can't be attributed to a hostname the router resolved for that device can be dropped outright. Release at wifihaven.net/press; happy to answer technical questions.
 ```
 
 ## 21. Tom's Hardware — Brandon Hill
 
 - **Priority:** 3
-- **Form:** https://www.tomshardware.com/about-us
+- **Form:** NONE FOUND. tomshardware.com/about-us is a membership/premium page with no
+  editorial contacts (checked 2026-08-17). The staff page appears to be at
+  /reviews/about-us,4260.html — unverified. **Parked.**
 - **id:** `tomshardware`
 
 ```
@@ -286,7 +349,7 @@ Tom's Hardware covers router firmware closer than most outlets, so here's the pi
 
 ---
 
-## LinkedIn — founder post (operator posts this personally)
+## LinkedIn — founder post — POSTED 2026-08-17
 
 Not a submission. This goes out from Sameer's own LinkedIn account, in his own voice,
 which is why it is first person singular where the pitches are plural.
@@ -323,3 +386,102 @@ Request access: app.wifihaven.net/beta
 The release: wifihaven.net/press
 Source: github.com/wifihaven/wifihaven
 ```
+
+---
+
+## Tooling note (2026-08-17)
+
+Browser automation could not drive these forms. Two sites were attempted — selfh.st and
+It's FOSS — and both fail the same way: the page never reaches `document_idle`, so
+`read_page`, `find`, screenshots and JavaScript evaluation all time out. Ad, consent and
+analytics scripts on modern publisher sites keep the renderer busy indefinitely.
+`get_page_text` sometimes still works, which is how the selfh.st routes below were found.
+
+Assume the submissions are **manual**. This pack is the working copy for a human doing
+them by hand: each block already carries the form URL, the outlet's own pitch, and the
+field mapping.
+
+Corrections found while trying:
+
+- **selfh.st** — the real submission route is `/submit/` (a Formbricks form offering
+  Self-Host Weekly / apps directory / icon request), not `/about/` as originally listed.
+  `/contact/` also exposes an "E-mail Me" button.
+
+### Future plc titles — parked 2026-08-17
+
+FOUR of the 21 targets are Future plc: TechRadar Pro, TechRadar Pro (security desk),
+Tom's Hardware and Tom's Guide. None of them has a reachable editorial contact.
+The media list routed the first three at futureplc.com/contact/. That page carries no editorial or press
+contact whatsoever — it is advertising, licensing, ecommerce, finance and investor relations.
+
+TechRadar does publish a "how to pitch" guide (techradar.com/how-to/how-to-pitch-your-ideas-to-techradar)
+whose guidance is to write to the editor covering the topic, but its contents could not be
+retrieved from this environment. Third-party directories report Future's address format as
+first.last@futurenet.com. **That format is not to be used to construct an address** — same rule
+as PCMag: a pattern from an aggregator is a guess.
+
+`team@techradar.com` is published, but the guide around it is a FREELANCE CONTRIBUTOR process —
+it asks for your writing samples, a proposed headline, a 100–200 word synopsis, a word count
+(features run 1,000–2,000 words) and original imagery you own. It commissions writers; it does
+not take product pitches. Sending the product pitch there misreads the page.
+
+The legitimate route into TechRadar is therefore to pitch a FEATURE the founder writes — the
+"why parental controls keep failing" story, with WifiHaven as the author's context rather than
+the subject. That is a real writing commitment and an operator decision, not a form submission.
+
+Tom's Guide is the biggest loss of the four: Brian Nadel reviewed the Gryphon, which makes it
+the single best-matched pitch on the list. If any Future title is worth chasing by another
+route, it is that one.
+
+---
+
+## Outcome — 2026-08-17
+
+Fifteen of the 21 targets reached, plus the LinkedIn post. Eight form submissions
+(selfh.st, Hackaday, It's FOSS, ServeTheHome, Dong Knows Tech, NetworkChuck, Linux
+Unplugged, OMG Ubuntu), five emails (The Register, Techno Tim, Wolfgang, XDA, PCMag),
+one feature pitch (TechRadar) and one PR-desk email (How-To Geek). 8 + 5 + 1 + 1 = 15.
+
+**Six targets had no reachable route** and were parked or dropped: Lawrence Systems
+(sales form only), Ars Technica (the beat left with Kevin Purdy), Wirecutter (declines
+creator pitches by policy), and the four Future plc titles — TechRadar Pro, TechRadar
+Pro security, Tom's Hardware, Tom's Guide — which share a corporate contact page with
+no editorial route on it. 15 + 6 = 21.
+
+### What this pass learned about the media list
+
+The 2026-07-12 research was confident and thin. Of 21 entries:
+
+- **Three targets publish a direct email** the list said did not exist — Techno Tim,
+  Wolfgang and Adam Conway, each on a page they control. All three were found by
+  reading the page.
+- **Seven routes were wrong, dead or unreachable**: Lawrence Systems' hire-us form,
+  ServeTheHome's main-site contact (the real one is on their forum), selfh.st's
+  /about/ (the real one is /submit/), Wolfgang's linktree (no contact on it at all),
+  NetworkChuck's merch store, Jupiter Broadcasting's contact page (no form at all),
+  PCMag's contact URL (404 to an automated fetch — unverified rather than confirmed dead).
+- **One entry's premise had expired**: Ars was pitched at self-hosting coverage that
+  was Kevin Purdy's beat, and he has moved to Tailscale.
+
+Every correction is recorded against its entry with what was checked and when. A future
+pass should verify the route before writing the pitch, not after — that ordering is what
+caught all of the above.
+
+---
+
+## Why two addresses are missing from this file
+
+Two targets — The Register's Liam Proven and PCMag's Kim Key — were reached by email during the
+2026-08-17 wave using addresses the operator supplied. Those addresses are **deliberately absent
+from this repo**, and removing them was a decision (operator, 2026-08-17), not an oversight.
+
+The rule at the top of [`media-list.md`](media-list.md) reads: *"Emails appear ONLY where actually
+published; nothing fabricated."* Both halves matter. An operator-supplied address is not
+fabricated — but neither is it published, and this repository is public. Writing down a named
+journalist's working address that they have not put in public is a disclosure we would be making
+on their behalf.
+
+The three addresses this file DOES record — Techno Tim, Wolfgang, Adam Conway — are different in
+kind: each is published by that person on a page they control, and each entry cites the page and
+the date it was read. That is the test. If a future address passes it, record it with its source;
+if it only reaches us privately, keep it with the operator and note that it exists.
