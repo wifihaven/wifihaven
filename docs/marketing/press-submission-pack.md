@@ -54,9 +54,9 @@ outlet, which is the whole point of doing this by hand.
 | 2 | It's FOSS | P1 | 2026-08-17 | |
 | 3 | Lawrence Systems (YouTube) | P1 | SKIPPED — no press route | see note |
 | 4 | selfh.st / Self-Host Weekly | P1 | 2026-08-17 (short form, 200-char limit) | |
-| 5 | ServeTheHome | P1 | | |
-| 6 | Techno Tim (YouTube) | P1 | | |
-| 7 | The Register (FOSS desk) | P1 | | |
+| 5 | ServeTheHome | P1 | 2026-08-17 | |
+| 6 | Techno Tim (YouTube) | P1 | drafted (Gmail) | |
+| 7 | The Register (FOSS desk) | P1 | drafted (Gmail) | |
 | 8 | Wolfgang's Channel (YouTube) | P1 | | |
 | 9 | XDA (self-hosting) | P1 | | |
 | 10 | Ars Technica | P2 | | |
@@ -148,7 +148,12 @@ WifiHaven might make a good build video: whole-network screen time and content p
 ## 7. The Register (FOSS desk) — Liam Proven
 
 - **Priority:** 1
-- **Form:** https://www.theregister.com/Author/Email/Liam-Proven
+- **Email:** `liam.proven@theregister.com` — **operator-supplied 2026-08-17**, not independently
+  verified here. Recorded because the operator asserted it, not because it was found published.
+- **Forms, if email is not used:** https://www.theregister.com/Author/Email/Liam-Proven (per-author
+  mail form) or https://www.theregister.com/Profile/contact/ (site contact page). Neither could be
+  checked from here — theregister.com returns 404 to automated fetches for every path, including
+  ones that certainly exist, so a 404 there proves nothing.
 - **id:** `theregister`
 
 ```
