@@ -63,10 +63,10 @@ outlet, which is the whole point of doing this by hand.
 | 11 | Dong Knows Tech | P2 | 2026-08-17 (Review request) | |
 | 12 | NetworkChuck (YouTube) | P2 | 2026-08-17 | |
 | 13 | PCMag | P2 | 2026-08-17 sent | |
-| 14 | TechRadar Pro | P2 | PARKED — no editorial route | see note |
+| 14 | TechRadar Pro | P2 | drafted — FEATURE pitch, team@techradar.com | see note |
 | 15 | Tom's Guide | P2 | PARKED — no editorial route | Future plc |
 | 16 | Wirecutter (NYT) | P2 | BLOCKED — need contact route | nytimes.com unfetchable |
-| 17 | How-To Geek | P3 | | |
+| 17 | How-To Geek | P3 | drafted (pr@howtogeek.com) | |
 | 18 | Jupiter Broadcasting (Linux Unplugged) | P3 | | |
 | 19 | OMG Ubuntu | P3 | | |
 | 20 | TechRadar Pro (security desk) | P3 | PARKED — no editorial route | see note |
@@ -296,7 +296,9 @@ For How-To Geek's self-hosting coverage: WifiHaven is a free, open-source, self-
 ## 18. Jupiter Broadcasting (Linux Unplugged) — Chris Fisher / Alex Kretzschmar
 
 - **Priority:** 3
-- **Form:** https://www.jupiterbroadcasting.com/contact/
+- **Form:** https://linuxunplugged.com/contact — verified 2026-08-17. Fields: Name, Email,
+  Website, Message. The show's OWN form. jupiterbroadcasting.com/contact/ (as listed) has no
+  form or address at all — only Discord, IRC, Matrix and Twitch links.
 - **id:** `jupiterbroadcasting`
 
 ```
