@@ -496,14 +496,17 @@
       }
       /* The Bandwidth tile carries a rate badge rather than a single count. Up and
          down are stacked because the one-line form the app renders does not fit the
-         tile's column width; without the stack the badge wraps raggedly and stretches
-         the whole strip. Wrapping stays enabled so a wider fallback mono font pushes
-         "/s" onto its own line rather than spilling out of the tile. */
+         tile's column width. Each line is then held on one line: allowing them to
+         wrap lets "/s" orphan onto a third line at mid viewport widths, which
+         stretches all five tiles. The 11px size (against 12px elsewhere in the
+         tile) is what buys the line enough slack to survive a wider fallback mono
+         font rather than spilling out of the tile. */
       .stat .v.rate {
         font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-        font-size: 12px;
+        font-size: 11px;
         font-weight: 600;
-        line-height: 1.2;
+        line-height: 1.25;
+        white-space: nowrap;
       }
       .stat .v.rate .up,
       .stat .v.rate .down {
