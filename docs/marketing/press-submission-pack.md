@@ -55,10 +55,10 @@ outlet, which is the whole point of doing this by hand.
 | 3 | Lawrence Systems (YouTube) | P1 | SKIPPED — no press route | see note |
 | 4 | selfh.st / Self-Host Weekly | P1 | 2026-08-17 (short form, 200-char limit) | |
 | 5 | ServeTheHome | P1 | 2026-08-17 | |
-| 6 | Techno Tim (YouTube) | P1 | drafted (Gmail) | |
+| 6 | Techno Tim (YouTube) | P1 | 2026-08-17 sent | |
 | 7 | The Register (FOSS desk) | P1 | 2026-08-17 sent | |
-| 8 | Wolfgang's Channel (YouTube) | P1 | drafted (Gmail) | |
-| 9 | XDA (self-hosting) | P1 | drafted (Gmail) | |
+| 8 | Wolfgang's Channel (YouTube) | P1 | 2026-08-17 sent | |
+| 9 | XDA (self-hosting) | P1 | 2026-08-17 sent | |
 | 10 | Ars Technica | P2 | | |
 | 11 | Dong Knows Tech | P2 | | |
 | 12 | NetworkChuck (YouTube) | P2 | | |
