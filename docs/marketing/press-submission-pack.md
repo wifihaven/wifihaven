@@ -63,12 +63,12 @@ outlet, which is the whole point of doing this by hand.
 | 11 | Dong Knows Tech | P2 | 2026-08-17 (Review request) | |
 | 12 | NetworkChuck (YouTube) | P2 | 2026-08-17 | |
 | 13 | PCMag | P2 | 2026-08-17 sent | |
-| 14 | TechRadar Pro | P2 | drafted — FEATURE pitch, team@techradar.com | see note |
+| 14 | TechRadar Pro | P2 | 2026-08-17 sent — FEATURE pitch | see note |
 | 15 | Tom's Guide | P2 | PARKED — no editorial route | Future plc |
 | 16 | Wirecutter (NYT) | P2 | DROPPED — they don't take creator pitches | operator, 2026-08-17 |
-| 17 | How-To Geek | P3 | drafted (pr@howtogeek.com) | |
+| 17 | How-To Geek | P3 | 2026-08-17 sent | |
 | 18 | Jupiter Broadcasting (Linux Unplugged) | P3 | 2026-08-17 | |
-| 19 | OMG Ubuntu | P3 | | |
+| 19 | OMG Ubuntu | P3 | 2026-08-17 sent | |
 | 20 | TechRadar Pro (security desk) | P3 | PARKED — no editorial route | see note |
 | 21 | Tom's Hardware | P3 | PARKED — no editorial route | see note |
 
@@ -428,3 +428,37 @@ the subject. That is a real writing commitment and an operator decision, not a f
 Tom's Guide is the biggest loss of the four: Brian Nadel reviewed the Gryphon, which makes it
 the single best-matched pitch on the list. If any Future title is worth chasing by another
 route, it is that one.
+
+---
+
+## Outcome — 2026-08-17
+
+Twelve of the 21 targets reached, plus the LinkedIn post. Seven form submissions
+(selfh.st, Hackaday, It's FOSS, ServeTheHome, Dong Knows Tech, NetworkChuck, Linux
+Unplugged, OMG Ubuntu), five emails (The Register, Techno Tim, Wolfgang, XDA, PCMag),
+one feature pitch (TechRadar) and one PR-desk email (How-To Geek).
+
+**Six targets had no reachable route** and were parked or dropped: Lawrence Systems
+(sales form only), Ars Technica (the beat left with Kevin Purdy), Wirecutter (declines
+creator pitches by policy), and the four Future plc titles — TechRadar Pro, TechRadar
+Pro security, Tom's Hardware, Tom's Guide — which share a corporate contact page with
+no editorial route on it.
+
+### What this pass learned about the media list
+
+The 2026-07-12 research was confident and thin. Of 21 entries:
+
+- **Three targets publish a direct email** the list said did not exist — Techno Tim,
+  Wolfgang and Adam Conway, each on a page they control. All three were found by
+  reading the page.
+- **At least six routes were wrong or dead**: Lawrence Systems' hire-us form,
+  ServeTheHome's main-site contact (the real one is on their forum), selfh.st's
+  /about/ (the real one is /submit/), Wolfgang's linktree (no contact on it at all),
+  NetworkChuck's merch store, Jupiter Broadcasting's contact page (no form at all),
+  PCMag's contact URL (404).
+- **One entry's premise had expired**: Ars was pitched at self-hosting coverage that
+  was Kevin Purdy's beat, and he has moved to Tailscale.
+
+Every correction is recorded against its entry with what was checked and when. A future
+pass should verify the route before writing the pitch, not after — that ordering is what
+caught all of the above.
