@@ -6,7 +6,8 @@ Emails appear ONLY where actually published; nothing fabricated. Items marked
 UNVERIFIED need a check before sending.
 
 > **How the outreach is actually done (#2233):** by hand, one contact form at a time. NO target on
-> this list has a publishable direct email address — every outlet is a form or tip line — so there
+> this list has a publishable direct email address EXCEPT Techno Tim (`tim@technotim.com`,
+> published on his own links hub and verified 2026-08-17) — the rest are forms or tip lines — so there
 > is no email send. The working sheet, with each outlet's form URL and the pitch written for it, is
 > [`press-submission-pack.md`](press-submission-pack.md). The API's press-outreach email sender was
 > removed on 2026-08-15 for the same reason; the #2203 press RESPONDER is untouched and still
@@ -35,7 +36,7 @@ confirmed active.
 | 4 | `theregister` | The Register (FOSS desk) | Liam Proven | FOSS/OS correspondent; covers OpenWRT releases | Per-author mail form: https://www.theregister.com/Author/Email/Liam-Proven | **Active.** Publishing on the FOSS desk in 2026; per-author mail form still live. |
 | 5 | `lawrencesystems` | Lawrence Systems (YouTube ~1M) | Tom Lawrence | pfSense/firewall/network-filtering content; explains DNS-filter bypassability | **No press route.** Verified 2026-08-17: only Hire Us (sales), Advertise with Us (paid), forums, social | **Corrected.** The `/hire-us/` entry was an assumption, not a verified contact route — it is a business-enquiry form. Skipped for the form wave. |
 | 6 | `servethehome` | ServeTheHome | Patrick Kennedy (EIC) | Networking + open-source for home/SMB | https://www.servethehome.com/contact/ (no published email) | Not re-checked in depth; contact form unchanged. |
-| 7 | `technotim` | Techno Tim (YouTube) | Tim Stewart | Homelab/self-hosting tutorials ([technotim.com](https://technotim.com/)) | https://links.technotim.com/ business links | Not re-checked in depth. |
+| 7 | `technotim` | Techno Tim (YouTube) | Tim Stewart | Homelab/self-hosting tutorials ([technotim.com](https://technotim.com/)) | **`tim@technotim.com` — published + verified** | **The one target with a publishable direct address.** The Email entry on links.technotim.com redirects to a `mailto:`; resolved 2026-08-17. Not fabricated — published by him. |
 | 8 | `wolfgang` | Wolfgang's Channel (YouTube) | Wolfgang (notthebee) | Privacy-focused self-hosting, DIY routers ([notthebe.ee](https://notthebe.ee/)) | https://linktr.ee/wolfgangschannel — **business email on the YouTube About page is login-gated and stays UNVERIFIED**; use the linktree | Contact route unchanged; email still not publishable. |
 | 9 | `itsfoss` | It's FOSS | News desk (Abhishek Prakash, ed.) | Self-hosting starter-pack style roundups | https://itsfoss.com/community-submission/ | Not re-checked in depth; community-submission route unchanged. |
 
