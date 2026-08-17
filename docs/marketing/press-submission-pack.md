@@ -65,7 +65,7 @@ outlet, which is the whole point of doing this by hand.
 | 13 | PCMag | P2 | 2026-08-17 sent | |
 | 14 | TechRadar Pro | P2 | PARKED — no editorial route | see note |
 | 15 | Tom's Guide | P2 | PARKED — no editorial route | Future plc |
-| 16 | Wirecutter (NYT) | P2 | | |
+| 16 | Wirecutter (NYT) | P2 | BLOCKED — need contact route | nytimes.com unfetchable |
 | 17 | How-To Geek | P3 | | |
 | 18 | Jupiter Broadcasting (Linux Unplugged) | P3 | | |
 | 19 | OMG Ubuntu | P3 | | |
@@ -270,7 +270,11 @@ You reviewed the Gryphon, so you know the pitch for a router that does parental 
 ## 16. Wirecutter (NYT) — Joel Santo Domingo
 
 - **Priority:** 2
-- **Form:** https://www.nytimes.com/wirecutter/contact-us/
+- **Form:** UNVERIFIED. nytimes.com cannot be fetched from this environment and no Wirecutter
+  submission address surfaced in search. Needs the operator to read the contact page. Published
+  guidance (third-party) is that Wirecutter editors are reached by email, lead with reader
+  service, and that pitching something already covered or where you have an undisclosed conflict
+  are the two common ways to get binned.
 - **id:** `wirecutter`
 
 ```
@@ -280,7 +284,9 @@ This is a long shot for Wirecutter but we'd rather you hear it from us: WifiHave
 ## 17. How-To Geek — Homelab desk
 
 - **Priority:** 3
-- **Form:** https://www.howtogeek.com/contact/
+- **Form:** https://www.howtogeek.com/contact/ — verified 2026-08-17. No form on the page
+  itself: it lists CATEGORIES that link through to submission routes. Use **"Events & PR —
+  Media Inquiries"** (the honest one; this is PR). Fallback: "Editorial Inquiries — Topic Ideas".
 - **id:** `howtogeek`
 
 ```
@@ -331,7 +337,7 @@ Tom's Hardware covers router firmware closer than most outlets, so here's the pi
 
 ---
 
-## LinkedIn — founder post (operator posts this personally)
+## LinkedIn — founder post — POSTED 2026-08-17
 
 Not a submission. This goes out from Sameer's own LinkedIn account, in his own voice,
 which is why it is first person singular where the pitches are plural.
