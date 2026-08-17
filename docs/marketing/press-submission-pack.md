@@ -135,7 +135,10 @@ WifiHaven is a family-policy layer for hardware people already have: an agent on
 ## 6. Techno Tim (YouTube) — Tim Stewart
 
 - **Priority:** 1
-- **Form:** https://links.technotim.com/
+- **Email:** `tim@technotim.com` — a VERIFIED published address, not a form. The "Email"
+  entry on his own links hub (links.technotim.com) redirects to
+  `mailto:tim@technotim.com?Subject=Contact%20Request`. Resolved and confirmed 2026-08-17.
+  Send the full pitch by email with the release URL; there is no form to fit.
 - **id:** `technotim`
 
 ```
