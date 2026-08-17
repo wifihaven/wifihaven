@@ -59,7 +59,7 @@ outlet, which is the whole point of doing this by hand.
 | 7 | The Register (FOSS desk) | P1 | 2026-08-17 sent | |
 | 8 | Wolfgang's Channel (YouTube) | P1 | 2026-08-17 sent | |
 | 9 | XDA (self-hosting) | P1 | 2026-08-17 sent | |
-| 10 | Ars Technica | P2 | | |
+| 10 | Ars Technica | P2 | SKIPPED — premise stale | see note |
 | 11 | Dong Knows Tech | P2 | | |
 | 12 | NetworkChuck (YouTube) | P2 | | |
 | 13 | PCMag | P2 | | |
@@ -187,7 +187,14 @@ Your July piece on the four reasons people self-host lines up with what we've ju
 ## 10. Ars Technica — Kevin Purdy / Lee Hutchinson
 
 - **Priority:** 2
-- **Form:** https://arstechnica.com/contact-us/
+- **Form:** https://arstechnica.com/contact-us/ — could not be checked; arstechnica.com is
+  unfetchable from this environment entirely, so the tips address must be read off the site.
+- **SKIPPED for this wave (2026-08-17).** The pitch was written to Ars's self-hosting coverage,
+  and that beat was Kevin Purdy's — he has since left for Tailscale. Lee Hutchinson is still
+  Senior Technology Editor but covers gadgets, cars, IT, culture and spaceflight. Pitching him
+  cold on self-hosting is a worse shot than waiting until there is coverage elsewhere to cite.
+  Aside, not press: Purdy now writes Tailscale's technical content, and our own release cites
+  Tailscale as a model for the free-forever commitment — a warm contact, but not a journalist one.
 - **id:** `arstechnica`
 
 ```

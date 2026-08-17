@@ -50,7 +50,7 @@ confirmed active.
 | 13 | `wirecutter` | Wirecutter (NYT) | Joel Santo Domingo (senior writer, networking) | Best Wi-Fi Router guides; 250+ routers tested | https://www.nytimes.com/wirecutter/contact-us/ | **Active.** Still Wirecutter's networking writer. Longest shot on the list; pitched as such. |
 | 14 | `dongknows` | Dong Knows Tech | Dong Ngo (ex-CNET, independent) | "[Firewalla Gold Review](https://dongknows.com/firewalla-gold-review/)" — exactly this category | https://dongknows.com/contact/ | **Active.** Publishing router roundups through 2026. |
 | 15 | `networkchuck` | NetworkChuck (YouTube 4M+) | Chuck Keith | Pi-hole videos with millions of views; home-network security | https://store.networkchuck.com/pages/contact-us — **circulating emails UNVERIFIED, do not use** | Contact route unchanged. |
-| 16 | `arstechnica` | Ars Technica | Kevin Purdy / Lee Hutchinson | Ars covers Home Assistant / self-hosted infra regularly | https://arstechnica.com/contact-us/ | **Recency not confirmed.** Could not verify a 2026 self-hosting byline for Purdy; the entry keeps both names and routes through the general contact page rather than an individual. |
+| 16 | `arstechnica` | Ars Technica | ~~Kevin Purdy~~ / Lee Hutchinson | Ars covered Home Assistant / self-hosted infra — **that beat was Purdy's** | https://arstechnica.com/contact-us/ (unfetchable from here; get the tips route off the site) | **CORRECTED 2026-08-17. Purdy has LEFT Ars** — now Technical Content Manager at Tailscale. Hutchinson is still Senior Technology Editor (active Jul 2026) but covers gadgets/cars/IT/culture and spaceflight, not self-hosting. The entry's premise left with Purdy. |
 
 ## Priority 3 — Secondary
 
