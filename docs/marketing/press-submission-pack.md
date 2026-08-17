@@ -190,7 +190,9 @@ Your July piece on the four reasons people self-host lines up with what we've ju
 - **Form:** https://arstechnica.com/contact-us/ — could not be checked; arstechnica.com is
   unfetchable from this environment entirely, so the tips address must be read off the site.
 - **SKIPPED for this wave (2026-08-17).** The pitch was written to Ars's self-hosting coverage,
-  and that beat was Kevin Purdy's — he has since left for Tailscale. Lee Hutchinson is still
+  and that beat was Kevin Purdy's. Per web search — NOT read on a first-party page, since
+  arstechnica.com is unfetchable from here — he appears to have left for a Technical Content
+  Manager role at Tailscale. Re-check before acting on it. Lee Hutchinson is still
   Senior Technology Editor but covers gadgets, cars, IT, culture and spaceflight. Pitching him
   cold on self-hosting is a worse shot than waiting until there is coverage elsewhere to cite.
   Aside, not press: Purdy now writes Tailscale's technical content, and our own release cites
@@ -231,8 +233,10 @@ Your Pi-hole videos are how a lot of people first learn that the network can enf
 - **Email:** `<address held by the operator, not recorded here>` — **operator-supplied 2026-08-17**, not independently
   verified here. (Ziff Davis owns PCMag, so the domain is consistent, but consistency is not
   verification.)
-- **The listed form URL is DEAD.** https://www.pcmag.com/about/contact-us 404s. pcmag.com is
-  unfetchable from this environment, so the live contact path could not be found. A third-party
+- **The listed form URL could not be reached — UNVERIFIED, not confirmed dead.**
+  https://www.pcmag.com/about/contact-us returned 404, but pcmag.com is unfetchable from this
+  environment for every path, so that 404 is evidence about the fetch and not about the page —
+  the same caveat recorded for theregister.com above. It may well be live in a browser. A third-party
   directory reports the address format as `first_last@pcmag.com` — **do not use that**; a format
   inferred from an aggregator is a guess, and the fabrication rule covers guesses.
 - **id:** `pcmag`
@@ -433,16 +437,16 @@ route, it is that one.
 
 ## Outcome — 2026-08-17
 
-Twelve of the 21 targets reached, plus the LinkedIn post. Seven form submissions
+Fifteen of the 21 targets reached, plus the LinkedIn post. Eight form submissions
 (selfh.st, Hackaday, It's FOSS, ServeTheHome, Dong Knows Tech, NetworkChuck, Linux
 Unplugged, OMG Ubuntu), five emails (The Register, Techno Tim, Wolfgang, XDA, PCMag),
-one feature pitch (TechRadar) and one PR-desk email (How-To Geek).
+one feature pitch (TechRadar) and one PR-desk email (How-To Geek). 8 + 5 + 1 + 1 = 15.
 
 **Six targets had no reachable route** and were parked or dropped: Lawrence Systems
 (sales form only), Ars Technica (the beat left with Kevin Purdy), Wirecutter (declines
 creator pitches by policy), and the four Future plc titles — TechRadar Pro, TechRadar
 Pro security, Tom's Hardware, Tom's Guide — which share a corporate contact page with
-no editorial route on it.
+no editorial route on it. 15 + 6 = 21.
 
 ### What this pass learned about the media list
 
@@ -451,11 +455,11 @@ The 2026-07-12 research was confident and thin. Of 21 entries:
 - **Three targets publish a direct email** the list said did not exist — Techno Tim,
   Wolfgang and Adam Conway, each on a page they control. All three were found by
   reading the page.
-- **At least six routes were wrong or dead**: Lawrence Systems' hire-us form,
+- **Seven routes were wrong, dead or unreachable**: Lawrence Systems' hire-us form,
   ServeTheHome's main-site contact (the real one is on their forum), selfh.st's
   /about/ (the real one is /submit/), Wolfgang's linktree (no contact on it at all),
   NetworkChuck's merch store, Jupiter Broadcasting's contact page (no form at all),
-  PCMag's contact URL (404).
+  PCMag's contact URL (404 to an automated fetch — unverified rather than confirmed dead).
 - **One entry's premise had expired**: Ars was pitched at self-hosting coverage that
   was Kevin Purdy's beat, and he has moved to Tailscale.
 
