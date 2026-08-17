@@ -60,7 +60,7 @@ outlet, which is the whole point of doing this by hand.
 | 8 | Wolfgang's Channel (YouTube) | P1 | 2026-08-17 sent | |
 | 9 | XDA (self-hosting) | P1 | 2026-08-17 sent | |
 | 10 | Ars Technica | P2 | SKIPPED — premise stale | see note |
-| 11 | Dong Knows Tech | P2 | | |
+| 11 | Dong Knows Tech | P2 | 2026-08-17 (Review request) | |
 | 12 | NetworkChuck (YouTube) | P2 | | |
 | 13 | PCMag | P2 | | |
 | 14 | TechRadar Pro | P2 | | |
@@ -214,7 +214,11 @@ You've put a Firewalla Gold through its paces about as thoroughly as anyone writ
 ## 12. NetworkChuck (YouTube) — Chuck Keith
 
 - **Priority:** 2
-- **Form:** https://store.networkchuck.com/pages/contact-us
+- **Form:** https://networkchuck.com/contact-us/ — general contact (Name / Email / Message).
+  Verified 2026-08-17. The media list pointed at store.networkchuck.com, which is the MERCH
+  store's form and routes to store ops.
+- **Do NOT use `sponsor@networkchuck.com`.** It is published on that page but is explicitly for
+  sponsorships and advertising — writing there frames a story pitch as a paid-placement request.
 - **id:** `networkchuck`
 
 ```
