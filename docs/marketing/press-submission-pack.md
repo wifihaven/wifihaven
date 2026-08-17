@@ -51,8 +51,8 @@ outlet, which is the whole point of doing this by hand.
 | # | Outlet | Priority | Submitted | Response |
 |---|--------|----------|-----------|----------|
 | 1 | Hackaday | P1 | 2026-08-17 | |
-| 2 | It's FOSS | P1 | | |
-| 3 | Lawrence Systems (YouTube) | P1 | | |
+| 2 | It's FOSS | P1 | 2026-08-17 | |
+| 3 | Lawrence Systems (YouTube) | P1 | SKIPPED — no press route | see note |
 | 4 | selfh.st / Self-Host Weekly | P1 | 2026-08-17 (short form, 200-char limit) | |
 | 5 | ServeTheHome | P1 | | |
 | 6 | Techno Tim (YouTube) | P1 | | |
@@ -97,7 +97,12 @@ WifiHaven has just opened its beta: an open-source parental-control and screen-t
 ## 3. Lawrence Systems (YouTube) — Tom Lawrence
 
 - **Priority:** 1
-- **Form:** https://lawrencesystems.com/hire-us/
+- **Form:** NONE. Verified 2026-08-17: lawrencesystems.com publishes no press or tips route.
+  The only contacts are "Hire Us" (a sales queue — the wrong door for a story), "Advertise
+  with Us" (paid placement, a different thing entirely), the community forums, and social.
+  **Skipped for the form wave.** If revisited, the honest routes are a forum post
+  (forums.lawrencesystems.com, needs an account) or a public mention to @TomLawrenceTech —
+  neither is a press submission, and a launch post from a stranger reads badly on a forum.
 - **id:** `lawrencesystems`
 
 ```
