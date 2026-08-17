@@ -58,7 +58,7 @@ outlet, which is the whole point of doing this by hand.
 | 6 | Techno Tim (YouTube) | P1 | drafted (Gmail) | |
 | 7 | The Register (FOSS desk) | P1 | 2026-08-17 sent | |
 | 8 | Wolfgang's Channel (YouTube) | P1 | drafted (Gmail) | |
-| 9 | XDA (self-hosting) | P1 | | |
+| 9 | XDA (self-hosting) | P1 | drafted (Gmail) | |
 | 10 | Ars Technica | P2 | | |
 | 11 | Dong Knows Tech | P2 | | |
 | 12 | NetworkChuck (YouTube) | P2 | | |
@@ -175,7 +175,9 @@ Your channel's angle on self-hosting for privacy is the reason we're sending thi
 ## 9. XDA (self-hosting) — Adam Conway
 
 - **Priority:** 1
-- **Form:** https://www.xda-developers.com/author/adamconway-xda/
+- **Email:** `adam@xda-developers.com` — VERIFIED published, stated in his own XDA author bio
+  ("you can reach out to me at adam@xda-developers.com"). Read 2026-08-17. Also public:
+  @AdamConwayIE on X/Instagram/Reddit, adamconway.ie.
 - **id:** `xda`
 
 ```
