@@ -461,7 +461,7 @@
       }
       .stats {
         display: grid;
-        grid-template-columns: repeat(4, 1fr);
+        grid-template-columns: repeat(5, 1fr);
         gap: 12px;
         margin-bottom: 18px;
       }
@@ -493,6 +493,30 @@
       }
       .stat .v.amb {
         color: var(--amber);
+      }
+      /* The Bandwidth tile carries a rate badge rather than a single count. Up and
+         down stack so the badge stays two short lines at the tile's column width —
+         a free-wrapping badge grows to three lines and stretches the whole strip. */
+      .stat .v.rate {
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 12px;
+        font-weight: 600;
+        line-height: 1.2;
+        white-space: nowrap;
+      }
+      .stat .v.rate .up,
+      .stat .v.rate .down {
+        display: block;
+      }
+      .stat .v.rate .up {
+        color: var(--amber);
+      }
+      .stat .v.rate .down {
+        color: var(--terracotta);
+      }
+      .stat .v.rate .per {
+        color: var(--muted);
+        font-weight: 400;
       }
       .qtable {
         background: #fff;
@@ -550,48 +574,67 @@
         font-size: 11px;
         margin-left: 8px;
       }
-      .bw {
-        display: flex;
-        gap: 16px;
-        align-items: center;
-        background: #fff;
-        border: 1px solid var(--b);
-        border-radius: 14px;
-        padding: 10px 14px;
+      /* Recently Blocked feed — leads the dashboard, grouped by profile. */
+      .qtable.rb {
         margin-bottom: 18px;
-        font-family: ui-monospace, Menlo, monospace;
-        font-size: 13px;
-        color: var(--slate);
       }
-      .bw .k {
+      .qh .win {
+        font-weight: 400;
+        text-transform: none;
+        letter-spacing: 0;
+        color: var(--muted);
+        margin-left: 6px;
+      }
+      .rbgroup {
+        padding: 5px 14px;
         font-family: 'Inter', sans-serif;
         font-size: 10px;
         font-weight: 600;
         letter-spacing: 0.07em;
         text-transform: uppercase;
-        color: var(--muted);
+        color: var(--terracotta);
+        background: rgba(242, 232, 213, 0.5);
+        border-bottom: 1px solid rgba(229, 221, 201, 0.6);
       }
-      .barow {
+      .rbrow {
         display: flex;
-        justify-content: space-between;
-        align-items: center;
+        align-items: baseline;
+        gap: 8px;
         padding: 8px 14px;
         border-bottom: 1px solid rgba(229, 221, 201, 0.6);
-        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
         font-size: 12px;
       }
-      .barow:last-child {
+      .rbrow:last-child {
         border-bottom: 0;
       }
-      .barow .h {
+      .rbrow .who {
+        font-family: 'Inter', sans-serif;
+        color: var(--ink);
+        flex-shrink: 0;
+      }
+      .rbrow .sep {
+        color: var(--muted);
+        flex-shrink: 0;
+      }
+      .rbrow .h {
         color: var(--slate);
+        flex: 1;
+        min-width: 0;
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
       }
-      .barow .bk {
+      .rbrow .why {
+        font-family: 'Inter', sans-serif;
+        font-size: 11px;
         color: var(--red);
-        font-weight: 600;
+        flex-shrink: 0;
+      }
+      .rbrow .ago {
+        font-family: 'Inter', sans-serif;
+        font-size: 11px;
+        color: var(--muted);
+        flex-shrink: 0;
       }
       /* Block-page preview */
       .blockpage {
@@ -686,6 +729,12 @@
         }
         .stats {
           grid-template-columns: 1fr 1fr;
+        }
+        /* The feed rows are dense; let the reason/age pair wrap rather than
+           squeezing the hostname out of the row on a phone. */
+        .rbrow {
+          flex-wrap: wrap;
+          gap: 4px 8px;
         }
         .pcards {
           grid-template-columns: 1fr;
@@ -815,15 +864,37 @@
                   </div>
                   <div class="app-body">
                     <h1 class="app-h1">Dashboard</h1>
-                    <!-- Status-first KPI strip, above NOW (#1834): Online now / Blocked now / Events (1h) / Blocked (1h). -->
+                    <!-- Section order mirrors DashboardPage.tsx:73-74: Recently Blocked (top) →
+                         KPI strip → NOW. Recently Blocked leads as the actionable diagnostic. -->
+                    <div class="qtable rb">
+                      <div class="qh">Recently Blocked <span class="win">last 15 min</span></div>
+                      <div class="rbgroup">Kids ↗</div>
+                      <div class="rbrow">
+                        <span class="who">Maya's iPad</span><span class="sep">·</span>
+                        <span class="h">tiktok.com</span>
+                        <span class="why">scheduled quiet time</span><span class="ago">2m ago</span>
+                      </div>
+                      <div class="rbrow">
+                        <span class="who">Maya's iPad</span><span class="sep">·</span>
+                        <span class="h">ads.example-tracker.net</span>
+                        <span class="why">category: ads</span><span class="ago">6m ago</span>
+                      </div>
+                      <div class="rbgroup">Teens ↗</div>
+                      <div class="rbrow">
+                        <span class="who">Leo's Laptop</span><span class="sep">·</span>
+                        <span class="h">roblox.com</span>
+                        <span class="why">daily limit reached</span><span class="ago">11m ago</span>
+                      </div>
+                    </div>
+                    <!-- KPI strip, five tiles (DashboardPage.tsx:843-849): Online now / Blocked now /
+                         Events (1h) / Blocked (1h) / Bandwidth. -->
                     <div class="stats">
                       <div class="stat"><p class="k">Online now</p><p class="v acc">3</p></div>
                       <div class="stat"><p class="k">Blocked now</p><p class="v red">1</p></div>
                       <div class="stat"><p class="k">Events (1h)</p><p class="v">540</p></div>
                       <div class="stat"><p class="k">Blocked (1h)</p><p class="v amb">22</p></div>
+                      <div class="stat"><p class="k">Bandwidth</p><p class="v rate"><span class="up">▲ 2.4M</span><span class="down">▼ 18.0M<span class="per"> /s</span></span></p></div>
                     </div>
-                    <!-- Live household bandwidth (#747). -->
-                    <div class="bw"><span class="k">Bandwidth</span><span>▲ 2.4 MB/s</span><span>▼ 18 MB/s</span></div>
                     <p class="lbl">Now <span class="fresh">updated 12s ago · live ●</span></p>
                     <div class="pcards">
                       <div class="pcard live">
@@ -841,17 +912,10 @@
                         </div>
                       </div>
                     </div>
-                    <!-- Merged ranked-blocked-host panel (#1836), rollup-backed over 24h (#1837). -->
-                    <div class="qtable">
-                      <div class="qh">Blocking activity (24h)</div>
-                      <div class="barow"><span class="h">tiktok.com</span><span class="bk">42</span></div>
-                      <div class="barow"><span class="h">doubleclick.net</span><span class="bk">17</span></div>
-                      <div class="barow"><span class="h">roblox.com</span><span class="bk">9</span></div>
-                    </div>
                   </div>
                 </div>
               </div>
-              <p class="preview-cap">The household dashboard — who's online now, live bandwidth, and the day's blocking activity at a glance.</p>
+              <p class="preview-cap">The household dashboard — what was just blocked, who's online now, and live bandwidth at a glance.</p>
             </div>
 
             <!-- Kid-side block page -->
