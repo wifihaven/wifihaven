@@ -56,8 +56,8 @@ outlet, which is the whole point of doing this by hand.
 | 4 | selfh.st / Self-Host Weekly | P1 | 2026-08-17 (short form, 200-char limit) | |
 | 5 | ServeTheHome | P1 | 2026-08-17 | |
 | 6 | Techno Tim (YouTube) | P1 | drafted (Gmail) | |
-| 7 | The Register (FOSS desk) | P1 | drafted (Gmail) | |
-| 8 | Wolfgang's Channel (YouTube) | P1 | | |
+| 7 | The Register (FOSS desk) | P1 | 2026-08-17 sent | |
+| 8 | Wolfgang's Channel (YouTube) | P1 | drafted (Gmail) | |
 | 9 | XDA (self-hosting) | P1 | | |
 | 10 | Ars Technica | P2 | | |
 | 11 | Dong Knows Tech | P2 | | |
@@ -163,7 +163,9 @@ The Register's readers have sat through enough "open-core" launches to be skepti
 ## 8. Wolfgang's Channel (YouTube) — Wolfgang (notthebee)
 
 - **Priority:** 1
-- **Form:** https://linktr.ee/wolfgangschannel
+- **Email:** `wolfgangschannel@mailbox.org` — VERIFIED published, found under the contact link
+  on his own site notthebe.ee (2026-08-17). The linktr.ee hub listed in the media list carries
+  NO contact route at all — only YouTube, Patreon, GitHub and Twitch — so it was the wrong door.
 - **id:** `wolfgang`
 
 ```
