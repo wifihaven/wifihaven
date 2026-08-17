@@ -495,14 +495,15 @@
         color: var(--amber);
       }
       /* The Bandwidth tile carries a rate badge rather than a single count. Up and
-         down stack so the badge stays two short lines at the tile's column width —
-         a free-wrapping badge grows to three lines and stretches the whole strip. */
+         down are stacked because the one-line form the app renders does not fit the
+         tile's column width; without the stack the badge wraps raggedly and stretches
+         the whole strip. Wrapping stays enabled so a wider fallback mono font pushes
+         "/s" onto its own line rather than spilling out of the tile. */
       .stat .v.rate {
         font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
         font-size: 12px;
         font-weight: 600;
         line-height: 1.2;
-        white-space: nowrap;
       }
       .stat .v.rate .up,
       .stat .v.rate .down {
@@ -512,7 +513,7 @@
         color: var(--amber);
       }
       .stat .v.rate .down {
-        color: var(--terracotta);
+        color: var(--accent-dark, #a8582e);
       }
       .stat .v.rate .per {
         color: var(--muted);
@@ -864,8 +865,10 @@
                   </div>
                   <div class="app-body">
                     <h1 class="app-h1">Dashboard</h1>
-                    <!-- Section order mirrors DashboardPage.tsx:73-74: Recently Blocked (top) →
-                         KPI strip → NOW. Recently Blocked leads as the actionable diagnostic. -->
+                    <!-- Section order mirrors DashboardPage's Recently Blocked (top) → KPI strip
+                         → NOW (#2073); Recently Blocked leads as the actionable diagnostic. Rows
+                         and group headers follow RecentlyBlockedRow / RecentlyBlockedGroupHeader,
+                         the window label RECENT_BLOCKED_WINDOW_LABEL, reasons blockReasonText. -->
                     <div class="qtable rb">
                       <div class="qh">Recently Blocked <span class="win">last 15 min</span></div>
                       <div class="rbgroup">Kids ↗</div>
@@ -886,8 +889,9 @@
                         <span class="why">daily limit reached</span><span class="ago">11m ago</span>
                       </div>
                     </div>
-                    <!-- KPI strip, five tiles (DashboardPage.tsx:843-849): Online now / Blocked now /
-                         Events (1h) / Blocked (1h) / Bandwidth. -->
+                    <!-- KPI strip, five tiles (KpiStrip, #2056): Online now / Blocked now /
+                         Events (1h) / Blocked (1h) / Bandwidth. The Bandwidth gauge folded in
+                         here as the 5th tile and the standalone panel was deleted. -->
                     <div class="stats">
                       <div class="stat"><p class="k">Online now</p><p class="v acc">3</p></div>
                       <div class="stat"><p class="k">Blocked now</p><p class="v red">1</p></div>
