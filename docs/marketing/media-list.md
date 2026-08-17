@@ -74,6 +74,7 @@ confirmed active.
 | selfh.st/apps directory | Submit to the catalog (separate from the newsletter pitch). |
 | Awesome-Selfhosted | PR per CONTRIBUTING.md; check age/commit-activity minimums and category taxonomy first. |
 | r/Parenting / r/ScreenTime | Stretch; only after mainstream coverage lands. |
+| LinkedIn (founder's personal account) | Founder post in his own voice — copy in [`press-submission-pack.md`](press-submission-pack.md). Post AFTER the press page is live and the Priority 1 forms are in, since it links to that page. Names no competitor. |
 
 ## Submission workflow
 

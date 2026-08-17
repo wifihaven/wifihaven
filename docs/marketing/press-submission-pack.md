@@ -7,7 +7,8 @@ sender was removed for that reason (operator decision, 2026-08-15); the #2203 pr
 RESPONDER is untouched and still handles inbound press mail at `press@wifihaven.net`.
 
 This file is the working sheet for that session. One block per outlet, in send order:
-the form URL, the pitch written for that outlet, and what to paste where.
+the form URL, the pitch written for that outlet, and what to paste where. The founder's
+LinkedIn post is at the end — that one is posted personally, not submitted.
 
 ## Before the first submission
 
@@ -281,4 +282,44 @@ You covered the OpenWrt One launch, and WifiHaven fits right alongside it: famil
 
 ```
 Tom's Hardware covers router firmware closer than most outlets, so here's the pitch straight: WifiHaven is open-source parental controls and screen-time limits that run as an agent on a router flashed with OpenWrt, not as an app on each device. Enforcement is an nftables drop at the gateway, so it isn't the DNS filtering most vendor firmware ships. Reference hardware is the GL.iNet Flint 2, with the Flint at around $80 as the entry point. Free to self-host, hosted tier at $10/month at list price, and we can get you a Flint 2 configured if you want to put it through its paces.
+```
+
+---
+
+## LinkedIn — founder post (operator posts this personally)
+
+Not a submission. This goes out from Sameer's own LinkedIn account, in his own voice,
+which is why it is first person singular where the pitches are plural.
+
+**Timing:** post it AFTER `wifihaven.net/press` is live and after the Priority 1 forms are
+in, so a journalist who sees it can already read the release. Not before — the post links
+to a page that only exists once the PR merges.
+
+**Deliberately names no competitor.** The opener is drawn from a real experience (two
+router-based screen-time products that disappointed) but names neither and attributes no
+specific technical failure to either. The failure modes in the second paragraph are stated
+as properties of two general APPROACHES, not of any product. An earlier draft placed "two
+routers" and "two approaches" back to back, which invited a reader to resolve them as one
+claim about those specific products; that echo was removed. A reader who owns one of them
+should be able to read this without feeling got at.
+
+Went through an independent copy-review pass. Post as plain text — LinkedIn does not render
+markdown, and the three links are meant to be bare on their own lines.
+
+```
+I bought two different routers that promise to handle screen time for a family. Neither gave me what I wanted, so I dug into how these tools actually work under the hood. That became WifiHaven. The beta opens today.
+
+Screen-time tools on the market mostly take one of two approaches, and kids get around both. The apps you install on a child's phone stop working the moment the app is deleted or the phone is reset. Filtering that works through DNS stops being consulted the moment a browser turns on encrypted DNS, which every major browser and phone OS now ships.
+
+WifiHaven enforces a layer lower down. It runs on the router the family already owns and drops disallowed connections at the gateway with nftables. DNS still resolves normally, the lookup succeeds, the answer comes back. The connection to that address just never leaves the house. Nothing is installed on the child's device, so there is nothing to delete and nothing to reset around.
+
+On top of that: per-child profiles that follow every device a kid uses, bedtime and school-hours schedules, daily and per-app time limits, category blocking, and a pause button.
+
+The whole stack is open source and free to self-host, permanently. That is a real commitment. For families who would rather not run a server there is a hosted tier, free during the beta with no card.
+
+The beta is invite-based and I read every request myself. If you already run Pi-hole or Home Assistant at home, this is built for you right now.
+
+Request access: app.wifihaven.net/beta
+The release: wifihaven.net/press
+Source: github.com/wifihaven/wifihaven
 ```
