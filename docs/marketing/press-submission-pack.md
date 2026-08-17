@@ -65,7 +65,7 @@ outlet, which is the whole point of doing this by hand.
 | 13 | PCMag | P2 | 2026-08-17 sent | |
 | 14 | TechRadar Pro | P2 | drafted — FEATURE pitch, team@techradar.com | see note |
 | 15 | Tom's Guide | P2 | PARKED — no editorial route | Future plc |
-| 16 | Wirecutter (NYT) | P2 | BLOCKED — need contact route | nytimes.com unfetchable |
+| 16 | Wirecutter (NYT) | P2 | DROPPED — they don't take creator pitches | operator, 2026-08-17 |
 | 17 | How-To Geek | P3 | drafted (pr@howtogeek.com) | |
 | 18 | Jupiter Broadcasting (Linux Unplugged) | P3 | | |
 | 19 | OMG Ubuntu | P3 | | |
@@ -270,11 +270,12 @@ You reviewed the Gryphon, so you know the pitch for a router that does parental 
 ## 16. Wirecutter (NYT) — Joel Santo Domingo
 
 - **Priority:** 2
-- **Form:** UNVERIFIED. nytimes.com cannot be fetched from this environment and no Wirecutter
-  submission address surfaced in search. Needs the operator to read the contact page. Published
-  guidance (third-party) is that Wirecutter editors are reached by email, lead with reader
-  service, and that pitching something already covered or where you have an undisclosed conflict
-  are the two common ways to get binned.
+- **DROPPED 2026-08-17 (operator).** Wirecutter states explicitly that they do not take contacts
+  from creators/makers. There is no route, by policy rather than by omission — do not re-add this
+  entry on the assumption that the contact page was simply hard to find.
+
+  Removing it does not weaken the list much: it was always flagged as the longest shot, since
+  Wirecutter reviews finished consumer products and WifiHaven requires flashing a router.
 - **id:** `wirecutter`
 
 ```
