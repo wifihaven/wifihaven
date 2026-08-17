@@ -67,7 +67,7 @@ outlet, which is the whole point of doing this by hand.
 | 15 | Tom's Guide | P2 | PARKED — no editorial route | Future plc |
 | 16 | Wirecutter (NYT) | P2 | DROPPED — they don't take creator pitches | operator, 2026-08-17 |
 | 17 | How-To Geek | P3 | drafted (pr@howtogeek.com) | |
-| 18 | Jupiter Broadcasting (Linux Unplugged) | P3 | | |
+| 18 | Jupiter Broadcasting (Linux Unplugged) | P3 | 2026-08-17 | |
 | 19 | OMG Ubuntu | P3 | | |
 | 20 | TechRadar Pro (security desk) | P3 | PARKED — no editorial route | see note |
 | 21 | Tom's Hardware | P3 | PARKED — no editorial route | see note |
@@ -309,7 +309,12 @@ Possible Linux Unplugged segment: WifiHaven is open-source parental controls and
 ## 19. OMG Ubuntu — Joey Sneddon
 
 - **Priority:** 3
-- **Form:** https://www.omgubuntu.co.uk/tip
+- **Form:** https://www.omgubuntu.co.uk/tip — verified 2026-08-17. Fields: Your Name (required),
+  Email (optional), Your Message (required). No published email address; the `contact@omgubuntu.co.uk`
+  the media list saw in a search snippet is NOT on the page — submissions go through the form.
+  It is a READER TIP form, not a press desk: he asks for a link, a name for credit, and an email
+  only if you agree to be contacted. Pitch in that register, and disclose that we built it —
+  submitting your own project to a reader-tips form without saying so trades on the wrong premise.
 - **id:** `omgubuntu`
 
 ```
