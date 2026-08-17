@@ -123,7 +123,9 @@ We've just opened the beta of WifiHaven, an open-source parental-control and scr
 ## 5. ServeTheHome — Patrick Kennedy
 
 - **Priority:** 1
-- **Form:** https://www.servethehome.com/contact/
+- **Form:** https://forums.servethehome.com/index.php?misc/contact — verified 2026-08-17.
+  The main site's /contact/ page is only a pointer to this. No login required; fields are
+  name / email / subject / message plus an anti-spam Verification field.
 - **id:** `servethehome`
 
 ```
