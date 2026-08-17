@@ -1,6 +1,6 @@
 # Media outreach list — WifiHaven beta launch
 
-Status: researched 2026-07-12, **re-verified 2026-08-15** for the #2233 staging pass.
+Status: researched 2026-07-12, **re-verified 2026-08-16** for the #2233 staging pass.
 Companion to [`press-release.md`](press-release.md) and [`launch-plan.md`](launch-plan.md).
 Emails appear ONLY where actually published; nothing fabricated. Items marked
 UNVERIFIED need a check before sending.
@@ -9,7 +9,7 @@ UNVERIFIED need a check before sending.
 > this list has a publishable direct email address — every outlet is a form or tip line — so there
 > is no email send. The working sheet, with each outlet's form URL and the pitch written for it, is
 > [`press-submission-pack.md`](press-submission-pack.md). The API's press-outreach email sender was
-> removed on 2026-08-15 for the same reason; the #2203 press RESPONDER is untouched and still
+> removed on 2026-08-16 for the same reason; the #2203 press RESPONDER is untouched and still
 > handles inbound press mail at `press@wifihaven.net`.
 
 **Send order:** Priority 1 first (they set community tone and their coverage
@@ -17,7 +17,7 @@ gives P2 outlets a reason to care), Show HN same day, Priority 2 with a
 1-week exclusive offer to one outlet if desired, Priority 3 as a follow-up
 wave.
 
-## What the 2026-08-15 re-verification checked
+## What the 2026-08-16 re-verification checked
 
 For each named person: are they still at the outlet, and have they published on
 the relevant beat recently enough that the pitch's premise holds? Web research
@@ -27,7 +27,7 @@ confirmed active.
 
 ## Priority 1 — Core audience (self-hosting / OpenWRT / homelab)
 
-| # | id | Outlet | Person | Why (relevant coverage) | Contact | Verified 2026-08-15 |
+| # | id | Outlet | Person | Why (relevant coverage) | Contact | Verified 2026-08-16 |
 |---|----|--------|--------|-------------------------|---------|---------------------|
 | 1 | `selfhst` | selfh.st / Self-Host Weekly | Ethan Sholly | Weekly self-hosted news roundup featuring new launches | [selfh.st/about](https://selfh.st/about/) contact route; @shollyethan on Fosstodon | **Active.** Newsletter still publishing weekly through [7 Aug 2026](https://selfh.st/weekly/2026-08-07/). |
 | 2 | `hackaday` | Hackaday | Maya Posch | "[Revisiting Making Your Own Internet Router In 2026](https://hackaday.com/2026/06/01/revisiting-making-your-own-internet-router-in-2026/)"; also [Banana Pi BPI-R4 Pro / OpenWRT](https://hackaday.com/2026/05/22/how-the-banana-pi-bpi-r4-pro-violates-the-first-rule-of-openwrt-club/) (May 2026) | Tip line: https://hackaday.com/submit-a-tip/ | **Active, hottest fit on the list.** Three OpenWrt-router pieces Mar–Jun 2026. |
@@ -41,7 +41,7 @@ confirmed active.
 
 ## Priority 2 — Mainstream tech review press (competitor reviewers)
 
-| # | id | Outlet | Person | Why | Contact | Verified 2026-08-15 |
+| # | id | Outlet | Person | Why | Contact | Verified 2026-08-16 |
 |---|----|--------|--------|-----|---------|---------------------|
 | 10 | `tomsguide` | Tom's Guide | Brian Nadel | Reviewed the [Gryphon Secure Mesh Router](https://www.tomsguide.com/us/gryphon-secure-mesh-router,review-6042.html); still their working router reviewer | [Author page](https://www.tomsguide.com/author/brian-nadel) — no published email; Future plc editorial otherwise | **Active and current.** Bylined on Tom's Guide's 2026 Wi-Fi 7, mesh and gaming-router roundups. Author page is now the contact route (was "not published"). |
 | 11 | `techradarpro` | TechRadar Pro | Mike Williams (**byline still UNVERIFIED**) | [Firewalla Gold](https://www.techradar.com/reviews/firewalla) / [Gold Pro](https://www.techradar.com/pro/firewalla-gold-pro-review) reviews | https://www.futureplc.com/contact/ | **Not confirmed.** Treat the person as unverified — the pitch is written to the Firewalla coverage, which is solid, not to the byline. Confirm before a direct email. |
@@ -53,7 +53,7 @@ confirmed active.
 
 ## Priority 3 — Secondary
 
-| # | id | Outlet | Person | Why | Contact | Verified 2026-08-15 |
+| # | id | Outlet | Person | Why | Contact | Verified 2026-08-16 |
 |---|----|--------|--------|-----|---------|---------------------|
 | 17 | `tomshardware` | Tom's Hardware | Brandon Hill (**UNVERIFIED as router lead**) | [Router reviews section](https://www.tomshardware.com/networking/routers/reviews) | https://www.tomshardware.com/about-us (Future plc tips form) | Not confirmed. Pitch is written to the outlet's firmware coverage, not to the individual. |
 | 18 | `howtogeek` | How-To Geek | Homelab desk (no writer verified) | Frequent self-hosting/Pi-hole listicles | https://www.howtogeek.com/contact/ | Desk-level; no individual to verify. |
