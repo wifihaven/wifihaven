@@ -62,15 +62,15 @@ outlet, which is the whole point of doing this by hand.
 | 10 | Ars Technica | P2 | SKIPPED — premise stale | see note |
 | 11 | Dong Knows Tech | P2 | 2026-08-17 (Review request) | |
 | 12 | NetworkChuck (YouTube) | P2 | 2026-08-17 | |
-| 13 | PCMag | P2 | drafted (Gmail) | |
-| 14 | TechRadar Pro | P2 | | |
+| 13 | PCMag | P2 | 2026-08-17 sent | |
+| 14 | TechRadar Pro | P2 | PARKED — no editorial route | see note |
 | 15 | Tom's Guide | P2 | | |
 | 16 | Wirecutter (NYT) | P2 | | |
 | 17 | How-To Geek | P3 | | |
 | 18 | Jupiter Broadcasting (Linux Unplugged) | P3 | | |
 | 19 | OMG Ubuntu | P3 | | |
-| 20 | TechRadar Pro (security desk) | P3 | | |
-| 21 | Tom's Hardware | P3 | | |
+| 20 | TechRadar Pro (security desk) | P3 | PARKED — no editorial route | see note |
+| 21 | Tom's Hardware | P3 | PARKED — no editorial route | see note |
 
 ---
 
@@ -244,7 +244,10 @@ For PCMag's parental-control coverage, WifiHaven is a category outlier worth kno
 ## 14. TechRadar Pro — Mike Williams
 
 - **Priority:** 2
-- **Form:** https://www.futureplc.com/contact/
+- **Form:** NONE USABLE. Verified 2026-08-17: futureplc.com/contact/ is CORPORATE ONLY —
+  advertising@, licensing@, ecommerce@, invoices, credit control, investor relations. There is
+  no editorial, press or tips route on it. `advertising@futurenet.com` is the closest thing and
+  sending a story pitch there frames it as buying ad space. **Parked, not submitted.**
 - **id:** `techradarpro`
 
 ```
@@ -314,7 +317,9 @@ You covered the OpenWrt One launch, and WifiHaven fits right alongside it: famil
 ## 21. Tom's Hardware — Brandon Hill
 
 - **Priority:** 3
-- **Form:** https://www.tomshardware.com/about-us
+- **Form:** NONE FOUND. tomshardware.com/about-us is a membership/premium page with no
+  editorial contacts (checked 2026-08-17). The staff page appears to be at
+  /reviews/about-us,4260.html — unverified. **Parked.**
 - **id:** `tomshardware`
 
 ```
@@ -380,3 +385,18 @@ Corrections found while trying:
 - **selfh.st** — the real submission route is `/submit/` (a Formbricks form offering
   Self-Host Weekly / apps directory / icon request), not `/about/` as originally listed.
   `/contact/` also exposes an "E-mail Me" button.
+
+### Future plc titles — parked 2026-08-17
+
+TechRadar Pro, TechRadar Pro (security desk) and Tom's Hardware are all Future plc, and the
+media list routed all three at futureplc.com/contact/. That page carries no editorial or press
+contact whatsoever — it is advertising, licensing, ecommerce, finance and investor relations.
+
+TechRadar does publish a "how to pitch" guide (techradar.com/how-to/how-to-pitch-your-ideas-to-techradar)
+whose guidance is to write to the editor covering the topic, but its contents could not be
+retrieved from this environment. Third-party directories report Future's address format as
+first.last@futurenet.com. **That format is not to be used to construct an address** — same rule
+as PCMag: a pattern from an aggregator is a guess.
+
+To unpark: read the pitch guide in a browser, identify the editor who actually covers network
+security or home networking, and use the address published there.
