@@ -52,3 +52,8 @@ hosts:
   - tiktokw.us # TikTok's own analytics/SDK domain
   - redditinc.com # Reddit Inc's own corporate/investor domain
   - twitter.new # Twitter/X's official .new gTLD domain
+  # traffic-driven addition (#2729): 30-day prod recent-apexes sweep (26
+  # devices, 2026-08-18). tiktokv.us is TikTok's own API/app-delivery
+  # infrastructure domain (confirmed via netify), a sibling apex of the
+  # already-curated tiktokw.us / tiktokcdn-us.com, same pattern as those.
+  - tiktokv.us # TikTok's app-delivery/API infra domain (sibling to tiktokw.us)

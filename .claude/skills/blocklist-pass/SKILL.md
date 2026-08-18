@@ -203,6 +203,48 @@ that edit in the same PR.** If a step above is now wrong, fix the step too.
 
 ## Learnings log (newest first)
 
+- **2026-08-18** (#2729) — **Before trusting a fresh websearch's top result
+  for an ambiguous apex, check the CURRENT curated file first — a prior pass
+  may have already resolved the SAME apex to a different, correct identity.**
+  `axon.ai` websearched this run as Axon Enterprise (the public-safety
+  body-cam company at axon.com) — but `axon.ai` was already curated in
+  `ads.yml` since #2599 as AppLovin's "Axon" ad platform (a sibling apex of
+  `applovin.com`). Two unrelated companies both plausibly own an `axon.ai`
+  -shaped apex; the file already has the verified answer, a fresh search does
+  not. Grep the category file for the exact candidate apex before running a
+  new identity search on it.
+- **2026-08-18** (#2729) — **Embedded third-party WIDGETS that happen to be
+  AI-powered (TTS narration players, AI-search-visibility overlays) belong in
+  the same content-collateral/dual-use skip bucket as `unity3d.com`, not in
+  `ai.yml`.** `trinityaudio.ai`/`trinitymedia.ai` (an AI text-to-speech
+  article-narration widget embedded by unrelated publisher/news sites) and
+  `gpteng.co` (the embed-script CDN loaded by many Lovable-built web apps,
+  not Lovable's own product domain) both matched the `ai.yml` sweep on
+  ownership/name but are infra embedded across many unrelated sites — blocking
+  either breaks a feature on sites that have nothing to do with the "AI
+  product" in question. The question isn't "is this AI-branded" but "is this
+  domain the consumer-facing product itself, or an SDK/CDN/widget riding
+  underneath many unrelated products."
+- **2026-08-18** (#2729) — **Developer-facing AI *tools* (coding agents, AI
+  IDEs/CLIs) are out of `ai.yml`'s scope even when consumer-AI-shaped
+  keywords match — the category is chat/assistant/companion/generator
+  products a household blocks, not professional dev tooling.** `opencode.ai`
+  (an open-source terminal AI coding agent) is the clearest case this pass;
+  same reasoning that would exclude Claude Code / Cursor / Copilot-for-VS-Code
+  domains if they ever surfaced. A developer-heavy household's traffic will
+  keep surfacing these — don't add on AI-branding alone, check whether the
+  product is something a household profile would plausibly want blocked.
+- **2026-08-18** (#2729) — **A domain privacy-registered via MarkMonitor under
+  "DNStination Inc." is a pattern independently documented for at least one
+  other confirmed Amazon-affiliated domain (`prime.com` per
+  DomainInvesting.com) — corroborating but not conclusive on its own.**
+  `amazon-ads-attestation.com` used this exact registrar/privacy-proxy
+  pairing; combined with a maximally self-descriptive name ("ads-attestation"),
+  that was enough to add under the `inhousedsp.com` precedent (#2212: a
+  self-descriptive name is sufficient without a named company page). Note the
+  distinction from a *plausible* explanation used to justify skipping
+  (`youngle.tech`, #2348) — here the corroborating signal supports adding an
+  apex whose own name is already the strongest evidence.
 - **2026-08-04** (#2599) — **This pass's household traffic was unusually
   developer/infra-heavy (anthropic.com, claude.ai, warp.dev, docker.com,
   github.com dominated the top of the ranked list) — do not let a

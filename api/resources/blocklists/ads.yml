@@ -467,3 +467,31 @@ hosts:
   - starlyrtb.live
   - tritondigital.com
   - yourrtb.com
+  # traffic-driven additions (#2729): 30-day prod recent-apexes sweep (26
+  # devices, 2026-08-18). Verified-ownership adds: adnxs-simple.com (Xandr's
+  # cookie-free variant of the already-curated adnxs.com/adnxs.net — same
+  # sibling-apex pattern), programmaticx.ai (ProgrammaticX, a programmatic
+  # ad-tech vendor for mobile/CTV), fouanalytics.com (FouAnalytics, ad-fraud
+  # verification analytics — same functional class as adlooxtracking.com),
+  # anzu-rtb.live (Anzu.io, intrinsic in-game advertising RTB), pem-teads.tv
+  # (sibling apex of the already-curated teads.tv), admixer.net (Admixer, an
+  # established ad exchange/DSP). amazon-ads-attestation.com is a
+  # maximally-self-descriptive ad-attestation apex registered via MarkMonitor
+  # under the DNStination Inc. privacy proxy (the same privacy-registration
+  # pattern used for other confirmed Amazon domains) — added on the
+  # inhousedsp.com precedent (#2212) for self-descriptive names without a
+  # named-company page. Re-confirmed already-curated: axon.ai. Re-confirmed
+  # already-documented SKIPs (dual-use / wrong-category, no change): hs-
+  # analytics.net, google-analytics.com, app-analytics-services.com,
+  # app-ads-services.com, freebeacon.com, bdtelemetry.amazon, imganalytics.com,
+  # siteimproveanalytics.com/.io, opentrackr.org, popcorn-tracker.org
+  # (BitTorrent tracker decoys). desync.com remains HELD OUT unverified — no
+  # confirmed ad-tech identity after a web search. See
+  # evidence/ads-classification-2729.md.
+  - adnxs-simple.com
+  - programmaticx.ai
+  - fouanalytics.com
+  - amazon-ads-attestation.com
+  - anzu-rtb.live
+  - pem-teads.tv
+  - admixer.net
