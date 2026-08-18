@@ -158,6 +158,8 @@ object BundledBlocklistsSpec
         assertTrue(ads.contains(Hostname.unsafe("geoedge.be"))) &&
         // traffic-driven addition pinned for presence (#2503)
         assertTrue(ads.contains(Hostname.unsafe("inspectlet.com"))) &&
+        // traffic-driven addition pinned for presence (#2729)
+        assertTrue(ads.contains(Hostname.unsafe("adnxs-simple.com"))) &&
         assertTrue(meta.isDefined) &&
         assertTrue(meta.exists(m => m.bundled && m.name == "Ads & Trackers"))
     },
@@ -420,7 +422,9 @@ object BundledBlocklistsSpec
         // traffic-driven addition pinned for presence (#2348)
         assertTrue(gambling.contains(Hostname.unsafe("acebet.cc"))) &&
         // traffic-driven addition pinned for presence (#2503)
-        assertTrue(social.contains(Hostname.unsafe("redditmedia.com")))
+        assertTrue(social.contains(Hostname.unsafe("redditmedia.com"))) &&
+        // traffic-driven addition pinned for presence (#2729)
+        assertTrue(social.contains(Hostname.unsafe("tiktokv.us")))
     },
     test("ai: bundled list is loaded and includes the major AI services (#1890)") {
       for {
