@@ -234,11 +234,11 @@ function M:recv(timeout)
         -- reason the ping above does not return: recv's contract is one call,
         -- one complete message, and returning between fragments would hand the
         -- caller a non-message in the middle of one. Deferring costs no refresh
-        -- at all — not "one heartbeat later": the message this pong was deferred
-        -- past comes back from the very next recv, and ws_loop.handle_inbound
-        -- touches health as its FIRST statement on any inbound frame, so the
-        -- sentinel moves the moment the message completes rather than waiting
-        -- for another pong. Doing this HERE rather than relying on the caller's
+        -- at all — not "one heartbeat later", and not even one extra loop in the
+        -- caller: not returning means THIS recv keeps reading and returns the
+        -- completed message itself, and ws_loop.handle_inbound touches health as
+        -- its FIRST statement on any inbound frame. So the sentinel moves the
+        -- moment the message completes, without waiting for another pong. Doing this HERE rather than relying on the caller's
         -- loop keeps one rule for every control frame instead of a per-opcode
         -- exception that only the #1959 ping is guarded against.
         if opcode == ws_frame.OP_PONG and not self.reasm:in_progress() then

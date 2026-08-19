@@ -330,9 +330,25 @@ def test_ws_health_sentinel_is_refreshed_by_the_heartbeat_alone(router, fake_api
     # The faster heartbeat is written FIRST, uncommitted, so the helper's commit
     # and restart pick it up: the freeze decision stays in one place and the
     # sidecar comes up once, rather than connecting on the 30s heartbeat and
-    # being restarted out from under itself a moment later.
+    # being restarted out from under itself a moment later. This leans on uci
+    # staging an uncommitted `set` in the savedir, where it outlives the one-shot
+    # ssh session, so the helper's `uci commit wifihaven` sweeps it up along with
+    # its own — which is exactly the coupling a future edit to the helper could
+    # break from a distance, hence the assertion below.
     router_ssh("uci set wifihaven.ws.heartbeat_interval=5", timeout=30)
     _enable_ws_and_freeze_poll()
+    # Pin the precondition. A 30s heartbeat still lands inside the 300s window,
+    # so a heartbeat that silently failed to commit would leave this scenario
+    # GREEN while measuring the slow path — the assertion is what turns that into
+    # a failure. Same spirit as the every-sample-parsed anchor further down.
+    committed = router_ssh(
+        "uci get wifihaven.ws.heartbeat_interval", check=False, timeout=30,
+    ).stdout.strip()
+    assert committed == "5", (
+        f"the 5s heartbeat did not commit (uci reports {committed!r}) — the "
+        "scenario would still pass on the 30s default while measuring something "
+        "slower than it claims to"
+    )
     fake_api.wait_for_ws_connected(timeout_s=180)
     wait_until(
         lambda: True if _ws_health_present() else None,
