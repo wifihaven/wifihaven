@@ -51,10 +51,10 @@ local function dbg(...) if DEBUG then io.write("[echo] ", table.concat({...}, " 
 -- WS_ECHO_FRAGMENT=<chunk>: instead of echoing a data frame in one shot, split
 -- it into <chunk>-byte RFC 6455 §5.4 fragments — a TEXT/BINARY frame with FIN=0,
 -- then CONTINUATION (0x0) frames, the last FIN=1 — and inject a PING and an
--- unsolicited PONG after the
--- first fragment. This drives the #1959 client-side reassembly path (continuation
--- + interleaved control) over the REAL cqueues socket on the Lua-5.1 target,
--- which the pure busted spec can't reach. Default 0 = no fragmentation.
+-- unsolicited PONG after the first fragment. This drives the #1959 client-side
+-- reassembly path (continuation + interleaved control) over the REAL cqueues
+-- socket on the Lua-5.1 target, which the pure busted spec can't reach.
+-- Default 0 = no fragmentation.
 local FRAGMENT = tonumber(os.getenv("WS_ECHO_FRAGMENT") or "0") or 0
 
 -- Echo `payload` (opcode = the client's data opcode) back to the socket, either

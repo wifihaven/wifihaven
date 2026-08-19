@@ -5,11 +5,10 @@
 -- Sends a LARGE (default 12 KiB) text payload to a fragmenting echo server
 -- (run_echo_server.lua with WS_ECHO_FRAGMENT set). The server echoes it back
 -- as a TEXT(FIN=0) + CONTINUATION(0x0) sequence with a PING and an unsolicited
--- PONG interleaved between
--- fragments. The REAL ws_client:recv must reassemble those fragments — and pong
--- the interleaved ping, and defer surfacing the interleaved pong (#2731),
--- without corrupting the message — into the exact bytes we
--- sent. A byte-for-byte match proves the §5.4 reassembly works on the real
+-- PONG interleaved between fragments. The REAL ws_client:recv must reassemble
+-- those fragments — answering the interleaved ping, and deferring the
+-- interleaved pong (#2731), without corrupting the message — into the exact
+-- bytes we sent. A byte-for-byte match proves the §5.4 reassembly works on the real
 -- Lua-5.1 + cqueues stack, which the pure busted spec (ws_frame_spec.lua) can't
 -- exercise. Before #1959 the client returned only the first ~chunk and this
 -- FAILS the length/equality check.

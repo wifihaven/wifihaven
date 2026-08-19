@@ -320,8 +320,6 @@ end)
 -- the message it would have interrupted is complete. Pure state, so it is
 -- pinned here rather than only through the on-target fragment e2e.
 describe("ws_frame reassembler in_progress — #2731", function()
-  local frame = require("wifihaven.ws_frame")
-
   it("is false on a fresh reassembler", function()
     assert.is_false(frame.reassembler():in_progress())
   end)

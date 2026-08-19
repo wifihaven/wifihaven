@@ -327,15 +327,12 @@ def test_ws_health_sentinel_is_refreshed_by_the_heartbeat_alone(router, fake_api
     """
     fake_api.serve_snapshot(_snapshot(etag=ETAG_ON_CONNECT, extra_blocked=[]))
 
-    # The freeze decision lives in one place; this scenario only adds the faster
-    # heartbeat on top of it.
+    # The faster heartbeat is written FIRST, uncommitted, so the helper's commit
+    # and restart pick it up: the freeze decision stays in one place and the
+    # sidecar comes up once, rather than connecting on the 30s heartbeat and
+    # being restarted out from under itself a moment later.
+    router_ssh("uci set wifihaven.ws.heartbeat_interval=5", timeout=30)
     _enable_ws_and_freeze_poll()
-    router_ssh(
-        "uci set wifihaven.ws.heartbeat_interval=5; "
-        "uci commit wifihaven; "
-        "/etc/init.d/wifihaven restart",
-        timeout=60,
-    )
     fake_api.wait_for_ws_connected(timeout_s=180)
     wait_until(
         lambda: True if _ws_health_present() else None,

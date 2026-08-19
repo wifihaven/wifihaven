@@ -233,11 +233,13 @@ function M:recv(timeout)
         -- Deferred while a fragmented message is mid-assembly, for the same
         -- reason the ping above does not return: recv's contract is one call,
         -- one complete message, and returning between fragments would hand the
-        -- caller a non-message in the middle of one. Nothing is lost by waiting
-        -- — the sentinel has a 300 s window and the heartbeat beats every 30 s,
-        -- so the refresh simply lands on the next pong once the message
-        -- completes. Doing this HERE rather than relying on the caller's loop
-        -- keeps one rule for every control frame instead of a per-opcode
+        -- caller a non-message in the middle of one. Deferring costs no refresh
+        -- at all — not "one heartbeat later": the message this pong was deferred
+        -- past comes back from the very next recv, and ws_loop.handle_inbound
+        -- touches health as its FIRST statement on any inbound frame, so the
+        -- sentinel moves the moment the message completes rather than waiting
+        -- for another pong. Doing this HERE rather than relying on the caller's
+        -- loop keeps one rule for every control frame instead of a per-opcode
         -- exception that only the #1959 ping is guarded against.
         if opcode == ws_frame.OP_PONG and not self.reasm:in_progress() then
           return nil, ws_frame.RECV_PONG
