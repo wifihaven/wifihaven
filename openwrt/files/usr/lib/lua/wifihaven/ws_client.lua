@@ -174,7 +174,8 @@ function M:send_ping(payload)
 end
 
 -- recv(timeout) — block (cooperatively, yielding to the cqueues loop) until one
--- complete application frame arrives, OR a control PONG is consumed.
+-- complete application frame arrives, OR a control PONG is consumed while no
+-- message is mid-assembly.
 -- Transparently answers server ping→pong — without interrupting an in-progress
 -- reassembly (#1959) — and surfaces close. Returns opcode, payload  OR
 -- nil, reason. The reason vocabulary:
@@ -185,6 +186,9 @@ end
 --                                     heartbeat ping. Not a message and NOT a
 --                                     drop — it is proof the peer is alive, and
 --                                     on a quiet link it is the only proof.
+--                                     Never returned mid-reassembly, so the
+--                                     one-call-one-message contract holds for
+--                                     every control frame, not just ping.
 -- `ws_loop.classify_recv` is the single place that sorts a reason into
 -- message / idle / liveness / drop.
 --
@@ -225,10 +229,19 @@ function M:recv(timeout)
         -- the caller instead of swallowing it — ws_loop refreshes the health
         -- sentinel on it, which is what keeps a live-but-idle connection from
         -- reading as unhealthy and latching the router back onto HTTP polling.
-        -- Returning here is not a lost message: any application frame already
-        -- buffered in rxbuf is decoded by the caller's very next recv() with no
-        -- socket read.
-        if opcode == ws_frame.OP_PONG then return nil, ws_frame.RECV_PONG end
+        --
+        -- Deferred while a fragmented message is mid-assembly, for the same
+        -- reason the ping above does not return: recv's contract is one call,
+        -- one complete message, and returning between fragments would hand the
+        -- caller a non-message in the middle of one. Nothing is lost by waiting
+        -- — the sentinel has a 300 s window and the heartbeat beats every 30 s,
+        -- so the refresh simply lands on the next pong once the message
+        -- completes. Doing this HERE rather than relying on the caller's loop
+        -- keeps one rule for every control frame instead of a per-opcode
+        -- exception that only the #1959 ping is guarded against.
+        if opcode == ws_frame.OP_PONG and not self.reasm:in_progress() then
+          return nil, ws_frame.RECV_PONG
+        end
         -- A reserved control opcode (0xB..0xF). Not liveness we can vouch for,
         -- so it keeps the pre-#2731 behaviour: ignore it and read on.
       elseif status == "message" then

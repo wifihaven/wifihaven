@@ -142,31 +142,35 @@ def _ws_recv_policy_count() -> int:
     return 0
 
 
-def _ws_sent_counter(op: str) -> int:
-    """Parse ws_frames_sent_total{op=<op>} from the sidecar's tmpfs tally."""
-    res = router_ssh(f"cat {WS_METRICS_PATH} 2>/dev/null || true", check=False, timeout=10)
-    for line in (res.stdout or "").splitlines():
-        parts = line.split("\t")
-        if len(parts) == 3 and parts[0] == "ws_frames_sent_total" and parts[1] == op:
-            try:
-                return int(parts[2])
-            except ValueError:
-                return 0
-    return 0
+def _ws_app_frames_and_stamp() -> tuple[int, int | None]:
+    """One ssh round trip → (usage+events frames sent, health-sentinel stamp).
 
+    Both values come from a SINGLE `cat` so they describe the same instant. Read
+    separately, a usage frame landing between the two reads would produce a
+    window that looks quiet but was not, which is exactly the sample this
+    scenario must not mis-classify.
 
-def _ws_health_stamp() -> int | None:
-    """The sentinel's CONTENT — the os.time() the sidecar last wrote, or None.
-
-    Read as an integer rather than by mtime because stock busybox lacks
-    `stat -c %Y`; the agent reads it the same way (ws_health_read).
+    The sentinel is read as CONTENT rather than mtime because stock busybox has
+    no `stat -c %Y` — the agent reads it the same way (ws_health_read).
     """
-    res = router_ssh(f"cat {WS_HEALTH_PATH} 2>/dev/null || true", check=False, timeout=10)
-    raw = (res.stdout or "").strip()
+    res = router_ssh(
+        f"cat {WS_METRICS_PATH} 2>/dev/null; echo '---'; cat {WS_HEALTH_PATH} 2>/dev/null",
+        check=False, timeout=10,
+    )
+    metrics_text, _, stamp_text = (res.stdout or "").partition("---")
+    frames = 0
+    for line in metrics_text.splitlines():
+        parts = line.split("\t")
+        if len(parts) == 3 and parts[0] == "ws_frames_sent_total" and parts[1] in ("usage", "events"):
+            try:
+                frames += int(parts[2])
+            except ValueError:
+                pass
     try:
-        return int(raw)
+        stamp: int | None = int(stamp_text.strip())
     except ValueError:
-        return None
+        stamp = None
+    return frames, stamp
 
 
 def _ws_health_present() -> bool:
@@ -313,13 +317,21 @@ def test_ws_health_sentinel_is_refreshed_by_the_heartbeat_alone(router, fake_api
     Sampling rather than a single before/after pair because the agent's own usage
     timer can fire inside any given window; we need one clean window, not a lucky
     one. The heartbeat is dropped to 5s so several fit inside the sampling run.
+
+    "Quiet" counts only OUTBOUND application frames, even though an inbound one
+    would also refresh the sentinel (ws_loop.handle_inbound). That is sound here
+    because the Gate-2 fake does not ack (fake-api/fake_api/app.py) and no
+    snapshot changes mid-run, so there is no inbound application traffic to
+    confound the window. A fake that starts acking would need this to count
+    received frames too.
     """
     fake_api.serve_snapshot(_snapshot(etag=ETAG_ON_CONNECT, extra_blocked=[]))
 
+    # The freeze decision lives in one place; this scenario only adds the faster
+    # heartbeat on top of it.
+    _enable_ws_and_freeze_poll()
     router_ssh(
-        "uci set wifihaven.ws.enabled=1; "
         "uci set wifihaven.ws.heartbeat_interval=5; "
-        "uci set wifihaven.wifihaven.policy_poll_interval=3600; "
         "uci commit wifihaven; "
         "/etc/init.d/wifihaven restart",
         timeout=60,
@@ -331,29 +343,31 @@ def test_ws_health_sentinel_is_refreshed_by_the_heartbeat_alone(router, fake_api
         description="ws-health sentinel exists once the socket is up",
     )
 
-    # Sample (application frames sent, sentinel stamp) repeatedly, then look for
-    # one consecutive pair where the frame counters held still and the sentinel
-    # moved. ~30 samples over ~60s against a 5s heartbeat and a 60s usage timer,
-    # so at most a couple of pairs can be contaminated by a real frame.
+    # Sample (application frames sent, sentinel stamp) until one consecutive pair
+    # shows the frame counters holding still while the sentinel moved. Up to ~30
+    # samples over ~60s against a 5s heartbeat and a 60s usage timer, so at most a
+    # couple of pairs can be contaminated by a real frame — but the loop stops at
+    # the first clean one, which on a healthy link is within a few samples.
     samples: list[tuple[int, int | None]] = []
+    quiet_refreshes: list[tuple[tuple[int, int | None], tuple[int, int | None]]] = []
     for _ in range(30):
-        app_frames = _ws_sent_counter("usage") + _ws_sent_counter("events")
-        samples.append((app_frames, _ws_health_stamp()))
+        samples.append(_ws_app_frames_and_stamp())
+        if len(samples) >= 2:
+            a, b = samples[-2], samples[-1]
+            if a[1] is not None and b[1] is not None and a[0] == b[0] and b[1] > a[1]:
+                quiet_refreshes.append((a, b))
+                break
         time.sleep(2)
 
-    # Liveness anchor: the sentinel must have been readable throughout. A harness
-    # that could not read the router at all would otherwise satisfy "no frame was
-    # sent" for free, which is the absence-assertion trap.
+    # Liveness anchor: the sentinel must have been readable on EVERY sample. A
+    # harness that could not read the router at all would otherwise satisfy "no
+    # frame was sent" for free, which is the absence-assertion trap.
     stamps = [st for _, st in samples if st is not None]
     assert len(stamps) == len(samples), (
         f"the sentinel became unreadable mid-run ({len(stamps)}/{len(samples)} "
         "samples parsed) — the router or sidecar died, so this run proves nothing"
     )
 
-    quiet_refreshes = [
-        (a, b) for a, b in zip(samples, samples[1:])
-        if a[0] == b[0] and b[1] > a[1]
-    ]
     assert quiet_refreshes, (
         "the ws-health sentinel never advanced during a window in which the "
         "sidecar sent no usage/events frame — the heartbeat is not refreshing it, "

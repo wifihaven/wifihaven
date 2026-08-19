@@ -227,6 +227,16 @@ function M.reassembler(max_bytes)
     Reassembler)
 end
 
+-- in_progress() → true while a fragmented message is mid-assembly (a TEXT/BINARY
+-- with FIN=0 has been seen and its CONTINUATIONs have not completed). Callers
+-- use it to decide whether returning to their own loop would strand a partial
+-- message: ws_client defers surfacing a control PONG while this is true (#2731),
+-- so recv's "one call, one complete message" contract holds for EVERY control
+-- frame, not just the ping the #1959 guard happens to exercise.
+function Reassembler:in_progress()
+  return self.op ~= nil
+end
+
 function Reassembler:push(frame)
   local opcode = frame.opcode
 
