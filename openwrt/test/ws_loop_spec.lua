@@ -43,6 +43,9 @@ local function new_client(recvs)
     local r = table.remove(self._recvs, 1)
     if not r then return nil, "closed" end
     if r.timeout then return nil, "timeout" end
+    -- #2731: ws_client:recv surfaces the control ping/pong exchange as a
+    -- non-message outcome so the caller can treat it as proof of liveness.
+    if r.control then return nil, r.control end
     if r.drop then return nil, r.drop end
     return r.op, r.payload
   end
@@ -425,5 +428,116 @@ describe("ws_loop.run — outbound drain tick (#2620)", function()
     })
     ws_loop.run(cfg)
     assert.are.equal(ws_loop.MIN_POLL_INTERVAL, timeouts[1])
+  end)
+end)
+
+
+-- ── #2731: the heartbeat is what proves the link is alive ───────────────────
+--
+-- Before this change the health sentinel was refreshed ONLY by connect and by
+-- application frames in either direction. The agent's outbound tee only spools
+-- application frames while the sentinel is already fresh, so any gap in
+-- application traffic longer than fallback_after latched the router into HTTP
+-- polling for the life of an otherwise perfectly healthy connection: nothing
+-- was spooled, so nothing was sent, so nothing was acked, so nothing touched
+-- the sentinel. Measured on prod as an 80-minute-stale sentinel under a live
+-- socket that was still heartbeating (#2731).
+--
+-- The control ping/pong exchange is the one thing that proves the peer is alive
+-- on a quiet link, and it runs every heartbeat_interval (30 s) against a 300 s
+-- window. ws_client:recv now surfaces it instead of swallowing it, and serve
+-- refreshes health on it.
+
+describe("ws_loop.classify_recv — #2731 recv outcome vocabulary", function()
+  it("an application frame is a message", function()
+    assert.are.equal("message", ws_loop.classify_recv(1, '{"op":"policy"}'))
+  end)
+  it("a benign read timeout is idle — the socket is live but said nothing", function()
+    assert.are.equal("idle", ws_loop.classify_recv(nil, "timeout"))
+  end)
+  it("a control pong is liveness — the peer answered our heartbeat", function()
+    assert.are.equal("liveness", ws_loop.classify_recv(nil, "pong"))
+  end)
+  it("a control ping is liveness — the peer beat at us and we ponged it", function()
+    assert.are.equal("liveness", ws_loop.classify_recv(nil, "ping"))
+  end)
+  it("eof / closed / protocol are drops", function()
+    assert.are.equal("drop", ws_loop.classify_recv(nil, "eof"))
+    assert.are.equal("drop", ws_loop.classify_recv(nil, "closed"))
+    assert.are.equal("drop", ws_loop.classify_recv(nil, "protocol: bad opcode"))
+  end)
+end)
+
+describe("ws_loop.serve — #2731 heartbeat liveness refreshes the health sentinel", function()
+  it("touches health on every control pong, with NO application traffic at all", function()
+    local touches, clears = 0, 0
+    local recvs = {}
+    -- Ten heartbeat round-trips on a completely quiet link: no usage, no
+    -- events, no policy push. Pre-#2731 this touched health exactly once (the
+    -- connect) and the sentinel went stale 300 s later.
+    for _ = 1, 10 do
+      recvs[#recvs + 1] = { timeout = true }
+      recvs[#recvs + 1] = { control = "pong" }
+    end
+    recvs[#recvs + 1] = { drop = "closed" }
+    local client = new_client(recvs)
+    local cfg = base_cfg({
+      connect = function() return client, nil end,
+      touch_health = function() touches = touches + 1 end,
+      clear_health = function() clears = clears + 1 end,
+      stop = stop_after(1),
+    })
+    ws_loop.run(cfg)
+    -- 1 connect + 10 pongs. The count is exact, not ">= 1": an absence-style
+    -- "the poll did not run" assertion passes for free against a dead harness,
+    -- so this pins the positive number of refreshes instead.
+    assert.are.equal(11, touches)
+    -- Liveness anchor: the loop really ran to the scripted disconnect rather
+    -- than bailing out on the first control frame.
+    assert.are.equal(0, #client._recvs)
+    assert.are.equal(1, clears)
+  end)
+
+  it("meters the control exchange so a quiet-but-live link is visible", function()
+    local client = new_client({ { control = "pong" }, { control = "ping" }, { drop = "closed" } })
+    local cfg = base_cfg({
+      connect = function() return client, nil end,
+      stop = stop_after(1),
+    })
+    ws_loop.run(cfg)
+    local recv = cfg.metrics.rec.recv
+    assert.are.same({ "pong", "ping" }, recv)
+  end)
+
+  it("keeps serving after a control frame — a later outbound frame still goes out", function()
+    local drained = false
+    local client = new_client({ { control = "pong" }, { timeout = true }, { drop = "closed" } })
+    local cfg = base_cfg({
+      connect = function() return client, nil end,
+      spool_drain = function()
+        if drained then return {} end
+        drained = true
+        return { { op = "usage", payload = {} } }
+      end,
+      stop = stop_after(1),
+    })
+    ws_loop.run(cfg)
+    assert.are.equal(1, #client.sent)
+    assert.are.equal(0, #client._recvs)
+  end)
+
+  it("a genuinely dead link still drops out and clears health (fallback intact)", function()
+    local touches, clears = 0, 0
+    local client = new_client({ { control = "pong" }, { drop = "eof" } })
+    local cfg = base_cfg({
+      connect = function() return client, nil end,
+      touch_health = function() touches = touches + 1 end,
+      clear_health = function() clears = clears + 1 end,
+      stop = stop_after(1),
+    })
+    ws_loop.run(cfg)
+    assert.are.equal(2, touches)   -- connect + the one pong before the drop
+    assert.are.equal(1, clears)    -- the eof cleared it: the poll resumes
+    assert.is_true(client.closed)
   end)
 end)
