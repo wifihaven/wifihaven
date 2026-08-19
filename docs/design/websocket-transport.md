@@ -510,6 +510,20 @@ surface.
 - On every (re)connect the server pushes the current full snapshot, so the agent
   re-syncs policy unconditionally — a missed change during a disconnect window
   converges on reconnect, no diff bookkeeping needed.
+- **What keeps the health sentinel fresh is the heartbeat, not the traffic**
+  ([#2731](https://github.com/wifihaven/wifihaven/issues/2731)). The sidecar
+  touches `paths.ws_health` on connect, on every application frame in either
+  direction, and on the control ping/pong exchange. That last one is the
+  load-bearing case: it is the only refresh a quiet link gets, and it runs every
+  `ws.heartbeat_interval` (30 s) against a 300 s window. Refreshing from
+  application frames ALONE does not work, because the agent's outbound tee only
+  spools application frames while the sentinel is already fresh — the signal
+  feeds itself, so one quiet gap past `ws_fallback_after` latches a live
+  connection into permanent HTTP polling until the next server push or
+  reconnect. That was #2731: 9% poll suppression on a fleet whose links were up
+  the whole time. A benign read timeout deliberately does NOT refresh the
+  sentinel — it proves nothing about the peer, so a black-holed connection must
+  still age out into the poll fallback.
 - While disconnected longer than `ws_fallback_after`, the main agent resumes
   HTTP polling (§3.1) so enforcement never goes stale waiting on a flapping
   socket. Failover/boot-deny semantics (`docs/resilience.md §1/§4`) are

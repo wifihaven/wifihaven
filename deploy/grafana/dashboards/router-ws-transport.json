@@ -1226,6 +1226,202 @@
           "refId": "B"
         }
       ]
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "title": "Poll suppression while ws is healthy — the cutover gate (#2731)",
+      "description": "policy_poll_skipped_total / (policy_poll_skipped_total + snapshot_poll_total), fleet-wide. The share of policy-poll ticks the agent suppressed because its ws link was healthy. This is the number the router-side REST poll removal (and #1850) is gated on: at 100% nothing is polling and the poll is vestigial, so removing it is safe; well below 100% means the poll is still load-bearing and removing it would strand routers. It read ~9% on 2026-08-19, which is #2731: the ws health sentinel was fed only by application frames, and the agent's outbound tee produces those only while the sentinel is already fresh, so one quiet gap latched a healthy router back onto HTTP polling. Since #2731 the sentinel is refreshed by the control ping/pong heartbeat every 30 s against a 300 s window. A drop here on a fleet whose ws_state is 1 is a regression of that gate, not a fleet that lost its links — check 'WS health sentinel age' below to tell the two apart.",
+      "type": "stat",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 80
+      },
+      "id": 20,
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 0.5
+              },
+              {
+                "color": "green",
+                "value": 0.95
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "area",
+        "textMode": "auto",
+        "justifyMode": "auto",
+        "orientation": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(rate(policy_poll_skipped_total{env=\"$env\"}[$__rate_interval])) / clamp_min(sum(rate(policy_poll_skipped_total{env=\"$env\"}[$__rate_interval])) + sum(rate(snapshot_poll_total{env=\"$env\"}[$__rate_interval])), 0.0000001)",
+          "legendFormat": "suppressed share",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "title": "Routers still polling while ws is healthy (#2731)",
+      "description": "sum by (router_id) (rate(snapshot_poll_total[5m])) and on (router_id) (ws_state == 1) — the poll rate of exactly those routers whose agent reports a live ws link. Empty is the target state and the direct read of 'is anyone still polling while ws is healthy?'. A router that appears here holds a ws connection and is polling anyway, which is the #2731 failure mode and the thing that blocks the ws-only cutover. A router polling with ws_state 0 is the fallback working as designed and correctly does not appear here.",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 80
+      },
+      "id": 21,
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "cps",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "lineWidth": 1
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (router_id) (rate(snapshot_poll_total{env=\"$env\"}[5m])) and on (router_id) (ws_state{env=\"$env\"} == 1)",
+          "legendFormat": "{{router_id}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "title": "WS health sentinel age (#2731)",
+      "description": "max by (router_id) (ws_health_age_seconds) — seconds since the ws sidecar last touched /tmp/wifihaven-ws-health, the sole input to the poll-dormancy gate. The agent suppresses the poll while this is at or under ws.fallback_after (300 s by default) and resumes polling above it. Since #2731 the control ping/pong heartbeat refreshes it every 30 s, so a healthy router sits well under the line; a sawtooth that crosses 300 s means the heartbeat is not landing. -1 means the sentinel is absent: ws is off, or the sidecar cleared it on disconnect and the poll fallback is engaged. This gauge exists because #2731 was invisible without it — every series said the link was up while the sentinel the gate reads sat 80 minutes stale, and diagnosing it needed an SSH to the router.",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 88
+      },
+      "id": 22,
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "s",
+          "min": -1,
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "lineWidth": 1,
+            "thresholdsStyle": {
+              "mode": "line"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 300
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max by (router_id) (ws_health_age_seconds{env=\"$env\"})",
+          "legendFormat": "{{router_id}}",
+          "refId": "A"
+        }
+      ]
     }
   ],
   "refresh": "30s",
