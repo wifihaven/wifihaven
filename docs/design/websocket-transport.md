@@ -513,9 +513,14 @@ surface.
 - **What keeps the health sentinel fresh is the heartbeat, not the traffic**
   ([#2731](https://github.com/wifihaven/wifihaven/issues/2731)). The sidecar
   touches `paths.ws_health` on connect, on every application frame in either
-  direction, and on the control ping/pong exchange. That last one is the
-  load-bearing case: it is the only refresh a quiet link gets, and it runs every
-  `ws.heartbeat_interval` (30 s) against a 300 s window. Refreshing from
+  direction, and on the control PONG answering its own heartbeat ping. That last
+  one is the load-bearing case: it is the only refresh a quiet link gets, and it
+  runs every `ws.heartbeat_interval` (30 s) against a 300 s window. (An inbound
+  server PING is answered but does NOT return from `recv` — returning there would
+  abort an in-flight fragmented message, the #1959 contract.) What the pong
+  certifies is the socket and Netty's pipeline, not that the ws handler behind
+  them is still reading; see
+  [#2733](https://github.com/wifihaven/wifihaven/issues/2733). Refreshing from
   application frames ALONE does not work, because the agent's outbound tee only
   spools application frames while the sentinel is already fresh — the signal
   feeds itself, so one quiet gap past `ws_fallback_after` latches a live

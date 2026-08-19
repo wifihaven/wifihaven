@@ -636,8 +636,8 @@ local function ws_link_healthy()
 end
 
 -- #2731: the sentinel's age in seconds for the ws_health_age_seconds gauge,
--- or -1 when the sentinel is absent (ws off, or cleared by the sidecar on
--- disconnect). Reported rather than inferred because #2731 was exactly this
+-- or -1 when there is no age to report — ws is off, or the sentinel is absent
+-- because the sidecar never connected or cleared it on disconnect. Reported rather than inferred because #2731 was exactly this
 -- value going cold under a link every other series called healthy. Derived from
 -- ws_outbound.health_age — the SAME read ws_link_healthy judges — so the gauge
 -- an operator reads and the gate the agent acts on cannot drift. A GLOBAL so
@@ -645,6 +645,7 @@ end
 -- (Lua 5.1 60-upvalue load limit, #1930).
 function wh_ws_health_age()
   return ws_outbound.health_age({
+    enabled     = (ws_enabled == "1"),
     health_read = ws_health_read,
     now         = os.time,
   }) or -1

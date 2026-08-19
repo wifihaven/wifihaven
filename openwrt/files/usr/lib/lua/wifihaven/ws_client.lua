@@ -174,10 +174,19 @@ function M:send_ping(payload)
 end
 
 -- recv(timeout) — block (cooperatively, yielding to the cqueues loop) until one
--- complete application frame arrives. Transparently answers server ping→pong
--- and surfaces close. Returns opcode, payload  OR  nil, reason
--- (reason "closed"/"timeout"/"eof"/error string) — the clean drop signal §3.4
--- asks for, so the caller's reconnect loop can act on it.
+-- complete application frame arrives, OR a control PONG is consumed.
+-- Transparently answers server ping→pong — without interrupting an in-progress
+-- reassembly (#1959) — and surfaces close. Returns opcode, payload  OR
+-- nil, reason. The reason vocabulary:
+--   "closed" / "eof" / "protocol: …"  the clean drop signal §3.4 asks for, so
+--                                     the caller's reconnect loop can act on it
+--   "timeout"                         a benign idle read deadline
+--   ws_frame.RECV_PONG                #2731: we consumed the answer to our own
+--                                     heartbeat ping. Not a message and NOT a
+--                                     drop — it is proof the peer is alive, and
+--                                     on a quiet link it is the only proof.
+-- `ws_loop.classify_recv` is the single place that sorts a reason into
+-- message / idle / liveness / drop.
 --
 -- Cooperative blocking read with a deadline. A read timeout is expected in
 -- steady state (the quiet gaps between heartbeats), so we MUST `clearerr` the
@@ -202,8 +211,11 @@ function M:recv(timeout)
       if status == "control" then
         local opcode, payload = a, b
         if opcode == ws_frame.OP_PING then
+          -- Answer and KEEP READING. A server ping may arrive interleaved
+          -- between the fragments of a message being reassembled, and returning
+          -- here would abort that recv — the #1959 contract, guarded on a real
+          -- Lua 5.1 target by spike/ws-1845/poc_fragment.lua.
           self:send_pong(payload)                -- heartbeat: keepalive
-          return nil, "ping"                     -- #2731: the peer beat at us
         elseif opcode == ws_frame.OP_CLOSE then
           self.closed = true
           return nil, "closed"
@@ -216,7 +228,7 @@ function M:recv(timeout)
         -- Returning here is not a lost message: any application frame already
         -- buffered in rxbuf is decoded by the caller's very next recv() with no
         -- socket read.
-        if opcode == ws_frame.OP_PONG then return nil, "pong" end
+        if opcode == ws_frame.OP_PONG then return nil, ws_frame.RECV_PONG end
         -- A reserved control opcode (0xB..0xF). Not liveness we can vouch for,
         -- so it keeps the pre-#2731 behaviour: ignore it and read on.
       elseif status == "message" then

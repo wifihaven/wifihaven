@@ -36,12 +36,20 @@ local function fresh(h, now_val, fallback_after)
 end
 
 -- health_age(opts) → seconds since the sidecar last touched the sentinel, or
--- nil when it is absent (never connected, or cleared on disconnect). Derived
--- from the SAME read `fresh` judges, so the gauge the agent reports and the gate
+-- nil when there is no age to report. Derived from the SAME `enabled` flag and
+-- the SAME read is_healthy judges, so the gauge the agent reports and the gate
 -- the agent acts on can never disagree (#2731 — the 9%-suppression bug was
 -- invisible from the fleet metrics precisely because nothing reported this).
---   opts: health_read fn()→number|nil, now fn()→number
+--
+-- nil covers BOTH ways the gate can be false for a reason other than age:
+-- the sentinel is absent (never connected, or cleared on disconnect), and ws is
+-- disabled. The second matters because clear_health only runs on a clean exit,
+-- so a router with ws switched off can be left holding a stale sentinel file
+-- whose age climbs forever — reporting that as an age would show a growing,
+-- threshold-crossing number for a gate that is correctly and permanently false.
+--   opts: enabled bool, health_read fn()→number|nil, now fn()→number
 function M.health_age(opts)
+  if not opts.enabled then return nil end
   local h = opts.health_read()
   if h == nil then return nil end
   return opts.now() - h

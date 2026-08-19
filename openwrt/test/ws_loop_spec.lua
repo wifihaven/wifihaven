@@ -10,7 +10,8 @@
 -- Everything time/IO is injected (now/sleep/stop/metrics/spool/on_policy), so
 -- the tests are deterministic and codec-agnostic.
 
-local ws_loop = require("wifihaven.ws_loop")
+local ws_loop  = require("wifihaven.ws_loop")
+local ws_frame = require("wifihaven.ws_frame")
 
 -- ── a recording metrics sink ────────────────────────────────────────────────
 local function new_metrics()
@@ -43,8 +44,10 @@ local function new_client(recvs)
     local r = table.remove(self._recvs, 1)
     if not r then return nil, "closed" end
     if r.timeout then return nil, "timeout" end
-    -- #2731: ws_client:recv surfaces the control ping/pong exchange as a
-    -- non-message outcome so the caller can treat it as proof of liveness.
+    -- #2731: ws_client:recv surfaces a consumed control PONG as a non-message
+    -- outcome so the caller can treat it as proof of liveness. The reason string
+    -- comes from ws_frame.RECV_PONG — the same constant the real client returns
+    -- — so this fake cannot drift from it.
     if r.control then return nil, r.control end
     if r.drop then return nil, r.drop end
     return r.op, r.payload
@@ -456,10 +459,15 @@ describe("ws_loop.classify_recv — #2731 recv outcome vocabulary", function()
     assert.are.equal("idle", ws_loop.classify_recv(nil, "timeout"))
   end)
   it("a control pong is liveness — the peer answered our heartbeat", function()
-    assert.are.equal("liveness", ws_loop.classify_recv(nil, "pong"))
+    assert.are.equal("liveness", ws_loop.classify_recv(nil, ws_frame.RECV_PONG))
   end)
-  it("a control ping is liveness — the peer beat at us and we ponged it", function()
-    assert.are.equal("liveness", ws_loop.classify_recv(nil, "ping"))
+  -- An inbound server PING is deliberately absent from the liveness vocabulary:
+  -- ws_client answers it and keeps reading, because returning mid-reassembly
+  -- would abort an in-flight fragmented message (#1959). So a "ping" reason is
+  -- something recv never produces, and if one ever appeared it would be an
+  -- unrecognised reason — i.e. a drop, the safe direction (resume polling).
+  it("does not treat a ping reason as liveness — recv never surfaces one", function()
+    assert.are.equal("drop", ws_loop.classify_recv(nil, "ping"))
   end)
   it("eof / closed / protocol are drops", function()
     assert.are.equal("drop", ws_loop.classify_recv(nil, "eof"))
@@ -477,7 +485,7 @@ describe("ws_loop.serve — #2731 heartbeat liveness refreshes the health sentin
     -- connect) and the sentinel went stale 300 s later.
     for _ = 1, 10 do
       recvs[#recvs + 1] = { timeout = true }
-      recvs[#recvs + 1] = { control = "pong" }
+      recvs[#recvs + 1] = { control = ws_frame.RECV_PONG }
     end
     recvs[#recvs + 1] = { drop = "closed" }
     local client = new_client(recvs)
@@ -498,20 +506,27 @@ describe("ws_loop.serve — #2731 heartbeat liveness refreshes the health sentin
     assert.are.equal(1, clears)
   end)
 
-  it("meters the control exchange so a quiet-but-live link is visible", function()
-    local client = new_client({ { control = "pong" }, { control = "ping" }, { drop = "closed" } })
+  -- ws_frames_recv_total's `op` enum is the APPLICATION frame vocabulary
+  -- (policy / ack / unknown). Folding ~2,880 control pongs/router/day into it
+  -- would add a label value AND silently change what its existing `pong` bucket
+  -- means, so the heartbeat is deliberately not metered there — its effect shows
+  -- up on ws_health_age_seconds instead.
+  it("does not fold the heartbeat into the application frame counter", function()
+    local client = new_client({ { control = ws_frame.RECV_PONG }, { op = 1, payload = "x" }, { drop = "closed" } })
     local cfg = base_cfg({
       connect = function() return client, nil end,
+      decode_frame = function() return { op = "ack" } end,
       stop = stop_after(1),
     })
     ws_loop.run(cfg)
-    local recv = cfg.metrics.rec.recv
-    assert.are.same({ "pong", "ping" }, recv)
+    -- Liveness anchor: the application frame WAS metered, so an empty recv list
+    -- would mean a dead harness rather than a correctly-unmetered heartbeat.
+    assert.are.same({ "ack" }, cfg.metrics.rec.recv)
   end)
 
   it("keeps serving after a control frame — a later outbound frame still goes out", function()
     local drained = false
-    local client = new_client({ { control = "pong" }, { timeout = true }, { drop = "closed" } })
+    local client = new_client({ { control = ws_frame.RECV_PONG }, { timeout = true }, { drop = "closed" } })
     local cfg = base_cfg({
       connect = function() return client, nil end,
       spool_drain = function()
@@ -528,7 +543,7 @@ describe("ws_loop.serve — #2731 heartbeat liveness refreshes the health sentin
 
   it("a genuinely dead link still drops out and clears health (fallback intact)", function()
     local touches, clears = 0, 0
-    local client = new_client({ { control = "pong" }, { drop = "eof" } })
+    local client = new_client({ { control = ws_frame.RECV_PONG }, { drop = "eof" } })
     local cfg = base_cfg({
       connect = function() return client, nil end,
       touch_health = function() touches = touches + 1 end,

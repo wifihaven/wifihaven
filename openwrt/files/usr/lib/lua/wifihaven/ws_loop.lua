@@ -27,6 +27,7 @@
 -- on HTTP fallback path; this ws path is best-effort-after-send.
 
 local ws_backoff = require("wifihaven.ws_backoff")
+local ws_frame   = require("wifihaven.ws_frame")
 
 local M = {}
 
@@ -163,14 +164,18 @@ end
 -- should do with it (#2731). Pure, so the vocabulary is pinned by unit tests on
 -- the dev host even though ws_client itself only loads on the router target.
 --   message  — an application frame (usage ack / policy push / …)
---   liveness — the control ping/pong exchange: the peer answered, the link is
---              provably alive, refresh the health sentinel
+--   liveness — ws_frame.RECV_PONG: the peer answered our heartbeat ping, so the
+--              link is provably alive; refresh the health sentinel
 --   idle     — a benign read timeout: nothing proven, keep looping
 --   drop     — eof / closed / protocol: reconnect
+--
+-- An inbound server PING is deliberately NOT in this vocabulary: ws_client
+-- answers it and keeps reading, because returning mid-reassembly would abort an
+-- in-flight fragmented message (#1959).
 function M.classify_recv(op, payload)
   if op then return "message" end
   if payload == "timeout" then return "idle" end
-  if payload == "ping" or payload == "pong" then return "liveness" end
+  if payload == ws_frame.RECV_PONG then return "liveness" end
   return "drop"
 end
 
@@ -200,16 +205,27 @@ local function serve(cfg, client, ctx)
     if kind == "message" then
       handle_inbound(cfg, payload)
     elseif kind == "liveness" then
-      -- #2731: the control ping/pong exchange is the peer answering, so it is
-      -- proof the link is alive — and on a quiet link it is the ONLY proof.
-      -- Refreshing the sentinel here is what breaks the latch: before this, the
-      -- sentinel was fed only by application frames, which the agent's outbound
-      -- tee only produces while the sentinel is already fresh, so a long enough
-      -- quiet gap parked a perfectly healthy connection on HTTP polling until
-      -- the next server push or reconnect. Beats every heartbeat_interval (30 s)
-      -- against a 300 s fallback_after, so the window is not tight.
+      -- #2731: the pong answering our heartbeat ping is the peer proving it is
+      -- there — and on a quiet link it is the ONLY proof. Refreshing the
+      -- sentinel here is what breaks the latch: before this, the sentinel was
+      -- fed only by application frames, which the agent's outbound tee only
+      -- produces while the sentinel is already fresh, so a long enough quiet gap
+      -- parked a perfectly healthy connection on HTTP polling until the next
+      -- server push or reconnect. Beats every heartbeat_interval (30 s) against
+      -- a 300 s fallback_after, so the window is not tight.
+      --
+      -- Deliberately NOT metered on ws_frames_recv_total: that series' `op`
+      -- enum is the APPLICATION frame vocabulary (policy / ack / unknown), and
+      -- folding ~2,880 control pongs/router/day into it would both add a label
+      -- value and silently change what its existing `pong` bucket means, making
+      -- the panel's history non-comparable across this deploy. The heartbeat's
+      -- effect is already visible, and more directly, on ws_health_age_seconds.
       cfg.touch_health()
-      cfg.metrics.frame_recv(payload)
+      -- Costs one extra outer-loop iteration (a spool_drain + heartbeat check)
+      -- rather than being consumed inside recv. Bounded by the INBOUND frame
+      -- rate, so an idle socket cannot spin on it: at one pong per heartbeat
+      -- (30 s) it is free, and only a peer ponging faster than poll_interval
+      -- would make it measurable.
     elseif kind == "drop" then
       -- eof / protocol / close: a real drop → return so run() reconnects (and
       -- clears the sentinel, so the HTTP poll resumes on the agent's next tick).
