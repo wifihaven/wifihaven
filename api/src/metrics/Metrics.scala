@@ -243,6 +243,15 @@ object MetricGuard {
     // snapshot_poll_total is the dormancy working). `reason` is a fixed 1-value
     // enum today (`ws_healthy`) — bounded, no per-mac/host dimension.
     "policy_poll_skipped_total"                 -> Set("reason", "router_id", "installation_id"),
+    // #2731 — seconds since the ws sidecar last touched its health sentinel, the
+    // sole input to the dormancy gate above. #2731 was that sentinel sitting 80
+    // minutes stale under a live, heartbeating socket: ws_state read 1, frames
+    // had flowed earlier in the day, and nothing reported the one value the gate
+    // actually consults, so the router quietly polled every 5 s and diagnosing
+    // it took an SSH. -1 means the sentinel is absent (ws off, or cleared on
+    // disconnect); any non-negative value is a real age in seconds. Unlabelled
+    // beyond the fleet dimensions — no per-mac/host dimension.
+    "ws_health_age_seconds"                     -> Set("router_id", "installation_id"),
     "agent_uptime_seconds"                      -> Set("router_id", "installation_id"),
     "agent_version"                             -> Set("version", "router_id", "installation_id"),
     // #2381 — the local enforcement escape hatch. 1 = this router is in bypass

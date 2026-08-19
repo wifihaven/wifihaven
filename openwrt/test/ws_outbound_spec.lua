@@ -151,3 +151,71 @@ describe("ws_outbound.make — enabled but link down (fallback)", function()
     assert.are.equal(1, #calls)                 -- fell back to HTTP
   end)
 end)
+
+-- ── #2731: the sentinel's age, exposed for the fleet dashboard ──────────────
+-- The 9%-suppression bug was invisible from the metrics we shipped: every
+-- series said the link was up (ws_state 1, frames flowing earlier in the day)
+-- and nothing said the sentinel the gate actually reads had gone stale. It took
+-- an SSH to the prod router to see it. ws_health_age_seconds closes that gap,
+-- and it is derived from the SAME read is_healthy uses so the two cannot drift.
+describe("ws_outbound.health_age — #2731", function()
+  it("is the seconds since the sidecar last touched the sentinel", function()
+    assert.are.equal(100, ws_outbound.health_age({
+      enabled     = true,
+      health_read = function() return 1000 end,
+      now         = function() return 1100 end,
+    }))
+  end)
+
+  it("is nil when the sentinel is absent (never connected / disconnected)", function()
+    assert.is_nil(ws_outbound.health_age({
+      enabled     = true,
+      health_read = function() return nil end,
+      now         = function() return 1100 end,
+    }))
+  end)
+
+  -- clear_health only runs on a clean sidecar exit, so a router with ws switched
+  -- off can be left holding a stale sentinel file whose age climbs forever.
+  -- Reporting that as an age would put a growing, threshold-crossing number on
+  -- the dashboard for a gate that is correctly and permanently false.
+  it("is nil when ws is disabled, even with a stale sentinel left on disk", function()
+    assert.is_nil(ws_outbound.health_age({
+      enabled     = false,
+      health_read = function() return 1000 end,
+      now         = function() return 99999 end,
+    }))
+  end)
+
+  it("agrees with is_healthy at the fallback boundary (one freshness rule)", function()
+    local read = function() return 1000 end
+    local at = function(t)
+      local o = { enabled = true, health_read = read, fallback_after = 300, now = function() return t end }
+      return ws_outbound.health_age(o), ws_outbound.is_healthy(o)
+    end
+    local age_in, healthy_in = at(1300)
+    assert.are.equal(300, age_in)
+    assert.is_true(healthy_in)
+    local age_out, healthy_out = at(1301)
+    assert.are.equal(301, age_out)
+    assert.is_false(healthy_out)
+  end)
+
+  -- The gauge and the gate must agree on WHY they are off, not just that they
+  -- are: whenever health_age reports no age, is_healthy must also be false.
+  it("never reports an age while the gate is false for a non-age reason", function()
+    for _, case in ipairs({
+      { enabled = false, health = 1000 },   -- ws off, stale file left behind
+      { enabled = true,  health = nil },    -- sentinel absent
+    }) do
+      local o = {
+        enabled        = case.enabled,
+        health_read    = function() return case.health end,
+        now            = function() return 99999 end,
+        fallback_after = 300,
+      }
+      assert.is_nil(ws_outbound.health_age(o))
+      assert.is_false(ws_outbound.is_healthy(o))
+    end
+  end)
+end)

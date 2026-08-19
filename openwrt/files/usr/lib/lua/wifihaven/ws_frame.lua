@@ -28,6 +28,13 @@ M.OP_CLOSE        = 0x8
 M.OP_PING         = 0x9
 M.OP_PONG         = 0xA
 
+-- The reason string ws_client:recv returns when it consumed a control PONG —
+-- not a message, but proof the peer answered our heartbeat. Defined HERE, next
+-- to the opcode it names, so the producer (ws_client:recv), the consumer
+-- (ws_loop.classify_recv) and the specs that script a fake client all read one
+-- value instead of three hand-matched string literals (#2731).
+M.RECV_PONG       = "pong"
+
 -- The fixed GUID RFC 6455 §1.3 appends to the client key before SHA-1 to form
 -- the Sec-WebSocket-Accept value the server echoes.
 local WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
@@ -218,6 +225,16 @@ function M.reassembler(max_bytes)
   return setmetatable(
     { op = nil, parts = nil, size = 0, max_bytes = max_bytes or DEFAULT_MAX_BYTES },
     Reassembler)
+end
+
+-- in_progress() → true while a fragmented message is mid-assembly (a TEXT/BINARY
+-- with FIN=0 has been seen and its CONTINUATIONs have not completed). Callers
+-- use it to decide whether returning to their own loop would strand a partial
+-- message: ws_client defers surfacing a control PONG while this is true (#2731),
+-- so recv's "one call, one complete message" contract holds for EVERY control
+-- frame, not just the ping the #1959 guard happens to exercise.
+function Reassembler:in_progress()
+  return self.op ~= nil
 end
 
 function Reassembler:push(frame)

@@ -87,9 +87,14 @@ run_case "wss" "$WSS_PORT tls $WORK/cert.pem $WORK/key.pem" \
 
 # Case 3: #1959 fragment reassembly over ws:// — the server echoes a 12 KiB
 # payload as 512-byte §5.4 fragments (TEXT FIN=0 + CONTINUATIONs) with an
-# interleaved PING; the client must reassemble it byte-for-byte. Before #1959
-# the client returned only the first fragment and poc_fragment FAILs the length
-# check. This is the real-Lua-5.1/cqueues twin of the pure ws_frame_spec case.
+# interleaved PING and an unsolicited PONG; the client must reassemble it
+# byte-for-byte. Before #1959 the client returned only the first fragment and
+# poc_fragment FAILs the length check. #2731 added the interleaved PONG: recv
+# now RETURNS on a pong (that is what keeps a quiet link's health sentinel
+# fresh), so this pins that it still defers doing so mid-assembly — otherwise
+# recv comes back `nil, "pong"` and the message is stranded, which is the same
+# bug as #1959 wearing a different opcode. This is the real-Lua-5.1/cqueues twin
+# of the pure ws_frame_spec case.
 FRAG_PORT=$(( BASE_PORT + 2 ))
 run_case "frag-ws" "$FRAG_PORT" "ws://127.0.0.1:$FRAG_PORT" "" \
   "poc_fragment.lua ws://127.0.0.1:$FRAG_PORT 12288" "WS_ECHO_FRAGMENT=512"

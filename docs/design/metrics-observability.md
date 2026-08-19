@@ -328,6 +328,7 @@ suggestions to be tuned during implementation.
 | `policy_apply_duration_seconds` | histogram | — | Snapshot-fetch-to-ruleset-loaded wall time. Buckets ~ `0.01,0.05,0.1,0.5,1,5`. |
 | `snapshot_poll_total` | counter | `result` ∈ {`200`, `304`, `error`} | Per policy poll. `304` should dominate (ETag fast-path); a `200` spike means policy churn, an `error` spike means the link is degraded. |
 | `snapshot_poll_duration_seconds` | histogram | — | Round-trip incl. the 304-not-modified path. |
+| `ws_health_age_seconds` | gauge | — | Seconds since the ws sidecar last touched its health sentinel — the sole input to the poll-dormancy gate. `-1` means the sentinel is absent (ws off, or cleared on disconnect). Added by [#2731](https://github.com/wifihaven/wifihaven/issues/2731), where the sentinel sat 80 minutes stale under a live, heartbeating socket: `ws_state` read `1`, frames had flowed earlier in the day, and nothing reported the one value the gate actually consults, so diagnosing a router that was quietly polling every 5 s took an SSH. |
 | `agent_uptime_seconds` | gauge | — | Resets to ~0 on agent restart; pairs with `agentStartedAt` reset detection. |
 | `agent_version` | gauge (info, value `1`) | `version` | One series per (router, version); flips when an agent upgrades. Drives a fleet-version panel. |
 | `dns_queries_total` | counter | `result` ∈ {`resolved`, `nxdomain`, `blocked_at_nft`, `served_local`} | Folded from the existing `dns_log.lua` event stream. **Cardinality-gated:** `result` only — never `domain`. Include only if the agent can emit it cheaply; otherwise defer. |
@@ -701,6 +702,7 @@ each × **R** routers):
 | `policy_apply_duration_seconds` | histogram | — | (6+2) |
 | `snapshot_poll_total` | counter | `result` | 3 (`200`,`304`,`error`) |
 | `snapshot_poll_duration_seconds` | histogram | — | (6+2) |
+| `ws_health_age_seconds` | gauge | — | 1 |
 | `agent_uptime_seconds` | gauge | — | 1 |
 | `agent_version` | gauge | `version` | small (slow-moving) |
 | `dns_queries_total` *(allowlisted, not yet emitted — #1301/#1302)* | counter | `result` | 4 |

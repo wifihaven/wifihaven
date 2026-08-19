@@ -50,10 +50,11 @@ local function dbg(...) if DEBUG then io.write("[echo] ", table.concat({...}, " 
 
 -- WS_ECHO_FRAGMENT=<chunk>: instead of echoing a data frame in one shot, split
 -- it into <chunk>-byte RFC 6455 §5.4 fragments — a TEXT/BINARY frame with FIN=0,
--- then CONTINUATION (0x0) frames, the last FIN=1 — and inject a PING after the
--- first fragment. This drives the #1959 client-side reassembly path (continuation
--- + interleaved control) over the REAL cqueues socket on the Lua-5.1 target,
--- which the pure busted spec can't reach. Default 0 = no fragmentation.
+-- then CONTINUATION (0x0) frames, the last FIN=1 — and inject a PING and an
+-- unsolicited PONG after the first fragment. This drives the #1959 client-side
+-- reassembly path (continuation + interleaved control) over the REAL cqueues
+-- socket on the Lua-5.1 target, which the pure busted spec can't reach.
+-- Default 0 = no fragmentation.
 local FRAGMENT = tonumber(os.getenv("WS_ECHO_FRAGMENT") or "0") or 0
 
 -- Echo `payload` (opcode = the client's data opcode) back to the socket, either
@@ -74,6 +75,13 @@ local function echo_payload(sock, opcode, payload)
       -- §5.4: a control frame between message fragments. The client must pong
       -- this WITHOUT corrupting the in-progress reassembly.
       sock:write(ws_frame.encode(ws_frame.OP_PING, "mid")); sock:flush()
+      -- #2731: and an unsolicited PONG (legal, §5.5.3) right behind it. The
+      -- client now RETURNS from recv on a pong — that is how a quiet link keeps
+      -- proving itself — so this pins that it still defers doing so while a
+      -- message is mid-assembly. Without the deferral this recv comes back
+      -- `nil, "pong"` and the reassembly is stranded, which is the ping bug
+      -- (#1959) wearing a different opcode.
+      sock:write(ws_frame.encode(ws_frame.OP_PONG, "mid")); sock:flush()
       first = false
     end
     pos = pos + FRAGMENT

@@ -146,7 +146,9 @@ config ws 'ws'
 	# read per interval on an idle socket.
 	# How long (seconds) the socket may stay down before the main agent resumes
 	# HTTP polling (design §3.1 belt-and-suspenders). The agent reads the
-	# ws-health sentinel's mtime against this window.
+	# ws-health sentinel's CONTENT — the os.time() the sidecar writes into it —
+	# against this window. Not its mtime: stock busybox has no `stat -c %Y`,
+	# which is why the sentinel carries a timestamp rather than relying on one.
 	option fallback_after '300'
 	# Self-imposed max bytes per outbound frame. An oversized UsageReport is
 	# split across multiple `usage` frames at this cap (the #1017 fix, §5.3).

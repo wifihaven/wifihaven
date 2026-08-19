@@ -315,3 +315,38 @@ describe("ws_frame", function()
     end)
   end)
 end)
+
+-- #2731 — `in_progress()` is what lets ws_client hold a control PONG back until
+-- the message it would have interrupted is complete. Pure state, so it is
+-- pinned here rather than only through the on-target fragment e2e.
+describe("ws_frame reassembler in_progress — #2731", function()
+  it("is false on a fresh reassembler", function()
+    assert.is_false(frame.reassembler():in_progress())
+  end)
+
+  it("is true between a FIN=0 opener and its final continuation", function()
+    local r = frame.reassembler()
+    assert.are.equal("more", r:push({ opcode = frame.OP_TEXT, payload = "ab", fin = false }))
+    assert.is_true(r:in_progress())
+    assert.are.equal("more", r:push({ opcode = frame.OP_CONTINUATION, payload = "cd", fin = false }))
+    assert.is_true(r:in_progress())
+    local status, _, payload = r:push({ opcode = frame.OP_CONTINUATION, payload = "ef", fin = true })
+    assert.are.equal("message", status)
+    assert.are.equal("abcdef", payload)
+    assert.is_false(r:in_progress())
+  end)
+
+  it("stays true across an interleaved control frame", function()
+    local r = frame.reassembler()
+    r:push({ opcode = frame.OP_TEXT, payload = "ab", fin = false })
+    assert.are.equal("control", r:push({ opcode = frame.OP_PONG, payload = "mid", fin = true }))
+    assert.is_true(r:in_progress())
+  end)
+
+  it("is false for an unfragmented message, so a pong beside one is never deferred", function()
+    local r = frame.reassembler()
+    local status = r:push({ opcode = frame.OP_TEXT, payload = "whole", fin = true })
+    assert.are.equal("message", status)
+    assert.is_false(r:in_progress())
+  end)
+end)

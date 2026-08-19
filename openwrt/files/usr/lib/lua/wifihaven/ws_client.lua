@@ -174,10 +174,23 @@ function M:send_ping(payload)
 end
 
 -- recv(timeout) — block (cooperatively, yielding to the cqueues loop) until one
--- complete application frame arrives. Transparently answers server ping→pong
--- and surfaces close. Returns opcode, payload  OR  nil, reason
--- (reason "closed"/"timeout"/"eof"/error string) — the clean drop signal §3.4
--- asks for, so the caller's reconnect loop can act on it.
+-- complete application frame arrives, OR a control PONG is consumed while no
+-- message is mid-assembly.
+-- Transparently answers server ping→pong — without interrupting an in-progress
+-- reassembly (#1959) — and surfaces close. Returns opcode, payload  OR
+-- nil, reason. The reason vocabulary:
+--   "closed" / "eof" / "protocol: …"  the clean drop signal §3.4 asks for, so
+--                                     the caller's reconnect loop can act on it
+--   "timeout"                         a benign idle read deadline
+--   ws_frame.RECV_PONG                #2731: we consumed the answer to our own
+--                                     heartbeat ping. Not a message and NOT a
+--                                     drop — it is proof the peer is alive, and
+--                                     on a quiet link it is the only proof.
+--                                     Never returned mid-reassembly, so the
+--                                     one-call-one-message contract holds for
+--                                     every control frame, not just ping.
+-- `ws_loop.classify_recv` is the single place that sorts a reason into
+-- message / idle / liveness / drop.
 --
 -- Cooperative blocking read with a deadline. A read timeout is expected in
 -- steady state (the quiet gaps between heartbeats), so we MUST `clearerr` the
@@ -202,12 +215,37 @@ function M:recv(timeout)
       if status == "control" then
         local opcode, payload = a, b
         if opcode == ws_frame.OP_PING then
+          -- Answer and KEEP READING. A server ping may arrive interleaved
+          -- between the fragments of a message being reassembled, and returning
+          -- here would abort that recv — the #1959 contract, guarded on a real
+          -- Lua 5.1 target by spike/ws-1845/poc_fragment.lua.
           self:send_pong(payload)                -- heartbeat: keepalive
         elseif opcode == ws_frame.OP_CLOSE then
           self.closed = true
           return nil, "closed"
         end
-        -- OP_PONG: liveness ack; loop for the next frame.
+        -- OP_PONG: the answer to our own heartbeat ping, and on a quiet link the
+        -- ONLY thing that proves the peer is still there. #2731: surface it to
+        -- the caller instead of swallowing it — ws_loop refreshes the health
+        -- sentinel on it, which is what keeps a live-but-idle connection from
+        -- reading as unhealthy and latching the router back onto HTTP polling.
+        --
+        -- Deferred while a fragmented message is mid-assembly, for the same
+        -- reason the ping above does not return: recv's contract is one call,
+        -- one complete message, and returning between fragments would hand the
+        -- caller a non-message in the middle of one. Deferring costs no refresh
+        -- at all — not "one heartbeat later", and not even one extra loop in the
+        -- caller: not returning means THIS recv keeps reading and returns the
+        -- completed message itself, and ws_loop.handle_inbound touches health as
+        -- its FIRST statement on any inbound frame. So the sentinel moves the
+        -- moment the message completes, without waiting for another pong. Doing this HERE rather than relying on the caller's
+        -- loop keeps one rule for every control frame instead of a per-opcode
+        -- exception that only the #1959 ping is guarded against.
+        if opcode == ws_frame.OP_PONG and not self.reasm:in_progress() then
+          return nil, ws_frame.RECV_PONG
+        end
+        -- A reserved control opcode (0xB..0xF). Not liveness we can vouch for,
+        -- so it keeps the pre-#2731 behaviour: ignore it and read on.
       elseif status == "message" then
         return a, b                              -- (opcode, reassembled payload)
       elseif status == "error" then

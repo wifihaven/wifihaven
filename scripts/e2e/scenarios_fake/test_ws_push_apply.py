@@ -34,6 +34,8 @@ runner→public-resolver egress flake (#1935).
 """
 from __future__ import annotations
 
+import time
+
 import pytest
 
 from lib.vm import router_ssh
@@ -138,6 +140,37 @@ def _ws_recv_policy_count() -> int:
             except ValueError:
                 return 0
     return 0
+
+
+def _ws_app_frames_and_stamp() -> tuple[int, int | None]:
+    """One ssh round trip → (usage+events frames sent, health-sentinel stamp).
+
+    Both values come from a SINGLE `cat` so they describe the same instant. Read
+    separately, a usage frame landing between the two reads would produce a
+    window that looks quiet but was not, which is exactly the sample this
+    scenario must not mis-classify.
+
+    The sentinel is read as CONTENT rather than mtime because stock busybox has
+    no `stat -c %Y` — the agent reads it the same way (ws_health_read).
+    """
+    res = router_ssh(
+        f"cat {WS_METRICS_PATH} 2>/dev/null; echo '---'; cat {WS_HEALTH_PATH} 2>/dev/null",
+        check=False, timeout=10,
+    )
+    metrics_text, _, stamp_text = (res.stdout or "").partition("---")
+    frames = 0
+    for line in metrics_text.splitlines():
+        parts = line.split("\t")
+        if len(parts) == 3 and parts[0] == "ws_frames_sent_total" and parts[1] in ("usage", "events"):
+            try:
+                frames += int(parts[2])
+            except ValueError:
+                pass
+    try:
+        stamp: int | None = int(stamp_text.strip())
+    except ValueError:
+        stamp = None
+    return frames, stamp
 
 
 def _ws_health_present() -> bool:
@@ -263,6 +296,96 @@ def test_ws_policy_push_received_and_saved(router, fake_api):
         lambda: True if _ws_recv_policy_count() > baseline_recv else None,
         timeout_s=60, interval_s=3,
         description="sidecar receives a second policy frame (push-on-change)",
+    )
+
+
+def test_ws_health_sentinel_is_refreshed_by_the_heartbeat_alone(router, fake_api):
+    """#2731 — a live-but-quiet socket keeps proving itself, with no app traffic.
+
+    The bug: the sidecar wrote the health sentinel only on connect and on
+    APPLICATION frames in either direction, and the agent's outbound tee only
+    produces application frames while that same sentinel is fresh. The signal fed
+    itself, so one quiet gap past ws.fallback_after (300s) latched a perfectly
+    healthy connection into permanent HTTP polling — measured on prod as a
+    sentinel 80 minutes stale under a socket that was still heartbeating.
+
+    The fix makes the control ping/pong exchange refresh the sentinel, so this
+    asserts exactly that: a window in which the sentinel ADVANCED while the
+    sidecar sent NO application frame. Pre-#2731 no such window exists on a quiet
+    link — the sentinel only ever moves alongside a usage/events frame.
+
+    Sampling rather than a single before/after pair because the agent's own usage
+    timer can fire inside any given window; we need one clean window, not a lucky
+    one. The heartbeat is dropped to 5s so several fit inside the sampling run.
+
+    "Quiet" counts only OUTBOUND application frames, even though an inbound one
+    would also refresh the sentinel (ws_loop.handle_inbound). That is sound here
+    because the Gate-2 fake does not ack (fake-api/fake_api/app.py) and no
+    snapshot changes mid-run, so there is no inbound application traffic to
+    confound the window. A fake that starts acking would need this to count
+    received frames too.
+    """
+    fake_api.serve_snapshot(_snapshot(etag=ETAG_ON_CONNECT, extra_blocked=[]))
+
+    # The faster heartbeat is written FIRST, uncommitted, so the helper's commit
+    # and restart pick it up: the freeze decision stays in one place and the
+    # sidecar comes up once, rather than connecting on the 30s heartbeat and
+    # being restarted out from under itself a moment later. This leans on uci
+    # staging an uncommitted `set` in the savedir, where it outlives the one-shot
+    # ssh session, so the helper's `uci commit wifihaven` sweeps it up along with
+    # its own — which is exactly the coupling a future edit to the helper could
+    # break from a distance, hence the assertion below.
+    router_ssh("uci set wifihaven.ws.heartbeat_interval=5", timeout=30)
+    _enable_ws_and_freeze_poll()
+    # Pin the precondition. A 30s heartbeat still lands inside the 300s window,
+    # so a heartbeat that silently failed to commit would leave this scenario
+    # GREEN while measuring the slow path — the assertion is what turns that into
+    # a failure. Same spirit as the every-sample-parsed anchor further down.
+    committed = router_ssh(
+        "uci get wifihaven.ws.heartbeat_interval", check=False, timeout=30,
+    ).stdout.strip()
+    assert committed == "5", (
+        f"the 5s heartbeat did not commit (uci reports {committed!r}) — the "
+        "scenario would still pass on the 30s default while measuring something "
+        "slower than it claims to"
+    )
+    fake_api.wait_for_ws_connected(timeout_s=180)
+    wait_until(
+        lambda: True if _ws_health_present() else None,
+        timeout_s=90, interval_s=3,
+        description="ws-health sentinel exists once the socket is up",
+    )
+
+    # Sample (application frames sent, sentinel stamp) until one consecutive pair
+    # shows the frame counters holding still while the sentinel moved. Up to ~30
+    # samples over ~60s against a 5s heartbeat and a 60s usage timer, so at most a
+    # couple of pairs can be contaminated by a real frame — but the loop stops at
+    # the first clean one, which on a healthy link is within a few samples.
+    samples: list[tuple[int, int | None]] = []
+    quiet_refreshes: list[tuple[tuple[int, int | None], tuple[int, int | None]]] = []
+    for _ in range(30):
+        samples.append(_ws_app_frames_and_stamp())
+        if len(samples) >= 2:
+            a, b = samples[-2], samples[-1]
+            if a[1] is not None and b[1] is not None and a[0] == b[0] and b[1] > a[1]:
+                quiet_refreshes.append((a, b))
+                break
+        time.sleep(2)
+
+    # Liveness anchor: the sentinel must have been readable on EVERY sample. A
+    # harness that could not read the router at all would otherwise satisfy "no
+    # frame was sent" for free, which is the absence-assertion trap.
+    stamps = [st for _, st in samples if st is not None]
+    assert len(stamps) == len(samples), (
+        f"the sentinel became unreadable mid-run ({len(stamps)}/{len(samples)} "
+        "samples parsed) — the router or sidecar died, so this run proves nothing"
+    )
+
+    assert quiet_refreshes, (
+        "the ws-health sentinel never advanced during a window in which the "
+        "sidecar sent no usage/events frame — the heartbeat is not refreshing it, "
+        "so a quiet link will age out into the HTTP poll fallback (#2731). "
+        f"samples (app_frames, stamp): {samples}"
     )
 
 
