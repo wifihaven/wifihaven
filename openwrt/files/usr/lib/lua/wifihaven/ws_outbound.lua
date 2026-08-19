@@ -35,6 +35,18 @@ local function fresh(h, now_val, fallback_after)
   return h ~= nil and (now_val - h) <= fallback_after
 end
 
+-- health_age(opts) → seconds since the sidecar last touched the sentinel, or
+-- nil when it is absent (never connected, or cleared on disconnect). Derived
+-- from the SAME read `fresh` judges, so the gauge the agent reports and the gate
+-- the agent acts on can never disagree (#2731 — the 9%-suppression bug was
+-- invisible from the fleet metrics precisely because nothing reported this).
+--   opts: health_read fn()→number|nil, now fn()→number
+function M.health_age(opts)
+  local h = opts.health_read()
+  if h == nil then return nil end
+  return opts.now() - h
+end
+
 -- is_healthy(opts) → bool. The single definition of "the ws link is healthy",
 -- consulted by BOTH the outbound tee (M.make, below) and the agent's policy-poll
 -- dormancy gate (#2037), so the two cannot drift. True iff ws is enabled AND the

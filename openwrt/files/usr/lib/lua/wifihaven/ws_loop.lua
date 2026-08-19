@@ -157,6 +157,23 @@ local function handle_inbound(cfg, payload)
   end
 end
 
+-- classify_recv(op, payload) → "message" | "liveness" | "idle" | "drop"
+--
+-- The single place that sorts a ws_client:recv return into what the serve loop
+-- should do with it (#2731). Pure, so the vocabulary is pinned by unit tests on
+-- the dev host even though ws_client itself only loads on the router target.
+--   message  — an application frame (usage ack / policy push / …)
+--   liveness — the control ping/pong exchange: the peer answered, the link is
+--              provably alive, refresh the health sentinel
+--   idle     — a benign read timeout: nothing proven, keep looping
+--   drop     — eof / closed / protocol: reconnect
+function M.classify_recv(op, payload)
+  if op then return "message" end
+  if payload == "timeout" then return "idle" end
+  if payload == "ping" or payload == "pong" then return "liveness" end
+  return "drop"
+end
+
 -- serve(cfg, client, ctx) — the connected steady-state loop. Drains outbound,
 -- beats the heartbeat, and processes inbound frames until the socket drops (or a
 -- send fails). Returns when disconnected so run() can reconnect.
@@ -179,14 +196,28 @@ local function serve(cfg, client, ctx)
     end
 
     local op, payload = client:recv(poll)
-    if not op then
-      -- A read timeout is the normal idle gap between polls — the socket is
-      -- still live, so keep looping. Anything else (eof / protocol / close) is a
-      -- real drop → return to reconnect.
-      if payload ~= "timeout" then return end
-    else
+    local kind = M.classify_recv(op, payload)
+    if kind == "message" then
       handle_inbound(cfg, payload)
+    elseif kind == "liveness" then
+      -- #2731: the control ping/pong exchange is the peer answering, so it is
+      -- proof the link is alive — and on a quiet link it is the ONLY proof.
+      -- Refreshing the sentinel here is what breaks the latch: before this, the
+      -- sentinel was fed only by application frames, which the agent's outbound
+      -- tee only produces while the sentinel is already fresh, so a long enough
+      -- quiet gap parked a perfectly healthy connection on HTTP polling until
+      -- the next server push or reconnect. Beats every heartbeat_interval (30 s)
+      -- against a 300 s fallback_after, so the window is not tight.
+      cfg.touch_health()
+      cfg.metrics.frame_recv(payload)
+    elseif kind == "drop" then
+      -- eof / protocol / close: a real drop → return so run() reconnects (and
+      -- clears the sentinel, so the HTTP poll resumes on the agent's next tick).
+      return
     end
+    -- "idle": a read timeout, the normal gap between polls. The socket is still
+    -- live but has not proven it, so health is deliberately NOT touched — a
+    -- black-holed connection must still age out into the poll fallback.
   end
 end
 

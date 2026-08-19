@@ -1866,6 +1866,21 @@ conntrack.watch({
       -- wire change. Unlabelled (router_id/installation_id are added server-side).
       metrics.set_gauge(mreg, "enforcement_disabled", {},
                         ts.enforcement_disabled_applied and 1 or 0)
+      -- #2731: how stale the ws health sentinel is, in seconds — the input to
+      -- the poll-dormancy gate, reported so the gate's decision is legible from
+      -- Grafana. #2731 was a sentinel that sat 80 minutes stale under a live,
+      -- heartbeating socket: every series we shipped said the link was up
+      -- (ws_state 1) and none said the thing the gate actually reads had gone
+      -- cold, so diagnosing it needed an SSH to the router. Read through
+      -- ws_outbound.health_age, the same read is_healthy judges, so gauge and
+      -- gate cannot drift. Reported as -1 when the sentinel is absent (ws off,
+      -- or cleared on disconnect); the transport carries numbers, not nils, and
+      -- a negative age is unambiguous against any real one.
+      local health_age = ws_outbound.health_age({
+        health_read = ws_health_read,
+        now         = os.time,
+      })
+      metrics.set_gauge(mreg, "ws_health_age_seconds", {}, health_age or -1)
       -- #1325/#1302: fold the external cumulative sources (nftables drop
       -- counters; the dns-tail query-result tally) into the registry just
       -- before the push so the batch carries their latest deltas.

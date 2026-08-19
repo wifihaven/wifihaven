@@ -203,11 +203,20 @@ function M:recv(timeout)
         local opcode, payload = a, b
         if opcode == ws_frame.OP_PING then
           self:send_pong(payload)                -- heartbeat: keepalive
+          return nil, "ping"                     -- #2731: the peer beat at us
         elseif opcode == ws_frame.OP_CLOSE then
           self.closed = true
           return nil, "closed"
         end
-        -- OP_PONG: liveness ack; loop for the next frame.
+        -- OP_PONG: the answer to our own heartbeat ping, and on a quiet link the
+        -- ONLY thing that proves the peer is still there. #2731: surface it to
+        -- the caller instead of swallowing it — ws_loop refreshes the health
+        -- sentinel on it, which is what keeps a live-but-idle connection from
+        -- reading as unhealthy and latching the router back onto HTTP polling.
+        -- Returning here is not a lost message: any application frame already
+        -- buffered in rxbuf is decoded by the caller's very next recv() with no
+        -- socket read.
+        return nil, "pong"
       elseif status == "message" then
         return a, b                              -- (opcode, reassembled payload)
       elseif status == "error" then
