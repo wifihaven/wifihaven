@@ -216,7 +216,9 @@ function M:recv(timeout)
         -- Returning here is not a lost message: any application frame already
         -- buffered in rxbuf is decoded by the caller's very next recv() with no
         -- socket read.
-        return nil, "pong"
+        if opcode == ws_frame.OP_PONG then return nil, "pong" end
+        -- A reserved control opcode (0xB..0xF). Not liveness we can vouch for,
+        -- so it keeps the pre-#2731 behaviour: ignore it and read on.
       elseif status == "message" then
         return a, b                              -- (opcode, reassembled payload)
       elseif status == "error" then
