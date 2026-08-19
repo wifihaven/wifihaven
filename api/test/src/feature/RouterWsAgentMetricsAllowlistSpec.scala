@@ -52,6 +52,14 @@ object RouterWsAgentMetricsAllowlistSpec extends ZIOSpecDefault {
     test("enforcement_disabled is a fleet gauge with no extra labels (#2381)") {
       hasEntry("enforcement_disabled", Set.empty)
     },
+    // #2731 — the age of the ws health sentinel, in seconds. The sentinel is the
+    // sole input to the poll-dormancy gate, and #2731 was a sentinel sitting 80
+    // minutes stale under a live socket while every series we shipped said the
+    // link was up. Without the firewall entry the gauge is rejected and the gate
+    // stays exactly as unobservable as it was.
+    test("ws_health_age_seconds is a fleet gauge with no extra labels (#2731)") {
+      hasEntry("ws_health_age_seconds", Set.empty)
+    },
     test("a forbidden per-mac label on a ws series is rejected") {
       val rejected = Metric.counter("metrics_rejected_total").tagged("reason", "forbidden_label")
       for {
