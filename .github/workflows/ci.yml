@@ -722,6 +722,7 @@ jobs:
   # can be folded in separately. Members:
   #   test_stale_routers.py — staging test-router pruner selection (#2179)
   #   test_wan_health.py    — guest-WAN-DHCP Gate-2 flake signature (#2390)
+  #   test_dns_cache.py     — dns→host cache-settle matcher, v6-attr gate (#2734)
   e2e-lib-tests:
     name: E2E lib unit tests
     needs: changes
@@ -739,7 +740,7 @@ jobs:
         # CWD = the lib dir so the modules import bare (the established
         # convention for scripts/e2e/lib/test_*.py — no package prefix).
         working-directory: scripts/e2e/lib
-        run: python -m pytest test_stale_routers.py test_wan_health.py -v
+        run: python -m pytest test_stale_routers.py test_wan_health.py test_dns_cache.py -v
 
   # ── render.yaml: YAML parse check ───────────────────────────────────────
   render-blueprint:
