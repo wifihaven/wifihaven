@@ -17,14 +17,37 @@ nothing.
 """
 from __future__ import annotations
 
-from dns_cache import find_ip_host_row
+from dns_cache import canon_ip, find_ip_host_row
 
-IP6 = "2001:db8::10"
+IP6 = "2001:db8::10"  # compressed — the form the scenario passes as LEAF_IP6
+IP6_EXPANDED = "2001:0db8:0000:0000:0000:0000:0000:0010"  # the form the cache stores
 HOST = "e2e-edge.wifihaven.net"
 
 
 def test_hit_exact():
     assert find_ip_host_row([(IP6, HOST)], IP6, HOST) == (IP6, HOST)
+
+
+def test_hit_compressed_query_matches_expanded_cache_row():
+    # THE #2734 first-cut bug: wifihaven-dns-tail stores v6 keys in the canonical
+    # fully-expanded form, but the scenario queries with the compressed literal.
+    # A raw string compare misses even though the mapping is present, so the gate
+    # times out against a cache that already had the row. The match must be on
+    # the canonical key.
+    assert find_ip_host_row([(IP6_EXPANDED, HOST)], IP6, HOST) == (IP6_EXPANDED, HOST)
+
+
+def test_hit_expanded_query_matches_compressed_cache_row():
+    # The reverse spelling must match too (dnsmasq compressed insert, expanded query).
+    assert find_ip_host_row([(IP6, HOST)], IP6_EXPANDED, HOST) == (IP6, HOST)
+
+
+def test_canon_ip_expands_v6_and_leaves_v4_alone():
+    assert canon_ip(IP6) == IP6_EXPANDED
+    assert canon_ip(IP6_EXPANDED) == IP6_EXPANDED
+    assert canon_ip("2001:DB8::10") == IP6_EXPANDED  # case-insensitive
+    assert canon_ip("192.0.2.10") == "192.0.2.10"  # v4 untouched
+    assert canon_ip("not-an-ip") == "not-an-ip"
 
 
 def test_hit_case_insensitive_host():
