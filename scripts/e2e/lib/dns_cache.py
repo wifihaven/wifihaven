@@ -28,7 +28,15 @@ def find_ip_host_row(
     either column is ignored so raw ``<ip>\t<host>\t<ts>`` file lines compare
     cleanly. Rows with fewer than two columns are skipped.
     """
-    # NOTE(#2734): intentionally a stub for the first (red) TDD commit — the
-    # positive cases in test_dns_cache.py fail until find_ip_host_row is
-    # implemented. Replaced by the real matcher in the follow-up commit.
+    want_ip = (ip or "").strip()
+    want_host = (host or "").strip().lower()
+    if not want_ip or not want_host:
+        return None
+    for row in rows:
+        if row is None or len(row) < 2:
+            continue
+        cip = (row[0] or "").strip()
+        chost = (row[1] or "").strip()
+        if cip == want_ip and chost.lower() == want_host:
+            return (cip, chost)
     return None

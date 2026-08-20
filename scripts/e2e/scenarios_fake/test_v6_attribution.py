@@ -44,6 +44,7 @@ import pytest
 
 from ._observers import (
     dig_ipv6_answers,
+    wait_dns_cache_attributed,
     wait_event_with_host_attribution,
 )
 from .snapshot_builder import SnapshotBuilder
@@ -160,6 +161,23 @@ def test_v6_destination_attributes_to_fqdn_not_bare_literal(router, client, fake
         f"— check that terraform apply has been run for infra/cloudflare/ "
         f"(#1677)"
     )
+
+    # Step 1b (#2734): gate on the ROUTER's shared dns→host cache having
+    # actually learned 2001:db8::10 -> e2e-edge.wifihaven.net before we fire
+    # the SYN. `dig` returning the AAAA to the client proves dnsmasq answered;
+    # it does NOT prove wifihaven-dns-tail has ingested that reply line and
+    # flushed it to /tmp/wifihaven-dns-cache.txt — the exact file conntrack.lua's
+    # attribute_hostname reads when conntrack -E NEW fires. Under Gate-2 VM load
+    # (#2734: ~5/6 red, reproduced on a base predating #2731 so not a product
+    # regression) the single SYN can beat that ingest; handle_flow then falls
+    # back to the bare v6 literal and the FQDN event never comes. Unlike the v4
+    # G3 attribution test — which reprobes via wait_http_succeeds and so gets
+    # many attribution chances — this test fires exactly one one-shot SYN, so it
+    # must gate the cache first. Mirrors the v4 SNI sibling's wait_sni_attributed.
+    # Test-only: the cache being populated is a precondition step 1 always
+    # intended, so this cannot mask a conntrack-side attribution regression (a
+    # broken lookup still fails the event assertion below).
+    wait_dns_cache_attributed(LEAF_IP6, LEAF_HOST, timeout_s=120)
 
     # Step 2: emit the v6 SYN. The router's conntrack -E NEW fires; the
     # agent's handle_flow resolves the v6 destination through the cache

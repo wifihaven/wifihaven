@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import re
 
+from lib.dns_cache import find_ip_host_row
 from lib.traffic import dns_query, http_get
 from lib.vm import client_exec, router_nft_set, router_nft_set_exists, router_ssh
 from lib.wait import wait_until
@@ -452,20 +453,14 @@ def wait_sni_attributed(ip: str, host: str, *, timeout_s: float = 120) -> tuple[
     Returns the matched (ip, hostname) cache row. Raises TimeoutError (surfacing
     the current cache rows + SNI spool tail) if the mapping never appears.
     """
-    want_ip = ip.strip()
-    want_host = host.strip().lower()
-
     def probe():
-        for cip, chost in sni_cache_rows():
-            if cip == want_ip and chost.lower() == want_host:
-                return (cip, chost)
-        return None
+        return find_ip_host_row(sni_cache_rows(), ip, host)
 
     try:
         return wait_until(
             probe, timeout_s=timeout_s, interval_s=3,
             description=(
-                f"dns-cache row {want_ip} -> {host} attributed via SNI "
+                f"dns-cache row {ip.strip()} -> {host} attributed via SNI "
                 f"(host never DNS-resolved, so SNI is the only possible source)"
             ),
         )
@@ -474,12 +469,60 @@ def wait_sni_attributed(ip: str, host: str, *, timeout_s: float = 120) -> tuple[
         spool = sni_spool_lines()
         rows = sni_cache_rows()
         raise TimeoutError(
-            f"SNI attribution {want_ip} -> {host} never landed in the dns-cache "
+            f"SNI attribution {ip.strip()} -> {host} never landed in the dns-cache "
             f"within {timeout_s}s.\n"
             f"  dns-cache rows ({len(rows)}): {rows!r}\n"
             f"  sni spool lines ({len(spool)}): {spool[-10:]!r}\n"
             f"  (spool non-empty + cache miss => dns-tail SNI ingest broke; "
             f"spool empty => sidecar capture/parse broke or no ClientHello crossed br-lan)"
+        )
+
+
+def wait_dns_cache_attributed(
+    ip: str, host: str, *, timeout_s: float = 120
+) -> tuple[str, str]:
+    """Block until the router's shared dns→host cache maps ``ip -> host`` (#2734).
+
+    This is the DNS-derived sibling of :func:`wait_sni_attributed`: it proves
+    ``wifihaven-dns-tail`` has ingested the DNS reply resolving ``ip`` and
+    flushed it to ``/tmp/wifihaven-dns-cache.txt`` — the SAME file conntrack.lua's
+    ``attribute_hostname`` reads when a NEW flow's SYN crosses the router
+    (#259/#583). A client-side ``dig`` returning the answer does NOT prove the
+    router-side sidecar has ingested it yet; under Gate-2 VM load a SYN fired
+    immediately after ``dig`` can beat the ingest, so attribution falls back to
+    the bare IP literal and the FQDN event never comes. Callers that emit a
+    single one-shot flow (no HTTP-retry loop to give attribution a second
+    chance) MUST gate on this before firing.
+
+    Returns the matched ``(ip, hostname)`` row. Raises ``TimeoutError`` (dumping
+    the current cache rows) if the mapping never appears — so if a genuine
+    product regression stopped dns-tail from populating the cache, this gate
+    fails fast here with a precise message instead of the opaque downstream
+    120s event-wait timeout. It does NOT mask a conntrack-side attribution
+    regression: the cache being populated is a precondition the scenario always
+    intended, and a broken conntrack lookup still fails the event assertion
+    downstream.
+    """
+    def probe():
+        return find_ip_host_row(sni_cache_rows(), ip, host)
+
+    try:
+        return wait_until(
+            probe, timeout_s=timeout_s, interval_s=3,
+            description=(
+                f"dns-cache row {ip.strip()} -> {host} learned by wifihaven-dns-tail "
+                f"before driving a flow attributed off the same cache (#2734)"
+            ),
+        )
+    except TimeoutError:
+        rows = sni_cache_rows()
+        raise TimeoutError(
+            f"dns-tail never mapped {ip.strip()} -> {host} in the shared dns-cache "
+            f"within {timeout_s}s.\n"
+            f"  dns-cache rows ({len(rows)}): {rows!r}\n"
+            f"  (the DNS reply resolving {ip.strip()} was never ingested + flushed "
+            f"to /tmp/wifihaven-dns-cache.txt — check wifihaven-dns-tail / dnsmasq "
+            f"query-log path)"
         )
 
 
