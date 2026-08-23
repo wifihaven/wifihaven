@@ -618,6 +618,15 @@ locals {
     # with "the link is gone" does not move under them — even though the config
     # key itself is deleted by #2736 and the agent now derives its own staleness
     # bound from `ws.heartbeat_interval`.
+    # THE AGENT'S BOUND AND THIS ONE ARE INDEPENDENT ON PURPOSE. The agent
+    # declares the link down at 3 x heartbeat (90 s by default,
+    # ws_outbound.STALE_HEARTBEATS) because its failover edge must react fast —
+    # a closed-mode profile should close as soon as we are out of contact. A
+    # PAGE must not fire on a blip, so this sits at 300 s with for = 30 m. The
+    # consequence to remember: lowering ws.heartbeat_interval on a router
+    # tightens ITS failover and does nothing to when you get paged. That is
+    # deliberate, not drift, and the same note is on the constant in
+    # openwrt/files/usr/lib/lua/wifihaven/ws_outbound.lua.
     #
     # for = 30m, AND BE HONEST ABOUT THE CALIBRATION WINDOW. Unlike W14 there is
     # no fortnight of history to replay: `ws_health_age_seconds` only started

@@ -42,6 +42,15 @@ local M = {}
 -- gauge (2026-08-21 → 08-23) against a 30s heartbeat, so 90s clears the
 -- observed steady state by ~3x while still noticing a dead link inside two
 -- minutes.
+--
+-- THIS IS NOT THE ALERT THRESHOLD, and the two move independently. This bound
+-- drives the AGENT's failover edge, which must react fast for safety (a
+-- closed-mode profile should close as soon as we are out of contact). Alert W15
+-- fires on `ws_health_age_seconds` at a fixed 300s with `for = 30m`, because an
+-- alert must not page on a blip. Lowering `ws.heartbeat_interval` therefore
+-- tightens failover and leaves W15 exactly where it is; changing when an
+-- operator gets PAGED means editing the rule in
+-- infra/grafana/alerting-rules-warning.tf.
 M.STALE_HEARTBEATS = 3
 
 -- The SINGLE definition of the staleness bound, so the agent and anything else
