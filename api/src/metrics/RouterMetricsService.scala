@@ -28,8 +28,11 @@ import zio.*
  * The value was already on the wire and already arriving: every batch carries `agentVersion`, on
  * the agent's 60 s metrics push. It is persisted HERE rather than in the two carriers because both
  * of them funnel through `ingest` — one writer, no parallel touch to drift (the sibling-path
- * drift-by-omission rule in `docs/pr-review-checklist.md` §1). The write is a COALESCE-guarded
- * touch, so an empty version from an agent that never had one read cannot blank the column.
+ * drift-by-omission rule in `docs/pr-review-checklist.md` §1). It goes through
+ * `RouterRepo.recordAgentVersion`, NOT `touch`, so it writes the version alone and leaves
+ * `last_seen_at` untouched: the metrics push is the one channel that outlives a dead websocket, so
+ * stamping liveness from it would keep `agent_connected_routers` green for a fleet that has lost
+ * its transport and silently retire C7's fleet-wide outage arm.
  */
 trait RouterMetricsService {
   def ingest(batch: RouterMetricsBatch): UIO[Unit]
@@ -78,8 +81,8 @@ final class RouterMetricsServiceLive(
   /**
    * #2736: keep `routers.agent_version` fresh from the metrics push, now that the REST policy poll
    * that used to carry the `X-WifiHaven-Agent-Version` header is gone (see the class doc). An empty
-   * string is skipped rather than written: `RouterRepo.touch` COALESCEs a `None`, so skipping
-   * preserves a previously-known version instead of overwriting it with nothing.
+   * string is skipped rather than written, so an agent whose baked-in VERSION file is missing
+   * cannot blank a version we already know.
    *
    * Best-effort on FAILURE ONLY — a DB blip must not reject a metrics batch that otherwise landed —
    * but never silently: a failure is logged with the router id, the same way the ws transport's own
@@ -89,7 +92,7 @@ final class RouterMetricsServiceLive(
   private def recordAgentVersion(batch: RouterMetricsBatch): UIO[Unit] =
     ZIO
       .when(batch.agentVersion.nonEmpty)(
-        routerRepo.touch(batch.routerId, None, Some(batch.agentVersion)),
+        routerRepo.recordAgentVersion(batch.routerId, batch.agentVersion),
       )
       .catchAll(e =>
         ZIO.logWarning(
