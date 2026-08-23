@@ -124,13 +124,12 @@ local function flush_metrics() ws_metrics.flush(mstate, paths.ws_metrics) end
 
 local metrics_sink = {
   connect    = function(result) ws_metrics.inc(mstate, "ws_connect_total", result); flush_metrics() end,
-  fallback   = function(result) ws_metrics.inc(mstate, "ws_fallback_total", result); flush_metrics() end,
   frame_sent = function(op)     ws_metrics.inc(mstate, "ws_frames_sent_total", op); flush_metrics() end,
   frame_recv = function(op)     ws_metrics.inc(mstate, "ws_frames_recv_total", op); flush_metrics() end,
   state      = function(v)      ws_metrics.set(mstate, "ws_state", v); flush_metrics() end,
 }
 
--- ── health sentinel (the agent's outbound tee + fallback decision, §3.1) ──────
+-- ── health sentinel (the agent's failover edge + the W15 gauge, §3.2) ────────
 local function touch_health()
   local f = io.open(paths.ws_health, "w")
   if f then f:write(tostring(os.time())); f:close() end
@@ -227,7 +226,6 @@ local cfg = {
   metrics      = metrics_sink,
   heartbeat_interval = heartbeat,
   poll_interval      = poll_int,
-  fallback_after     = fallback,
   rng          = math.random,
   log          = log,
 }

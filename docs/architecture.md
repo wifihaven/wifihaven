@@ -187,9 +187,12 @@ case class ProfilePolicy(
     rules: BlockRules,
     failureMode: FailureMode,                  // per-profile: what the router does
                                                //   for THIS profile's devices the moment
-                                               //   a policy poll fails (#422 — failover
-                                               //   trips on the first failed poll; no
-                                               //   time-based cushion). See
+                                               //   the router loses contact with the API
+                                               //   (#422 — trips immediately, no
+                                               //   time-based cushion). Pre-#2736 that
+                                               //   meant a failed policy poll; since the
+                                               //   agent is websocket-only it means the
+                                               //   ws health sentinel going stale. See
                                                //   docs/resilience.md §4 for the
                                                //   per-mode behaviour and the
                                                //   defaulting policy.

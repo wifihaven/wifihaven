@@ -90,12 +90,12 @@ function M.classify_connect_error(err)
   return "upgrade_fail"
 end
 
--- should_fallback(disconnected_secs, fallback_after) → bool. Once the socket has
--- been down longer than fallback_after, the main agent resumes HTTP polling so
--- enforcement never goes stale waiting on a flapping link (design §3.1/§5.1).
-function M.should_fallback(disconnected_secs, fallback_after)
-  return disconnected_secs >= fallback_after
-end
+-- #2736: `should_fallback` is gone with the thing it signalled. It existed to
+-- tell the main agent, via ws_fallback_total{to_http}, that the socket had been
+-- down long enough to resume HTTP polling. There is no poll to resume, so the
+-- counter counted a transition that can no longer happen. What the link is doing
+-- is still fully observable: ws_state (1/0), ws_connect_total{result}, and
+-- ws_health_age_seconds — which is the one alert W15 pages on.
 
 -- Drain the outbound spool (plus any frames retained from a failed prior
 -- connection) and send each as a frame. A `usage` frame whose encoded size
@@ -252,28 +252,16 @@ end
 --   frame_op(frame)      → op string
 --   split_usage(frame)   → { frame, … }   (the #1017 split)
 --   touch_health()/clear_health()         (the ws-health sentinel the agent reads)
---   metrics{connect,state,fallback,frame_sent,frame_recv}
---   heartbeat_interval, fallback_after, rng, log
+--   metrics{connect,state,frame_sent,frame_recv}
+--   heartbeat_interval, rng, log
 --   poll_interval        → recv/loop-tick seconds (#2620); sanitized per
 --                          M.sanitize_poll_interval, so an absent value is the
 --                          documented default rather than an error
 function M.run(cfg)
   local ctx = { pending = {} }
   local attempt = 0
-  local fell_back = false
-  local disconnected_since = cfg.now()
 
   while not cfg.stop() do
-    -- Belt-and-suspenders fallback: if we've been disconnected longer than
-    -- fallback_after, signal the main agent to resume HTTP polling (once per
-    -- outage, not per attempt). The agent reads the health sentinel; emitting
-    -- the metric here keeps the rollout dashboard honest (§3.1/§7).
-    local disc = cfg.now() - disconnected_since
-    if not fell_back and M.should_fallback(disc, cfg.fallback_after) then
-      cfg.metrics.fallback("to_http")
-      fell_back = true
-    end
-
     local client, err = cfg.connect()
     if not client then
       attempt = attempt + 1
@@ -289,21 +277,17 @@ function M.run(cfg)
       cfg.metrics.connect("ok")
       cfg.metrics.state(1)
       cfg.touch_health()
-      if fell_back then
-        cfg.metrics.fallback("back_to_ws")
-        fell_back = false
-      end
       if cfg.log and cfg.log.info then cfg.log.info("ws: connected") end
 
       serve(cfg, client, ctx)
 
-      -- Disconnected. Lower the link gauge, clear the health sentinel (so the
-      -- agent's outbound tee falls back to HTTP after fallback_after), and start
-      -- the disconnect clock for the fallback decision above.
+      -- Disconnected. Lower the link gauge and clear the health sentinel. An
+      -- ABSENT sentinel is the agent's immediate "the link is down" signal: it
+      -- trips the #331/#422 failover edge and drives ws_health_age_seconds to
+      -- -1, which is the arm alert W15 catches.
       cfg.metrics.state(0)
       cfg.clear_health()
       pcall(function() client:close() end)
-      disconnected_since = cfg.now()
     end
   end
 end

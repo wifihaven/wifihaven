@@ -70,7 +70,8 @@ A clean power-cycle losing < 60 seconds of usage data is materially harmless
 ### Intended behavior
 - **Agent rides through.** While the API is unreachable, the agent continues
   enforcing from its **last-applied policy snapshot**, which is persisted to
-  flash (`/etc/wifihaven/policy.json` or similar) on every successful poll.
+  flash (`/etc/wifihaven/policy.json`) — written by the ws sidecar on every
+  push it receives (pre-#2736, by the poll on every successful fetch).
   Tmpfs is not enough — a reboot during the API outage would otherwise drop
   the router to default-deny (§1), which is correct for safety but disruptive
   for adults; the on-flash snapshot lets the router come back up enforcing
@@ -86,22 +87,32 @@ A clean power-cycle losing < 60 seconds of usage data is materially harmless
   ~1000 batches and on cap-exceeded the **oldest** batches are dropped to
   preserve recent activity. This is intentional: when memory is constrained
   we want the most recent traffic on the Activity tab, not stale history.
-- **Polling resumes on API return.** Poll cadence is unchanged during the
-  outage (default 30s); the agent does not back off poll attempts as
-  aggressively as usage POSTs because policy freshness matters more than
-  usage freshness.
-- **Failover trips immediately on a failed poll.** The agent transitions
-  to the per-profile failure mode defined in §4 the moment a poll attempt
-  fails; the next successful poll lifts the transition. There is no time-
-  based cushion (#422 removed the prior 300s gate, which contradicted the
+- **Policy resumes on API return.** The ws sidecar reconnects with
+  exponential backoff + jitter and the server pushes the current snapshot on
+  connect (#1849), so policy is fresh within a reconnect rather than within a
+  poll interval. Since
+  [#2736](https://github.com/wifihaven/wifihaven/issues/2736) there is no HTTP
+  poll to resume — see §4 for what a lost link does to enforcement.
+- **Failover trips immediately on losing contact.** The agent transitions
+  to the per-profile failure mode defined in §4 the moment contact with the
+  API is lost; regaining it lifts the transition. There is no time-based
+  cushion (#422 removed the prior 300s gate, which contradicted the
   per-profile failureMode design intent — block-all should drop traffic
-  the moment we can't reach the API).
+  the moment we can't reach the API). Pre-#2736 "lost contact" meant a failed
+  snapshot poll; it now means the ws health sentinel gone stale or absent,
+  judged against `3 × ws.heartbeat_interval` (`ws_outbound.stale_after`).
+- **A router with a dead websocket is ALERTED, not silent.** This is what
+  makes #2736's removal of the poll fallback acceptable. The box keeps
+  enforcing its last on-disk snapshot but reports nothing, so alert **W15**
+  fires on `ws_health_age_seconds` — a signal that still reaches the server
+  because the agent's metrics push deliberately stayed on HTTP. See
+  `docs/design/alerting.md` §7.2.
 
 ### Why
-The asymmetry — sequential drain for usage, fixed cadence for policy — is
+The asymmetry — sequential drain for usage, immediate push for policy — is
 deliberate: a long API outage followed by recovery should not stampede the
 DB with one giant batched usage POST per router, but it SHOULD restore
-correct policy within one poll interval.
+correct policy as soon as the socket is back.
 
 ### Implementation
 - `openwrt/files/usr/lib/lua/wifihaven/policy.lua`: write snapshot to
@@ -111,15 +122,15 @@ correct policy within one poll interval.
 - `openwrt/files/usr/lib/lua/wifihaven/conntrack.lua`: same retry-queue
   pattern for events POSTs (#330); cap = 1000 batches, drop-oldest on
   overflow; drained from the conntrack watcher loop on every tick.
-- Agent main loop: track `last_fetch_ok` for the most-recent poll;
-  transition enforcement per §4 immediately on any failed poll
+- Agent main loop: read the ws health sentinel each policy tick;
+  transition enforcement per §4 immediately once it is stale or absent
   (#422 — no 300s gate). `last_successful_poll_ts` is kept only for
   human-readable log lines (`poll_age=NNNs`).
 
 ### How to verify
-- Stop the API container; on the first failed poll the agent transitions
-  per §4. Restart the API; on the next successful poll the agent applies
-  the fresh snapshot and clears the failover state.
+- Stop the API container; once the sidecar's sentinel goes stale the agent
+  transitions per §4. Restart the API; on reconnect the server pushes the
+  snapshot, the agent applies it and clears the failover state.
 - Confirm queued usage drains sequentially after API return (check API
   logs for spaced POSTs, not one batch).
 
@@ -162,9 +173,10 @@ client (the agent) without parsing error bodies.
 ## 4. Internet outage on router (agent can't reach API) — KEY DESIGN DECISION
 
 ### Intended behavior
-- **Failover trips on the first failed poll.** The agent transitions
-  enforcement per **per-profile `failureMode`** the moment a poll
-  attempt fails (#422 — there is no time-based cushion). Three modes
+- **Failover trips the moment contact is lost.** The agent transitions
+  enforcement per **per-profile `failureMode`** as soon as the ws health
+  sentinel is stale or absent (#422 — there is no time-based cushion;
+  pre-#2736 the trigger was a failed snapshot poll). Three modes
   (#385) —
   named identically across architecture.md §0.2, this section,
   `shared/src/Models.scala`, the wire JSON, and the DB column:
@@ -236,11 +248,11 @@ never a default — it must be picked deliberately.
 - `api/src/policy/PolicyService.scala`: includes `failureMode` per
   `ProfilePolicy` in the rendered `PolicySnapshot`. The ETag covers
   this value so a mode change invalidates client caches.
-- `openwrt/files/usr/lib/lua/wifihaven/policy.lua`: on every failed
-  poll, renders nft with `opts.poll_failed = true`; on the next
-  successful poll, renders with `opts.poll_failed = false` to clear the
-  failover chain (#422). `last_successful_poll_ts` is retained for
-  human-readable log lines only.
+- `openwrt/files/usr/lib/lua/wifihaven/policy.lua`: on the edge into
+  lost contact, renders nft with `opts.link_failed = true`; on recovery,
+  renders with `opts.link_failed = false` to clear the failover chain
+  (#422; the opt was `poll_failed` before #2736). `last_successful_poll_ts`
+  is retained for human-readable log lines only.
 - `openwrt/files/usr/lib/lua/wifihaven/render.lua`: branches by mode.
   `BlockAll` emits a dedicated `failover_drop` set and drop chain.
   `AllowAll` suppresses the profile's MACs from every drop list before
@@ -252,7 +264,8 @@ never a default — it must be picked deliberately.
 
 ### How to verify
 - Block the API at the router (firewall rule on the router itself
-  blocking egress to the API host). Within one poll cycle, confirm that:
+  blocking egress to the API host). Within `3 × ws.heartbeat_interval`
+  (90 s by default) plus one policy tick, confirm that:
   - A `BlockAll` profile's device cannot reach the internet but the
     block page loads;
   - A `LastKnownGood` profile's device continues to work under cached
@@ -260,8 +273,8 @@ never a default — it must be picked deliberately.
     already in effect;
   - An `AllowAll` profile's device passes traffic with no enforcement,
     even if the cached snapshot has `extraBlocked` entries for it.
-- Restore API reachability; all three profiles return to normal within
-  one poll cycle.
+- Restore API reachability; all three profiles return to normal within one
+  ws reconnect plus one policy tick.
 
 ---
 
@@ -290,7 +303,7 @@ The previous agent-side skew detector (Date-header capture,
 | Scenario | Current behavior | Status |
 | --- | --- | --- |
 | 1. Power loss | Identity persists; **no default-deny gate before agent renders** — traffic forwards unfiltered for the boot window. Usage buckets in tmpfs (intentional). | **GAP** |
-| 2. API restart | No persisted policy cache (tmpfs only); usage POSTs have **no retry/backoff**; no failover-on-poll-fail trigger. | **GAP** |
+| 2. API restart | No persisted policy cache (tmpfs only); usage POSTs have **no retry/backoff**; no failover-on-lost-contact trigger. | **GAP** |
 | 3. DB blip | Health endpoint correct (503). All other routes return **bare 500 on DB failure**. JWT auth rides through correctly. | **GAP** |
 | 4. Internet outage | No `failureMode` field exists. Agent is **fail-open** on cold start with no cached policy; rules persist in tmpfs only. | **GAP** |
 | 5. Time skew | Router does no time-based evaluation (Truth 2 / #350); API clock is authoritative. See #334 for API-side time handling. | **N/A (by design)** |

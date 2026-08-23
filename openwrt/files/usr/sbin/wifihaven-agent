@@ -334,13 +334,11 @@ end
 -- (api/src/metrics/Metrics.scala). ws_state is an unlabelled link gauge (1/0).
 local ws_metrics_baseline = {
   ws_connect_total     = {},
-  ws_fallback_total    = {},
   ws_frames_sent_total = {},
   ws_frames_recv_total = {},
 }
 local WS_METRIC_LABEL_KEY = {
   ws_connect_total     = "result",
-  ws_fallback_total    = "result",
   ws_frames_sent_total = "op",
   ws_frames_recv_total = "op",
 }
