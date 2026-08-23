@@ -775,6 +775,83 @@ the same failure and neither subsumes the other.
   fleet" panel — the one that carries `router_id` — to identify which router is
   missing.
 
+**W15. A router's websocket is stale or down**
+([#2736](https://github.com/wifihaven/wifihaven/issues/2736))
+
+The **ws cutover's safety net**. #2736 removed the agent's HTTP snapshot poll,
+making the websocket the only policy and telemetry transport; this rule is the
+condition that removal is contingent on.
+
+- Query:
+  ```promql
+  (
+    (max by (router_id) (ws_health_age_seconds{env="prod"}) > bool 300)
+      +
+    (max by (router_id) (ws_health_age_seconds{env="prod"}) < bool 0)
+  )
+  ```
+- `gt = 0`, `for = 30m`.
+- **Why it had to exist first.** Before #2736 the agent carried its own
+  recovery: once the ws-health sentinel aged past `ws.fallback_after` the HTTP
+  snapshot poll woke back up and the router kept receiving policy and reporting
+  usage/events over REST. With that poll gone, a router that loses the socket
+  keeps **enforcing its last on-disk snapshot** — blocking does not stop — but
+  receives no policy and reports nothing, *silently*. Deleting a fallback is
+  only acceptable if the state it used to absorb is loudly alerted instead.
+- **Nothing else covered it**, verified against the deployed rules (not just the
+  Terraform) on 2026-08-23:
+  - **C7** keys on `agent_connected_routers < 1` — the whole fleet going dark.
+    One router of two losing ws leaves it at 1 and C7 stays silent.
+  - **W14** uses `router_ws_connections_active` as its *reference* operand. A
+    router that loses its socket **lowers** that reference, so the comparison
+    stays balanced and W14 goes quiet — the inversion its own block documents,
+    and the gap already recorded in §8 below.
+  - **W10** keys off `agent_version`, a never-cleared info gauge that per #2646
+    is not a health signal at all, and says nothing about the socket.
+- **The signal rides a transport that survives the failure it reports.** This is
+  the crux. #2736 removed the REST snapshot poll and the REST usage/events
+  fall-through, but the **metrics push deliberately stayed on HTTP**
+  (`ws_outbound.lua` tees only `usage` and `events`), precisely so the `ws_*`
+  observability series still reach the server while the socket is down. A signal
+  carried over the broken link would be the #2546 shape — silence reading as
+  health. This one is not. It is also the one value the agent actually acts on:
+  the same sentinel age #2731 found sitting 80 minutes stale under a live,
+  heartbeating socket while every other series said the link was fine.
+- **It can name the router**, unlike W14. `router_id` here is *agent-pushed*,
+  the documented exception to the cardinality firewall in
+  [`docs/process/instrumentation.md`](../process/instrumentation.md) that W10
+  also relies on — not a server-derived per-router label.
+- **Two arms, summed.** `> bool 300` catches a socket that is up but has gone
+  cold (the #2731 shape). `< bool 0` catches the gauge's `-1` sentinel — the
+  health file is **absent**, which is what the sidecar leaves behind on a clean
+  disconnect, and a negative value no greater-than threshold can ever see. The
+  arms are mutually exclusive, so the sum is 0 or 1 and `gt = 0` is a true
+  boolean test.
+- **Threshold 300s.** Ten times the sidecar's 30s heartbeat/pong cadence, which
+  is what refreshes the sentinel (#2731). It is also the value
+  `ws.fallback_after` carried, so the number an operator already associates with
+  "the link is gone" does not move under them — even though #2736 deletes that
+  config key and the agent now derives its staleness bound from
+  `ws.heartbeat_interval`.
+- **`for = 30m`, and the calibration window is short — say so.** Unlike W14
+  there is no fortnight to replay: `ws_health_age_seconds` only began being
+  emitted with #2731 (PR #2732), so retention holds **2.1 days**
+  (2026-08-21T16:04Z → 08-23T18:34Z, 1213 samples across both routers at 300s
+  step, no gaps). Over that window the gauge never left `[0, 31]` and the
+  shipping expression evaluated to 0 on every sample for both routers — zero
+  false positives, but no benign excursion to calibrate *against*. So 30m is
+  chosen from the cadences, not fitted: 300s + 30m means the socket has been
+  provably dead ~35 minutes, 70× the heartbeat, comfortably clear of an agent
+  upgrade or a router reboot (both of which stop the metrics push too, landing
+  in no_data → OK rather than firing). Revisit once months of the series exist.
+- **What it still does not cover**, stated so absence is not read as health: a
+  router that dies *completely* stops pushing metrics, the series goes absent,
+  and `no_data_state = OK` keeps the rule silent. That residual is
+  **pre-existing and unchanged** by #2736 (a dead agent never polled either) and
+  is the same §8 row W14 could not close.
+- Paired panel: "ws health sentinel age" on the router-ws-transport dashboard,
+  which plots exactly this gauge per `router_id`.
+
 ## 8. Gaps — metrics not yet emitted
 
 These are alerts worth having whose metric does not (reliably) exist yet. They
@@ -786,8 +863,8 @@ it (per the "alert only on emitted series" rule).
 | Deploy failure (pairs with #1245 annotations) | No alertable series. `deploy-webhook` writes **Grafana annotations only** — by design it "does not scaffold any notification/alerting transport." Annotations are not PromQL-alertable. | [#1405](https://github.com/wifihaven/wifihaven/issues/1405): have `deploy-webhook` *also* emit a Prometheus counter (e.g. `render_deploy_total{lifecycle}`) scraped by Alloy, then alert `increase(...{lifecycle="failed"}[10m]) > 0`. Or use Grafana Cloud's native Render-integration deploy events if/when available. |
 | Blocklist fetch failures (W5) | `blocklist_fetch_failures_total` router-pushed but unreliable in prod | [#1382](https://github.com/wifihaven/wifihaven/issues/1382) + agent counters [#1301](https://github.com/wifihaven/wifihaven/issues/1301)/[#1302](https://github.com/wifihaven/wifihaven/issues/1302)/[#1325](https://github.com/wifihaven/wifihaven/issues/1325) |
 | Agent restart / uptime regression | `agent_uptime_seconds`, `dnsmasq_restarts_total` router-pushed, unreliable in prod | same as above — fleet roll-forward + #1382 |
-| Per-router liveness (which router dropped, not just "fleet → 0") | Would need a per-`router_id` **server-derived** series, which the bounded-label-enum rule forbids; `agent_connected_routers` is a single aggregate gauge. W14 detects that *some* router went quiet by comparing counts, and its summary routes the operator to the version-distribution panel to identify which — but the alert itself cannot name it. | acceptable for now (household = ~1 router); revisit if the fleet grows |
-| A router that disappeared entirely (one of N powered off, not the whole fleet) | No reference series survives it: the router leaves `router_ws_connections_active` and `agent_version` together, so W14's comparison stays balanced and C7 only covers fleet → 0. Would need an enrolled-router gauge off the `routers` table, which fires unresolvably for a decommissioned-but-undeleted row (see W14's rejected candidates). | unfiled; wants the enrollment-lifecycle question answered first (what marks a router retired?) |
+| Per-router liveness (which router dropped, not just "fleet → 0") | **Partly closed by W15** (#2736), which keys on the *agent-pushed* `ws_health_age_seconds` and so does carry `router_id` — it names the router whose websocket went stale or down. Still open for liveness failures that are not ws-shaped: those would want a per-`router_id` **server-derived** series, which the bounded-label-enum rule forbids, and W14 can only detect that *some* router went quiet by comparing counts. | acceptable for now (household = ~1 router); revisit if the fleet grows |
+| A router that disappeared entirely (one of N powered off, not the whole fleet) | No reference series survives it: the router leaves `router_ws_connections_active` and `agent_version` together, so W14's comparison stays balanced and C7 only covers fleet → 0. W15 does not reach it either — its gauge is agent-pushed, so a dead agent takes the signal with it. Would need an enrolled-router gauge off the `routers` table, which fires unresolvably for a decommissioned-but-undeleted row (see W14's rejected candidates). | unfiled; wants the enrollment-lifecycle question answered first (what marks a router retired?) |
 
 ## 9. Implementation sub-issues
 
@@ -821,7 +898,10 @@ Filed under the **Alerting & Paging** epic, one per coherent chunk:
    [#2477](https://github.com/wifihaven/wifihaven/issues/2477) with W11–W12, by
    [#2517](https://github.com/wifihaven/wifihaven/issues/2517) with W13, and by
    [#2646](https://github.com/wifihaven/wifihaven/issues/2646)'s follow-up with
-   W14 (W10's absence arm).
+   W14 (W10's absence arm), and by
+   [#2736](https://github.com/wifihaven/wifihaven/issues/2736) with W15 (the ws
+   cutover's safety net — shipped as the first commit of that PR, because
+   removing the HTTP poll fallback was contingent on it).
 5. **[#1405](https://github.com/wifihaven/wifihaven/issues/1405) —
    Deploy-failure signal** ([§8](#8-gaps--metrics-not-yet-emitted)): extend
    `deploy-webhook` to emit `render_deploy_total{lifecycle}` (or adopt native
