@@ -398,6 +398,11 @@ agent boot
   │
   └─ sentinel stale past 3 × ws.heartbeat_interval?
         ├─▶ the #331/#422 failover edge trips: closed-mode profiles close
+        ├─▶ the apply-on-push tick KEEPS RUNNING — a push that lands lifts
+        │   failover, because receiving one proves the link is live. Gating it
+        │   on the failover flag (as the pre-#2736 code did, safely, while the
+        │   poll was what recovered) would make failover suppress the only
+        │   remaining apply path.
         ├─▶ enforcement otherwise CONTINUES off the last on-disk snapshot
         └─▶ alert W15 fires on ws_health_age_seconds (the metrics push stays
             on HTTP, so the signal survives the outage it reports)

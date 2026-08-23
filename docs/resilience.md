@@ -101,6 +101,14 @@ A clean power-cycle losing < 60 seconds of usage data is materially harmless
   the moment we can't reach the API). Pre-#2736 "lost contact" meant a failed
   snapshot poll; it now means the ws health sentinel gone stale or absent,
   judged against `3 × ws.heartbeat_interval` (`ws_outbound.stale_after`).
+- **Failover never blocks the apply path.** The apply-on-push tick is NOT
+  skipped while a failover render is in effect. That gate existed pre-#2736 and
+  was safe only because the POLL was what recovered; with the poll gone,
+  failover trips on a stale sentinel and the push tick is the ONLY way policy
+  reaches enforcement, so skipping it made failover suppress its own recovery.
+  Applying a pushed snapshot also LIFTS failover — receiving one proves the link
+  is live. Found by Gate 2, where a ws blip stalled a pushed snapshot for ~5
+  minutes.
 - **A router with a dead websocket is ALERTED, not silent.** This is what
   makes #2736's removal of the poll fallback acceptable. The box keeps
   enforcing its last on-disk snapshot but reports nothing, so alert **W15**

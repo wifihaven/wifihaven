@@ -1502,11 +1502,31 @@ conntrack.watch({
     -- than waiting for the gate. The gate is KEPT as a backstop so a missed/torn
     -- trigger (write failed, tmpfs cleared) can never strand a pushed snapshot.
     -- Both entrypoints run the SAME etag-deduped apply, so there is no
-    -- double-apply. Skipped while in failover (the failover chain owns the plane
-    -- until the ws link recovers).
+    -- double-apply.
     --
-    -- #2736: no longer gated on a ws-enabled flag — this is THE policy path.
-    if not ts.in_failover_render then
+    -- #2736: no longer gated on a ws-enabled flag, AND no longer skipped while
+    -- in failover. Both gates had to go, and the second one is the subtle half.
+    --
+    -- It used to read `not ts.in_failover_render` — "the failover chain owns the
+    -- plane until the poll recovers" — which was safe only because the POLL was
+    -- the thing that recovered: `in_failover_render` went true on a failed HTTP
+    -- fetch, and the very next successful fetch lifted it and applied. With the
+    -- poll gone, failover trips on a stale ws sentinel instead, and this tick is
+    -- the ONLY remaining way policy reaches enforcement — so the old gate made
+    -- failover suppress the sole apply path. Caught by Gate 2: a ws blip past
+    -- the staleness bound stalled a pushed snapshot for ~5 minutes (log:
+    -- "failover render: ws link down" 20:53:38 → "failover lifted" 20:54:03 →
+    -- apply 20:54:11), which is long enough to blow a scenario's timeout and, on
+    -- a real router, to leave an admin's edit unapplied for as long as the socket
+    -- flaps.
+    --
+    -- Applying a pushed snapshot is also PROOF the link is live — the sidecar
+    -- could not have received and persisted it otherwise — so a successful apply
+    -- clears the failover flag here rather than waiting for the next policy tick
+    -- to notice. That also removes a double-apply: without it, recovery rendered
+    -- the OLD cached snapshot to lift failover and then immediately rendered the
+    -- new one.
+    do
       local trig_etag, persist_up = ws_pending_read()
       local due_trigger = trig_etag ~= nil and trig_etag ~= ts.current_etag
       local due_gate    = (mono - ts.last_ws_apply_run) >= ws_apply_int
@@ -1533,6 +1553,14 @@ conntrack.watch({
                   metrics.observe(mreg, "ws_push_apply_latency_seconds", {}, lat)
                 end
               end
+            end
+            -- A push we received and applied proves the link is up, so lift any
+            -- failover render in the same breath. `apply_and_publish` renders
+            -- with no failover opts, so the chain is already gone from the
+            -- ruleset; this just stops the flag from re-rendering it.
+            if ts.in_failover_render then
+              ts.in_failover_render = false
+              log.info("failover lifted: a pushed snapshot applied, so the ws link is live")
             end
             log.info("ws apply: applied pushed snapshot etag=%s (poll-independent)",
                      tostring(pushed.etag))

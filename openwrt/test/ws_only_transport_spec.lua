@@ -241,6 +241,78 @@ describe("#2736 (D) the failover edge reads the ws link, not a poll result", fun
   end)
 end)
 
+-- ── (F) failover must not suppress the only policy path ──────────────────
+
+describe("#2736 (F) a failover render does not stall the ws apply tick", function()
+  -- THE BUG THIS PINS, found by Gate 2 rather than by review. The ws
+  -- apply-on-push tick used to be gated on `not ts.in_failover_render` — "the
+  -- failover chain owns the plane until the poll recovers" — which was safe
+  -- only while the POLL was the thing that recovered. With the poll gone,
+  -- failover trips on a stale ws sentinel and this tick is the ONLY way policy
+  -- reaches enforcement, so the gate made failover suppress the sole apply
+  -- path: a ws blip stalled a pushed snapshot for ~5 minutes on the real VM.
+
+  it("the agent does not gate the ws apply tick on in_failover_render", function()
+    local src = slurp(AGENT_PATH)
+    assert.is_nil(src:find("if not ts.in_failover_render then", 1, true),
+      "the ws apply-on-push tick must not be skipped while in failover")
+  end)
+
+  it("ANCHOR: the agent still HAS a failover render path", function()
+    -- Without this, the assertion above would also pass on an agent that had
+    -- dropped failover altogether, which would be a different bug.
+    local src = slurp(AGENT_PATH)
+    assert.is_not_nil(src:find("policy.failover_transition", 1, true))
+    assert.is_not_nil(src:find("in_failover_render", 1, true))
+  end)
+
+  -- Behavioural model of on_tick's two blocks in their real order: the policy
+  -- tick judges the link and may trip failover, then the ws apply tick reads
+  -- the on-disk snapshot. Uses the REAL failover_transition and is_healthy.
+  local function tick(state, opts)
+    local link_ok = ws_outbound.is_healthy({
+      health_read = function() return opts.health end,
+      now         = function() return opts.now end,
+      stale_after = 90,
+    })
+    local _, _, nif = policy.failover_transition(state.in_failover, link_ok)
+    state.in_failover = nif
+    -- ws apply tick: ungated by failover since #2736.
+    if opts.pushed_etag and opts.pushed_etag ~= state.applied_etag then
+      state.applied_etag = opts.pushed_etag
+      state.applies = state.applies + 1
+      state.in_failover = false   -- a push we applied proves the link is live
+    end
+    return state
+  end
+
+  local function fresh_state()
+    return { in_failover = false, applied_etag = nil, applies = 0 }
+  end
+
+  it("ANCHOR: a pushed snapshot applies on a healthy link", function()
+    local st = tick(fresh_state(), { health = 1000, now = 1010, pushed_etag = "e1" })
+    assert.are.equal(1, st.applies)
+    assert.is_false(st.in_failover)
+  end)
+
+  it("a stale link trips failover", function()
+    local st = tick(fresh_state(), { health = 1000, now = 2000 })
+    assert.is_true(st.in_failover)
+  end)
+
+  it("a snapshot pushed WHILE in failover still applies, and lifts it", function()
+    local st = tick(fresh_state(), { health = 1000, now = 2000 })
+    assert.is_true(st.in_failover, "precondition: we are in failover")
+    -- The sidecar reconnected and persisted a snapshot; the sentinel read in
+    -- THIS tick is still the stale one, which is exactly the window the old
+    -- gate stalled in.
+    st = tick(st, { health = 1000, now = 2001, pushed_etag = "e2" })
+    assert.are.equal(1, st.applies, "the pushed snapshot must not wait for failover to lift")
+    assert.is_false(st.in_failover, "applying a push proves the link is live")
+  end)
+end)
+
 -- ── (E) the fallback's config is gone ─────────────────────────────────────
 
 describe("#2736 (E) fallback-only config is removed", function()
