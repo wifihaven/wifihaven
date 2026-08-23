@@ -29,7 +29,7 @@ The base `wifihaven` package and `luci-base` must already be installed.
 ## Status panel
 
 The Status tab is a stub. Wiring it to real signals (last successful policy
-poll / usage POST, retry-queue depth) is a follow-up — the agent does not
+apply / usage upload, retry-queue depth) is a follow-up — the agent does not
 currently surface those over a stable surface that LuCI can read.
 
 ## Layout

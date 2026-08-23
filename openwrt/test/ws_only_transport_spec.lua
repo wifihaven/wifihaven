@@ -96,9 +96,6 @@ describe("#2736 (B) the outbound tee has no HTTP fall-through", function()
         r.spooled[#r.spooled + 1] = line
         return true
       end,
-      health_read  = function() return opts.health end,
-      now          = function() return opts.now or 1000 end,
-      stale_after  = opts.stale_after or 90,
       metrics_inc  = function(result) r.meters[#r.meters + 1] = result end,
     })
     return r
@@ -251,14 +248,28 @@ describe("#2736 (E) fallback-only config is removed", function()
     assert.is_not_nil(slurp(CONFIG_PATH):find("heartbeat_interval", 1, true))
   end)
 
-  it("ships no ws.fallback_after", function()
-    assert.is_nil(slurp(CONFIG_PATH):find("fallback_after", 1, true))
+  it("ships no ws.fallback_after option", function()
+    -- The section's prose still names the retired key, which is useful; what
+    -- must be gone is the shipped `option` line an agent would read.
+    assert.is_nil(slurp(CONFIG_PATH):find("option fallback_after", 1, true))
   end)
 
   it("ships no ws.enabled opt-out (ws is the only transport)", function()
     -- Keeping the toggle after the poll is gone would let an operator strand a
-    -- router with no policy transport at all.
-    assert.is_nil(slurp(CONFIG_PATH):find("option enabled", 1, true))
-    assert.is_nil(slurp(AGENT_PATH):find("fallback_after", 1, true))
+    -- router with no policy transport at all. Scoped to the `config ws` section:
+    -- the sni sidecar's own `option enabled` is unrelated and stays.
+    local cfg = slurp(CONFIG_PATH)
+    local ws_section = cfg:sub(cfg:find("config ws 'ws'", 1, true))
+    assert.is_nil(ws_section:find("option enabled", 1, true))
+  end)
+
+  it("the agent reads no fallback_after and holds no ws-enabled flag", function()
+    -- The prose above each removal still NAMES the retired keys, which is
+    -- useful; what must be gone is the code that reads them.
+    local src = slurp(AGENT_PATH)
+    assert.is_nil(src:find('uci_get_ws("fallback_after"', 1, true))
+    assert.is_nil(src:find("ws_fallback_after", 1, true))
+    assert.is_nil(src:find('uci_get_ws("enabled"', 1, true))
+    assert.is_nil(src:find("ws_enabled", 1, true))
   end)
 end)

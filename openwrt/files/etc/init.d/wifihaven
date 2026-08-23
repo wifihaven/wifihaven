@@ -71,28 +71,22 @@ start_service() {
     procd_set_param stderr 1
     procd_close_instance
 
-    # ws sidecar (wifihaven-ws): the persistent-websocket transport (#1848).
-    # Owns its own cqueues event loop, separate from the conntrack-driven agent
-    # loop (which is unchanged). DEFAULT ON as of #2608 — an UNSET flag starts
-    # the sidecar, so a fresh install lands on ws with no UCI step. Only an
-    # explicit `wifihaven.ws.enabled=0` keeps it off, and the agent's HTTP
-    # poll/POST path is untouched either way: it is what an opted-out router
-    # uses AND what a default-on router falls back to whenever the sidecar is
-    # down past ws_fallback_after (design §3.1). Niced below dnsmasq like the
-    # rest of the stack (#1864). Local agent config, NOT a policy field.
-    local ws_enabled
-    config_get ws_enabled ws enabled '1'
-    if [ "$ws_enabled" = "1" ]; then
-        procd_open_instance "ws"
-        procd_set_param command /usr/sbin/wifihaven-ws
-        procd_set_param respawn 3600 5 5
-        procd_set_param nice "$WIFIHAVEN_NICE"
-        procd_set_param stdout 1
-        procd_set_param stderr 1
-        procd_close_instance
-    else
-        logger -t wifihaven 'ws sidecar disabled via uci (wifihaven.ws.enabled=0)'
-    fi
+    # ws sidecar (wifihaven-ws): the persistent-websocket transport (#1848),
+    # and since #2736 the router's ONLY policy/telemetry transport. Owns its own
+    # cqueues event loop, separate from the conntrack-driven agent loop (which is
+    # unchanged). ALWAYS started: the `wifihaven.ws.enabled` toggle is gone,
+    # because with the HTTP poll removed an opt-out would leave the router with
+    # no way to receive policy or report usage at all — a footgun, not a choice.
+    # A router whose socket is down keeps enforcing its last on-disk snapshot and
+    # alert W15 fires on it. Niced below dnsmasq like the rest of the stack
+    # (#1864).
+    procd_open_instance "ws"
+    procd_set_param command /usr/sbin/wifihaven-ws
+    procd_set_param respawn 3600 5 5
+    procd_set_param nice "$WIFIHAVEN_NICE"
+    procd_set_param stdout 1
+    procd_set_param stderr 1
+    procd_close_instance
 }
 
 service_triggers() {

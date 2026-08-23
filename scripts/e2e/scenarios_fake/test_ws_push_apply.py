@@ -96,30 +96,17 @@ def _snapshot(*, etag: str, extra_blocked: list[str], paused: bool = False) -> d
     )
 
 
-def _enable_ws_and_freeze_poll() -> None:
-    """Turn the ws sidecar on and widen the HTTP poll so only the push delivers.
+def _restart_agent() -> None:
+    """Restart the agent so this scenario starts from a known transport state.
 
-    Setting `policy_poll_interval=3600` neutralises the poll for the scenario's
-    lifetime (the agent still does ONE startup poll, then sleeps an hour), so any
-    policy.json change observed after the socket is up is attributable to the ws
-    push and nothing else.
-
-    The `ws.enabled=1` write is redundant since #2608 made ws the shipped default
-    (the base snapshot now comes up with the sidecar running and `enabled` unset).
-    It is kept because this scenario's whole point is to be explicit about which
-    transport it is testing — it must not silently start passing or failing on a
-    future default change. Freezing the poll is the part that still does work.
-
-    The settings live in the VM disk and are reverted by the next test's `router`
-    fixture (router_restore to the base snapshot, which is ws-ON as of #2608).
+    #2736 emptied this of its old contents and that is the point. It used to set
+    `ws.enabled=1` and widen `policy_poll_interval` to an hour, so that only the
+    ws push could deliver a snapshot. Neither is needed or possible now: the
+    toggle is gone, and there is no HTTP poll left for a push to be confused
+    with, so the attribution this function existed to establish is now
+    structural. A plain restart is all that remains.
     """
-    router_ssh(
-        "uci set wifihaven.ws.enabled=1; "
-        "uci set wifihaven.wifihaven.policy_poll_interval=3600; "
-        "uci commit wifihaven; "
-        "/etc/init.d/wifihaven restart",
-        timeout=60,
-    )
+    router_ssh("/etc/init.d/wifihaven restart", timeout=60)
 
 
 _router_snapshot_etag = router_snapshot_etag
@@ -254,7 +241,7 @@ def test_ws_policy_push_received_and_saved(router, fake_api):
 
     # Enable the sidecar + freeze the poll, then wait for the agent to upgrade
     # the socket (the fake sees the connection).
-    _enable_ws_and_freeze_poll()
+    _restart_agent()
     fake_api.wait_for_ws_connected(timeout_s=180)
 
     # ── Leg A — policy-on-connect ───────────────────────────────────────────
@@ -307,7 +294,10 @@ def test_ws_health_sentinel_is_refreshed_by_the_heartbeat_alone(router, fake_api
     produces application frames while that same sentinel is fresh. The signal fed
     itself, so one quiet gap past ws.fallback_after (300s) latched a perfectly
     healthy connection into permanent HTTP polling — measured on prod as a
-    sentinel 80 minutes stale under a socket that was still heartbeating.
+    sentinel 80 minutes stale under a socket that was still heartbeating. (That
+    was under the old `ws.fallback_after` window; #2736 removed both the poll it
+    fell back to and the key, and the sentinel is now what the failover edge and
+    alert W15 read instead — so this property matters more, not less.)
 
     The fix makes the control ping/pong exchange refresh the sentinel, so this
     asserts exactly that: a window in which the sentinel ADVANCED while the
@@ -336,7 +326,7 @@ def test_ws_health_sentinel_is_refreshed_by_the_heartbeat_alone(router, fake_api
     # its own — which is exactly the coupling a future edit to the helper could
     # break from a distance, hence the assertion below.
     router_ssh("uci set wifihaven.ws.heartbeat_interval=5", timeout=30)
-    _enable_ws_and_freeze_poll()
+    _restart_agent()
     # Pin the precondition. A 30s heartbeat still lands inside the 300s window,
     # so a heartbeat that silently failed to commit would leave this scenario
     # GREEN while measuring the slow path — the assertion is what turns that into
@@ -408,7 +398,7 @@ def test_ws_policy_push_applies_enforcement_live(router, fake_api):
     fake_api.serve_snapshot(
         _snapshot(etag=ETAG_ENFORCE_BASE, extra_blocked=["example.com"])
     )
-    _enable_ws_and_freeze_poll()
+    _restart_agent()
     fake_api.wait_for_ws_connected(timeout_s=180)
 
     # The one startup poll applies the base snapshot; the device must NOT carry a
@@ -469,7 +459,7 @@ def test_ws_pushed_pause_applies_on_idle_client_without_nudge(router, fake_api):
     fake_api.serve_snapshot(
         _snapshot(etag=ETAG_IDLE_BASE, extra_blocked=["example.com"])
     )
-    _enable_ws_and_freeze_poll()
+    _restart_agent()
     fake_api.wait_for_ws_connected(timeout_s=180)
 
     wait_until(
@@ -554,7 +544,7 @@ def test_ws_policy_push_applies_paused_with_extra_allowed(router, fake_api):
     """
     # ── On-connect baseline — device assigned, carve hosts allowed, NOT paused ─
     fake_api.serve_snapshot(_carve_snapshot(etag=ETAG_CARVE_BASE, paused=False))
-    _enable_ws_and_freeze_poll()
+    _restart_agent()
     fake_api.wait_for_ws_connected(timeout_s=180)
 
     wait_until(

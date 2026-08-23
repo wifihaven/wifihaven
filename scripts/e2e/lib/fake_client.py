@@ -165,7 +165,12 @@ class FakeAPIClient:
         timeout_s: float = 180,
         interval_s: float = 2.0,
     ) -> dict[str, Any]:
-        """Block until a /api/router/policy fetch with id > after_id arrives."""
+        """Block until a policy DELIVERY with id > after_id arrives.
+
+        Transport-agnostic since #2608: the fake records a pushed ws `policy`
+        frame in the same list as an HTTP fetch. Since #2736 the agent has no
+        HTTP poll at all, so in practice every record here is a ws push.
+        """
         deadline = time.monotonic() + timeout_s
         while time.monotonic() < deadline:
             fetches = (self.policy_fetches(since_id=after_id).get("fetches") or [])
