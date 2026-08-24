@@ -172,6 +172,30 @@ above is now wrong, fix the step too — don't just log around it.
 
 ## Learnings log (newest first)
 
+- **2026-08-24 (#2740)** — Another clean no-op: no new app, no host-set gap,
+  no blocklist entry. Two new things worth recording:
+  - `api.mcsrvstat.us` (7.8 MB / 89 hits, real recurring volume) is a **shared
+    third-party Minecraft-server-status API** used by many unrelated
+    sites/bots (web-confirmed) — not owned or branded by Mojang or
+    Eaglercraft. Treat "single `api.` host, real bytes, but the *owner* is a
+    generic multi-consumer service" as its own collateral class, distinct
+    from both "vendor-API-with-no-branded-surface" (skip, e.g.
+    `elevenlabs.io`) and "brand-dedicated infra for an app you already
+    template" (extend the app's `hosts:`, e.g. the eaglercraft relay
+    servers). The tell is ownership, not volume: don't add a shared-service
+    apex to an app's host-set just because the app's users are the ones
+    hitting it — confirm the *service itself* is brand-owned first.
+  - `scholastic.com` (8.0 MB / 6 hits, spread thin across `clubs`/`ltm`/
+    `sstats`/`webchat-customer`/`www`) is a parent/school book-ordering
+    commerce flow (Scholastic Book Clubs), not a kid-facing recurring app —
+    skip even though the byte count alone would clear prior "thin cluster"
+    bars (cf. `serato`/#2331, `freckle`/#2596). When a candidate's real-world
+    function is a parent/administrative transaction rather than something
+    the kid personally engages with, that's disqualifying regardless of
+    subdomain diversity or byte volume.
+  - The device roster itself can rotate between passes (the #2129-era "Kid
+    Mac" is gone; Prima's MAC changed) — always pull `GET /api/devices`
+    fresh each run rather than reusing a MAC list from a prior evidence doc.
 - **2026-08-14 (#2699)** — A #1705-era "watch-item" deferral can graduate
   years later on a plain re-check, not just a byte-growth trigger: `poki.com`
   was explicitly deferred in the original `poki.yml` comment as "marketing
