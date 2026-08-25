@@ -1140,7 +1140,9 @@ describe('ProfilesPage — apps section (#767)', () => {
     )
   })
 
-  it('checkbox is not rendered when app is not time-limited', async () => {
+  // #2747 — the row checkbox now also covers allowed-mode apps; a blocked app
+  // accrues no usage, so it stays hidden there.
+  it('checkbox is not rendered for a blocked-mode app', async () => {
     (api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([tiktok])
     const user = userEvent.setup()
     renderPage()
@@ -1339,6 +1341,11 @@ describe('ProfilesPage — apps section (#767)', () => {
 // (allowed-during / blocked-during); the rule set rides the assignment's
 // UpsertAppAssignmentRequest as additive `scheduleRules`. Autosave: add/remove
 // persists immediately (no Save button).
+// NOTE (#2751): every fixture here puts `scheduleRules` on the assignment, a
+// field `GET /api/apps` does not currently return (`AppPolicyAssignment` has no
+// such member). These tests pin the SPA's render path for the post-#2751 API
+// shape — a green run here is NOT evidence that the schedule-editor surface is
+// reachable in the shipped product today.
 describe('ProfilesPage — per-app schedule rules (#1380)', () => {
   const bedtime = { id: 10, name: 'Bedtime', description: null, windows: [] }
   const schoolHours = { id: 11, name: 'School hours', description: null, windows: [] }
@@ -1503,14 +1510,24 @@ describe('ProfilesPage — exempt-from-daily for Allowed apps with no schedule r
     expect(cb.checked).toBe(false)
   })
 
-  it('copy describes the effect for an app with no schedule rule — no "in-window" wording', async () => {
+  // The copy must describe the flag's ACTUAL effect for a plain Allowed app,
+  // which is budget-only. The old schedule-editor wording ("reachable in-window
+  // even past the cap") is wrong twice over here: there is no window, and
+  // reachability past the cap is a property of Allow mode, not of the exemption
+  // — `ProfileAppDispositions.enforcement` carves an Allowed app's hosts into
+  // extraAllowed unconditionally, and `exemptUnderCapHosts` only ever sees
+  // TimeLimited assignments (`capGroups`). So the copy must claim the budget
+  // effect and MUST NOT claim a reachability one.
+  it('copy claims the budget effect only — no window, no reachability claim', async () => {
     (api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([allowedApp(true)])
     const user = userEvent.setup()
     await openApps(user)
     const label = (await screen.findByTestId('app-row-50-counts-toward-daily')).closest('label')!
     expect(label.textContent).toMatch(/Counts toward daily limit/i)
     expect(label.textContent).toMatch(/exempt/i)
+    expect(label.textContent).toMatch(/doesn't reduce the profile's remaining time/i)
     expect(label.textContent).not.toMatch(/in-window/i)
+    expect(label.textContent).not.toMatch(/reachable/i)
   })
 
   it('checking it writes exemptFromDaily: false (inverted, autosaved)', async () => {
@@ -1567,6 +1584,10 @@ describe('ProfilesPage — exempt-from-daily for Allowed apps with no schedule r
     await openApps(user)
     await screen.findByTestId('app-row-51')
     expect(screen.queryByTestId('app-row-51-counts-toward-daily')).not.toBeInTheDocument()
+    // Belt-and-braces: this fixture has no rules, so the schedule-editor toggle is
+    // already gated off by `hasAllowedRule`. The assertion that actually pins the
+    // new `showExemptToggle={mode === 'blocked'}` gate is the blocked-app-WITH-rule
+    // test in the #1380 describe above.
     expect(screen.queryByTestId('app-row-51-schedule-exempt')).not.toBeInTheDocument()
   })
 })
