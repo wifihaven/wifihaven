@@ -2144,10 +2144,18 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
           sp     = out.apps.find(_.appName == "Speechify").get
           orphan = out.orphanHosts.find(_.host.value == "elevenlabs.io")
         } yield assertTrue(resp.status == Status.Ok) &&
-          // FG = feelinggreat.com (1200 s) + elevenlabs.io 09:05 share (300 s).
-          assertTrue(fg.proportionalSeconds == 1500L) &&
-          // Speechify = speechify.com (900 s) + elevenlabs.io 11:30 share (300 s).
-          assertTrue(sp.proportionalSeconds == 1200L) &&
+          // #2744: the app HEADLINE is the canonical distinctive-host stitch — the same figure
+          // the per-app cap and the `app_used_daily` rollup read (#1897 distinctive-only,
+          // #1514/#1532 one per-app computation). It is NOT the per-host allocation summed.
+          //
+          // The shared row at 09:05 is co-present with the FG span [09:00, 09:20] BY
+          // CONSTRUCTION — that is the overlap test that credits it to FG at all — so those
+          // 300 s are the SAME wall clock feelinggreat.com already contributed. Adding them on
+          // top was the #2744 double-count in miniature. FG is therefore its distinctive span:
+          assertTrue(fg.proportionalSeconds == 1200L) &&
+          // Speechify likewise = speechify.com's span [11:25, 11:40]; its 11:30 shared row is
+          // inside that span.
+          assertTrue(sp.proportionalSeconds == 900L) &&
           // The shared host surfaces under BOTH apps' host rows (co-presence attribution).
           assertTrue(fg.hosts.exists(_.host.value == "elevenlabs.io")) &&
           assertTrue(sp.hosts.exists(_.host.value == "elevenlabs.io")) &&

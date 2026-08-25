@@ -617,6 +617,43 @@ object UsageRoutes {
         settings,
       )
 
+    // #2744: the per-app HEADLINE seconds come from the canonical per-app primitive
+    // ([[Presence.appSecondsForProfile]] over the app's DISTINCTIVE host-set — the #1514/#1532
+    // "exactly one per-app time computation" that `TimeStatusService.appSecondsByApp` feeds the
+    // per-app cap and the `app_used_daily` rollup from). They are NOT re-derived by summing the
+    // per-host allocation below.
+    //
+    // Summing per-host seconds treats an app's concurrently-active hosts as additive, so an app
+    // whose apex and CDN carry one browsing session reported ~2x its engaged time and disagreed
+    // with the number enforcement used (prod 2026-08-25: Khan Academy 50 min here vs 37 min on the
+    // cap/rollup). The per-host `hosts` drill-down below still carries the per-host allocation —
+    // that is host-level detail, and it does NOT sum to the app headline precisely because the
+    // app's hosts overlap in wall clock.
+    //
+    // The host-set is the same global-catalog distinctive partition `distinctiveByApex` uses, so
+    // for an app ASSIGNED to this profile this reproduces `appSecondsByApp` exactly; unassigned
+    // apps (which this endpoint reports on but the cap does not) go through the identical
+    // primitive. Groups are restricted to apps some presence row actually touches so an unused
+    // catalog entry costs no scan.
+    val touchedAppIds: Set[AppId]                       =
+      presence.iterator
+        .flatMap(r => distinctiveAppOf(r.host).iterator ++ sharedAppsOf(r.host))
+        .toSet
+    val distinctiveHostsByApp: Map[AppId, List[String]] =
+      mappings.filterNot(_.shared).groupBy(_.appId).view.mapValues(_.map(_.host.value)).toMap
+    val canonicalGroups: List[(String, List[String])]   =
+      touchedAppIds.toList
+        .sortBy(_.value)
+        .flatMap(id => distinctiveHostsByApp.get(id).map(hs => s"app:${id.value}" -> hs))
+    val canonicalSecondsByApp: Map[AppId, Long]         =
+      Presence
+        .appSecondsForProfile(presence, canonicalGroups, overlap, filter, continuationSeconds)
+        .iterator
+        .flatMap { case (key, secs) =>
+          key.stripPrefix("app:").toLongOption.map(id => AppId(id) -> secs)
+        }
+        .toMap
+
     // #1465: per-host presence is the session-stitch span (heartbeat-filtered), combined across the
     // profile's devices by its `crossDeviceOverlapMode`.
     val propByHost    =
@@ -649,13 +686,11 @@ object UsageRoutes {
     val touchedByHost: Map[HostId, Set[Option[AppId]]]     =
       allocByHost.view.mapValues(_.keySet).toMap
 
-    val appProp    = scala.collection.mutable.Map.empty[Option[AppId], Long]
     val hostsByApp = scala.collection.mutable.Map.empty[Option[AppId], List[HostUsage]]
     for ((h, alloc) <- allocByHost) {
       val totalSecs = alloc.values.sum
       val single    = alloc.sizeIs == 1
       for ((key, secs) <- alloc if key.isDefined) {
-        appProp.updateWith(key)(prev => Some(prev.getOrElse(0L) + secs))
         // Distinctive (single-key) host carries its display minutes verbatim; a split shared host's
         // proportional minutes follow its allocated seconds, and its `usedMins` (bucket presence) is
         // scaled by the same fraction so the per-app host row reflects the share.
@@ -684,7 +719,9 @@ object UsageRoutes {
     }
 
     // #1519: real-app rows ONLY. The `None` key surfaces as individual orphanHosts entries below.
-    val appKeys = (appProp.keySet ++ appPresence.keySet).iterator.flatten.toList.distinct
+    // #2744: the engaged-seconds side of the key set is the canonical map, not a per-host sum.
+    val appKeys =
+      (canonicalSecondsByApp.keySet ++ appPresence.keySet.flatten).toList.distinct
     val rows    = appKeys.map { aid =>
       val key   = Some(aid)
       val name  = appById.get(aid).map(_.name).getOrElse(aid.value.toString)
@@ -698,7 +735,7 @@ object UsageRoutes {
         appName = name,
         appIcon = icon,
         appIconType = it,
-        proportionalSeconds = appProp.getOrElse(key, 0L),
+        proportionalSeconds = canonicalSecondsByApp.getOrElse(aid, 0L),
         presenceSeconds = appPresence.getOrElse(key, 0L),
         hosts = hosts,
       )
