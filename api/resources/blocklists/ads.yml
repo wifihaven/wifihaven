@@ -495,3 +495,60 @@ hosts:
   - anzu-rtb.live
   - pem-teads.tv
   - admixer.net
+  # traffic-driven additions (#2742): 30-day prod recent-apexes sweep (26
+  # devices, 2026-08-25). tpdads.com (The Publisher Desk ad infra —
+  # cdn./prebid. subdomains observed) and ad.gt (Audigent, an audience
+  # advertising-intelligence platform, confirmed via netify) were both
+  # HELD OUT unverified in prior passes (#2122, #2503) for lack of identity
+  # confirmation; this run found a clear confirmed identity for each, so
+  # they move from held-out to added. broadstreetads.com (Broadstreet Ads,
+  # a publisher ad-manager platform), blogherads.com (BlogHer Ads, owned by
+  # Penske/SHE Media), admetricspro.com (AdMetricsPro, a programmatic ad
+  # network connecting publishers to ad exchanges), and ad-delivery.net
+  # (flagged "Risky Advertiser" by Netify — obfuscated ad-delivery infra,
+  # same obfuscated-but-confirmed-function class as the Bigo Ads domains)
+  # are all newly-confirmed ad-tech gaps. html-load.com / html-load.cc are a
+  # documented adware/malvertising pair that displays fake "ad blocker
+  # broke this page" prompts to coerce users into disabling ad blockers —
+  # confirmed ad-adjacent nuisance infra, not a legitimate site feature.
+  # blisspointmedia.com (Bliss Point Media, now part of Tinuiti) is an
+  # algorithmic TV/OTT media-buying agency — same attribution/media-buying
+  # class as the already-curated everesttech.net/ml314.com. Dual-use /
+  # wrong-category SKIPPED (no change from the standing #2503 call):
+  # bounceexchange.com (Wunderkind/BounceX on-site personalization tool).
+  # HELD OUT as UNVERIFIED this run: ad-score.com (name is shared by at
+  # least three unrelated "AdScore" companies — ad-fraud detection,
+  # automotive-ad compliance, marketing analytics — could not confirm which
+  # owns this exact domain), akiads.net (no identifiable owner found),
+  # adapexads.io (distinct domain from the confirmed ad-tech company
+  # Adapex/adapex.io — no direct confirmation the "ads" variant is the same
+  # company), brainlyads.com (weak/unconfirmed "advertising services"
+  # description only), adsensecustomsearchads.com (confirmed Google-owned
+  # AdSense-for-Search serving domain, but held out rather than risk
+  # reproducing the #2601 shared-GFE-collateral failure mode without IP-level
+  # confirmation it sits on dedicated, non-shared frontends).
+  # Re-confirmed already-documented HELD-OUT (no change): desync.com,
+  # powerad.ai, componecat.ai, conduit.ai, connectmachine.ai, e-volution.ai,
+  # elixion.ai, betrad.com. Re-confirmed already-documented SKIPs (no
+  # change): hs-analytics.net, synchrony.com/synchronycredit.com/
+  # mysynchrony.com, stageagent.com, myfitnesspal.com, tagsrvcs.com (HUMAN
+  # Security), imganalytics.com, opentrackr.org, popcorn-tracker.org,
+  # googletagmanager.com/googletagservices.com/google-analytics.com/
+  # googleadservices.com/app-analytics-services.com (banned shared-GFE
+  # apexes, see SharedGfeHosts.scala), app-ads-services.com,
+  # bdtelemetry.amazon (Amazon first-party telemetry). False positives
+  # (name matched a category regex, not ad-tech): 4kdownload.com,
+  # tinkercad.com, badssl.com, landspace.com (Chinese rocket company —
+  # matched via "dsp" inside "lanDSPace"), insiad.com (redirects to
+  # INSEAD business school), hellometrics.co (a marketing agency's own
+  # corporate site, not embedded tracking infra). See
+  # evidence/multi-category-classification-2742.md.
+  - tpdads.com
+  - ad.gt
+  - broadstreetads.com
+  - blogherads.com
+  - admetricspro.com
+  - ad-delivery.net
+  - html-load.com
+  - html-load.cc
+  - blisspointmedia.com

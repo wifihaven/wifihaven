@@ -203,6 +203,59 @@ that edit in the same PR.** If a step above is now wrong, fix the step too.
 
 ## Learnings log (newest first)
 
+- **2026-08-25** (#2742) — **A hand-written `grep -oE '^  - [a-zA-Z0-9._-]+$'`
+  extraction anchored with `$` silently drops any host line carrying a
+  trailing inline `# comment`** — `social-media.yml` and `games.yml` both use
+  inline comments on some host lines (`- acebet.cc # Acebet.cc US sweepstakes
+  social casino`), and the anchored regex under-counted `gambling.yml` by 4
+  hosts, `games.yml` by 1, and `social-media.yml` by 10 — enough to make
+  `acebet.cc` (already curated) look like a fresh gap. Fix: strip the
+  trailing comment first (`sed -E 's/^  - //; s/[[:space:]]*#.*$//'`) rather
+  than anchoring the match on it. This is the same class of bug the
+  #2122 `\s`-on-macOS lesson warns about — always smoke-test extraction
+  against a known sentinel that HAS an inline comment, not just one that
+  doesn't.
+- **2026-08-25** (#2742) — **A candidate can be a "genuine gap" for the
+  category it keyword-matched on while already being fully enforced under a
+  DIFFERENT category's file — check membership across every curated file,
+  not just the one the sweep bucketed it into.** `ads-twitter.com` and the
+  `tiktokpangle-b.us`/`tiktokpangle-cdn-us.com`/`tiktokpangle.us` cluster
+  all matched the social-media keyword sweep (Twitter/TikTok branding) but
+  are correctly curated in `ads.yml` (X's ad-conversion pixel; Pangle is
+  ByteDance's ad network, not TikTok content). Checking only
+  `social-media.yml`'s host set would have re-added them as "gaps" when
+  they're already dropped. Same applies in reverse — `axon.ai` and
+  `programmaticx.ai` both keyword-matched the `ai` sweep (`.ai` TLD) but are
+  correctly curated in `ads.yml` (ad-tech companies that happen to use a
+  `.ai` domain, not consumer AI products).
+- **2026-08-25** (#2742) — **A domain HELD OUT as "unverified — no identity
+  confirmation" in a prior pass is not permanently stuck there — a fresh
+  websearch that lands a specific, named-source identification (a netify.ai
+  company profile, not just a suggestive URL snippet) is legitimate grounds
+  to move it from held-out to added.** `tpdads.com` (held out in #2122) and
+  `ad.gt` (held out in #2503, explicitly for "no identity confirmation")
+  both resolved this run to clear, sourced identities (The Publisher Desk;
+  Audigent via netify.ai) and were added. Contrast with the standing
+  `bounceexchange.com` SKIP (already explicitly classified dual-use in a
+  live `ads.yml` comment, not just held-out) — that is a settled call, not
+  an open question, and was left alone per the xlgmedia.com precedent
+  (#2503) of respecting a prior pass's explicit classification over a fresh
+  guess.
+- **2026-08-25** (#2742) — **A confirmed brand name is not enough when
+  multiple unrelated companies share it, or when copycat/squatting sites
+  reuse it for an unrelated product — check that THIS domain, not just the
+  brand string, is the real owner.** `ad-score.com` matched three distinct
+  "AdScore" companies (ad-fraud detection, automotive-ad compliance,
+  marketing analytics) with no way to tell which owns the hyphenated domain
+  — held out. `poki.io` looked like a natural sibling of the already-curated
+  `poki.com`/`poki-cdn.com`, but a search surfaced several unrelated
+  brand-squatting clone sites reusing "Poki" for copycat game portals
+  (`poki.us.com`, `poki.us.org`, `poki.to`, `pokigames2.com`) and the bare
+  `poki.io` apex didn't even resolve — held out despite the tempting naming
+  pattern. `poki-gdn.com` (a CDN-suffix sibling, Amazon-registrar +
+  Cloudflare infra matching the confirmed `poki-cdn.com`) was added instead;
+  the naming-pattern signal is much stronger when it's a distinctive
+  suffix/infra match, not just brand-substring reuse.
 - **2026-08-18** (#2729) — **Before trusting a fresh websearch's top result
   for an ambiguous apex, check the CURRENT curated file first — a prior pass
   may have already resolved the SAME apex to a different, correct identity.**

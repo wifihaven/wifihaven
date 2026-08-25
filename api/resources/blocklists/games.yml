@@ -124,3 +124,18 @@ hosts:
   # web search as a dedicated Eaglercraft-unblocked portal. 30-day prod
   # recent-apexes sweep (27 devices, 2026-08-04).
   - eaglercraftgame.io
+  # traffic-driven additions (#2742): 30-day prod recent-apexes sweep (26
+  # devices, 2026-08-25). eaglercraft.dev is a fourth Eaglercraft TLD
+  # variant (35.8MB / 94 hits — the highest-traffic variant seen yet), same
+  # "unblocked games" evasion vein as the already-curated .com/.ru/-game.io
+  # apexes. poki-gdn.com is a sibling apex of the already-curated
+  # poki.com/poki-cdn.com cluster (same "gdn"-suffix CDN naming pattern,
+  # Amazon-registrar + Cloudflare infra consistent with poki-cdn.com).
+  # poki.io was HELD OUT unverified this run — several unrelated
+  # brand-squatting clone sites (poki.us.com, poki.us.org, poki.to,
+  # pokigames2.com) reuse the "Poki" name for copycat game portals, and the
+  # bare poki.io apex does not currently resolve, so its ownership could not
+  # be confirmed as the same company. See
+  # evidence/multi-category-classification-2742.md.
+  - eaglercraft.dev
+  - poki-gdn.com
