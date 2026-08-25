@@ -655,32 +655,56 @@ object UsageRoutes {
     // app start qualifying for shared-host seconds — silently moving them out of the orphan bucket.
     // A separate pass cannot affect the assigned apps' numbers at all.
     //
+    // Being its own pass, this one has its own `appHostPatterns` and therefore its own
+    // `effectiveGap` and heartbeat carve-out: a catalog app's minutes are stitched under a gap
+    // derived from the catalog groups, not from the assigned ones. That asymmetry is the price of
+    // not letting catalog traffic reach the assigned apps' gap, and it is the right way round —
+    // assigned apps are the ones with an enforcement counterpart to stay close to.
+    //
     // The membership gate uses `HostMatch.matchesAny`, the same predicate the primitive itself
-    // applies, so an app the primitive would match is never gated out by a weaker matcher. It is
-    // bounded by DISTINCT presence hosts (tens per profile-day), not rows.
-    val assignedAppIds: Set[AppId]                      = appLimits.map(_.appId).toSet
-    val distinctiveHostsByApp: Map[AppId, List[String]] =
+    // applies, so an app the primitive would match is never gated out by a weaker matcher. Cost is
+    // O(catalog apps x their hosts x DISTINCT presence hosts) — the catalog (`listAllHostMappings`)
+    // is the growing term, not the row count; `buildUsageByApp` runs per profile on the GET and on
+    // the `SpaPush` appUsage fan-out.
+    //
+    // #1061 note: both headline paths use PER-APP distinctive host-sets with no lowest-appId
+    // tiebreak, matching what the per-app cap counts. A host listed distinctively on two apps
+    // therefore counts for both headlines, where the old per-host sum credited only the lowest
+    // appId. The `hosts` drill-down below still applies the tiebreak via `distinctiveAppOf`, so
+    // the losing app shows a headline with no host rows. No shipped app template has a host
+    // distinctive on two apps; it is reachable for operator-created apps.
+    val assignedAppIds: Set[AppId]                          = appLimits.map(_.appId).toSet
+    val distinctiveHostsByApp: Map[AppId, List[String]]     =
       mappings
         .filterNot(_.shared)
         .groupBy(_.appId)
         .view
         .mapValues(_.map(_.host.value).distinct)
         .toMap
-    val presenceHosts: List[HostId]                     = presence.map(_.host).distinct
-    val catalogGroups: List[(String, List[String])]     =
+    val presenceHosts: List[HostId]                         = presence.map(_.host).distinct
+    // (label, appId, hosts) for the catalog-only apps this batch touched. Deriving the label→appId
+    // map from THESE entries (not from the full catalog) keeps the "no assigned app can appear on
+    // the catalog pass" disjointness visible at the definition.
+    val catalogEntries: List[(String, AppId, List[String])] =
       distinctiveHostsByApp.iterator
         .filterNot { case (id, _) => assignedAppIds.contains(id) }
         .filter { case (_, hosts) => presenceHosts.exists(h => HostMatch.matchesAny(h, hosts)) }
         .toList
         .sortBy(_._1.value)
-        .map { case (id, hosts) => s"app-catalog:${id.value}" -> hosts }
-    val catalogLabelToAppId: Map[String, AppId]         =
-      distinctiveHostsByApp.keysIterator.map(id => s"app-catalog:${id.value}" -> id).toMap
-    val catalogSecondsByApp: Map[AppId, Long]           =
-      if catalogGroups.isEmpty then Map.empty
+        .map { case (id, hosts) => (s"app-catalog:${id.value}", id, hosts) }
+    val catalogLabelToAppId: Map[String, AppId]             =
+      catalogEntries.iterator.map { case (label, id, _) => label -> id }.toMap
+    val catalogSecondsByApp: Map[AppId, Long]               =
+      if catalogEntries.isEmpty then Map.empty
       else
         Presence
-          .appSecondsForProfile(presence, catalogGroups, overlap, filter, continuationSeconds)
+          .appSecondsForProfile(
+            presence,
+            catalogEntries.map { case (label, _, hosts) => label -> hosts },
+            overlap,
+            filter,
+            continuationSeconds,
+          )
           .iterator
           .flatMap { case (label, secs) => catalogLabelToAppId.get(label).map(_ -> secs) }
           .toMap
