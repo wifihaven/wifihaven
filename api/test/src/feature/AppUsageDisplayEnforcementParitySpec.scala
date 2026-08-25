@@ -252,5 +252,70 @@ object AppUsageDisplayEnforcementParitySpec
         assertTrue(khanDisplay == khanEnforced)
       }
     },
+    test(
+      "an UNASSIGNED catalog app gets its own headline but is NOT a shared-host co-presence qualifier",
+    ) {
+      // #2744 guard. Unassigned catalog apps get their engaged seconds from a SEPARATE pass over
+      // the same primitive, deliberately not folded into `distinctiveSpansByApp`. If they were
+      // folded in they would become #1898 co-presence qualifiers, and a shared row whose only
+      // co-present app is unassigned would move OUT of the orphan bucket into that app's host rows.
+      // This pins both halves: the unassigned app still reports its own minutes, and the shared row
+      // still lands in "Other".
+      val today      = TestClock.schoolDayAfternoon.toLocalDate
+      val loneHost   = "unassigned-app.example"
+      val sharedHost = "shared-backend.example"
+      for {
+        _           <- cleanDb
+        profileRepo <- ZIO.service[ProfileRepo]
+        tlRepo      <- ZIO.service[TimeLimitRepo]
+        deviceRepo  <- ZIO.service[DeviceRepo]
+        appRepo     <- ZIO.service[AppRepo]
+        kidsId      <- TestLayers.seedKidsProfile(profileRepo)
+        _           <- tlRepo.upsert(kidsId, 240)
+        _           <- TestLayers.seedDevice(deviceRepo, testMac, "Kid Laptop", kidsId)
+        routerId    <- seedRouter
+        // NO assignment for this app — catalog entry only.
+        loneId      <- appRepo.create("Unassigned App", "unassigned-app", None, None)
+        _           <- appRepo.setHostEntries(
+          loneId,
+          List(
+            AppHostEntry(Hostname.unsafe(loneHost), shared = false),
+            AppHostEntry(Hostname.unsafe(sharedHost), shared = true),
+          ),
+        )
+        // 15 minutes on the unassigned app's distinctive host, with the shared backend firing
+        // inside that window — co-present with the ONLY candidate, which is unassigned.
+        _           <- seedTraffic(routerId, loneHost, today, 15, 0)
+        _           <- seedTraffic(routerId, sharedHost, today, 5, 1)
+
+        uRoutes <- usageRoutes
+        auth    <- makeAuth
+        token   <- auth.login("admin", "changeme").map(_.token.value)
+        resp    <- uRoutes.runZIO(
+          Request
+            .get(
+              URL
+                .decode(s"/api/profiles/${kidsId.value}/usage-by-app?from=$today&to=$today")
+                .toOption
+                .get,
+            )
+            .addHeader(Header.Authorization.Bearer(token)),
+        )
+        body    <- resp.body.asString
+        out     <- ZIO.fromEither(body.fromJson[ProfileUsageByApp])
+      } yield {
+        val lone = out.apps.find(_.appName == "Unassigned App")
+        assertTrue(resp.status == Status.Ok) &&
+        // LIVENESS ANCHOR: the unassigned app really is reported, with its real distinctive
+        // minutes — so the "not a qualifier" assertion below cannot pass on an empty response.
+        assertTrue(lone.isDefined) &&
+        assertTrue(lone.get.proportionalSeconds == 900L) &&
+        // The shared row is NOT credited to it: its seconds stay in the orphan bucket.
+        assertTrue(!lone.get.hosts.exists(_.host.value == sharedHost)) &&
+        assertTrue(
+          out.orphanHosts.exists(o => o.host.value == sharedHost && o.proportionalSeconds == 300L),
+        )
+      }
+    },
   ) @@ TestAspect.sequential // DB-backed: clones the migration template into a fixed-named scratch DB.
 }

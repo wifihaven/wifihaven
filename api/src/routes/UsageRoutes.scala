@@ -607,14 +607,24 @@ object UsageRoutes {
         .flatMap(fqdn => HostMatch.lookupApex(fqdn.value, sharedAppsByApex))
         .getOrElse(Set.empty)
 
-    // #1898: the S2 single-source-of-truth seam — each app's DISTINCTIVE-host engaged spans. S3 reads
-    // these for the co-presence overlap test rather than re-deriving the distinctive partition.
-    //
-    // #2744: these spans are ALSO the per-app headline (`proportionalSeconds`) below. They are the
-    // gap-bridged stitch over the app's distinctive host-set — `Presence.appSpansForProfile`, the
-    // #1514/#1532 "exactly one per-app time computation" — so for a TimeLimited app the headline is
-    // literally the spans `TimeStatusService.appSecondsByApp` sums for the per-app cap and the
-    // `app_used_daily` rollup, and display cannot drift from enforcement.
+    // #1898: the S2 single-source-of-truth seam — each app's DISTINCTIVE-host engaged spans, for
+    // every app ASSIGNED to this profile. S3 reads these for the co-presence overlap test rather
+    // than re-deriving the distinctive partition, and the qualifier set is exactly the assigned
+    // apps — unchanged by #2744, so the shared-host allocation and the orphan bucket below behave
+    // as they did before.
+    val distinctiveSpans =
+      wifihaven.api.policy.TimeStatusService.distinctiveSpansByApp(
+        profile,
+        appLimits,
+        presence,
+        settings,
+      )
+
+    // #2744: an ASSIGNED app's headline (`proportionalSeconds`) is the span seconds off the map
+    // above. Those spans are `Presence.appSpansForProfile` over the app's distinctive host-set —
+    // the #1514/#1532 "exactly one per-app time computation" — which is the same primitive over the
+    // same host-set the per-app cap (`TimeStatusService.appSecondsByApp`) and the `app_used_daily`
+    // rollup read, on the same gated presence batch.
     //
     // Previously the headline was rebuilt by SUMMING `Presence.proportionalHostSeconds` over the
     // app's hosts. That treats an app's hosts as additive, so an app whose apex and CDN carry one
@@ -624,32 +634,58 @@ object UsageRoutes {
     // deliberately does NOT sum to the app headline, precisely because an app's hosts overlap in
     // wall clock.
     //
-    // `catalogOnly` carries the apps this endpoint reports on that the profile has NO assignment
-    // for (#1519: a non-app host is its own single-host app, and an unassigned catalog app still
-    // gets a row). They ride the SAME seam rather than a second derivation beside it, so every app
-    // in this response shares one distinctive host-set derivation, one `appHostPatterns` scope and
-    // one `effectiveGap`. Membership is tested with `HostMatch.matchesAny` — the same matcher the
-    // primitive itself uses — over the batch's DISTINCT hosts, so an app the primitive would match
-    // is never gated out by a different matcher.
+    // NOT claimed: bit-exact equality with the cap in every case. `distinctiveSpansByApp` is
+    // mode-agnostic (`appLabelDistinctiveHosts`) while the cap is TimeLimited-only
+    // (`capGroupLabelDistinctiveHosts`), and inside the primitive the group set is also the #1506
+    // attribution set that feeds `effectiveGap`, so a long row on a non-TimeLimited assigned app's
+    // host can widen the stitch gap on this path but not on the cap's. That scope difference is
+    // #1898's, predates this change, and is untouched by it — what #2744 removes is the structural
+    // per-host sum, which was wrong by a factor of the app's concurrent host count.
+    val assignedSecondsByApp: Map[AppId, Long] =
+      distinctiveSpans.view.mapValues(_.map(_.seconds).sum).toMap
+
+    // #1519: this endpoint also reports apps the profile has NO assignment for (a catalog app whose
+    // hosts the traffic touched still gets a row). They have no `ProfileAppDispositions` entry — no
+    // assignment to derive one from — and no enforcement counterpart to agree with, so they get
+    // their own pass over the SAME primitive with their host-set taken from the global catalog.
+    //
+    // Keeping them OUT of the `distinctiveSpansByApp` call above is deliberate: that call's group
+    // set is its `appHostPatterns` / `effectiveGap` scope AND #1898's co-presence qualifier set, so
+    // folding catalog apps in would both widen the assigned apps' stitch gap and let an unassigned
+    // app start qualifying for shared-host seconds — silently moving them out of the orphan bucket.
+    // A separate pass cannot affect the assigned apps' numbers at all.
+    //
+    // The membership gate uses `HostMatch.matchesAny`, the same predicate the primitive itself
+    // applies, so an app the primitive would match is never gated out by a weaker matcher. It is
+    // bounded by DISTINCT presence hosts (tens per profile-day), not rows.
     val assignedAppIds: Set[AppId]                      = appLimits.map(_.appId).toSet
     val distinctiveHostsByApp: Map[AppId, List[String]] =
-      mappings.filterNot(_.shared).groupBy(_.appId).view.mapValues(_.map(_.host.value)).toMap
+      mappings
+        .filterNot(_.shared)
+        .groupBy(_.appId)
+        .view
+        .mapValues(_.map(_.host.value).distinct)
+        .toMap
     val presenceHosts: List[HostId]                     = presence.map(_.host).distinct
-    val catalogOnly: List[(AppId, List[String])]        =
+    val catalogGroups: List[(String, List[String])]     =
       distinctiveHostsByApp.iterator
         .filterNot { case (id, _) => assignedAppIds.contains(id) }
         .filter { case (_, hosts) => presenceHosts.exists(h => HostMatch.matchesAny(h, hosts)) }
         .toList
-    val distinctiveSpans                                =
-      wifihaven.api.policy.TimeStatusService.distinctiveSpansByApp(
-        profile,
-        appLimits,
-        presence,
-        settings,
-        catalogOnly,
-      )
-    val canonicalSecondsByApp: Map[AppId, Long]         =
-      distinctiveSpans.view.mapValues(_.map(_.seconds).sum).filter(_._2 > 0L).toMap
+        .sortBy(_._1.value)
+        .map { case (id, hosts) => s"app-catalog:${id.value}" -> hosts }
+    val catalogLabelToAppId: Map[String, AppId]         =
+      distinctiveHostsByApp.keysIterator.map(id => s"app-catalog:${id.value}" -> id).toMap
+    val catalogSecondsByApp: Map[AppId, Long]           =
+      if catalogGroups.isEmpty then Map.empty
+      else
+        Presence
+          .appSecondsForProfile(presence, catalogGroups, overlap, filter, continuationSeconds)
+          .iterator
+          .flatMap { case (label, secs) => catalogLabelToAppId.get(label).map(_ -> secs) }
+          .toMap
+
+    val canonicalSecondsByApp: Map[AppId, Long] = assignedSecondsByApp ++ catalogSecondsByApp
 
     // #1465: per-host presence is the session-stitch span (heartbeat-filtered), combined across the
     // profile's devices by its `crossDeviceOverlapMode`.
