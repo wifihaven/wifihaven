@@ -317,5 +317,68 @@ object AppUsageDisplayEnforcementParitySpec
         )
       }
     },
+    test(
+      "a host distinctive on TWO apps counts for both headlines; the drill-down keeps the #1061 tiebreak",
+    ) {
+      // #2744 freezes a consequence of reading the canonical primitive. The old headline came from
+      // the per-host sum, fed by an apex map that resolved a doubly-listed host with
+      // `minBy(appId)` (#1061), so only the lowest appId was credited. Both headline paths now use
+      // PER-APP distinctive host-sets with no tiebreak — which is what the per-app cap counts — so
+      // the host counts for both apps. The `hosts` drill-down still applies the tiebreak, so the
+      // losing app renders a headline with no host rows.
+      //
+      // No shipped app template has a host distinctive on two apps, so nothing regresses today;
+      // this pins the intended behaviour before an operator-created app or a catalog pass makes it
+      // reachable.
+      val today    = TestClock.schoolDayAfternoon.toLocalDate
+      val dualHost = "dual-listed.example"
+      for {
+        _           <- cleanDb
+        profileRepo <- ZIO.service[ProfileRepo]
+        tlRepo      <- ZIO.service[TimeLimitRepo]
+        deviceRepo  <- ZIO.service[DeviceRepo]
+        appRepo     <- ZIO.service[AppRepo]
+        kidsId      <- TestLayers.seedKidsProfile(profileRepo)
+        _           <- tlRepo.upsert(kidsId, 240)
+        _           <- TestLayers.seedDevice(deviceRepo, testMac, "Kid Laptop", kidsId)
+        routerId    <- seedRouter
+        lowId       <- appRepo.create("Lower AppId", "lower-appid", None, None)
+        highId      <- appRepo.create("Higher AppId", "higher-appid", None, None)
+        _           <- appRepo.setHosts(lowId, List(Hostname.unsafe(dualHost)))
+        _           <- appRepo.setHosts(highId, List(Hostname.unsafe(dualHost)))
+        _ <- appRepo.upsertAssignment(lowId, kidsId, AppMode.TimeLimited, Some(120), false)
+        _ <- appRepo.upsertAssignment(highId, kidsId, AppMode.TimeLimited, Some(120), false)
+        _ <- seedTraffic(routerId, dualHost, today, 10, 0)
+
+        uRoutes <- usageRoutes
+        auth    <- makeAuth
+        token   <- auth.login("admin", "changeme").map(_.token.value)
+        resp    <- uRoutes.runZIO(
+          Request
+            .get(
+              URL
+                .decode(s"/api/profiles/${kidsId.value}/usage-by-app?from=$today&to=$today")
+                .toOption
+                .get,
+            )
+            .addHeader(Header.Authorization.Bearer(token)),
+        )
+        body    <- resp.body.asString
+        out     <- ZIO.fromEither(body.fromJson[ProfileUsageByApp])
+      } yield {
+        val low  = out.apps.find(_.appName == "Lower AppId")
+        val high = out.apps.find(_.appName == "Higher AppId")
+        assertTrue(resp.status == Status.Ok) &&
+        // LIVENESS ANCHOR: both apps are present with the real 10 minutes, so the drill-down
+        // assertions below cannot pass against a response that dropped one of them.
+        assertTrue(low.isDefined) &&
+        assertTrue(high.isDefined) &&
+        assertTrue(low.get.proportionalSeconds == 600L) &&
+        assertTrue(high.get.proportionalSeconds == 600L) &&
+        // #1061 tiebreak survives on the drill-down: the host row goes to the lower appId only.
+        assertTrue(low.get.hosts.map(_.host.value) == List(dualHost)) &&
+        assertTrue(high.get.hosts.isEmpty)
+      }
+    },
   ) @@ TestAspect.sequential // DB-backed: clones the migration template into a fixed-named scratch DB.
 }
