@@ -1424,13 +1424,150 @@ describe('ProfilesPage — per-app schedule rules (#1380)', () => {
     )
   })
 
-  it('an allowed-during rule surfaces the exempt-from-daily cap copy', async () => {
+  // #2747 — for an Allowed-mode app the exempt-from-daily control now lives on
+  // the app row (it applies with or without a schedule rule), so the
+  // schedule-editor copy must NOT also render: one control per mode.
+  it('an allowed-mode app with an allowed-during rule shows the row control and no second schedule-editor control', async () => {
     (api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([ytWithRules([{ scheduleId: 10, mode: 'allowed_during' }])])
+    ;(api.schedules.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([bedtime])
+    const user = userEvent.setup()
+    await openAppsSection(user)
+    const row = await screen.findByTestId('app-row-50-counts-toward-daily')
+    expect(row).toBeInTheDocument()
+    expect(screen.queryByTestId('app-row-50-schedule-exempt')).not.toBeInTheDocument()
+  })
+
+  // #2747 — a Blocked-mode app is only reachable inside an allowed_during
+  // window, so the "reachable in-window even past the cap" copy is accurate
+  // there and the schedule-editor toggle stays its home.
+  it('a blocked-mode app with an allowed-during rule keeps the in-window exempt toggle', async () => {
+    const blockedWithRule = {
+      app: { id: 50, name: 'YouTube', slug: 'youtube', templateId: null, icon: '📺', createdAt: '2026-01-01' },
+      hosts: ['youtube.com'],
+      assignments: [
+        {
+          id: 2, appId: 50, profileId: 1, mode: 'blocked' as const, dailyMinutes: null,
+          exemptFromDaily: true, scheduleRules: [{ scheduleId: 10, mode: 'allowed_during' as const }],
+        },
+      ],
+    }
+    ;(api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([blockedWithRule])
     ;(api.schedules.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([bedtime])
     const user = userEvent.setup()
     await openAppsSection(user)
     const exempt = await screen.findByTestId('app-row-50-schedule-exempt')
     expect(exempt.textContent).toMatch(/daily (time )?limit/i)
+    expect(screen.queryByTestId('app-row-50-counts-toward-daily')).not.toBeInTheDocument()
+  })
+})
+
+// #2747 — an Allowed-mode app with NO schedule rule must be markable exempt
+// from the profile's daily cap ("always reachable, and its usage does not
+// consume the daily allowance"). The capability already existed end-to-end
+// (`ProfileAppDispositions.exemptPatterns` is mode-agnostic; #1627 treats an
+// exempt app with no cap as always-under-cap) — only the render condition
+// withheld it. The control is the same positive-phrased, inverted-on-write
+// "Counts toward daily limit" checkbox the time_limited row uses, so there is
+// exactly one polarity for this flag in the app row.
+describe('ProfilesPage — exempt-from-daily for Allowed apps with no schedule rule (#2747)', () => {
+  function allowedApp(exemptFromDaily: boolean) {
+    return {
+      app: { id: 50, name: 'Khan', slug: 'khan', templateId: null, icon: '📚', createdAt: '2026-01-01' },
+      hosts: ['khanacademy.org'],
+      assignments: [
+        { id: 2, appId: 50, profileId: 1, mode: 'allowed' as const, dailyMinutes: null, exemptFromDaily },
+      ],
+    }
+  }
+
+  const blockedApp = {
+    app: { id: 51, name: 'TikTok', slug: 'tiktok', templateId: null, icon: '🎵', createdAt: '2026-01-01' },
+    hosts: ['tiktok.com'],
+    assignments: [
+      { id: 1, appId: 51, profileId: 1, mode: 'blocked' as const, dailyMinutes: null, exemptFromDaily: true },
+    ],
+  }
+
+  async function openApps(user: ReturnType<typeof userEvent.setup>) {
+    renderPage()
+    await screen.findByTestId('profile-card-1')
+    await expand(1, user)
+    await user.click(screen.getByTestId('profile-apps-toggle-1'))
+  }
+
+  it('renders the counts-toward-daily control, unchecked when exempt', async () => {
+    (api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([allowedApp(true)])
+    const user = userEvent.setup()
+    await openApps(user)
+    const cb = await screen.findByTestId('app-row-50-counts-toward-daily') as HTMLInputElement
+    expect(cb.checked).toBe(false)
+  })
+
+  it('copy describes the effect for an app with no schedule rule — no "in-window" wording', async () => {
+    (api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([allowedApp(true)])
+    const user = userEvent.setup()
+    await openApps(user)
+    const label = (await screen.findByTestId('app-row-50-counts-toward-daily')).closest('label')!
+    expect(label.textContent).toMatch(/Counts toward daily limit/i)
+    expect(label.textContent).toMatch(/exempt/i)
+    expect(label.textContent).not.toMatch(/in-window/i)
+  })
+
+  it('checking it writes exemptFromDaily: false (inverted, autosaved)', async () => {
+    (api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([allowedApp(true)])
+    const user = userEvent.setup()
+    await openApps(user)
+    await user.click(await screen.findByTestId('app-row-50-counts-toward-daily'))
+    await waitFor(() =>
+      expect(api.apps.setPolicy).toHaveBeenCalledWith(50, 1, {
+        mode: 'allowed',
+        dailyMinutes: null,
+        exemptFromDaily: false,
+        allowedDuringScheduleBlock: true,
+      }),
+    )
+  })
+
+  it('round-trips: a non-exempt app renders checked and unchecking writes exemptFromDaily: true', async () => {
+    (api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([allowedApp(false)])
+    const user = userEvent.setup()
+    await openApps(user)
+    const cb = await screen.findByTestId('app-row-50-counts-toward-daily') as HTMLInputElement
+    expect(cb.checked).toBe(true)
+    await user.click(cb)
+    await waitFor(() =>
+      expect(api.apps.setPolicy).toHaveBeenCalledWith(50, 1, {
+        mode: 'allowed',
+        dailyMinutes: null,
+        exemptFromDaily: true,
+        allowedDuringScheduleBlock: true,
+      }),
+    )
+  })
+
+  // #1086 — the write feeds server-side daily-cap math, so it must invalidate
+  // the ['time','status'] subtree or the profile-wide used/cap bar goes stale.
+  it('toggling it invalidates the time-status summary (#1086)', async () => {
+    (api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([allowedApp(true)])
+    const user = userEvent.setup()
+    await openApps(user)
+    const cb = await screen.findByTestId('app-row-50-counts-toward-daily')
+    expect(api.time.summaryAll).toHaveBeenCalledTimes(1)
+    await user.click(cb)
+    await waitFor(() => expect(api.apps.setPolicy).toHaveBeenCalled())
+    await waitFor(() => expect(api.time.summaryAll).toHaveBeenCalledTimes(2))
+  })
+
+  // Decision: a Blocked-mode app drops all traffic and so accrues no usage —
+  // an exemption is meaningless. Visibility is scoped to `allowed` explicitly
+  // rather than inherited from the old `mode !== 'time_limited'` condition.
+  it('is NOT rendered for a blocked-mode app', async () => {
+    (api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([blockedApp])
+    const user = userEvent.setup()
+    await openApps(user)
+    await screen.findByTestId('app-row-51')
+    expect(screen.queryByTestId('app-row-51-counts-toward-daily')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('app-row-51-schedule-exempt')).not.toBeInTheDocument()
   })
 })
 
