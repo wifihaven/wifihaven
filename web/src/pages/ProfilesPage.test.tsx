@@ -1480,8 +1480,9 @@ describe('ProfilesPage — per-app schedule rules (#1380)', () => {
 // `PolicyService.exemptUnderCapHosts` (the #1627 always-under-cap carve) never
 // sees an Allowed assignment: `ProfileAppDispositions.capGroups` filters
 // `state.perApp` to TimeLimited. An Allowed app outlives the profile cap
-// either way, because `enforcement` carves its hosts into extraAllowed
-// unconditionally.
+// either way, because `enforcement` carves its hosts into extraAllowed without
+// consulting capExhausted at all (only #1679's block-during-schedule opt-out
+// can suppress that carve, and that is a schedule concern, not a cap one).
 //
 // The control is the same positive-phrased, inverted-on-write "Counts toward
 // daily limit" checkbox the time_limited row uses, so there is exactly one
@@ -1525,9 +1526,9 @@ describe('ProfilesPage — exempt-from-daily for Allowed apps with no schedule r
   // even past the cap") is wrong twice over here: there is no window, and
   // reachability past the cap is a property of Allow mode, not of the exemption
   // — `ProfileAppDispositions.enforcement` carves an Allowed app's hosts into
-  // extraAllowed unconditionally, and `exemptUnderCapHosts` only ever sees
-  // TimeLimited assignments (`capGroups`). So the copy must claim the budget
-  // effect and MUST NOT claim a reachability one.
+  // extraAllowed without consulting capExhausted, and `exemptUnderCapHosts`
+  // only ever sees TimeLimited assignments (`capGroups`). So the copy must
+  // claim the budget effect and MUST NOT claim a reachability one.
   it('copy claims the budget effect only — no window, no reachability claim', async () => {
     (api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([allowedApp(true)])
     const user = userEvent.setup()

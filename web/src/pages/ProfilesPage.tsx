@@ -1993,7 +1993,6 @@ function AppRow({ app, profileId, onChanged, usedMins, blocklistNameById }: {
     await apply(mode, current?.dailyMinutes ?? null, current?.exemptFromDaily, next)
   }
 
-
   // #1679: toggle "block during scheduled downtime" for Allowed-mode apps.
   // nextAllowed = !checkbox.checked (checkbox is "block during schedule", NOT "allow during schedule").
   async function toggleScheduleBlock(nextAllowed: boolean) {
@@ -2173,8 +2172,10 @@ function AppRow({ app, profileId, onChanged, usedMins, blocklistNameById }: {
                 default IS exempt and which has no cap of its own to reason from.
                 Budget ONLY: for a plain Allowed app the flag changes nothing about
                 reachability. `ProfileAppDispositions.enforcement` carves an
-                Allowed app's hosts into extraAllowed unconditionally (capExhausted
-                is consulted only on the allowed_during branch), and
+                Allowed app's hosts into extraAllowed without ever consulting
+                capExhausted (that gate lives only on the allowed_during branch;
+                the one thing that can suppress the carve is #1679's
+                block-during-schedule opt-out, which is not the daily cap), and
                 `exemptUnderCapHosts` never sees it — `capGroups` filters
                 `state.perApp` to TimeLimited. So the app outlives the cap either
                 way; the flag decides only whether its usage counts. The
