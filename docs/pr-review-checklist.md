@@ -135,7 +135,13 @@ in [#1561](https://github.com/wifihaven/wifihaven/issues/1561).
   `blocked` / `blockReason`). Express new policy through the existing functional
   fields.
 - **`extraAllowed` beats every block path** — it must override `blocked` and
-  every other drop.
+  every other drop. This is the *router enforcement* invariant (#421): whatever
+  lands in `extraAllowed` wins. It is **not** a claim that the server always
+  puts an app's hosts there — `PolicyService` withholds the carve for a
+  **non**-exempt app once the profile's daily cap is exhausted
+  (`ProfileAppDispositions.scala:147`), so "the app is allowed, therefore it
+  works past the daily limit" is wrong unless the assignment is
+  `exemptFromDaily` (architecture.md → "App exempt-from-daily").
 - **`Clock` injected** — no direct `java.time` `now`. **ZIO effects** — no
   `throw`; typed sealed errors, not strings. **Config via `zio-config`** — no
   `sys.env` or hardcoded values.
