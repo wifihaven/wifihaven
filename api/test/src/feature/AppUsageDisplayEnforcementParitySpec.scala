@@ -248,10 +248,9 @@ object AppUsageDisplayEnforcementParitySpec
         // Reconciliation: 20 minutes of attributed traffic ⇒ ~20 engaged minutes, not 40. Summing
         // the two co-present hosts (the #2744 defect) yields 40 here.
         assertTrue(khanDisplay == 20) &&
-        // …and the two surfaces agree by construction, which is the invariant that must not drift.
+        // ...and the two surfaces agree by construction, the invariant that must not drift.
         assertTrue(khanDisplay == khanEnforced)
       }
     },
-    // Each DB-backed test clones the migration template into a fixed-named scratch DB.
-  ) @@ TestAspect.sequential
+  ) @@ TestAspect.sequential // DB-backed: clones the migration template into a fixed-named scratch DB.
 }

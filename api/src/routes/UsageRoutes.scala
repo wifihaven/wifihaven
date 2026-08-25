@@ -609,50 +609,47 @@ object UsageRoutes {
 
     // #1898: the S2 single-source-of-truth seam — each app's DISTINCTIVE-host engaged spans. S3 reads
     // these for the co-presence overlap test rather than re-deriving the distinctive partition.
-    val distinctiveSpans =
+    //
+    // #2744: these spans are ALSO the per-app headline (`proportionalSeconds`) below. They are the
+    // gap-bridged stitch over the app's distinctive host-set — `Presence.appSpansForProfile`, the
+    // #1514/#1532 "exactly one per-app time computation" — so for a TimeLimited app the headline is
+    // literally the spans `TimeStatusService.appSecondsByApp` sums for the per-app cap and the
+    // `app_used_daily` rollup, and display cannot drift from enforcement.
+    //
+    // Previously the headline was rebuilt by SUMMING `Presence.proportionalHostSeconds` over the
+    // app's hosts. That treats an app's hosts as additive, so an app whose apex and CDN carry one
+    // browsing session reported ~2x its engaged time (prod 2026-08-25: Khan Academy 50 min here vs
+    // 37 min on the cap/rollup, off a 28.2-minute wall-clock envelope). The per-host `hosts`
+    // drill-down below still carries the per-host allocation — that is host-level detail, and it
+    // deliberately does NOT sum to the app headline, precisely because an app's hosts overlap in
+    // wall clock.
+    //
+    // `catalogOnly` carries the apps this endpoint reports on that the profile has NO assignment
+    // for (#1519: a non-app host is its own single-host app, and an unassigned catalog app still
+    // gets a row). They ride the SAME seam rather than a second derivation beside it, so every app
+    // in this response shares one distinctive host-set derivation, one `appHostPatterns` scope and
+    // one `effectiveGap`. Membership is tested with `HostMatch.matchesAny` — the same matcher the
+    // primitive itself uses — over the batch's DISTINCT hosts, so an app the primitive would match
+    // is never gated out by a different matcher.
+    val assignedAppIds: Set[AppId]                      = appLimits.map(_.appId).toSet
+    val distinctiveHostsByApp: Map[AppId, List[String]] =
+      mappings.filterNot(_.shared).groupBy(_.appId).view.mapValues(_.map(_.host.value)).toMap
+    val presenceHosts: List[HostId]                     = presence.map(_.host).distinct
+    val catalogOnly: List[(AppId, List[String])]        =
+      distinctiveHostsByApp.iterator
+        .filterNot { case (id, _) => assignedAppIds.contains(id) }
+        .filter { case (_, hosts) => presenceHosts.exists(h => HostMatch.matchesAny(h, hosts)) }
+        .toList
+    val distinctiveSpans                                =
       wifihaven.api.policy.TimeStatusService.distinctiveSpansByApp(
         profile,
         appLimits,
         presence,
         settings,
+        catalogOnly,
       )
-
-    // #2744: the per-app HEADLINE seconds come from the canonical per-app primitive
-    // ([[Presence.appSecondsForProfile]] over the app's DISTINCTIVE host-set — the #1514/#1532
-    // "exactly one per-app time computation" that `TimeStatusService.appSecondsByApp` feeds the
-    // per-app cap and the `app_used_daily` rollup from). They are NOT re-derived by summing the
-    // per-host allocation below.
-    //
-    // Summing per-host seconds treats an app's concurrently-active hosts as additive, so an app
-    // whose apex and CDN carry one browsing session reported ~2x its engaged time and disagreed
-    // with the number enforcement used (prod 2026-08-25: Khan Academy 50 min here vs 37 min on the
-    // cap/rollup). The per-host `hosts` drill-down below still carries the per-host allocation —
-    // that is host-level detail, and it does NOT sum to the app headline precisely because the
-    // app's hosts overlap in wall clock.
-    //
-    // The host-set is the same global-catalog distinctive partition `distinctiveByApex` uses, so
-    // for an app ASSIGNED to this profile this reproduces `appSecondsByApp` exactly; unassigned
-    // apps (which this endpoint reports on but the cap does not) go through the identical
-    // primitive. Groups are restricted to apps some presence row actually touches so an unused
-    // catalog entry costs no scan.
-    val touchedAppIds: Set[AppId]                       =
-      presence.iterator
-        .flatMap(r => distinctiveAppOf(r.host).iterator ++ sharedAppsOf(r.host))
-        .toSet
-    val distinctiveHostsByApp: Map[AppId, List[String]] =
-      mappings.filterNot(_.shared).groupBy(_.appId).view.mapValues(_.map(_.host.value)).toMap
-    val canonicalGroups: List[(String, List[String])]   =
-      touchedAppIds.toList
-        .sortBy(_.value)
-        .flatMap(id => distinctiveHostsByApp.get(id).map(hs => s"app:${id.value}" -> hs))
     val canonicalSecondsByApp: Map[AppId, Long]         =
-      Presence
-        .appSecondsForProfile(presence, canonicalGroups, overlap, filter, continuationSeconds)
-        .iterator
-        .flatMap { case (key, secs) =>
-          key.stripPrefix("app:").toLongOption.map(id => AppId(id) -> secs)
-        }
-        .toMap
+      distinctiveSpans.view.mapValues(_.map(_.seconds).sum).filter(_._2 > 0L).toMap
 
     // #1465: per-host presence is the session-stitch span (heartbeat-filtered), combined across the
     // profile's devices by its `crossDeviceOverlapMode`.

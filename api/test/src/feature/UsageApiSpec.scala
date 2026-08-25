@@ -2156,9 +2156,14 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
           // Speechify likewise = speechify.com's span [11:25, 11:40]; its 11:30 shared row is
           // inside that span.
           assertTrue(sp.proportionalSeconds == 900L) &&
-          // The shared host surfaces under BOTH apps' host rows (co-presence attribution).
+          // #2744: the app headline no longer varies with the shared allocation, so the AMOUNT
+          // #1898 credits to each app has to be pinned on the per-host drill-down instead —
+          // otherwise this test would pass whether the 09:05 span went to FG whole, split, or
+          // nowhere. Each app's elevenlabs.io row carries its own 300 s share (5 min).
           assertTrue(fg.hosts.exists(_.host.value == "elevenlabs.io")) &&
           assertTrue(sp.hosts.exists(_.host.value == "elevenlabs.io")) &&
+          assertTrue(fg.hosts.find(_.host.value == "elevenlabs.io").get.proportionalMins == 5) &&
+          assertTrue(sp.hosts.find(_.host.value == "elevenlabs.io").get.proportionalMins == 5) &&
           // The un-covered 03:00 span lands in "Other" with exactly its 300 s.
           assertTrue(orphan.exists(_.proportionalSeconds == 300L))
       },
@@ -2452,6 +2457,10 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
           orphanHosts = out.orphanHosts.map(_.host.value).toSet
         } yield assertTrue(resp.status == Status.Ok) &&
           // Exactly 1 app row (the configured YouTube app-set, aggregated across 3 hosts).
+          // NB (#2744): the three host buckets here are consecutive and DISJOINT, so 900 s is both
+          // their sum and their union — this assertion does not distinguish the two and did not
+          // catch the co-present-host double-count. `AppUsageDisplayEnforcementParitySpec` is the
+          // test that does, by making the hosts concurrent.
           assertTrue(out.apps.length == 1) &&
           assertTrue(yt.proportionalSeconds == 900L) &&
           assertTrue(

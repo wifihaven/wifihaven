@@ -712,17 +712,35 @@ object TimeStatusService {
       appLimits: List[AppTimeLimit],
       presence: List[PresenceRow],
       settings: HouseholdSettings,
+      // #2744: catalog apps this profile has NO assignment for, as (appId -> distinctive hosts).
+      // `GET /api/profiles/{id}/usage-by-app` reports on every app whose hosts the profile's traffic
+      // touched, not only the assigned ones, and it needs their engaged spans from THIS seam rather
+      // than from a second derivation beside it. They are folded into the SAME
+      // `Presence.appSpansForProfile` call as the assigned groups, so there is one distinctive
+      // host-set derivation, one `appHostPatterns` scope, and one `effectiveGap` for every app this
+      // call reports on. An id already carried by an assignment is ignored — the assignment wins.
+      // Callers with no such apps pass `Nil` and get the #1898 behaviour unchanged.
+      catalogOnly: List[(AppId, List[String])] = Nil,
   ): Map[AppId, List[Presence.Span]] = {
     // #1898: mode-agnostic — `appLabelDistinctiveHosts` / `appLabelToAppId` cover EVERY assigned app,
     // not just the TimeLimited cap subset, so an Allowed-mode app's distinctive session still gates
     // the co-presence allocation of its shared backends. The span math is the SAME stitch primitive
     // ([[Presence.appSpansForProfile]]) over the SAME distinctive host-set the cap reads.
-    val dispositions = ProfileAppDispositions.from(appLimits)
-    val labelToAppId = dispositions.appLabelToAppId
+    val dispositions   = ProfileAppDispositions.from(appLimits)
+    val assignedById   = dispositions.appLabelToAppId.values.toSet
+    // Catalog-only groups get a label namespace that cannot collide with `app:<slug>`. Stable order
+    // by appId so the group list is deterministic, matching `appLabelDistinctiveHosts`.
+    val catalogEntries = catalogOnly.iterator
+      .filterNot { case (id, _) => assignedById.contains(id) }
+      .map { case (id, hosts) => (s"app-catalog:${id.value}", id, hosts.distinct) }
+      .toList
+      .sortBy(_._2.value)
+    val labelToAppId   =
+      dispositions.appLabelToAppId ++ catalogEntries.iterator.map { case (l, id, _) => l -> id }
     Presence
       .appSpansForProfile(
         presence,
-        dispositions.appLabelDistinctiveHosts,
+        dispositions.appLabelDistinctiveHosts ++ catalogEntries.map { case (l, _, h) => l -> h },
         profile.crossDeviceOverlapMode,
         settings.heartbeatFilter,
         settings.presenceContinuationSeconds,
