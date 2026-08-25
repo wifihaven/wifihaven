@@ -1469,13 +1469,23 @@ describe('ProfilesPage — per-app schedule rules (#1380)', () => {
 })
 
 // #2747 — an Allowed-mode app with NO schedule rule must be markable exempt
-// from the profile's daily cap ("always reachable, and its usage does not
-// consume the daily allowance"). The capability already existed end-to-end
-// (`ProfileAppDispositions.exemptPatterns` is mode-agnostic; #1627 treats an
-// exempt app with no cap as always-under-cap) — only the render condition
-// withheld it. The control is the same positive-phrased, inverted-on-write
-// "Counts toward daily limit" checkbox the time_limited row uses, so there is
-// exactly one polarity for this flag in the app row.
+// from the profile's daily cap, so its usage does not consume the kid's daily
+// allowance. The capability already existed in the model:
+// `ProfileAppDispositions.exemptPatterns` is mode-agnostic and filters exempt
+// traffic out of the daily total regardless of mode. Only the render condition
+// withheld it.
+//
+// The effect for a plain Allowed app is BUDGET ONLY — do not restate #2747's
+// original "always reachable" framing, which was refuted while implementing it.
+// `PolicyService.exemptUnderCapHosts` (the #1627 always-under-cap carve) never
+// sees an Allowed assignment: `ProfileAppDispositions.capGroups` filters
+// `state.perApp` to TimeLimited. An Allowed app outlives the profile cap
+// either way, because `enforcement` carves its hosts into extraAllowed
+// unconditionally.
+//
+// The control is the same positive-phrased, inverted-on-write "Counts toward
+// daily limit" checkbox the time_limited row uses, so there is exactly one
+// polarity for this flag in the app row.
 describe('ProfilesPage — exempt-from-daily for Allowed apps with no schedule rule (#2747)', () => {
   function allowedApp(exemptFromDaily: boolean) {
     return {

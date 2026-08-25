@@ -1959,26 +1959,21 @@ function AppRow({ app, profileId, onChanged, usedMins, blocklistNameById }: {
     }
   }
 
+  const mode = current?.mode ?? null
+  const isTimeLimited = mode === 'time_limited'
+  const currentMinutes = isTimeLimited ? current?.dailyMinutes ?? null : null
+
   // #1007 / #2747 — the ONE writer of exemptFromDaily on this row. Both surfaces
-  // that govern the flag (the "Counts toward daily limit" checkbox below and
-  // ScheduleRuleEditor's blocked-mode toggle) call this, so the write can't
-  // drift between them. A time_limited app with no cap set yet has nothing to
-  // exempt from, so that case is a no-op.
+  // that govern the flag call it: the "Counts toward daily limit" row checkbox
+  // (which inverts at the call site) and ScheduleRuleEditor's blocked-mode
+  // toggle (which passes the exemption through directly). Routing both here is
+  // what keeps their payloads from drifting. A time_limited app with no cap set
+  // yet has nothing to exempt from, so that case is a no-op.
   async function writeExempt(nextExempt: boolean) {
     if (mode == null) return
     if (mode === 'time_limited' && current?.dailyMinutes == null) return
     await apply(mode, current?.dailyMinutes ?? null, nextExempt)
   }
-
-  // The row checkbox is phrased POSITIVELY and inverted here: checked means
-  // "counts", i.e. exemptFromDaily: false. Shown for time_limited apps and,
-  // since #2747, for Allowed-mode apps, whose usage otherwise silently burns
-  // the profile's daily allowance with no way to opt out.
-  const toggleExempt = writeExempt
-
-  const mode = current?.mode ?? null
-  const isTimeLimited = mode === 'time_limited'
-  const currentMinutes = isTimeLimited ? current?.dailyMinutes ?? null : null
 
   // #1380 — schedule-rule add/remove and the exempt-from-daily toggle persist
   // the whole assignment immediately (autosave, no Save button). Re-applying
@@ -1998,9 +1993,6 @@ function AppRow({ app, profileId, onChanged, usedMins, blocklistNameById }: {
     await apply(mode, current?.dailyMinutes ?? null, current?.exemptFromDaily, next)
   }
 
-  // ScheduleRuleEditor's toggle names the exemption directly (no inversion) —
-  // same single writer, so the two surfaces cannot disagree about the payload.
-  const setScheduleExempt = writeExempt
 
   // #1679: toggle "block during scheduled downtime" for Allowed-mode apps.
   // nextAllowed = !checkbox.checked (checkbox is "block during schedule", NOT "allow during schedule").
@@ -2168,7 +2160,8 @@ function AppRow({ app, profileId, onChanged, usedMins, blocklistNameById }: {
             data-testid={`app-row-${app.app.id}-counts-toward-daily`}
             checked={!(current?.exemptFromDaily ?? true)}
             disabled={busy}
-            onChange={e => toggleExempt(!e.target.checked)}
+            // Inverted: the label says "counts", the flag says "exempt".
+            onChange={e => writeExempt(!e.target.checked)}
             className={`w-3.5 h-3.5 accent-amber-500 ${mode === 'allowed' ? 'mt-0.5' : ''}`}
           />
           <span>
@@ -2218,7 +2211,7 @@ function AppRow({ app, profileId, onChanged, usedMins, blocklistNameById }: {
           busy={busy}
           onAdd={addRule}
           onRemove={removeRule}
-          onSetExempt={setScheduleExempt}
+          onSetExempt={writeExempt}
         />
       )}
       {localError && (
