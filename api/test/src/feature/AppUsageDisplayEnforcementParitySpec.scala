@@ -373,6 +373,11 @@ object AppUsageDisplayEnforcementParitySpec
         // assertions below cannot pass against a response that dropped one of them.
         assertTrue(low.isDefined) &&
         assertTrue(high.isDefined) &&
+        // State the premise the app names only assert in prose: `apps.id` is BIGSERIAL, so
+        // creation order is id order. Only the RELATIVE order matters — it is what the drill-down
+        // tiebreak (`minBy(_.value)`) keys on — and asserting it makes a future inversion fail
+        // here, naming the cause, instead of surfacing as a confusing host-row mismatch below.
+        assertTrue(low.get.appId.exists(l => high.get.appId.exists(h => l.value < h.value))) &&
         assertTrue(low.get.proportionalSeconds == 600L) &&
         assertTrue(high.get.proportionalSeconds == 600L) &&
         // #1061 tiebreak survives on the drill-down: the host row goes to the lower appId only.
