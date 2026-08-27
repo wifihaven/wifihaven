@@ -27,12 +27,12 @@ icon_type: url
 # every child. It would also drag AWS CloudFront's shared 99.84.118.x pool
 # (what the bare apex resolves to) into the drop set. Two residuals to record
 # so a later author doesn't "fix" this by adding the apex back:
-#   1. A device navigating to bare `arduino.cc` completes those hops — its IPs
-#      are in no `eb_` set — and is dropped only on the follow-on `www` request.
-#      Over plain HTTP the apex redirects twice (http://arduino.cc → 301 →
-#      https://arduino.cc → 301 → https://www.arduino.cc), and the port-80 DNAT
-#      block page won't render for the apex, so the user sees those redirects
-#      and then a failed TLS handshake, not the block page.
+#   1. Over plain HTTP the apex redirects twice — http://arduino.cc → 301 →
+#      https://arduino.cc → 301 → https://www.arduino.cc. Every one of those
+#      hops completes, because the apex's IPs are in no `eb_` set, and the drop
+#      lands only on the follow-on `www` request. The port-80 DNAT block page
+#      won't render for the apex either, so the user sees the redirects and then
+#      a failed TLS handshake, not the block page.
 #   2. Bytes to bare `arduino.cc` go unattributed against the app's budget:
 #      HostMatch.matchesApex matches it against none of the hosts below.
 #
@@ -60,9 +60,21 @@ icon_type: url
 #   projects.arduinocontent.cc    Project Hub content, on a separate domain
 #
 # The last entry is the SUBDOMAIN, not the `arduinocontent.cc` apex, for the
-# same reason bare `arduino.cc` is excluded: an apex entry opts in to whatever
-# Arduino puts under that zone next. It is also the only host that resolves
-# there today — the apex itself has no A record.
+# same reason bare `arduino.cc` is excluded, and the zone shows why concretely:
+# `www.arduinocontent.cc` and `assets.arduinocontent.cc` also have A records on
+# the same Cloudflare pair (not a wildcard — a random label under the zone
+# resolves to nothing), so an apex entry would sweep both in. The apex itself
+# has no A record.
+#
+# `assets.arduinocontent.cc` is a WATCH ITEM for the next catalog pass, not an
+# omission: it answers identically to `projects.` (same IP pair, same 403 with
+# an empty application/xml body), consistent with fronting the same content
+# origin, but nothing referenced it from www.arduino.cc and no traffic has been
+# observed against it. Per the "only template what you've seen used" rule it
+# stays out. If a pass sees real bytes there, add it to `hosts:` — it resolves
+# to IPs already in this app's sets, so it carries no new collateral.
+# `www.arduinocontent.cc` returns a Cloudflare 530 (origin unreachable) and is
+# not a surface at all.
 #
 # `arduinocontent.cc` is Arduino-operated, and whois shows it: the domain and
 # `arduino.cc` share a registrant, `Qualcomm Incorporated` /
