@@ -67,14 +67,15 @@ icon_type: url
 # has no A record.
 #
 # `assets.arduinocontent.cc` is a WATCH ITEM for the next catalog pass, not an
-# omission: it answers identically to `projects.` (same IP pair, same 403 with
-# an empty application/xml body), consistent with fronting the same content
+# omission: it answers identically to `projects.` (same IP pair, and the same
+# 111-byte `AccessDenied` XML body on a 403), consistent with the same content
 # origin, but nothing referenced it from www.arduino.cc and no traffic has been
 # observed against it. Per the "only template what you've seen used" rule it
 # stays out. If a pass sees real bytes there, add it to `hosts:` — it resolves
 # to IPs already in this app's sets, so it carries no new collateral.
-# `www.arduinocontent.cc` returns a Cloudflare 530 (origin unreachable) and is
-# not a surface at all.
+# `www.arduinocontent.cc` returns a Cloudflare 530 with error code 1016 — an
+# origin DNS failure, so its origin hostname doesn't resolve — and is not a
+# surface at all.
 #
 # `arduinocontent.cc` is Arduino-operated, and whois shows it: the domain and
 # `arduino.cc` share a registrant, `Qualcomm Incorporated` /
