@@ -1,0 +1,24 @@
+slug: geofs
+name: GeoFS
+icon: "https://icons.duckduckgo.com/ip3/geo-fs.com.ico"
+icon_type: url
+# Operator request: GeoFS, the browser-based flight simulator at
+# https://www.geo-fs.com/geofs.php. Apex-only host-set — the asset hosts
+# referenced by the simulator page are all under `geo-fs.com` and dnsmasq's
+# `nftset=/geo-fs.com/` suffix-matches every one of them:
+#   www.geo-fs.com      simulator page + UI
+#   data.geo-fs.com     terrain / scenery / aircraft model data (bytes host)
+#   weather.geo-fs.com  live weather feed
+#   mps.geo-fs.com      multiplayer session server
+#
+# No shared-pool collateral: every one of these resolves into GeoFS's own
+# Scaleway range (51.15.x / 51.158.x), not a multi-tenant CDN edge — so the
+# `eb_geo-fs.com` drop set carries GeoFS bytes and nothing else.
+#
+# Deliberately EXCLUDED, third-party services the simulator merely links out
+# to and which serve many unrelated customers: dispatch.simbrief.com (flight
+# planning), disboard.org (Discord server directory), googletagmanager.com.
+# The `geofs.com` domain (no hyphen) is an unrelated site on a different IP —
+# do not add it.
+hosts:
+  - geo-fs.com

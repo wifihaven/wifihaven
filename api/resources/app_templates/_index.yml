@@ -57,3 +57,6 @@ slugs:
   - connectivity-test
   # #2699: traffic-driven catalog pass (see evidence/classification-2699.md)
   - zoom
+  # operator request: GeoFS browser flight simulator + Arduino maker platform
+  - geofs
+  - arduino

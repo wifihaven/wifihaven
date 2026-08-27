@@ -1,0 +1,54 @@
+slug: arduino
+name: Arduino
+icon: "https://icons.duckduckgo.com/ip3/arduino.cc.ico"
+icon_type: url
+# Operator request: Arduino — the maker/electronics platform. The kid-facing
+# surface is the Cloud Editor / Arduino Cloud plus the docs, Project Hub and
+# IDE downloads.
+#
+# Host-set is the Arduino-operated SUBDOMAINS, NOT the `arduino.cc` apex — a
+# deliberate deviation from the "apex hostnames" default in _README.yml, same
+# pattern as `lego.yml`. Enforcement is IP-layer, so an apex entry would pull
+# every subdomain's resolved IP into the `eb_` drop set, including three
+# surfaces that live on third-party MULTI-TENANT platforms whose IPs we don't
+# own (the #1636 collateral class):
+#   store.arduino.cc / store-usa.arduino.cc  Shopify shared edge (23.227.38.x)
+#   forum.arduino.cc                         hosted-by-discourse.com
+#   blog.arduino.cc                          WP Engine shared edge (141.193.213.x)
+#   support.arduino.cc                       Vercel shared edge (216.198.5x.x)
+# Blocking Arduino must not drop every Shopify store, Discourse community, WP
+# Engine site or Vercel app the household uses — and none of these four carry
+# Arduino's own engagement bytes. The store is a parent purchasing surface
+# besides, not something a kid should hold a time budget against.
+#
+# The hosts kept below sit behind Cloudflare/CloudFront edges, which is the
+# accepted Class-2 latent risk from _README.yml (branded per-app domains on a
+# multi-tenant CDN — that IS where the app's bytes live, so stripping them
+# would defeat the block). Bare `arduino.cc` is omitted on purpose: listing it
+# would suffix-match the four excluded surfaces above and undo this carve.
+#
+# Kept host-set, and what each surface is:
+#   www.arduino.cc          main site
+#   cloud.arduino.cc        Arduino Cloud
+#   app.arduino.cc          Arduino Cloud web app / editor
+#   create.arduino.cc       legacy Web Editor (Arduino Create)
+#   api2.arduino.cc         Arduino Cloud API backend
+#   docs.arduino.cc         documentation / language reference
+#   projecthub.arduino.cc   Project Hub
+#   content.arduino.cc      site content/assets
+#   cdn.arduino.cc          static asset CDN
+#   downloads.arduino.cc    IDE, cores and library downloads
+#   arduinocontent.cc       Arduino-owned content apex; only the observed
+#                           projects.arduinocontent.cc lives under it today
+hosts:
+  - www.arduino.cc
+  - cloud.arduino.cc
+  - app.arduino.cc
+  - create.arduino.cc
+  - api2.arduino.cc
+  - docs.arduino.cc
+  - projecthub.arduino.cc
+  - content.arduino.cc
+  - cdn.arduino.cc
+  - downloads.arduino.cc
+  - arduinocontent.cc
