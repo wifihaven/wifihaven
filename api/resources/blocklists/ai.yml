@@ -91,3 +91,12 @@ hosts:
   - jasper.ai
   - copy.ai
   - writesonic.com
+  # traffic-driven addition (#2742): 30-day prod recent-apexes sweep (26
+  # devices, 2026-08-25). higgsfield.ai is a consumer-facing generative AI
+  # video/image platform (22M+ users, AI-generated cinematic video/image
+  # creation) — squarely in-scope per the image/video generator signal.
+  # 198MB / 22 hits, the standout gap this pass. higgs.ai was HELD OUT
+  # unverified — much lower traffic (664KB / 4 hits) and no direct
+  # confirmation it belongs to the same company as higgsfield.ai (search
+  # results conflated the two). See evidence/multi-category-classification-2742.md.
+  - higgsfield.ai

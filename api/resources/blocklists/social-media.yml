@@ -57,3 +57,9 @@ hosts:
   # infrastructure domain (confirmed via netify), a sibling apex of the
   # already-curated tiktokw.us / tiktokcdn-us.com, same pattern as those.
   - tiktokv.us # TikTok's app-delivery/API infra domain (sibling to tiktokw.us)
+  # traffic-driven addition (#2742): 30-day prod recent-apexes sweep (26
+  # devices, 2026-08-25). telegram.org was a categorical absence — despite
+  # WhatsApp/Discord/Reddit/TikTok/etc. all being covered, Telegram had zero
+  # representation in this list (same "is a major platform just missing
+  # outright" check the #2599 whatsapp.net addition established).
+  - telegram.org # Telegram messaging/social platform
