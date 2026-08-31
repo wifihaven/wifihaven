@@ -172,6 +172,47 @@ above is now wrong, fix the step too — don't just log around it.
 
 ## Learnings log (newest first)
 
+- **2026-08-31 (#2754)** — A brand-new template can ship with its own
+  host-set gap: `arduino.yml` merged this same week (#2753) missing
+  `login.arduino.cc` — the sign-in host every already-kept Arduino Cloud page
+  (`app`/`create`/`cloud.arduino.cc`) links to directly. **When a template is
+  brand new, don't just diff observed traffic against its host-set — `curl`
+  the already-kept pages' own HTML and grep for same-apex hostnames they
+  reference.** Byte/hit volume alone wouldn't have caught this: the gap is a
+  broken user flow (can load the shell, can't log in), not a missing-bytes
+  cluster. Also confirmed a zero-incremental-IP add is worth taking even with
+  unconfirmed purpose: `builder.arduino.cc` resolved to the *identical* 4 IPs
+  and `awselb`+CloudFront signature as the already-kept `api2.arduino.cc`.
+  **Careful with the inference this licenses** — matching edge IPs prove the
+  same CDN *edge*, not the same *distribution* (edge IPs are shared across
+  many distributions within a PoP), so don't generalize this to "matching A
+  records ⇒ same distribution ⇒ safe to add." What actually licenses the add
+  is narrower and still correct: no IP *outside the already-accepted set*
+  enters the drop set, which is all the collateral argument needs regardless
+  of distribution identity.
+- **2026-08-31 (#2754)** — Extended the "randomized-label subdomain = likely
+  CNAME-cloaked third-party telemetry" tell (first noted implicitly via the
+  `aayinltcs.arduino.cc` cluster this pass) as a general heuristic: a
+  same-apex subdomain with a non-descriptive, non-brand-related label (no
+  recognizable product/service name) paired with `api`/`evs`(events)/`t2`-style
+  child names is analytics/tracking infra hiding behind a first-party domain
+  to dodge ad-blockers — exclude it even when `dig` can't identify the actual
+  vendor behind the CNAME. Server-side Google Tag Manager (`sgtm.<apex>`,
+  resolving to an isolated Google Frontend IP with `x-cloud-trace-context` in
+  the response headers) is the same call under a more legible name — both
+  get the same disposition as `ct.canva.com` (a Google-routed click-tracking
+  redirector found the same pass): tracking relay, not app content, exclude
+  regardless of first-party hosting.
+- **2026-08-31 (#2754)** — Autodesk's product family keeps producing genuine
+  gaps even in a mature catalog: `instructables.com` (DIY/maker tutorials,
+  same Autodesk family as the already-templated `tinkercad`/`thingiverse`)
+  cleared the bar at just 8.1 MB / 18 hits. Its bare apex sits on AWS
+  CloudFront's shared `99.84.118.x` pool — the *exact* pool `arduino.yml`
+  already flags as collateral — while its two real subdomains each have their
+  own dedicated CloudFront distribution. When a candidate's apex lands on a
+  pool already named as shared-risk elsewhere in the catalog, that's a strong
+  prior for scoping to observed subdomains over templating the bare apex,
+  even before checking whether those subdomains have dedicated infra.
 - **2026-08-24 (#2740)** — Another clean no-op: no new app, no host-set gap,
   no blocklist entry. Two new things worth recording:
   - `api.mcsrvstat.us` (7.8 MB / 89 hits, real recurring volume) is a **shared

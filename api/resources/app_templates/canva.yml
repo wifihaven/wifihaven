@@ -1,0 +1,50 @@
+slug: canva
+name: Canva
+icon: "https://icons.duckduckgo.com/ip3/canva.com.ico"
+icon_type: url
+# #2754: traffic-driven catalog pass. Canva, the browser-based design tool —
+# 22.4 MB / 34 hits over a 30d window on one kid device, spread across a page
+# load (www), static assets (static) and template fetches (template): the
+# shape of a real design session, not a stray link click.
+#
+# Host-set is three of the five observed SUBDOMAINS (see the EXCLUDED list
+# below for the other two), not the bare `canva.com` apex — a deliberate
+# deviation from the "apex hostnames" default in _README.yml, for TWO
+# stacking reasons:
+#   1. Collateral: `ct.canva.com` (see EXCLUDED below) resolves off Canva's
+#      own pool onto Google's 216.239.32.0/19 block — a broad shared Google
+#      range (IPinfo: ~828K domains hosted across it), not Canva-dedicated
+#      infra. render.lua emits `nftset=/<host>/` verbatim per host and
+#      dnsmasq matches by pure suffix, so a bare `canva.com` entry would
+#      suffix-match `ct.canva.com` too and drag that shared Google range into
+#      the `eb_` drop set — same apex-sweep mechanism `arduino.yml` documents
+#      for `arduino.cc`.
+#   2. Only template what's been observed: no traffic was seen against the
+#      bare apex itself, only against the five subdomains below.
+# Residual to record: bytes to bare `canva.com`, if any ever appear, go
+# unattributed against the app's budget — `HostMatch.matchesApex`
+# (shared/src/types/HostMatch.scala) matches it against none of the hosts
+# below, same residual `arduino.yml` documents for `arduino.cc`.
+#
+# All three kept hosts share the same Cloudflare edge pair
+# (104.16.102.112/104.16.103.112) — Class 2 latent shared-CDN risk per
+# _README.yml, already accepted broadly across the catalog and not a reason to
+# omit the hosts that carry the app's own bytes.
+#
+# Deliberately EXCLUDED, both non-essential to actually using the editor:
+#   ct.canva.com          resolves off Canva's own Cloudflare pool onto Google's
+#                          216.239.32.21/216.239.34.21/216.239.36.21/
+#                          216.239.38.21 range — a click/conversion-tracking
+#                          redirector, not app content, and reason 1 above for
+#                          why the apex itself is excluded.
+#   telemetry.canva.com   first-party telemetry beacon. It shares the kept
+#                          hosts' Cloudflare pair, so excluding it changes
+#                          nothing at the IP/enforcement layer — the only
+#                          effect is that its bytes go unattributed to the
+#                          app (same residual as the bare apex, above) rather
+#                          than a collateral-risk exclusion like `ct.canva.com`
+#                          or `sgtm.arduino.cc` in `arduino.yml`.
+hosts:
+  - www.canva.com
+  - static.canva.com
+  - template.canva.com

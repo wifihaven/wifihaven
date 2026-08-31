@@ -1,0 +1,34 @@
+slug: instructables
+name: Instructables
+icon: "https://icons.duckduckgo.com/ip3/instructables.com.ico"
+icon_type: url
+# #2754: traffic-driven catalog pass. Instructables, Autodesk's DIY/maker
+# tutorial site — same family as the already-templated Tinkercad and
+# Thingiverse. 8.1 MB / 18 hits over a 30d window on one kid device, split
+# across a page-load host (www) and a content/asset host (content): a real
+# tutorial-reading session, not a beacon.
+#
+# Bare `instructables.com` is deliberately EXCLUDED — it resolves into AWS
+# CloudFront's shared 99.84.118.x pool, the exact shared pool `arduino.yml`
+# already documents as collateral risk (dig-verified: `dig instructables.com A`
+# returns 99.84.118.{29,99,100,106}). render.lua emits `nftset=/<host>/`
+# verbatim per host and dnsmasq matches by pure suffix, so an apex entry would
+# necessarily sweep every child subdomain's resolved IPs into the drop set,
+# including that shared pool — same reasoning `arduino.yml` gives for
+# excluding bare `arduino.cc`. The two kept subdomains sidestep that: each
+# resolves to its OWN dedicated CloudFront distribution, not the shared pool
+# the apex itself answers on:
+#   www.instructables.com      dwdpktf6trw8q.cloudfront.net (3.169.202.x)
+#   content.instructables.com  d38kwnbqqt6im9.cloudfront.net (13.226.251.x)
+# (Those ranges are still multi-tenant CDN edges in general — the accepted
+# Class-2 latent risk from _README.yml — just not the SPECIFIC shared pool
+# the bare apex sits on.)
+#
+# Residual to record: bytes to bare `instructables.com`, if any ever appear,
+# go unattributed against the app's budget — `HostMatch.matchesApex`
+# (shared/src/types/HostMatch.scala) matches it against none of the hosts
+# below, same residual `arduino.yml` and `canva.yml` document for their own
+# excluded apexes.
+hosts:
+  - www.instructables.com
+  - content.instructables.com

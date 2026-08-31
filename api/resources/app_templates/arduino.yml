@@ -41,10 +41,15 @@ icon_type: url
 # multi-tenant CDN — that IS where the app's bytes live, so stripping them
 # would defeat the block). They are not all equally exposed, and if the #1663
 # evidence loop ever revisits this set, `projects.arduinocontent.cc` is the
-# member to look at first. Of the ten `*.arduino.cc` hosts, eight land on
-# Arduino's own Cloudflare pair (104.18.12.135/104.18.13.135), `downloads` on
+# member to look at first. Of the ORIGINAL ten `*.arduino.cc` hosts, eight land
+# on Arduino's own Cloudflare pair (104.18.12.135/104.18.13.135), `downloads` on
 # 104.18.10.21/104.18.11.21 and `api2` on CloudFront 18.238.176.x — whereas that
-# one lands on Cloudflare's broadly-shared 104.21.x / 172.67.x pool.
+# one lands on Cloudflare's broadly-shared 104.21.x / 172.67.x pool. Of the
+# three #2754 additions, `login` and `projecthub-api` land on two more
+# distinct pools (Cloudflare 172.64.150.238/104.18.37.18, and a dedicated AWS
+# ELB, respectively); `builder` introduces no new pool at all — it shares
+# `api2`'s existing CloudFront 18.238.176.x range — see the #2754
+# note below for each.
 #
 # Kept host-set, and what each surface is:
 #   www.arduino.cc                main site
@@ -58,6 +63,47 @@ icon_type: url
 #   cdn.arduino.cc                static asset CDN
 #   downloads.arduino.cc          IDE, cores and library downloads
 #   projects.arduinocontent.cc    Project Hub content, on a separate domain
+#   login.arduino.cc              sign-in (Arduino's own Auth0 tenant, #2754)
+#   projecthub-api.arduino.cc     Project Hub API backend (#2754)
+#   builder.arduino.cc            purpose unconfirmed; same CloudFront edge as api2 (#2754)
+#
+# #2754: three hosts added after the first traffic pass past this template's
+# merge (#2753) showed real hits against them:
+#
+#   login.arduino.cc — CNAMEs to `arduino-prod-cd-*.edge.tenants.auth0.com`,
+#     Arduino's own dedicated Auth0 tenant, proxied through the same class of
+#     Cloudflare edge as the rest of this set (172.64.150.238/104.18.37.18) —
+#     no new risk class. It's not optional: `curl`-ing app.arduino.cc,
+#     create.arduino.cc and cloud.arduino.cc's own HTML each link directly to
+#     `login.arduino.cc` for sign-in, so without it a kid can load the Cloud
+#     Editor shell but can never authenticate into it. This was a functional
+#     gap in the template as merged, not a new-traffic addition.
+#
+#   projecthub-api.arduino.cc — CNAMEs to
+#     `prd-arduino-prjhub-be-*.us-east-1.elb.amazonaws.com`, a dedicated
+#     Arduino-named ELB (not a shared ALB pool) — the API backend for the
+#     already-kept `projecthub.arduino.cc` frontend.
+#
+#   builder.arduino.cc — `dig`-verified to resolve to the IDENTICAL four edge
+#     IPs as `api2.arduino.cc` (18.238.176.{7,46,72,103}), same `awselb`
+#     origin + CloudFront error signature on `curl -I`. Matching A records
+#     only prove the same CloudFront *edge* (edge IPs are shared across many
+#     distributions within a PoP), not necessarily the same distribution —
+#     but that's all the collateral argument needs: no IP outside this app's
+#     already-accepted set enters the `eb_` drop set by adding this host.
+#     Purpose unconfirmed beyond that (no public docs describe it), kept on
+#     that zero-incremental-IP-exposure basis plus observed real traffic.
+#
+# Considered and left OUT as analytics/tracking collateral, not app surface:
+#   sgtm.arduino.cc              server-side Google Tag Manager (Google
+#                                 Frontend, isolated IP 34.110.195.2) — a
+#                                 tracking relay, same call as excluding
+#                                 `ct.canva.com` in `canva.yml`.
+#   api.aayinltcs.arduino.cc,
+#   evs.aayinltcs.arduino.cc     randomized-label subdomain under a shared
+#                                 zone, `evs` (events) + `api` shape typical of
+#                                 a CNAME-cloaked third-party telemetry vendor;
+#                                 no recognizable Arduino-owned service name.
 #
 # The last entry is the SUBDOMAIN, not the `arduinocontent.cc` apex, for the
 # same reason bare `arduino.cc` is excluded, and the zone shows why concretely:
@@ -95,3 +141,6 @@ hosts:
   - cdn.arduino.cc
   - downloads.arduino.cc
   - projects.arduinocontent.cc
+  - login.arduino.cc
+  - projecthub-api.arduino.cc
+  - builder.arduino.cc
