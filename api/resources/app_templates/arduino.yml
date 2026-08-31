@@ -41,10 +41,14 @@ icon_type: url
 # multi-tenant CDN — that IS where the app's bytes live, so stripping them
 # would defeat the block). They are not all equally exposed, and if the #1663
 # evidence loop ever revisits this set, `projects.arduinocontent.cc` is the
-# member to look at first. Of the ten `*.arduino.cc` hosts, eight land on
-# Arduino's own Cloudflare pair (104.18.12.135/104.18.13.135), `downloads` on
+# member to look at first. Of the ORIGINAL ten `*.arduino.cc` hosts, eight land
+# on Arduino's own Cloudflare pair (104.18.12.135/104.18.13.135), `downloads` on
 # 104.18.10.21/104.18.11.21 and `api2` on CloudFront 18.238.176.x — whereas that
-# one lands on Cloudflare's broadly-shared 104.21.x / 172.67.x pool.
+# one lands on Cloudflare's broadly-shared 104.21.x / 172.67.x pool. The three
+# #2754 additions land on three MORE distinct pools — `login` on Cloudflare
+# 172.64.150.238/104.18.37.18, `projecthub-api` on a dedicated AWS ELB, and
+# `builder` on the same CloudFront 18.238.176.x range as `api2` — see the #2754
+# note below for each.
 #
 # Kept host-set, and what each surface is:
 #   www.arduino.cc                main site
@@ -79,12 +83,15 @@ icon_type: url
 #     Arduino-named ELB (not a shared ALB pool) — the API backend for the
 #     already-kept `projecthub.arduino.cc` frontend.
 #
-#   builder.arduino.cc — `dig`-verified to resolve to the IDENTICAL four IPs
-#     as `api2.arduino.cc` (18.238.176.{7,46,72,103}), same `awselb`+CloudFront
-#     response signature: it's the same CloudFront distribution already kept
-#     for the Cloud API, so adding it carries zero incremental collateral.
+#   builder.arduino.cc — `dig`-verified to resolve to the IDENTICAL four edge
+#     IPs as `api2.arduino.cc` (18.238.176.{7,46,72,103}), same `awselb`
+#     origin + CloudFront error signature on `curl -I`. Matching A records
+#     only prove the same CloudFront *edge* (edge IPs are shared across many
+#     distributions within a PoP), not necessarily the same distribution —
+#     but that's all the collateral argument needs: no IP outside this app's
+#     already-accepted set enters the `eb_` drop set by adding this host.
 #     Purpose unconfirmed beyond that (no public docs describe it), kept on
-#     the strength of same-distribution + observed real traffic.
+#     that zero-incremental-IP-exposure basis plus observed real traffic.
 #
 # Considered and left OUT as analytics/tracking collateral, not app surface:
 #   sgtm.arduino.cc              server-side Google Tag Manager (Google

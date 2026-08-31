@@ -32,13 +32,21 @@ lower byte counts.
 the same Cloudflare pair (104.16.102.112/104.16.103.112) — Class 2 latent
 shared-CDN risk per `_README.yml`, already accepted broadly across the
 catalog. `ct.canva.com` resolves off that pool entirely, onto Google's
-216.239.32-38.21 range — a click/conversion-tracking redirector.
+216.239.32.21 / 216.239.34.21 / 216.239.36.21 / 216.239.38.21 range — a
+click/conversion-tracking redirector.
 
 Kept: `www`, `static`, `template` (the three hosts that actually carry design
-content). Excluded: `ct.canva.com` (Google-routed tracking, not app content)
-and `telemetry.canva.com` (first-party analytics beacon — same Cloudflare
-pool as the kept hosts, so zero *additional* collateral either way, excluded
-because the kid's session doesn't depend on it functioning).
+content). Excluded: `ct.canva.com` (Google-routed tracking, not app content —
+a collateral-risk exclusion) and `telemetry.canva.com` (first-party analytics
+beacon on the same Cloudflare pool as the kept hosts, so excluding it changes
+nothing at the enforcement/IP layer — the only effect is its bytes go
+unattributed to the app, an attribution call rather than a collateral one).
+No traffic was observed against the bare `canva.com` apex or any subdomain
+beyond these five, so the host-set is scoped to the five observed subdomains
+rather than the apex — same "only template what you've seen used" call as
+elsewhere in the catalog; bytes to a bare apex, if any future pass finds them,
+go unattributed against the app's budget (`HostMatch.matchesApex` matches it
+against none of the kept hosts), the same residual `arduino.yml` documents.
 
 ## New app: Instructables
 
@@ -48,21 +56,26 @@ the already-templated `tinkercad` (also Autodesk) and `thingiverse`.
 
 `dig`-verified: bare `instructables.com` resolves to `99.84.118.{29,99,100,106}`
 — AWS CloudFront's shared pool, the *exact* pool `arduino.yml` already
-documents as collateral risk from the #2753 pass. The two observed subdomains
-instead sit on their own dedicated CloudFront distributions:
+documents as collateral risk from the #2753 pass. Since enforcement is
+IP-layer and dnsmasq matches by pure hostname suffix, an apex entry would
+necessarily sweep every child subdomain's resolved IPs into the drop set,
+including that shared pool — same reasoning `arduino.yml` gives for excluding
+bare `arduino.cc`. The two observed subdomains sidestep that: each sits on
+its own dedicated CloudFront distribution, not the shared pool the apex
+itself answers on:
 
 - `www.instructables.com` → `dwdpktf6trw8q.cloudfront.net` (3.169.202.x)
 - `content.instructables.com` → `d38kwnbqqt6im9.cloudfront.net` (13.226.251.x)
 
 Scoped to the two dedicated-distribution subdomains, bare apex excluded — same
-move `arduino.yml` and `lego.yml` make for the same reason.
+move `arduino.yml` makes, for the same apex-sweep reason.
 
 ## Existing-app gap: `arduino.yml` login flow was broken
 
 `arduino.cc` was the single largest apex this pass not already fully resolved
 (294 MB / 1,691 hits, Quintus iPad) — expected, since `arduino`/`geofs` merged
 only this week (#2753, commit `22a66aa3`). Observed subdomains against the
-current 10-entry host-set:
+current 11-entry host-set (10 `*.arduino.cc` hosts + `projects.arduinocontent.cc`):
 
 | observed subdomain | in host-set? |
 |---|---|
@@ -95,11 +108,14 @@ already-kept pages actually link to:
   for the already-kept `projecthub.arduino.cc` frontend — added for the same
   reason `api2.arduino.cc` pairs with `cloud`/`app`/`create`.
 - **`builder.arduino.cc`** — `dig`-verified to resolve to the *identical* four
-  IPs as `api2.arduino.cc` (18.238.176.{7,46,72,103}); `curl -I` on both
-  returns the same `awselb`+CloudFront error signature. Same CloudFront
-  distribution already accepted for the Cloud API, so adding it is zero
-  incremental collateral. Real hits observed; exact purpose beyond that isn't
-  publicly documented, kept on same-distribution + observed-use grounds.
+  edge IPs as `api2.arduino.cc` (18.238.176.{7,46,72,103}); `curl -I` on both
+  returns the same `awselb` origin + CloudFront error signature. Matching A
+  records confirm the same CloudFront *edge* (edge IPs are shared across
+  distributions within a PoP, so this doesn't prove the same *distribution*)
+  — but that's all the collateral argument needs: adding this host introduces
+  no IP outside the set already accepted for `api2.arduino.cc`. Real hits
+  observed; exact purpose beyond that isn't publicly documented, kept on that
+  zero-incremental-IP-exposure basis plus observed use.
 - **`sgtm.arduino.cc`** — resolves to an isolated Google Frontend IP
   (34.110.195.2), response headers (`server: Google Frontend`,
   `x-cloud-trace-context`) match a server-side Google Tag Manager container.
@@ -145,13 +161,12 @@ matching a slug name can still be mostly unrelated collateral):
 | `khanacademy.org`, `kastatic.org` | `khan-academy` app ✓ |
 | `lego.com` | `lego` app ✓ |
 | `zoom.us` | `zoom` app ✓ |
-| `icloud.com` (already listed above) | — |
-| `mathacademy.com`, `d3js.org`, `jsdelivr.net` | `math-academy` app ✓ |
+| `mathacademy.com`, `d3js.org`, `jsdelivr.net` | `math-academy` app ✓ — `jsdelivr.net` is math-academy's pinned `shared_hosts` entry (#1966), not plain `hosts:`; the shared-hosting skip row below does not include it |
 | `tinkercad.com` | `tinkercad` app ✓ |
 | `duolingo.com` | `duolingo` app ✓ |
 | `eaglercraft.dev`, `eaglercraft.ru`, `eaglercraft.com`, `eaglercraftgame.io`, `lax1dude.net`, `deev.is`, `shhnowisnottheti.me` | `eaglercraft` app ✓ |
 | `workers.dev` (`eaglercraft-counter.eaglercraft-99f.workers.dev` + unrelated `pioeg.admetricspro.workers.dev`) | mixed: eaglercraft subdomain ✓, `admetricspro` subdomain **skip** (ad-tech) — same split as #2740, unchanged |
-| `1password.com`, `wifihaven.net`, `canva.com` (see above), `poki.com`/`poki.io`/`poki-cdn.com`, `gimkit.com`/`gimkitconnect.com`, `apple.news`, `strava.com`, `mcsrvstat.us`, `scholastic.com`, `serato.com`, `freckle.com`, `mathplayground.com`, `snapchat.com`, `instructables.com` (see above), `prodigygame.com`, `giphy.com`, `facebook.com` | app-matched or already-classified per prior passes; each re-checked against its full host-set this pass, no gaps found beyond the arduino fix |
+| `1password.com`, `wifihaven.net`, `canva.com` (see above), `poki.com`/`poki.io`/`poki-cdn.com`, `gimkit.com`/`gimkitconnect.com`, `serato.com`, `freckle.com`, `mathplayground.com`, `snapchat.com`, `instructables.com` (see above), `prodigygame.com`, `giphy.com`, `facebook.com` | app-matched or already-classified per prior passes; each re-checked against its full host-set this pass, no gaps found beyond the arduino fix |
 | `apple.news`, `strava.com`, `scholastic.com`, `mcsrvstat.us` | **skip**, unchanged from #2740/#2490 reasoning (single-edge OS app, adult fitness tracker, parent commerce flow, shared multi-tenant status API) |
 | `southwest.com`, `hamstudy.org`, `boulderperformingarts.com`, `linkedin.com` | **skip** — adult/parent-account traffic (airline booking, ham-radio study site, performing-arts venue, professional network), not kid-facing |
 | `1passwordusercontent.com` | `1password` app ✓ — already in host-set (added #2331) |
@@ -159,7 +174,7 @@ matching a slug name can still be mostly unrelated collateral):
 | `duckmath.org` | `games.yml` ✓ — confirmed still present |
 | `cloudflare.com`, `cloudfront.net`, `fastly-edge.com`, `akamai.net`, `akamaized.net`, `akamaiedge.net`, `akadns.net`, `edgesuite.net`, `edgekey.net`, `github.io`, `githubusercontent.com`, `jsdelivr.net`, `unpkg.com`, `onrender.com`, `wixstatic.com`, `wixapps.net`, `wix.com`, `parastorage.com`, `azure.com` | **skip** — shared hosting/CDN infra |
 | `digicert.com`, `rapidssl.com`, `comodoca.com`, `usertrust.com` (not observed this pass but same class) | **skip** — CA/TLS infra |
-| `sentry.io`, `launchdarkly.com`, `clarity.ms`, `nr-data.net`, `bugsnag.com`, `dynatrace.com`, `iubenda.com`, `cookielaw.org`, `onetrust.com`, `privacymanager.io`, `cloudflareinsights.com`, `nel.goog`, `sgtm.arduino.cc` (see above), `activemetering.com`, `webcontentassessor.com`, `signalstuff.com`, `zeronaught.com`, `p7cloud.net`, `koah.ai`, `trygravity.ai`, `kidsafe.com`, `gt162037.com`, `revenuecat.com`, `crashlytics.com`, `tiqcdn.com`, `sc-static.net`, `redditstatic.com`, `reddit.com`, `yahoo.com`, `bing.com`, `microsoft.com`, `adobe.com`, `adobe.io`, `adobelogin.com`, `adobeccstatic.com`, `adobedtm.com`, `typekit.net`, `autodesk.com`, `salesforce-scrt.com`, `sendtonews.com`, `ampproject.org`, `assertcom.de`, `recaptcha.net`, `calculator.net`, `pypi.org`, `python.org`, `fwupd.org`, `ntv.io`, `shopify.com`, `licdn.com`, `samba.tv`, `wixapps.net`, `editmysite.com`, `apple-cloudkit.com`, `arkoselabs.com`, `kvaedit.site`, `site.com` | **skip** — analytics/error-reporting/consent-management/shared-corporate-infra/below-bar incidental, no branded kid surface |
+| `sentry.io`, `launchdarkly.com`, `clarity.ms`, `nr-data.net`, `bugsnag.com`, `dynatrace.com`, `iubenda.com`, `cookielaw.org`, `onetrust.com`, `privacymanager.io`, `cloudflareinsights.com`, `nel.goog`, `sgtm.arduino.cc` (see above), `activemetering.com`, `webcontentassessor.com`, `signalstuff.com`, `zeronaught.com`, `p7cloud.net`, `koah.ai`, `trygravity.ai`, `kidsafe.com`, `gt162037.com`, `revenuecat.com`, `crashlytics.com`, `tiqcdn.com`, `sc-static.net`, `redditstatic.com`, `reddit.com`, `yahoo.com`, `bing.com`, `microsoft.com`, `adobe.com`, `adobe.io`, `adobelogin.com`, `adobeccstatic.com`, `adobedtm.com`, `typekit.net`, `autodesk.com`, `salesforce-scrt.com`, `sendtonews.com`, `ampproject.org`, `assertcom.de`, `recaptcha.net`, `calculator.net`, `pypi.org`, `python.org`, `fwupd.org`, `ntv.io`, `shopify.com`, `licdn.com`, `samba.tv`, `editmysite.com`, `apple-cloudkit.com`, `arkoselabs.com`, `kvaedit.site`, `site.com` | **skip** — analytics/error-reporting/consent-management/shared-corporate-infra/below-bar incidental, no branded kid surface |
 | `thelegogroup.com` | **skip** — LEGO corporate error-reporting, excluded by design (#1815) |
 
 Everything at or below `~40 KB` bytes and 1-hit rows not individually

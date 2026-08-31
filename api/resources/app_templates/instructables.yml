@@ -11,12 +11,18 @@ icon_type: url
 # Bare `instructables.com` is deliberately EXCLUDED — it resolves into AWS
 # CloudFront's shared 99.84.118.x pool, the exact shared pool `arduino.yml`
 # already documents as collateral risk (dig-verified: `dig instructables.com A`
-# returns 99.84.118.{29,99,100,106}). The two kept subdomains each sit on
-# their OWN dedicated CloudFront distribution instead:
+# returns 99.84.118.{29,99,100,106}). render.lua emits `nftset=/<host>/`
+# verbatim per host and dnsmasq matches by pure suffix, so an apex entry would
+# necessarily sweep every child subdomain's resolved IPs into the drop set,
+# including that shared pool — same reasoning `arduino.yml` gives for
+# excluding bare `arduino.cc`. The two kept subdomains sidestep that: each
+# resolves to its OWN dedicated CloudFront distribution, not the shared pool
+# the apex itself answers on:
 #   www.instructables.com      dwdpktf6trw8q.cloudfront.net (3.169.202.x)
 #   content.instructables.com  d38kwnbqqt6im9.cloudfront.net (13.226.251.x)
-# Scoping to the dedicated-distribution subdomains and skipping the bare apex
-# is the same move `arduino.yml` and `lego.yml` make for the same reason.
+# (Those per-distribution ranges are still multi-tenant CDN edges in general —
+# the accepted Class-2 latent risk from _README.yml — just not the SPECIFIC
+# shared pool the bare apex sits on.)
 hosts:
   - www.instructables.com
   - content.instructables.com

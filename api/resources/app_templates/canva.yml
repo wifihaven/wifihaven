@@ -7,6 +7,17 @@ icon_type: url
 # load (www), static assets (static) and template fetches (template): the
 # shape of a real design session, not a stray link click.
 #
+# Host-set is the three observed SUBDOMAINS, not the bare `canva.com` apex —
+# a deliberate deviation from the "apex hostnames" default in _README.yml
+# (same move `arduino.yml` and `lego.yml` make, though for a different reason
+# than either: this isn't about sweeping in third-party collateral, it's the
+# "only template what you've seen used" rule — no traffic was observed against
+# the bare apex or any subdomain beyond the five listed above). Residual to
+# record: bytes to bare `canva.com`, if any ever appear, go unattributed
+# against the app's budget — `HostMatch.matchesApex` (shared/src/types/
+# HostMatch.scala) matches it against none of the hosts below, same residual
+# `arduino.yml` documents for `arduino.cc`.
+#
 # All three kept hosts share the same Cloudflare edge pair
 # (104.16.102.112/104.16.103.112) — Class 2 latent shared-CDN risk per
 # _README.yml, already accepted broadly across the catalog and not a reason to
@@ -14,13 +25,16 @@ icon_type: url
 #
 # Deliberately EXCLUDED, both non-essential to actually using the editor:
 #   ct.canva.com          resolves off Canva's own Cloudflare pool onto Google's
-#                          216.239.32-38.21 range — a click/conversion-tracking
+#                          216.239.32.21/216.239.34.21/216.239.36.21/
+#                          216.239.38.21 range — a click/conversion-tracking
 #                          redirector, not app content.
-#   telemetry.canva.com   first-party telemetry beacon (same Cloudflare pair as
-#                          the kept hosts, so zero *additional* collateral from
-#                          adding it — excluded because it carries no
-#                          functional bytes the kid's session depends on, same
-#                          call as `sgtm.arduino.cc` in `arduino.yml`).
+#   telemetry.canva.com   first-party telemetry beacon. It shares the kept
+#                          hosts' Cloudflare pair, so excluding it changes
+#                          nothing at the IP/enforcement layer — the only
+#                          effect is that its bytes go unattributed to the
+#                          app (same residual as the bare apex, above) rather
+#                          than a collateral-risk exclusion like `ct.canva.com`
+#                          or `sgtm.arduino.cc` in `arduino.yml`.
 hosts:
   - www.canva.com
   - static.canva.com
