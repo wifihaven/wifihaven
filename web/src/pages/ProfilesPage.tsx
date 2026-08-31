@@ -1959,14 +1959,21 @@ function AppRow({ app, profileId, onChanged, usedMins, blocklistNameById }: {
     }
   }
 
-  async function toggleExempt(nextExempt: boolean) {
-    if (current?.mode !== 'time_limited' || current.dailyMinutes == null) return
-    await apply('time_limited', current.dailyMinutes, nextExempt)
-  }
-
   const mode = current?.mode ?? null
   const isTimeLimited = mode === 'time_limited'
   const currentMinutes = isTimeLimited ? current?.dailyMinutes ?? null : null
+
+  // #1007 / #2747 — the ONE writer of exemptFromDaily on this row. Both surfaces
+  // that govern the flag call it: the "Counts toward daily limit" row checkbox
+  // (which inverts at the call site) and ScheduleRuleEditor's blocked-mode
+  // toggle (which passes the exemption through directly). Routing both here is
+  // what keeps their payloads from drifting. A time_limited app with no cap set
+  // yet has nothing to exempt from, so that case is a no-op.
+  async function writeExempt(nextExempt: boolean) {
+    if (mode == null) return
+    if (mode === 'time_limited' && current?.dailyMinutes == null) return
+    await apply(mode, current?.dailyMinutes ?? null, nextExempt)
+  }
 
   // #1380 — schedule-rule add/remove and the exempt-from-daily toggle persist
   // the whole assignment immediately (autosave, no Save button). Re-applying
@@ -1984,11 +1991,6 @@ function AppRow({ app, profileId, onChanged, usedMins, blocklistNameById }: {
     const next = scheduleRules.filter(r => !(r.scheduleId === scheduleId && r.mode === ruleMode))
     setScheduleRules(next)
     await apply(mode, current?.dailyMinutes ?? null, current?.exemptFromDaily, next)
-  }
-
-  async function setScheduleExempt(nextExempt: boolean) {
-    if (mode == null) return
-    await apply(mode, current?.dailyMinutes ?? null, nextExempt)
   }
 
   // #1679: toggle "block during scheduled downtime" for Allowed-mode apps.
@@ -2140,20 +2142,48 @@ function AppRow({ app, profileId, onChanged, usedMins, blocklistNameById }: {
           {formatMins(usedMins)} today
         </div>
       )}
-      {mode === 'time_limited' && (
-        <label className="flex items-center gap-2 text-xs text-brand-text cursor-pointer select-none">
+      {/* #1007 / #2747 — the single exempt-from-daily control for this app row.
+          Shown for time_limited AND allowed apps; NOT for blocked apps, which
+          drop all traffic and so accrue no usage to exempt (a blocked app
+          carved open by an allowed_during rule keeps the in-window toggle in
+          ScheduleRuleEditor instead). Polarity is positive-and-inverted:
+          checked ⇒ exemptFromDaily: false. */}
+      {(mode === 'time_limited' || mode === 'allowed') && (
+        <label className={`flex gap-2 text-xs text-brand-text cursor-pointer select-none ${
+          // Only the allowed row carries a wrapping explanation, so only it needs
+          // top alignment; the time_limited row keeps its shipped one-line layout.
+          mode === 'allowed' ? 'items-start' : 'items-center'
+        }`}>
           <input
             type="checkbox"
             data-testid={`app-row-${app.app.id}-counts-toward-daily`}
             checked={!(current?.exemptFromDaily ?? true)}
             disabled={busy}
-            onChange={e => toggleExempt(!e.target.checked)}
-            className="w-3.5 h-3.5 accent-amber-500"
+            // Inverted: the label says "counts", the flag says "exempt".
+            onChange={e => writeExempt(!e.target.checked)}
+            className={`w-3.5 h-3.5 accent-amber-500 ${mode === 'allowed' ? 'mt-0.5' : ''}`}
           />
           <span>
             Counts toward daily limit
             {!(current?.exemptFromDaily ?? true) && (
               <span className="ml-1 text-amber-700">(usage reduces overall remaining time)</span>
+            )}
+            {/* #2747 — spell the exempt side out only for an Allowed app, whose
+                default IS exempt and which has no cap of its own to reason from.
+                Budget ONLY: for a plain Allowed app the flag changes nothing about
+                reachability. `ProfileAppDispositions.enforcement` carves an
+                Allowed app's hosts into extraAllowed without ever consulting
+                capExhausted (that gate lives only on the allowed_during branch;
+                the one thing that can suppress the carve is #1679's
+                block-during-schedule opt-out, which is not the daily cap), and
+                `exemptUnderCapHosts` never sees it — `capGroups` filters
+                `state.perApp` to TimeLimited. So the app outlives the cap either
+                way; the flag decides only whether its usage counts. The
+                time_limited row is left exactly as it shipped. */}
+            {mode === 'allowed' && (current?.exemptFromDaily ?? true) && (
+              <span className="ml-1 text-brand-text-muted">
+                (exempt — this app's usage doesn't reduce the profile's remaining time)
+              </span>
             )}
           </span>
         </label>
@@ -2178,11 +2208,11 @@ function AppRow({ app, profileId, onChanged, usedMins, blocklistNameById }: {
           appId={app.app.id}
           rules={scheduleRules}
           exemptFromDaily={current?.exemptFromDaily ?? true}
-          showExemptToggle={mode !== 'time_limited'}
+          showExemptToggle={mode === 'blocked'}
           busy={busy}
           onAdd={addRule}
           onRemove={removeRule}
-          onSetExempt={setScheduleExempt}
+          onSetExempt={writeExempt}
         />
       )}
       {localError && (
@@ -2215,8 +2245,11 @@ function ScheduleRuleEditor({
   appId: number
   rules: AppScheduleRule[]
   exemptFromDaily: boolean
-  // Hidden for time_limited apps, whose own "Counts toward daily limit" row
-  // already governs the same exemptFromDaily flag (avoid two controls).
+  // #2747 — true only for blocked-mode apps. time_limited and allowed apps
+  // govern the same exemptFromDaily flag from their own "Counts toward daily
+  // limit" row checkbox; exactly one control per mode. A blocked app has no row
+  // checkbox (nothing to exempt) but CAN be carved open by an allowed_during
+  // rule, which is where the in-window copy below is accurate.
   showExemptToggle: boolean
   busy: boolean
   onAdd: (scheduleId: number, mode: AppScheduleMode) => void | Promise<void>
