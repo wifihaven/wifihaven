@@ -20,9 +20,15 @@ icon_type: url
 # the apex itself answers on:
 #   www.instructables.com      dwdpktf6trw8q.cloudfront.net (3.169.202.x)
 #   content.instructables.com  d38kwnbqqt6im9.cloudfront.net (13.226.251.x)
-# (Those per-distribution ranges are still multi-tenant CDN edges in general —
-# the accepted Class-2 latent risk from _README.yml — just not the SPECIFIC
-# shared pool the bare apex sits on.)
+# (Those ranges are still multi-tenant CDN edges in general — the accepted
+# Class-2 latent risk from _README.yml — just not the SPECIFIC shared pool
+# the bare apex sits on.)
+#
+# Residual to record: bytes to bare `instructables.com`, if any ever appear,
+# go unattributed against the app's budget — `HostMatch.matchesApex`
+# (shared/src/types/HostMatch.scala) matches it against none of the hosts
+# below, same residual `arduino.yml` and `canva.yml` document for their own
+# excluded apexes.
 hosts:
   - www.instructables.com
   - content.instructables.com

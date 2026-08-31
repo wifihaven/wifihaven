@@ -65,7 +65,7 @@ icon_type: url
 #   projects.arduinocontent.cc    Project Hub content, on a separate domain
 #   login.arduino.cc              sign-in (Arduino's own Auth0 tenant, #2754)
 #   projecthub-api.arduino.cc     Project Hub API backend (#2754)
-#   builder.arduino.cc            Arduino Cloud API surface (#2754)
+#   builder.arduino.cc            purpose unconfirmed; same CloudFront edge as api2 (#2754)
 #
 # #2754: three hosts added after the first traffic pass past this template's
 # merge (#2753) showed real hits against them:

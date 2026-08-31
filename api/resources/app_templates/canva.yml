@@ -12,11 +12,13 @@ icon_type: url
 # deviation from the "apex hostnames" default in _README.yml, for TWO
 # stacking reasons:
 #   1. Collateral: `ct.canva.com` (see EXCLUDED below) resolves off Canva's
-#      own pool onto a Google IP range. render.lua emits `nftset=/<host>/`
-#      verbatim per host and dnsmasq matches by pure suffix, so a bare
-#      `canva.com` entry would suffix-match `ct.canva.com` too and drag that
-#      Google range into the `eb_` drop set — same apex-sweep mechanism
-#      `arduino.yml` documents for `arduino.cc`.
+#      own pool onto Google's 216.239.32.0/19 block — a broad shared Google
+#      range (IPinfo: ~828K domains hosted across it), not Canva-dedicated
+#      infra. render.lua emits `nftset=/<host>/` verbatim per host and
+#      dnsmasq matches by pure suffix, so a bare `canva.com` entry would
+#      suffix-match `ct.canva.com` too and drag that shared Google range into
+#      the `eb_` drop set — same apex-sweep mechanism `arduino.yml` documents
+#      for `arduino.cc`.
 #   2. Only template what's been observed: no traffic was seen against the
 #      bare apex itself, only against the five subdomains below.
 # Residual to record: bytes to bare `canva.com`, if any ever appear, go
