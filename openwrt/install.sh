@@ -381,7 +381,7 @@ ensure_wifihaven_config() {
   #
   # Keep this list in step with the uci-defaults scripts openwrt/Makefile
   # installs; `openwrt/test/ws_default_on_spec.sh` pins that 97 is here.
-  for _wh_defaults in 96-wifihaven-settings 97-wifihaven-ws-default-on; do
+  for _wh_defaults in 96-wifihaven-settings; do
     if [ -f "$WIFIHAVEN_UCI_DEFAULTS/$_wh_defaults" ]; then
       sh "$WIFIHAVEN_UCI_DEFAULTS/$_wh_defaults" >/dev/null 2>&1 || true
     fi

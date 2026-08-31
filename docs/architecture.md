@@ -187,9 +187,12 @@ case class ProfilePolicy(
     rules: BlockRules,
     failureMode: FailureMode,                  // per-profile: what the router does
                                                //   for THIS profile's devices the moment
-                                               //   a policy poll fails (#422 — failover
-                                               //   trips on the first failed poll; no
-                                               //   time-based cushion). See
+                                               //   the router loses contact with the API
+                                               //   (#422 — trips immediately, no
+                                               //   time-based cushion). Pre-#2736 that
+                                               //   meant a failed policy poll; since the
+                                               //   agent is websocket-only it means the
+                                               //   ws health sentinel going stale. See
                                                //   docs/resilience.md §4 for the
                                                //   per-mode behaviour and the
                                                //   defaulting policy.
@@ -1367,12 +1370,12 @@ both sides. This does not apply to the self-hosted install, where the
 SPA ships inside the API image.
 
 Connection-level enforcement and per-device usage tracking run on the gateway router, not on the API host (see the "Architectural model" callout in AGENTS.md for why):
-- **OpenWRT** — the `openwrt/` Lua agent polls `/api/router/policy` and rewrites nftables rules + a dnsmasq fragment used only for hostname attribution / ipset population; reports usage via `/api/router/events` and `/api/router/usage`
+- **OpenWRT** — the `openwrt/` Lua agent receives policy snapshots pushed over its persistent websocket (`/api/router/ws`) and rewrites nftables rules + a dnsmasq fragment used only for hostname attribution / ipset population; reports usage and connection events over the same socket. It is **websocket-only** as of [#2736](https://github.com/wifihaven/wifihaven/issues/2736) — it no longer polls `GET /api/router/policy`, though the server still serves that endpoint until [#1850](https://github.com/wifihaven/wifihaven/issues/1850)
 - **OPNsense** — the `opnsense/` Python agent tails pflog and posts connection events
 
 Key API surface (under `/api/router/*` and `/api/blocklists/*`):
 - `POST /api/router/register` — one-time enrollment
-- `GET  /api/router/policy`   — ETag-polled enforcement snapshot
+- `GET  /api/router/policy`   — ETag-conditional enforcement snapshot (still served; the OpenWRT agent no longer calls it as of #2736, the OPNsense agent does)
 - `GET  /api/blocklists/<id>` — plain hostname-list blocklist per category (not RPZ)
 - `POST /api/router/usage`    — per-(mac, hostname) traffic records
 - `POST /api/router/events`   — DHCP lease + connection attempt events

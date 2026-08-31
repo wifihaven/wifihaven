@@ -376,7 +376,8 @@ complete connection timeline, not just block events.
 
 ## Tuning
 
-The cadence knobs in `/etc/config/wifihaven` (`policy_poll_interval`,
+The cadence knobs in `/etc/config/wifihaven` (`policy_poll_interval` — since
+#2736 the agent's policy TICK, not a fetch,
 `usage_report_interval`, `activity_sample_int`, `event_batch_size`,
 `event_flush_interval`) are documented with trade-offs and suggested
 ranges in [`docs/router-tuning.md`](../docs/router-tuning.md).

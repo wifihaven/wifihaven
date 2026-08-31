@@ -108,8 +108,6 @@ cat > "$WORK/post-install" <<'POSTINSTALL'
 # wifihaven-update installs the package and restarts the service without
 # rebooting, so run the ws migration here to land the flip on this restart.
 # Marker-guarded and idempotent, so the boot pass re-running it is a no-op.
-[ -f /etc/uci-defaults/97-wifihaven-ws-default-on ] \
-  && sh /etc/uci-defaults/97-wifihaven-ws-default-on >/dev/null 2>&1 || true
 
 # #869: Install cron entries. Replace any existing wifihaven entries so
 # upgrades migrate the cadence. This block is hand-duplicated across four

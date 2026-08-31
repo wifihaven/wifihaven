@@ -26,13 +26,13 @@ at the **connection layer**: nftables drops forwarded packets whose destination
 IP is in a per-host block set. Those sets are populated **lazily, at DNS-resolve
 time**, so there is a built-in warm-up.
 
-1. **Policy propagation (seconds).** A newly-authored block reaches the router
-   on its next policy poll. The default poll cadence is **5 s**
-   (`policy_poll_interval`, [`openwrt/files/etc/config/wifihaven`](../openwrt/files/etc/config/wifihaven));
-   on installs using the live WebSocket push path the snapshot arrives sooner
-   (`ws.apply_interval`, default **2 s**).
-   Either way the router now *knows* about the block, but the block set is still
-   empty.
+1. **Policy propagation (seconds).** A newly-authored block is pushed to the
+   router over its websocket and applied on `ws.apply_interval` (default **2 s**),
+   or sooner via the #2229 event-driven wake. Since
+   [#2736](https://github.com/wifihaven/wifihaven/issues/2736) that is the only
+   path — the agent no longer polls, and `policy_poll_interval` no longer paces a
+   fetch (see [`docs/router-tuning.md`](router-tuning.md)).
+   The router now *knows* about the block, but the block set is still empty.
 
 2. **Block sets fill on the device's next fresh lookup.** A host block is
    enforced via an nftables set named `eb_<host>` (`eb6_<host>` for IPv6) whose
@@ -167,7 +167,7 @@ step in
 
 | Constant | Default | Source |
 | --- | --- | --- |
-| `policy_poll_interval` | 5 s | [`etc/config/wifihaven`](../openwrt/files/etc/config/wifihaven) |
+| `ws.apply_interval` | 2 s | [`etc/config/wifihaven`](../openwrt/files/etc/config/wifihaven) |
 | `blocklist_refresh_interval` | 3600 s | [`usr/sbin/wifihaven-agent`](../openwrt/files/usr/sbin/wifihaven-agent) |
 | `eb_refresh_interval` | 1800 s | [`usr/sbin/wifihaven-agent`](../openwrt/files/usr/sbin/wifihaven-agent) |
 | `block_ip_only` | `false` | [`V17__profile_block_ip_only.sql`](../api/resources/db/migration/V17__profile_block_ip_only.sql) |

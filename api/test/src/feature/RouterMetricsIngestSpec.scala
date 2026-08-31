@@ -101,10 +101,11 @@ object RouterMetricsIngestSpec
       counters: List[MetricCounter] = Nil,
       gauges: List[MetricGauge] = Nil,
       histograms: List[MetricHistogram] = Nil,
+      agentVersion: String = "0.3.1",
   ): String =
     RouterMetricsBatch(
       routerId = routerId,
-      agentVersion = "0.3.1",
+      agentVersion = agentVersion,
       agentStartedAt = agentStartedAt,
       sampledAt = "2026-05-30T14:01:00Z",
       counters = counters,
@@ -117,7 +118,7 @@ object RouterMetricsIngestSpec
       for {
         _          <- cleanDb
         routerRepo <- ZIO.service[RouterRepo]
-        svc        <- RouterMetricsService.make
+        svc        <- RouterMetricsService.make(routerRepo)
         (rid, tok) <- newRouter("r-ok")
         routes = RouterMetricsRoutes.routes(new RouterAuthLive(routerRepo), svc)
         body   = batchJson(
@@ -177,7 +178,7 @@ object RouterMetricsIngestSpec
       for {
         _          <- cleanDb
         routerRepo <- ZIO.service[RouterRepo]
-        svc        <- RouterMetricsService.make
+        svc        <- RouterMetricsService.make(routerRepo)
         (rid, tok) <- newRouter("r-omit")
         routes = RouterMetricsRoutes.routes(new RouterAuthLive(routerRepo), svc)
         ridStr = rid.value.toString
@@ -213,7 +214,7 @@ object RouterMetricsIngestSpec
       for {
         _          <- cleanDb
         routerRepo <- ZIO.service[RouterRepo]
-        svc        <- RouterMetricsService.make
+        svc        <- RouterMetricsService.make(routerRepo)
         (rid, tok) <- newRouter("r-agent-counters")
         routes = RouterMetricsRoutes.routes(new RouterAuthLive(routerRepo), svc)
         body   = batchJson(
@@ -285,7 +286,7 @@ object RouterMetricsIngestSpec
       for {
         _          <- cleanDb
         routerRepo <- ZIO.service[RouterRepo]
-        svc        <- RouterMetricsService.make
+        svc        <- RouterMetricsService.make(routerRepo)
         (rid, tok) <- newRouter("r-auth")
         routes = RouterMetricsRoutes.routes(new RouterAuthLive(routerRepo), svc)
         noTokResp <- routes
@@ -304,7 +305,7 @@ object RouterMetricsIngestSpec
       for {
         _          <- cleanDb
         routerRepo <- ZIO.service[RouterRepo]
-        svc        <- RouterMetricsService.make
+        svc        <- RouterMetricsService.make(routerRepo)
         (rid, tok) <- newRouter("r-replay")
         routes = RouterMetricsRoutes.routes(new RouterAuthLive(routerRepo), svc)
         body   = batchJson(
@@ -329,7 +330,7 @@ object RouterMetricsIngestSpec
       for {
         _          <- cleanDb
         routerRepo <- ZIO.service[RouterRepo]
-        svc        <- RouterMetricsService.make
+        svc        <- RouterMetricsService.make(routerRepo)
         (rid, tok) <- newRouter("r-restart")
         routes = RouterMetricsRoutes.routes(new RouterAuthLive(routerRepo), svc)
         genA   = batchJson(
@@ -361,7 +362,7 @@ object RouterMetricsIngestSpec
       for {
         _          <- cleanDb
         routerRepo <- ZIO.service[RouterRepo]
-        svc        <- RouterMetricsService.make
+        svc        <- RouterMetricsService.make(routerRepo)
         (rid, tok) <- newRouter("r-reject")
         routes = RouterMetricsRoutes.routes(new RouterAuthLive(routerRepo), svc)
         body   = batchJson(
@@ -383,6 +384,91 @@ object RouterMetricsIngestSpec
           seriesValue(scraped, "metrics_rejected_total", """reason="unknown_name"""")
             .exists(_ >= 1.0),
         )
+    },
+    // #2736: the metrics push is now the ONLY thing that reports the agent's
+    // version. It used to ride the `X-WifiHaven-Agent-Version` header on the
+    // REST policy poll, which the websocket-only agent no longer makes — so
+    // without this write `routers.agent_version` freezes at whatever a router
+    // was running at its last poll and the SPA's Routers page shows a stale
+    // version with no error. These two tests are what keep that from
+    // regressing silently.
+    test("#2736 a metrics batch refreshes routers.agent_version") {
+      for {
+        _          <- cleanDb
+        routerRepo <- ZIO.service[RouterRepo]
+        svc        <- RouterMetricsService.make(routerRepo)
+        (rid, tok) <- newRouter("r-ver")
+        routes = RouterMetricsRoutes.routes(new RouterAuthLive(routerRepo), svc)
+        before <- routerRepo.findById(rid)
+        resp   <- post(
+          routes,
+          tok,
+          batchJson(rid, "2026-05-30T09:00:00Z", agentVersion = "0.3.32"),
+        )
+        after  <- routerRepo.findById(rid)
+        // The anchor: a freshly enrolled router has no version, so "it is
+        // 0.3.32 afterwards" cannot be satisfied by a value that was already
+        // there before the batch landed.
+      } yield assertTrue(resp.status == Status.Ok) &&
+        assertTrue(before.flatMap(_.agentVersion).isEmpty) &&
+        assertTrue(after.flatMap(_.agentVersion).contains("0.3.32"))
+    },
+    test("#2736 the version write does NOT stamp last_seen_at") {
+      // The metrics push is the one channel that survives a dead websocket, so
+      // it must not feed the liveness signal: if it did, agent_connected_routers
+      // would stay green for a fleet that had lost its policy/telemetry
+      // transport entirely and C7's fleet-wide outage arm would quietly stop
+      // covering the thing it was written for. This is why the write goes
+      // through RouterRepo.recordAgentVersion rather than touch.
+      //
+      // Compares the stored last_seen_at across the request rather than a
+      // presence-window count, so the assertion is exact and carries no clock
+      // race: `touch` would move the timestamp, `recordAgentVersion` cannot.
+      for {
+        _          <- cleanDb
+        routerRepo <- ZIO.service[RouterRepo]
+        svc        <- RouterMetricsService.make(routerRepo)
+        (rid, tok) <- newRouter("r-ver-liveness")
+        routes = RouterMetricsRoutes.routes(new RouterAuthLive(routerRepo), svc)
+        before <- routerRepo.findById(rid)
+        resp   <- post(
+          routes,
+          tok,
+          batchJson(rid, "2026-05-30T09:00:00Z", agentVersion = "0.3.32"),
+        )
+        after  <- routerRepo.findById(rid)
+        // ANCHOR: the batch really did land and really did write the version,
+        // so "last_seen_at did not move" is not the trivially-true reading of a
+        // request that never happened. It also proves last_seen_at was non-null
+        // to begin with (newRouter completes enrollment, which stamps it), so
+        // the equality below is comparing two real timestamps.
+      } yield assertTrue(resp.status == Status.Ok) &&
+        assertTrue(after.flatMap(_.agentVersion).contains("0.3.32")) &&
+        assertTrue(before.flatMap(_.lastSeenAt).isDefined) &&
+        assertTrue(before.flatMap(_.lastSeenAt) == after.flatMap(_.lastSeenAt))
+    },
+    test("#2736 an empty agentVersion does not blank a known version") {
+      for {
+        _          <- cleanDb
+        routerRepo <- ZIO.service[RouterRepo]
+        svc        <- RouterMetricsService.make(routerRepo)
+        (rid, tok) <- newRouter("r-ver-empty")
+        routes = RouterMetricsRoutes.routes(new RouterAuthLive(routerRepo), svc)
+        _     <- post(
+          routes,
+          tok,
+          batchJson(rid, "2026-05-30T09:00:00Z", agentVersion = "0.3.32"),
+        )
+        // An agent whose VERSION file is missing sends "" (wifihaven-agent
+        // passes `agent_version or ""`). That must not erase what we know.
+        resp  <- post(
+          routes,
+          tok,
+          batchJson(rid, "2026-05-30T09:00:00Z", agentVersion = ""),
+        )
+        after <- routerRepo.findById(rid)
+      } yield assertTrue(resp.status == Status.Ok) &&
+        assertTrue(after.flatMap(_.agentVersion).contains("0.3.32"))
     },
   ).provideSomeLayer[TestDatabase.AllRepos & EmbeddedPostgres & Clock](
     wifihaven.api.metrics.MetricsRuntime.prometheus(pollInterval),

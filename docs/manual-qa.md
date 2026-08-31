@@ -133,7 +133,7 @@ from the device is blocked and a `reason=timeLimit` event is recorded.
 # 2. From the device, generate ~90 s of activity:
 for i in $(seq 1 90); do curl -sS -o /dev/null http://example.com/; sleep 1; done
 
-# 3. Wait one usage_report_interval + one policy_poll_interval
+# 3. Wait one usage_report_interval + one ws.apply_interval
 #    (defaults: 300s + 60s = ~6 min worst case).
 
 # 4. Re-probe:

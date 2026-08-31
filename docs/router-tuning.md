@@ -20,16 +20,24 @@ WifiHaven → Settings**, or by hand in `/etc/config/wifihaven`.
 
 ### `policy_poll_interval` (default `5`)
 
-How often (seconds) the agent calls `GET /api/router/policy` to fetch the
-policy snapshot.
+Cadence (seconds) of the agent's policy tick.
 
-- **Lower** → site-limit changes, pauses, and `extraAllowed`/`extraBlocked`
-  edits propagate to the router faster; more API requests/minute (one per
-  router).
-- **Raise** → less API load; admin-UI changes feel laggy (a 30 s interval
-  means a parent's "pause" tap could take up to 30 s to bite).
-- **Suggested range:** `3`–`30`. Below `3` the `curl` spawn overhead
-  dominates; above `30` the UX gets noticeably sluggish.
+**This no longer paces a policy fetch.**
+[#2736](https://github.com/wifihaven/wifihaven/issues/2736) removed the agent's
+HTTP snapshot poll: policy arrives as a websocket push that the sidecar persists
+and the agent applies, on `ws.apply_interval` (2 s) plus an event-driven wake
+(#2229). What this knob still paces is the block-page-token refresh and the
+ws-link check behind the #331/#422 failover edge. The key keeps its historical
+name so existing overrides in the field are not silently reset.
+
+- **Lower** → a lost websocket trips per-profile failover marginally sooner;
+  negligible cost (no network call — a tmpfs read and an integer compare).
+- **Raise** → failover reacts more slowly; the block-page token takes longer to
+  land after an API outage.
+- **Suggested range:** `3`–`30`. It no longer affects how fast admin-UI edits
+  reach the router — that is the push path.
+
+To make policy edits land faster, look at `ws.apply_interval`, not here.
 
 ### `usage_report_interval` (default `60`)
 
@@ -65,7 +73,7 @@ How often (seconds) the agent samples per-MAC conntrack activity to compute
 
 How often (seconds) the agent's idle heartbeat drives `on_tick` — the
 cooperative dispatcher that runs the usage flush, the `activity_sample_int`
-sampler, the policy poll, the nflog drain, and the metrics push.
+sampler, the policy tick, the nflog drain, and the metrics push.
 
 Before #2024 those timers fired only when a `conntrack -E -e NEW` line
 arrived. On a quiet LAN — a single device on a long-lived connection (a kid
@@ -192,7 +200,7 @@ knob is exactly this UCI option (the init script's own log message says
 
 | Knob | Default | Suggested range | Couples with |
 |---|---|---|---|
-| `policy_poll_interval` | 5 | 3–30 | — |
+| `policy_poll_interval` | 5 | 3–30 | — (post-#2736: paces the failover check + block-page token, NOT a fetch) |
 | `usage_report_interval` | 60 | 30–300 | `activity_sample_int` (must divide evenly) |
 | `activity_sample_int` | 10 | 5–30 | `usage_report_interval`, `conntrack_tick_interval` |
 | `conntrack_tick_interval` | 1 | 1–5 | `activity_sample_int` (must stay well below) |

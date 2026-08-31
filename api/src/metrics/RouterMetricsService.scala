@@ -1,5 +1,6 @@
 package wifihaven.api.metrics
 
+import wifihaven.api.db.RouterRepo
 import wifihaven.shared.{MetricHistogram, RouterMetricsBatch}
 import wifihaven.shared.types.RouterId
 import zio.*
@@ -15,16 +16,33 @@ import zio.*
  * the baseline is dropped and the new cumulative re-bases from zero — the re-exposed counter keeps
  * climbing monotonically with no negative delta. Every emission passes through [[MetricGuard]], so
  * an unknown name or a forbidden label key is dropped and counted in `metrics_rejected_total`.
+ *
+ * #2736 — WHY THIS SERVICE ALSO WRITES `routers.agent_version`. That column used to have exactly
+ * one writer: the `X-WifiHaven-Agent-Version` header on the REST policy poll
+ * ([[wifihaven.api.routes.RouterRoutes]]). #2736 made the OpenWrt agent websocket-only, so nothing
+ * sends that header any more and the column would freeze at whatever version a router happened to
+ * be running at its last poll — still rendered on the SPA's Routers page, with no error and no way
+ * to tell it had gone stale. Silence reading as health is the #2546 shape, and it is the exact
+ * failure class #2736's own precondition argument rejects, so it cannot ship that way.
+ *
+ * The value was already on the wire and already arriving: every batch carries `agentVersion`, on
+ * the agent's 60 s metrics push. It is persisted HERE rather than in the two carriers because both
+ * of them funnel through `ingest` — one writer, no parallel touch to drift (the sibling-path
+ * drift-by-omission rule in `docs/pr-review-checklist.md` §1). It goes through
+ * `RouterRepo.recordAgentVersion`, NOT `touch`, so it writes the version alone and leaves
+ * `last_seen_at` untouched: the metrics push is the one channel that outlives a dead websocket, so
+ * stamping liveness from it would keep `agent_connected_routers` green for a fleet that has lost
+ * its transport and silently retire C7's fleet-wide outage arm.
  */
 trait RouterMetricsService {
   def ingest(batch: RouterMetricsBatch): UIO[Unit]
 }
 
 object RouterMetricsService {
-  def make: UIO[RouterMetricsService] =
+  def make(routerRepo: RouterRepo): UIO[RouterMetricsService] =
     Ref
       .make(Map.empty[RouterId, RouterMetricsServiceLive.RouterState])
-      .map(new RouterMetricsServiceLive(_))
+      .map(new RouterMetricsServiceLive(_, routerRepo))
 }
 
 object RouterMetricsServiceLive {
@@ -53,11 +71,35 @@ object RouterMetricsServiceLive {
 
 final class RouterMetricsServiceLive(
     state: Ref[Map[RouterId, RouterMetricsServiceLive.RouterState]],
+    routerRepo: RouterRepo,
 ) extends RouterMetricsService {
   import RouterMetricsServiceLive.*
 
   def ingest(batch: RouterMetricsBatch): UIO[Unit] =
-    state.modify(fold(batch, _)).flatten
+    state.modify(fold(batch, _)).flatten *> recordAgentVersion(batch)
+
+  /**
+   * #2736: keep `routers.agent_version` fresh from the metrics push, now that the REST policy poll
+   * that used to carry the `X-WifiHaven-Agent-Version` header is gone (see the class doc). An empty
+   * string is skipped rather than written, so an agent whose baked-in VERSION file is missing
+   * cannot blank a version we already know.
+   *
+   * Best-effort on FAILURE ONLY — a DB blip must not reject a metrics batch that otherwise landed —
+   * but never silently: a failure is logged with the router id, the same way the ws transport's own
+   * `last_seen` touch handles it. This is enrichment on an already-successful ingest, not a
+   * credential or permission problem, so it is on the right side of the no-dark-by-default line.
+   */
+  private def recordAgentVersion(batch: RouterMetricsBatch): UIO[Unit] =
+    ZIO
+      .when(batch.agentVersion.nonEmpty)(
+        routerRepo.recordAgentVersion(batch.routerId, batch.agentVersion),
+      )
+      .catchAll(e =>
+        ZIO.logWarning(
+          s"router metrics: agent_version touch failed for router=${batch.routerId}: $e",
+        ),
+      )
+      .unit
 
   /**
    * Pure fold: compute the registry emissions (already cardinality-gated by [[MetricGuard]]) and

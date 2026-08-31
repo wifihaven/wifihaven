@@ -140,7 +140,6 @@ define Package/wifihaven/install
 	# #2381: ensure the enforcement-escape-hatch `settings` UCI section exists.
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/files/etc/uci-defaults/96-wifihaven-settings $(1)/etc/uci-defaults/
 	# #2608: one-shot ws default-on migration (marker-guarded; see the script).
-	$(INSTALL_BIN) $(PKG_BUILD_DIR)/files/etc/uci-defaults/97-wifihaven-ws-default-on $(1)/etc/uci-defaults/
 endef
 
 define Package/wifihaven/postinst
@@ -163,8 +162,6 @@ define Package/wifihaven/postinst
 # wifihaven-update installs the package and restarts the service without
 # rebooting, so run the ws migration here to land the flip on this restart.
 # Marker-guarded and idempotent, so the boot pass re-running it is a no-op.
-[ -f /etc/uci-defaults/97-wifihaven-ws-default-on ] \
-  && sh /etc/uci-defaults/97-wifihaven-ws-default-on >/dev/null 2>&1 || true
 # Install cron entries. Replace any existing wifihaven entries so upgrades
 # migrate the cadence. Same canonical block as build-ipk.sh and build-apk.sh;
 # the crontab lines are pinned byte-for-byte across all copies by

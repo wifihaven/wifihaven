@@ -701,7 +701,7 @@ end
 -- render.nft(snapshot, opts) → string
 -- ---------------------------------------------------------------------------
 -- opts (optional table):
---   poll_failed       boolean — true iff the most-recent policy poll attempt
+--   link_failed       boolean — true iff the most-recent policy poll attempt
 --                              did not succeed. When true, the per-profile
 --                              failureMode decides what happens (#385/#422):
 --                                "block-all"       → emit an additional drop
@@ -766,7 +766,7 @@ function M.nft(snapshot, opts)
   -- the suppress set once so every subsequent rule-emission step can
   -- filter cheaply. Failover trips on a single failed poll (#422) — there
   -- is no time-keyed cushion.
-  local in_failover = opts and opts.poll_failed and true or false
+  local in_failover = opts and opts.link_failed and true or false
   local allowall_macs = {}
   if in_failover then
     local allowall_pids = {}
@@ -1595,7 +1595,7 @@ function M.nft(snapshot, opts)
   end
 
   -- #385: API-unreachable failover. failureMode is per-profile (carried on
-  -- ProfilePolicy) with three variants — see the opts.poll_failed
+  -- ProfilePolicy) with three variants — see the opts.link_failed
   -- doc at the top of M.nft for the per-mode behaviour. This block only
   -- handles BlockAll: collect MACs of devices whose profile's failureMode
   -- is "block-all" and emit a drop chain for them. AllowAll is enforced

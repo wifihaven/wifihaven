@@ -36,7 +36,11 @@ config wifihaven 'wifihaven'
 	# Force-flush the event batch after this many seconds even if not full
 	option event_flush_interval '10'
 
-	# How often (seconds) to poll for a new policy snapshot
+	# Cadence (seconds) of the agent's policy tick. Since #2736 there is no
+	# HTTP policy poll — the ws sidecar pushes snapshots and the agent applies
+	# them from disk — so this paces the block-page-token refresh and the
+	# ws-link judgement that drives the #331/#422 failover edge. The key keeps
+	# its old name so routers already in the field don't lose an override.
 	option policy_poll_interval '5'
 
 	# How often (seconds) to POST usage counters
@@ -102,28 +106,26 @@ config sni 'sni'
 config settings 'settings'
 	option enforcement_disabled '0'
 
-# Websocket transport sidecar (wifihaven-ws) toggle + tuning (#1848). Lives in
-# its own named `config ws 'ws'` section, read as `wifihaven.ws.<opt>`. DEFAULT
-# ON as of #2608, now that the transport is proven in the field: `enabled` is
-# deliberately NOT written here, and every reader (the agent, the sidecar, the
-# init script) treats an UNSET value as '1'. Leaving the key absent is what
-# makes "the operator never expressed an opinion" observable — a literal '0' in
-# this file would be indistinguishable from a hand-authored opt-out, which is
-# exactly the ambiguity /etc/uci-defaults/97-wifihaven-ws-default-on resolves
-# on upgrade.
+# Websocket transport sidecar (wifihaven-ws) tuning (#1848). Lives in its own
+# named `config ws 'ws'` section, read as `wifihaven.ws.<opt>`.
 #
-# To opt a router OUT and stay on the HTTP poll path:
-#   uci set wifihaven.ws.enabled=0 && uci commit wifihaven \
-#     && /etc/init.d/wifihaven restart
-# That choice is durable: the migration records a one-shot
-# `default_on_migrated` marker and never rewrites `enabled` again. The poll path
-# is unchanged and remains the automatic fallback whenever the sidecar is down
-# past `fallback_after` below (design §3.1). This is local agent config — NOT a
-# policy-snapshot field.
+# #2736: THERE IS NO `enabled` TOGGLE. The websocket is the router's only
+# policy and telemetry transport now that the HTTP snapshot poll is gone, so an
+# opt-out would leave a router unable to receive policy or report usage at all.
+# The init script always starts the sidecar. A router whose socket is down keeps
+# ENFORCING its last on-disk snapshot — enforcement degrades, it does not stop —
+# and alert W15 fires on the health sentinel's age so that state is loud rather
+# than silent. `ws.fallback_after` is gone with it: there is nothing left to fall
+# back TO, and the agent derives its link-staleness bound from
+# `heartbeat_interval` below (the cadence that actually refreshes the sentinel).
+# This is local agent config — NOT a policy-snapshot field.
 config ws 'ws'
 	# Heartbeat ping/pong cadence (seconds). Pinned below Render's ws idle
 	# timeout by the #1845 spike (design §5.5). The server closes a channel
-	# that misses a pong for 2× this.
+	# that misses a pong for 2× this. Since #2731 the pong also refreshes the
+	# agent's ws-health sentinel, which is why #2736 derives the link-staleness
+	# bound from THIS value (3x it — ws_outbound.STALE_HEARTBEATS) rather than
+	# from a separate knob.
 	option heartbeat_interval '30'
 	# Sidecar loop tick (seconds) — how long the connected loop blocks in the
 	# inbound recv before draining the outbound spool again (#2620). Separate
@@ -144,12 +146,6 @@ config ws 'ws'
 	# (the clamped value is what the sidecar logs at startup); a value at/above
 	# heartbeat_interval restores the pre-#2620 shape. Costs one tmpfs spool
 	# read per interval on an idle socket.
-	# How long (seconds) the socket may stay down before the main agent resumes
-	# HTTP polling (design §3.1 belt-and-suspenders). The agent reads the
-	# ws-health sentinel's CONTENT — the os.time() the sidecar writes into it —
-	# against this window. Not its mtime: stock busybox has no `stat -c %Y`,
-	# which is why the sentinel carries a timestamp rather than relying on one.
-	option fallback_after '300'
 	# Self-imposed max bytes per outbound frame. An oversized UsageReport is
 	# split across multiple `usage` frames at this cap (the #1017 fix, §5.3).
 	option max_frame_bytes '65536'

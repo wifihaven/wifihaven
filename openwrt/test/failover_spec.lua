@@ -1,6 +1,6 @@
 -- Tests for #385/#422 three-mode failover in render.nft.
 --
--- The agent passes opts.poll_failed = (not last_fetch_ok). When true,
+-- The agent passes opts.link_failed = (not last_fetch_ok). When true,
 -- the per-profile failureMode decides what happens:
 --   "block-all"       — profile's MACs get an additional drop chain.
 --   "allow-all"       — profile's MACs are SUPPRESSED from every drop
@@ -49,28 +49,28 @@ describe("render.nft — #385/#422 three-mode failover", function()
 
   -- ── BlockAll: existing failover_drop chain ────────────────────────────
 
-  it("emits no failover artifacts when poll_failed is nil (no signal yet)", function()
+  it("emits no failover artifacts when link_failed is nil (no signal yet)", function()
     local nft = render.nft(snap_three())
     assert.is_nil(nft:find("failover_drop", 1, true))
   end)
 
-  it("emits no failover_drop set when poll_failed is false", function()
-    local nft = render.nft(snap_three(), { poll_failed = false })
+  it("emits no failover_drop set when link_failed is false", function()
+    local nft = render.nft(snap_three(), { link_failed = false })
     assert.is_nil(nft:find("failover_drop", 1, true))
   end)
 
   -- #422: failover trips immediately on a failed poll; there is no time-
   -- keyed cushion. A fresh cached snapshot (no time signal at all) plus
-  -- poll_failed=true must produce failover artifacts.
-  it("BlockAll: poll_failed=true trips failover immediately even with a fresh cached snapshot (#422)", function()
-    local nft = render.nft(snap_three(), { poll_failed = true })
+  -- link_failed=true must produce failover artifacts.
+  it("BlockAll: link_failed=true trips failover immediately even with a fresh cached snapshot (#422)", function()
+    local nft = render.nft(snap_three(), { link_failed = true })
     assert.truthy(nft:find("set failover_drop", 1, true))
     assert.truthy(nft:find("@failover_drop", 1, true))
     assert.truthy(nft:find("aa:aa:aa:00:00:01", 1, true))
   end)
 
   it("BlockAll: emits failover_drop containing only the block-all profile's MACs", function()
-    local nft = render.nft(snap_three(), { poll_failed = true })
+    local nft = render.nft(snap_three(), { link_failed = true })
     assert.truthy(nft:find("set failover_drop", 1, true))
     -- Block-all profile device is in the set.
     assert.truthy(nft:find("aa:aa:aa:00:00:01", 1, true))
@@ -90,13 +90,13 @@ describe("render.nft — #385/#422 three-mode failover", function()
     s.devices = {
       ["bb:bb:bb:00:00:02"] = { profileId = 2, name = "adult", rules = nil },
     }
-    local nft = render.nft(s, { poll_failed = true })
+    local nft = render.nft(s, { link_failed = true })
     assert.is_nil(nft:find("@failover_drop", 1, true))
   end)
 
-  it("BlockAll: poll_failed=false → no failover; poll_failed=true → failover (#422)", function()
-    local nft_ok   = render.nft(snap_three(), { poll_failed = false })
-    local nft_fail = render.nft(snap_three(), { poll_failed = true })
+  it("BlockAll: link_failed=false → no failover; link_failed=true → failover (#422)", function()
+    local nft_ok   = render.nft(snap_three(), { link_failed = false })
+    local nft_fail = render.nft(snap_three(), { link_failed = true })
     assert.is_nil(nft_ok:find("@failover_drop", 1, true))
     assert.truthy(nft_fail:find("@failover_drop", 1, true))
   end)
@@ -109,7 +109,7 @@ describe("render.nft — #385/#422 three-mode failover", function()
     local s = snap_three()
     s.profiles["2"].rules.blocked = true
     s.profiles["2"].rules.blockReason = "Paused"
-    local nft = render.nft(s, { poll_failed = true })
+    local nft = render.nft(s, { link_failed = true })
     assert.truthy(nft:find("bb:bb:bb:00:00:02", 1, true),
       "LastKnownGood adult MAC must remain in @blocked_macs")
     -- And LastKnownGood is NOT in the failover_drop set even though it's blocked.
@@ -129,7 +129,7 @@ describe("render.nft — #385/#422 three-mode failover", function()
     local s = snap_three()
     s.profiles["3"].rules.blocked = true
     s.profiles["3"].rules.blockReason = "Schedule"
-    local nft = render.nft(s, { poll_failed = true })
+    local nft = render.nft(s, { link_failed = true })
     -- Scope to the @blocked_macs set body.
     local s_off = nft:find("set blocked_macs", 1, true)
     assert.truthy(s_off)
@@ -142,7 +142,7 @@ describe("render.nft — #385/#422 three-mode failover", function()
   it("AllowAll: profile's extraBlocked drops are SUPPRESSED during failover", function()
     local s = snap_three()
     s.profiles["3"].rules.extraBlocked = { "tiktok.com" }
-    local nft = render.nft(s, { poll_failed = true })
+    local nft = render.nft(s, { link_failed = true })
     assert.is_nil(nft:find(
       "ether saddr cc:cc:cc:00:00:03 ip daddr @eb_tiktok_com drop", 1, true),
       "AllowAll MAC must NOT have per-(MAC, host) extraBlocked drops during failover")
@@ -152,15 +152,15 @@ describe("render.nft — #385/#422 three-mode failover", function()
     local s = snap_three()
     s.profiles["3"].rules.blocklistIds = { "ads" }
     s.blocklists = { ads = { version = "v1", url = "/api/blocklists/ads" } }
-    local nft = render.nft(s, { poll_failed = true })
+    local nft = render.nft(s, { link_failed = true })
     assert.is_nil(nft:find(
       "ether saddr cc:cc:cc:00:00:03 ip daddr @bl_ads drop", 1, true),
       "AllowAll MAC must NOT have per-(MAC, blocklistId) drops during failover")
   end)
 
-  it("AllowAll: same blocks still apply pre-failover (poll_failed unset or false)", function()
-    -- Sanity: the AllowAll suppression must be gated on poll_failed. With
-    -- no signal, or with poll_failed=false, the cached snapshot's
+  it("AllowAll: same blocks still apply pre-failover (link_failed unset or false)", function()
+    -- Sanity: the AllowAll suppression must be gated on link_failed. With
+    -- no signal, or with link_failed=false, the cached snapshot's
     -- extraBlocked entry for guest still produces its drop rule.
     local s = snap_three()
     s.profiles["3"].rules.extraBlocked = { "tiktok.com" }
@@ -168,7 +168,7 @@ describe("render.nft — #385/#422 three-mode failover", function()
     assert.truthy(nft_no_signal:find(
       "ether saddr cc:cc:cc:00:00:03 ip daddr @eb_tiktok_com counter drop comment \"wh_drop:cc:cc:cc:00:00:03:host:tiktok.com\"", 1, true),
       "AllowAll must enforce normally when no failover signal is present")
-    local nft_ok = render.nft(s, { poll_failed = false })
+    local nft_ok = render.nft(s, { link_failed = false })
     assert.truthy(nft_ok:find(
       "ether saddr cc:cc:cc:00:00:03 ip daddr @eb_tiktok_com counter drop comment \"wh_drop:cc:cc:cc:00:00:03:host:tiktok.com\"", 1, true),
       "AllowAll must enforce normally when the most-recent poll succeeded")
@@ -181,7 +181,7 @@ describe("render.nft — #385/#422 three-mode failover", function()
     s.profiles["1"].rules.extraBlocked = { "kidblocked.example" }
     s.profiles["2"].rules.extraBlocked = { "adultblocked.example" }
     s.profiles["3"].rules.extraBlocked = { "guestblocked.example" }
-    local nft = render.nft(s, { poll_failed = true })
+    local nft = render.nft(s, { link_failed = true })
     -- Block-all kid keeps its extraBlocked drop.
     assert.truthy(nft:find(
       "ether saddr aa:aa:aa:00:00:01 ip daddr @eb_kidblocked_example counter drop comment \"wh_drop:aa:aa:aa:00:00:01:host:kidblocked.example\"",
@@ -200,7 +200,7 @@ describe("render.nft — #385/#422 three-mode failover", function()
     local s = snap_three()
     s.profiles["3"].rules.blocked = true
     s.profiles["3"].rules.blockReason = "Paused"
-    local nft = render.nft(s, { poll_failed = true })
+    local nft = render.nft(s, { link_failed = true })
     assert.is_nil(nft:find(
       "ether saddr cc:cc:cc:00:00:03", 1, true),
       "no DNAT rule scoped to AllowAll MAC during failover")
