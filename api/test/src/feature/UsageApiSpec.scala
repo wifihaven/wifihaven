@@ -2144,13 +2144,26 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
           sp     = out.apps.find(_.appName == "Speechify").get
           orphan = out.orphanHosts.find(_.host.value == "elevenlabs.io")
         } yield assertTrue(resp.status == Status.Ok) &&
-          // FG = feelinggreat.com (1200 s) + elevenlabs.io 09:05 share (300 s).
-          assertTrue(fg.proportionalSeconds == 1500L) &&
-          // Speechify = speechify.com (900 s) + elevenlabs.io 11:30 share (300 s).
-          assertTrue(sp.proportionalSeconds == 1200L) &&
-          // The shared host surfaces under BOTH apps' host rows (co-presence attribution).
+          // #2744: the app HEADLINE is the canonical distinctive-host stitch — the same figure
+          // the per-app cap and the `app_used_daily` rollup read (#1897 distinctive-only,
+          // #1514/#1532 one per-app computation). It is NOT the per-host allocation summed.
+          //
+          // The shared row at 09:05 is co-present with the FG span [09:00, 09:20] BY
+          // CONSTRUCTION — that is the overlap test that credits it to FG at all — so those
+          // 300 s are the SAME wall clock feelinggreat.com already contributed. Adding them on
+          // top was the #2744 double-count in miniature. FG is therefore its distinctive span:
+          assertTrue(fg.proportionalSeconds == 1200L) &&
+          // Speechify likewise = speechify.com's span [11:25, 11:40]; its 11:30 shared row is
+          // inside that span.
+          assertTrue(sp.proportionalSeconds == 900L) &&
+          // #2744: the app headline no longer varies with the shared allocation, so the AMOUNT
+          // #1898 credits to each app has to be pinned on the per-host drill-down instead —
+          // otherwise this test would pass whether the 09:05 span went to FG whole, split, or
+          // nowhere. Each app's elevenlabs.io row carries its own 300 s share (5 min).
           assertTrue(fg.hosts.exists(_.host.value == "elevenlabs.io")) &&
           assertTrue(sp.hosts.exists(_.host.value == "elevenlabs.io")) &&
+          assertTrue(fg.hosts.find(_.host.value == "elevenlabs.io").get.proportionalMins == 5) &&
+          assertTrue(sp.hosts.find(_.host.value == "elevenlabs.io").get.proportionalMins == 5) &&
           // The un-covered 03:00 span lands in "Other" with exactly its 300 s.
           assertTrue(orphan.exists(_.proportionalSeconds == 300L))
       },
@@ -2444,6 +2457,10 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
           orphanHosts = out.orphanHosts.map(_.host.value).toSet
         } yield assertTrue(resp.status == Status.Ok) &&
           // Exactly 1 app row (the configured YouTube app-set, aggregated across 3 hosts).
+          // NB (#2744): the three host buckets here are consecutive and DISJOINT, so 900 s is both
+          // their sum and their union — this assertion does not distinguish the two and did not
+          // catch the co-present-host double-count. `AppUsageDisplayEnforcementParitySpec` is the
+          // test that does, by making the hosts concurrent.
           assertTrue(out.apps.length == 1) &&
           assertTrue(yt.proportionalSeconds == 900L) &&
           assertTrue(
