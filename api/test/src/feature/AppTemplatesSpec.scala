@@ -168,6 +168,9 @@ object AppTemplatesSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
           // operator request: GeoFS browser flight simulator + Arduino maker platform
           "geofs",
           "arduino",
+          // #2754: traffic-driven catalog pass
+          "canva",
+          "instructables",
         )
         val slugs    = templates.map(_.slug.value).toSet
         assertTrue(slugs == expected) &&

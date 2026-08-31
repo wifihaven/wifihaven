@@ -60,3 +60,6 @@ slugs:
   # operator request: GeoFS browser flight simulator + Arduino maker platform
   - geofs
   - arduino
+  # #2754: traffic-driven catalog pass (see evidence/classification-2754.md)
+  - canva
+  - instructables

@@ -1,0 +1,27 @@
+slug: canva
+name: Canva
+icon: "https://icons.duckduckgo.com/ip3/canva.com.ico"
+icon_type: url
+# #2754: traffic-driven catalog pass. Canva, the browser-based design tool —
+# 22.4 MB / 34 hits over a 30d window on one kid device, spread across a page
+# load (www), static assets (static) and template fetches (template): the
+# shape of a real design session, not a stray link click.
+#
+# All three kept hosts share the same Cloudflare edge pair
+# (104.16.102.112/104.16.103.112) — Class 2 latent shared-CDN risk per
+# _README.yml, already accepted broadly across the catalog and not a reason to
+# omit the hosts that carry the app's own bytes.
+#
+# Deliberately EXCLUDED, both non-essential to actually using the editor:
+#   ct.canva.com          resolves off Canva's own Cloudflare pool onto Google's
+#                          216.239.32-38.21 range — a click/conversion-tracking
+#                          redirector, not app content.
+#   telemetry.canva.com   first-party telemetry beacon (same Cloudflare pair as
+#                          the kept hosts, so zero *additional* collateral from
+#                          adding it — excluded because it carries no
+#                          functional bytes the kid's session depends on, same
+#                          call as `sgtm.arduino.cc` in `arduino.yml`).
+hosts:
+  - www.canva.com
+  - static.canva.com
+  - template.canva.com
