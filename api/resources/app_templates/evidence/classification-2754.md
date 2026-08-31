@@ -42,10 +42,13 @@ beacon on the same Cloudflare pool as the kept hosts, so excluding it changes
 nothing at the enforcement/IP layer — the only effect is its bytes go
 unattributed to the app, an attribution call rather than a collateral one).
 No traffic was observed against the bare `canva.com` apex or any subdomain
-beyond these five, so the host-set is scoped to the five observed subdomains
-rather than the apex — same "only template what you've seen used" call as
-elsewhere in the catalog; bytes to a bare apex, if any future pass finds them,
-go unattributed against the app's budget (`HostMatch.matchesApex` matches it
+beyond these five, so the host-set is scoped to subdomains — three of the
+five observed — rather than the apex, for two stacking reasons: (1) collateral
+— a bare-apex entry would suffix-match `ct.canva.com` too and drag its
+off-pool Google range into the drop set, same apex-sweep mechanism
+`arduino.yml` documents for `arduino.cc`; (2) only template what's been
+observed. Bytes to a bare apex, if any future pass finds them, go
+unattributed against the app's budget (`HostMatch.matchesApex` matches it
 against none of the kept hosts), the same residual `arduino.yml` documents.
 
 ## New app: Instructables
@@ -172,7 +175,7 @@ matching a slug name can still be mostly unrelated collateral):
 | `1passwordusercontent.com` | `1password` app ✓ — already in host-set (added #2331) |
 | `deepai.org` | **skip** — `ai` blocklist category already covers AI tools categorically; not app-catalog territory |
 | `duckmath.org` | `games.yml` ✓ — confirmed still present |
-| `cloudflare.com`, `cloudfront.net`, `fastly-edge.com`, `akamai.net`, `akamaized.net`, `akamaiedge.net`, `akadns.net`, `edgesuite.net`, `edgekey.net`, `github.io`, `githubusercontent.com`, `jsdelivr.net`, `unpkg.com`, `onrender.com`, `wixstatic.com`, `wixapps.net`, `wix.com`, `parastorage.com`, `azure.com` | **skip** — shared hosting/CDN infra |
+| `cloudflare.com`, `cloudfront.net`, `fastly-edge.com`, `akamai.net`, `akamaized.net`, `akamaiedge.net`, `akadns.net`, `edgesuite.net`, `edgekey.net`, `github.io`, `githubusercontent.com`, `unpkg.com`, `onrender.com`, `wixstatic.com`, `wixapps.net`, `wix.com`, `parastorage.com`, `azure.com` | **skip** — shared hosting/CDN infra |
 | `digicert.com`, `rapidssl.com`, `comodoca.com`, `usertrust.com` (not observed this pass but same class) | **skip** — CA/TLS infra |
 | `sentry.io`, `launchdarkly.com`, `clarity.ms`, `nr-data.net`, `bugsnag.com`, `dynatrace.com`, `iubenda.com`, `cookielaw.org`, `onetrust.com`, `privacymanager.io`, `cloudflareinsights.com`, `nel.goog`, `sgtm.arduino.cc` (see above), `activemetering.com`, `webcontentassessor.com`, `signalstuff.com`, `zeronaught.com`, `p7cloud.net`, `koah.ai`, `trygravity.ai`, `kidsafe.com`, `gt162037.com`, `revenuecat.com`, `crashlytics.com`, `tiqcdn.com`, `sc-static.net`, `redditstatic.com`, `reddit.com`, `yahoo.com`, `bing.com`, `microsoft.com`, `adobe.com`, `adobe.io`, `adobelogin.com`, `adobeccstatic.com`, `adobedtm.com`, `typekit.net`, `autodesk.com`, `salesforce-scrt.com`, `sendtonews.com`, `ampproject.org`, `assertcom.de`, `recaptcha.net`, `calculator.net`, `pypi.org`, `python.org`, `fwupd.org`, `ntv.io`, `shopify.com`, `licdn.com`, `samba.tv`, `editmysite.com`, `apple-cloudkit.com`, `arkoselabs.com`, `kvaedit.site`, `site.com` | **skip** — analytics/error-reporting/consent-management/shared-corporate-infra/below-bar incidental, no branded kid surface |
 | `thelegogroup.com` | **skip** — LEGO corporate error-reporting, excluded by design (#1815) |

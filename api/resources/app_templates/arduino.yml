@@ -44,10 +44,11 @@ icon_type: url
 # member to look at first. Of the ORIGINAL ten `*.arduino.cc` hosts, eight land
 # on Arduino's own Cloudflare pair (104.18.12.135/104.18.13.135), `downloads` on
 # 104.18.10.21/104.18.11.21 and `api2` on CloudFront 18.238.176.x — whereas that
-# one lands on Cloudflare's broadly-shared 104.21.x / 172.67.x pool. The three
-# #2754 additions land on three MORE distinct pools — `login` on Cloudflare
-# 172.64.150.238/104.18.37.18, `projecthub-api` on a dedicated AWS ELB, and
-# `builder` on the same CloudFront 18.238.176.x range as `api2` — see the #2754
+# one lands on Cloudflare's broadly-shared 104.21.x / 172.67.x pool. Of the
+# three #2754 additions, `login` and `projecthub-api` land on two more
+# distinct pools (Cloudflare 172.64.150.238/104.18.37.18, and a dedicated AWS
+# ELB, respectively); `builder` introduces no new pool at all — it shares
+# `api2`'s existing CloudFront 18.238.176.x range — see the #2754
 # note below for each.
 #
 # Kept host-set, and what each surface is:
