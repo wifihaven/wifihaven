@@ -160,6 +160,8 @@ object BundledBlocklistsSpec
         assertTrue(ads.contains(Hostname.unsafe("inspectlet.com"))) &&
         // traffic-driven addition pinned for presence (#2729)
         assertTrue(ads.contains(Hostname.unsafe("adnxs-simple.com"))) &&
+        // traffic-driven addition pinned for presence (#2756)
+        assertTrue(ads.contains(Hostname.unsafe("adpushup.com"))) &&
         assertTrue(meta.isDefined) &&
         assertTrue(meta.exists(m => m.bundled && m.name == "Ads & Trackers"))
     },
@@ -396,7 +398,9 @@ object BundledBlocklistsSpec
         // traffic-driven unblocked-games addition pinned for presence (#2212)
         assertTrue(hosts.contains(Hostname.unsafe("eaglercraft.com"))) &&
         // traffic-driven addition pinned for presence (#2348)
-        assertTrue(hosts.contains(Hostname.unsafe("saygames.io")))
+        assertTrue(hosts.contains(Hostname.unsafe("saygames.io"))) &&
+        // traffic-driven addition pinned for presence (#2756)
+        assertTrue(hosts.contains(Hostname.unsafe("wordplays.com")))
     },
     test("gambling + social-media: traffic-driven additions are present (#2212)") {
       for {
@@ -424,7 +428,9 @@ object BundledBlocklistsSpec
         // traffic-driven addition pinned for presence (#2503)
         assertTrue(social.contains(Hostname.unsafe("redditmedia.com"))) &&
         // traffic-driven addition pinned for presence (#2729)
-        assertTrue(social.contains(Hostname.unsafe("tiktokv.us")))
+        assertTrue(social.contains(Hostname.unsafe("tiktokv.us"))) &&
+        // traffic-driven addition pinned for presence (#2756)
+        assertTrue(social.contains(Hostname.unsafe("truthsocial.com")))
     },
     test("ai: bundled list is loaded and includes the major AI services (#1890)") {
       for {
