@@ -139,3 +139,9 @@ hosts:
   # evidence/multi-category-classification-2742.md.
   - eaglercraft.dev
   - poki-gdn.com
+  # traffic-driven addition (#2756): 30-day prod recent-apexes sweep (28
+  # devices, 2026-09-01). wordplays.com is a dedicated browser word-game
+  # site (Scrabble/Boggle/Words-with-Friends helper + playable games),
+  # same "casual browser game portal" class as the already-curated
+  # coolmathgames.com/miniclip.com/y8.com.
+  - wordplays.com # Wordplays.com — browser word-game site (Scrabble, Boggle, etc.)

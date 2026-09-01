@@ -203,6 +203,54 @@ that edit in the same PR.** If a step above is now wrong, fix the step too.
 
 ## Learnings log (newest first)
 
+- **2026-09-01** (#2756) — **Check every candidate's history against
+  `evidence/*.md`, not just the current `.yml` content, BEFORE running a
+  fresh identity search — a domain can be a documented standing exclusion
+  even though it isn't in the curated list.** `claude.com` resurfaced in
+  traffic this run (unsurprising — the operator runs Claude Code heavily)
+  and a fresh websearch would happily confirm "yes, this is Anthropic's
+  domain" — but #2348 and #2503 had already ruled it out twice: it's
+  WifiHaven's own vendor infra, and separately the wrong *tier* of apex per
+  the `ai.yml` host-scoping convention (bare corporate apex vs. the
+  already-curated product subdomain `claude.ai`). Grepping
+  `evidence/*.md` for the exact candidate caught this before it got
+  re-added as a "new" gap. Same pattern, different resolution:
+  `lazybumblebee.com` — a weak, unauthoritative forum post this run
+  suggested a link to Bumble's dating app via its `d.lazybumblebee.com`
+  subdomain, but FOUR prior passes (#2212, #2348, #2503, #2729) had
+  already investigated the apex's actual site content directly and found
+  it to be an unrelated lifestyle blog — one ambiguous forum answer isn't
+  strong enough new evidence to reverse a repeatedly re-investigated
+  rejection, so it stayed held out. Contrast with `adelement.com`, which
+  *was* correctly promoted from a two-pass "plausible but unconfirmed"
+  hold-out (#2212, #2348) to added — because this run's evidence was a
+  first-party company website with concrete self-description (own domain,
+  funding, employee count, Inc 5000 ranking), which is categorically
+  stronger than the earlier "name sounds plausible" signal. The rule: a
+  standing rejection needs comparably strong NEW evidence to reverse, not
+  just any evidence.
+- **2026-09-01** (#2756) — **A `.ai`-TLD company whose actual product is an
+  ad network built for OTHER AI apps belongs in `ads.yml`, not `ai.yml` —
+  a second confirmed instance of the trap `axon.ai`/`programmaticx.ai`
+  first flagged (#2599/#2742).** `trygravity.ai` ("Gravity — The Ad
+  Network for AI") and `koah.ai` ("Koah — AdSense for AI") both surfaced
+  in the `ai.yml` keyword sweep (`.ai` TLD) but their entire business is
+  embedding sponsored placements into other companies' AI-chat/AI-app
+  output — that's an ads.yml candidate wearing an AI-branded TLD. This is
+  now a recurring enough pattern (3 instances across 2 passes) that any
+  `.ai` apex whose own marketing describes itself as an "ad network" /
+  "AdSense for X" should be checked against `ads.yml` criteria first,
+  before defaulting to `ai.yml` on TLD alone.
+- **2026-09-01** (#2756) — **An ad-monetization platform that serves ONLY
+  ads within game/content pages it doesn't otherwise deliver (Playwire's
+  RAMP) is a clean ads.yml add, not games.yml content-collateral —
+  contrast with a video CDN that also carries the actual content stream
+  (target-video.com/brid.tv, mmvideocdn.com).** The distinguishing
+  question from the ads-collateral rule: does blocking the apex drop
+  content the household is trying to consume, or only the ad slot layered
+  on top of content served from elsewhere? `playwire.com` monetizes the
+  already-curated Coolmath Games and other casual-game sites but doesn't
+  deliver the games themselves — safe to add.
 - **2026-08-25** (#2742) — **A hand-written `grep -oE '^  - [a-zA-Z0-9._-]+$'`
   extraction anchored with `$` silently drops any host line carrying a
   trailing inline `# comment`** — `social-media.yml` and `games.yml` both use
