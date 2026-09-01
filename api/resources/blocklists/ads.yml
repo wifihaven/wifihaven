@@ -552,3 +552,75 @@ hosts:
   - html-load.com
   - html-load.cc
   - blisspointmedia.com
+  # traffic-driven additions (#2756): 30-day prod recent-apexes sweep (28
+  # devices, 2026-09-01). Two new ad networks specifically built to embed
+  # sponsored placements inside AI-chatbot/AI-app output: trygravity.ai
+  # ("Gravity — The Ad Network for AI"; its own docs URL is a
+  # api.trygravity.ai/track/click redirect) and koah.ai ("Koah — The Ad
+  # Network Built for AI" / "AdSense for AI", $26M+ raised, TechCrunch/
+  # AdWeek/SiliconANGLE-confirmed). Same ".ai-TLD-but-the-product-is-ads"
+  # trap as axon.ai/programmaticx.ai (#2599/#2742) — these are ad infra,
+  # not consumer AI products, so ads.yml not ai.yml. adpushup.com (AdPushup,
+  # a Google Certified Publishing Partner ad-revenue-optimization + adblock-
+  # recovery platform, acquired by Geniee) and btloader.com (Blockthrough,
+  # the market-leading adblock-revenue-recovery script loader) are both
+  # anti-adblock/ad-enablement infra — same function class as the
+  # getadmiral.com precedent (#2503). adlightning.com (Ad Lightning, now
+  # rebranded Boltive — a programmatic ad-quality/ad-security platform used
+  # by publishers, SSPs and DSPs), s4mdsp.com (S4M, a Paris-founded
+  # mobile-native DSP with 500+ advertisers), adelement.com (AdElement, an
+  # AI-native app-focused DSP; Inc 5000 company, "Google Agency of the
+  # Year" — confirmed via its own site, stronger evidence than the
+  # "plausible but unconfirmed" hold-out in #2212/#2348), adentifi.com
+  # (AdTheorent, a predictive-advertising firm, confirmed via netify —
+  # bm./px. subdomains are its interest-based-ad opt-out + pixel infra),
+  # advanseads.com (Advanse, a creative-automation-for-advertisers
+  # platform), mediatradecraft.com (Media Tradecraft, an ad-tech
+  # monetization/programmatic-consulting firm — Digiday/AdExchanger award
+  # winner), and playdigo.live (Playdigo, a mobile user-acquisition DSP;
+  # sibling of the already-curated ssp.playdigo.com family) are all
+  # confirmed ad-tech companies. osdrtb.net (cdn./trk. subdomains, "rtb" in
+  # the apex — textbook RTB-bidder shape, same as the gamaibids.com
+  # precedent #2122) is a genuine gap despite no public company page.
+  # displayio.cloud is a sibling apex of the already-curated display.io
+  # (an in-app ad-monetization platform) — same multi-apex pattern as the
+  # Verve Group precedent (#1923). playwire.com (Playwire's RAMP ad-
+  # monetization platform for casual/browser games, used by sites including
+  # the already-curated Coolmath Games) is pure ad-monetization infra riding
+  # on top of game content, not the content itself — not the same
+  # content-collateral class as target-video.com/brid.tv, which serve the
+  # actual video.
+  # HELD OUT / REJECTED this run: claude.com — despite surfacing again in
+  # traffic, this is a documented standing exclusion (#2348, #2503): it is
+  # WifiHaven's own Anthropic-vendor infra AND the bare corporate apex
+  # rather than the product subdomain per the ai.yml host-scoping
+  # convention (the product itself is the already-curated claude.ai) — not
+  # an ads.yml candidate at all, noted here only to record it was
+  # re-examined and correctly excluded again. lazybumblebee.com — despite a
+  # weak, unauthoritative forum post this run suggesting a link to Bumble's
+  # d.lazybumblebee.com deep-link domain, FOUR prior passes (#2212, #2348,
+  # #2503, #2729) investigated this apex's actual site content and
+  # confirmed it is an unrelated lifestyle blog, not evidence of Bumble
+  # ownership — the standing "not a social-media candidate at all" verdict
+  # stands; a single ambiguous forum answer does not meet the bar to
+  # reverse a repeatedly-investigated rejection. akiads.net — re-observed
+  # (loader./serve. subdomains, "ads" substring in apex) but this is the
+  # SAME apex #2742 explicitly held out as "no identifiable owner found"
+  # with near-identical traffic volume; a subdomain-naming pattern alone is
+  # not new corroborating evidence over a company/product identity, so it
+  # stays held out rather than being added on inference. See
+  # evidence/multi-category-classification-2756.md.
+  - trygravity.ai
+  - koah.ai
+  - adpushup.com
+  - btloader.com
+  - adlightning.com
+  - s4mdsp.com
+  - adelement.com
+  - adentifi.com
+  - advanseads.com
+  - mediatradecraft.com
+  - playdigo.live
+  - osdrtb.net
+  - displayio.cloud
+  - playwire.com

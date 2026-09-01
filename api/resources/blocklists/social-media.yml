@@ -63,3 +63,16 @@ hosts:
   # representation in this list (same "is a major platform just missing
   # outright" check the #2599 whatsapp.net addition established).
   - telegram.org # Telegram messaging/social platform
+  # traffic-driven addition (#2756): 30-day prod recent-apexes sweep (28
+  # devices, 2026-09-01). truthsocial.com (Truth Social, Trump Media &
+  # Technology Group's consumer social network) was a categorical absence —
+  # same "major platform simply missing outright" check as #2599/#2742.
+  # HELD OUT / REJECTED: lazybumblebee.com — re-observed (only the
+  # d.lazybumblebee.com deep-link subdomain, 6.8M bytes / 304 hits) and a
+  # weak forum post this run suggested a Bumble-dating-app link, but FOUR
+  # prior passes (#2212, #2348, #2503, #2729) already investigated this
+  # exact apex's site content and confirmed it's an unrelated lifestyle
+  # blog, not Bumble infra — the standing rejection stands; one
+  # unauthoritative forum answer isn't enough to reverse a repeatedly
+  # re-investigated verdict. See evidence/multi-category-classification-2756.md.
+  - truthsocial.com # Truth Social consumer social network
