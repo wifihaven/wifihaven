@@ -1633,6 +1633,9 @@ function AppsRulesSubsection({
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
   }, [])
   const usageQ = useProfileUsageByApp(pd.profile.id, today, today, { enabled: open })
+  // #2764 — AGENTS.md#loading-states: a row must be able to tell "not loaded
+  // yet" from a genuine zero, so the query's state rides down with its data.
+  const usageStatus: UsageStatus = usageQ.isPending ? 'pending' : usageQ.isError ? 'error' : 'success'
   const usedMinsByAppId = useMemo(() => {
     const m = new Map<number, number>()
     for (const a of usageQ.data?.apps ?? []) {
@@ -1669,6 +1672,7 @@ function AppsRulesSubsection({
             onChanged={onAppsChanged}
             testIdPrefix={`profile-${pd.profile.id}-apps-section`}
             usedMinsByAppId={usedMinsByAppId}
+            usageStatus={usageStatus}
           />
         </div>
       )}
@@ -1681,7 +1685,20 @@ function findAssignment(app: AppDetail, profileId: number | null): AppPolicyAssi
   return app.assignments.find(a => a.profileId === profileId) ?? null
 }
 
-function AppsSection({ profileId, isNew, apps, onChanged, testIdPrefix = 'apps-section', usedMinsByAppId }: {
+// #2764 — usage query state, threaded down so a row can tell "still loading"
+// apart from a genuine zero. AGENTS.md#loading-states: a collapsed row must
+// never render `0m` or an empty bar while the query is pending.
+type UsageStatus = 'pending' | 'error' | 'success'
+
+// #2764 — an assignment's mode decides which list its row lives in. `allowed`
+// and `time_limited` are both "allowed, the latter with a cap", so they share
+// the allowed list; the mode mapping itself is untouched (setting min/day
+// promotes to time_limited, clearing demotes to allowed — see commitMinutes).
+function listOf(mode: AppMode): 'allowed' | 'blocked' {
+  return mode === 'blocked' ? 'blocked' : 'allowed'
+}
+
+function AppsSection({ profileId, isNew, apps, onChanged, testIdPrefix = 'apps-section', usedMinsByAppId, usageStatus = 'success' }: {
   profileId: number | null
   isNew: boolean
   apps: AppDetail[]
@@ -1690,10 +1707,14 @@ function AppsSection({ profileId, isNew, apps, onChanged, testIdPrefix = 'apps-s
   // #1061 — per-app today usage, threaded down to AppRow so time-limited rows
   // can render a usage bar. Empty/undefined → bar simply doesn't render.
   usedMinsByAppId?: Map<number, number>
+  // #2764 — the state of the query behind `usedMinsByAppId`.
+  usageStatus?: UsageStatus
 }) {
   // #1007: only show apps that already have an assignment for this profile.
-  // Unassigned apps stay manageable via the "+ Add app" picker below.
-  const [pickerOpen, setPickerOpen] = useState(false)
+  // Unassigned apps stay manageable via the add-app picker below.
+  // #2764 — the picker now carries the mode it will write, so "+ Allow app"
+  // and "+ Block app" land the picked app directly in the list you asked for.
+  const [pickerMode, setPickerMode] = useState<'allowed' | 'blocked' | null>(null)
   const [pickerFilter, setPickerFilter] = useState('')
   // #1983 — blocklist id → display name for the per-app overlap warning badges.
   const { data: blocklists = [] } = useBlocklists()
@@ -1706,6 +1727,14 @@ function AppsSection({ profileId, isNew, apps, onChanged, testIdPrefix = 'apps-s
     () => (profileId == null ? [] : apps.filter(a => findAssignment(a, profileId) != null)),
     [apps, profileId],
   )
+  const allowedApps = useMemo(
+    () => assigned.filter(a => listOf(findAssignment(a, profileId)!.mode) === 'allowed'),
+    [assigned, profileId],
+  )
+  const blockedApps = useMemo(
+    () => assigned.filter(a => listOf(findAssignment(a, profileId)!.mode) === 'blocked'),
+    [assigned, profileId],
+  )
   const unassigned = useMemo(
     () => (profileId == null ? [] : apps.filter(a => findAssignment(a, profileId) == null)),
     [apps, profileId],
@@ -1716,27 +1745,82 @@ function AppsSection({ profileId, isNew, apps, onChanged, testIdPrefix = 'apps-s
     return unassigned.filter(a => a.app.name.toLowerCase().includes(q))
   }, [unassigned, pickerFilter])
 
-  async function addApp(app: AppDetail) {
+  async function addApp(app: AppDetail, mode: 'allowed' | 'blocked') {
     if (profileId == null) return
-    // Default to 'allowed' on add — the user can immediately switch to block /
-    // time-limit on the now-visible row. We pick a mode (rather than just
-    // "make row appear") because every assignment requires one.
-    await api.apps.setPolicy(app.app.id, profileId, { mode: 'allowed', dailyMinutes: null })
-    setPickerOpen(false)
+    // #2764 — an app added to the ALLOWED list obeys scheduled downtime
+    // (`allowedDuringScheduleBlock: false`). This is the one deliberate
+    // behaviour change in the redesign: a fresh allowance shouldn't quietly
+    // punch a hole through the profile's downtime windows. It is a client-side
+    // payload change only — the column default, the wire default and every
+    // existing assignment are untouched, and moving an app back from Blocked
+    // restores whatever value that assignment already carried.
+    await api.apps.setPolicy(app.app.id, profileId, mode === 'allowed'
+      ? { mode, dailyMinutes: null, allowedDuringScheduleBlock: false }
+      : { mode, dailyMinutes: null })
+    setPickerMode(null)
     setPickerFilter('')
     await onChanged()
   }
 
+  const addBtn = 'text-xs px-2 py-1 rounded-lg border bg-white transition-colors disabled:opacity-50'
   const headerCta = !isNew && profileId != null && apps.length > 0 && (
-    <button
-      type="button"
-      data-testid={`${testIdPrefix}-add`}
-      onClick={() => setPickerOpen(v => !v)}
-      className="text-xs text-brand-accent hover:text-brand-accent"
-    >
-      {pickerOpen ? 'Close' : '+ Add app'}
-    </button>
+    <>
+      <button
+        type="button"
+        data-testid={`${testIdPrefix}-add-allowed`}
+        onClick={() => setPickerMode(m => (m === 'allowed' ? null : 'allowed'))}
+        className={`${addBtn} border-brand-accent/40 text-brand-accent hover:bg-brand-accent/10`}
+      >
+        {pickerMode === 'allowed' ? 'Close' : '+ Allow app'}
+      </button>
+      <button
+        type="button"
+        data-testid={`${testIdPrefix}-add-blocked`}
+        onClick={() => setPickerMode(m => (m === 'blocked' ? null : 'blocked'))}
+        className={`${addBtn} border-red-500/40 text-red-700 hover:bg-red-500/10`}
+      >
+        {pickerMode === 'blocked' ? 'Close' : '+ Block app'}
+      </button>
+    </>
   )
+
+  function renderList(list: 'allowed' | 'blocked', rows: AppDetail[]) {
+    return (
+      <div>
+        <div className="flex items-center gap-2 mb-1.5 pb-1 border-b border-brand-border">
+          <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${list === 'allowed' ? 'bg-brand-accent' : 'bg-red-500'}`} />
+          <span className="text-[11px] font-bold uppercase tracking-wider text-brand-ink">
+            {list === 'allowed' ? 'Allowed' : 'Blocked'}
+          </span>
+          <span className="text-[11px] font-mono text-brand-text-muted" data-testid={`${testIdPrefix}-${list}-count`}>
+            {rows.length}
+          </span>
+          <span className="ml-auto text-[11px] text-brand-text-muted">
+            {list === 'allowed'
+              ? 'Reachable, unless a limit or schedule says otherwise'
+              : 'Dropped at the router'}
+          </span>
+        </div>
+        <div className="space-y-1" data-testid={`${testIdPrefix}-${list}-list`}>
+          {rows.length === 0 ? (
+            <p className="text-xs text-brand-text-muted italic py-1" data-testid={`${testIdPrefix}-${list}-empty`}>
+              {list === 'allowed' ? 'No allowed apps.' : 'No blocked apps.'}
+            </p>
+          ) : rows.map(a => (
+            <AppRow
+              key={a.app.id}
+              app={a}
+              profileId={profileId!}
+              onChanged={onChanged}
+              usedMins={usedMinsByAppId?.get(a.app.id)}
+              usageStatus={usageStatus}
+              blocklistNameById={blocklistNameById}
+            />
+          ))}
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div data-testid={testIdPrefix}>
@@ -1744,12 +1828,12 @@ function AppsSection({ profileId, isNew, apps, onChanged, testIdPrefix = 'apps-s
         <label className="block text-xs font-semibold text-brand-text-muted uppercase tracking-wider">
           Apps
         </label>
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2">
           {headerCta}
           <Link
             to="/apps"
             data-testid={`${testIdPrefix}-manage-link`}
-            className="text-xs text-brand-accent hover:text-brand-accent"
+            className="text-xs text-brand-accent hover:text-brand-accent ml-1"
           >
             Manage apps →
           </Link>
@@ -1777,14 +1861,14 @@ function AppsSection({ profileId, isNew, apps, onChanged, testIdPrefix = 'apps-s
           }
         />
       ) : (
-        <div className="space-y-2">
-          {assigned.length === 0 && !pickerOpen && (
+        <div className="space-y-3">
+          {assigned.length === 0 && pickerMode == null && (
             <p className="text-xs text-brand-text-muted" data-testid={`${testIdPrefix}-none-assigned`}>
               No apps assigned to this profile.{' '}
               <button
                 type="button"
                 data-testid={`${testIdPrefix}-none-assigned-add`}
-                onClick={() => setPickerOpen(true)}
+                onClick={() => setPickerMode('allowed')}
                 className="text-brand-accent hover:text-brand-accent underline"
               >
                 Add one
@@ -1792,21 +1876,20 @@ function AppsSection({ profileId, isNew, apps, onChanged, testIdPrefix = 'apps-s
               {' '}from the {apps.length}-app library.
             </p>
           )}
-          {assigned.map(a => (
-            <AppRow
-              key={a.app.id}
-              app={a}
-              profileId={profileId}
-              onChanged={onChanged}
-              usedMins={usedMinsByAppId?.get(a.app.id)}
-              blocklistNameById={blocklistNameById}
-            />
-          ))}
-          {pickerOpen && (
+          {assigned.length > 0 && renderList('allowed', allowedApps)}
+          {assigned.length > 0 && renderList('blocked', blockedApps)}
+          {pickerMode != null && (
             <div
               data-testid={`${testIdPrefix}-picker`}
-              className="bg-brand-surface border border-brand-border-strong rounded-xl p-3 space-y-2"
+              className={`bg-brand-surface border rounded-xl p-3 space-y-2 ${
+                pickerMode === 'allowed' ? 'border-brand-accent/50' : 'border-red-500/50'
+              }`}
             >
+              <p className={`text-[11px] font-semibold uppercase tracking-wider ${
+                pickerMode === 'allowed' ? 'text-brand-accent' : 'text-red-700'
+              }`}>
+                {pickerMode === 'allowed' ? 'Allow an app' : 'Block an app'}
+              </p>
               <input
                 type="text"
                 autoFocus
@@ -1829,7 +1912,7 @@ function AppsSection({ profileId, isNew, apps, onChanged, testIdPrefix = 'apps-s
                       key={a.app.id}
                       type="button"
                       data-testid={`${testIdPrefix}-picker-add-${a.app.id}`}
-                      onClick={() => addApp(a)}
+                      onClick={() => addApp(a, pickerMode)}
                       className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg bg-white hover:bg-brand-alt border border-brand-border-strong text-left"
                     >
                       <AppIcon icon={a.app.icon} iconType={a.app.iconType} size="sm" className="w-5 text-center" />
@@ -1848,14 +1931,29 @@ function AppsSection({ profileId, isNew, apps, onChanged, testIdPrefix = 'apps-s
   )
 }
 
-function AppRow({ app, profileId, onChanged, usedMins, blocklistNameById }: {
+// #2764 — one app, one line. The row carries identity plus a trailing control
+// group; everything configurable lives behind one of two expanders, so an app
+// that is simply allowed or simply blocked costs a single line.
+//
+// The trailing group reads left to right:
+//   • today's usage (no-limit apps only — #1433), with loading/error states
+//   • exception pills: the two flags, shown ONLY at their exceptional value,
+//     each a one-click revert to the ordinary value
+//   • the limit expander: a chip carrying used/cap, or a quiet "+ limit"
+//   • the schedule expander: a chip carrying the rule count, or "+ schedule"
+//   • the move button (Block on an allowed row, Allow on a blocked one) —
+//     list membership IS the mode, so there is no Block/Allow pair any more
+//   • remove-from-profile
+function AppRow({ app, profileId, onChanged, usedMins, usageStatus = 'success', blocklistNameById }: {
   app: AppDetail
   profileId: number
   onChanged: () => void | Promise<void>
   // #1061 — today's proportional minutes attributed to this app for this
-  // profile. Undefined → not loaded yet (e.g. subsection just opened); the
-  // bar simply doesn't render until the value arrives.
+  // profile. Read together with `usageStatus`: undefined under 'success' is a
+  // genuine zero (the endpoint omits apps with no usage), undefined under
+  // 'pending' is simply not loaded yet.
   usedMins?: number
+  usageStatus?: UsageStatus
   // #1983 — blocklist id → display name for the overlap-warning badge.
   blocklistNameById?: Map<string, string>
 }) {
@@ -1883,6 +1981,10 @@ function AppRow({ app, profileId, onChanged, usedMins, blocklistNameById }: {
   )
   const [busy, setBusy] = useState(false)
   const [localError, setLocalError] = useState<string | null>(null)
+  // #2764 — the two expanders. Both default closed; a row that uses neither
+  // feature never pays for them.
+  const [limitOpen, setLimitOpen] = useState(false)
+  const [schedOpen, setSchedOpen] = useState(false)
   // #1380 — attached schedule rules, seeded from the persisted assignment and
   // re-seeded when it changes from outside (mirrors minutesDraft below).
   const [scheduleRules, setScheduleRules] = useState<AppScheduleRule[]>(
@@ -1962,13 +2064,21 @@ function AppRow({ app, profileId, onChanged, usedMins, blocklistNameById }: {
   const mode = current?.mode ?? null
   const isTimeLimited = mode === 'time_limited'
   const currentMinutes = isTimeLimited ? current?.dailyMinutes ?? null : null
+  const isAllowedList = mode != null && listOf(mode) === 'allowed'
+  const exempt = current?.exemptFromDaily ?? true
+  const allowedDuringDowntime = current?.allowedDuringScheduleBlock ?? true
+  const hasSchedule = scheduleRules.length > 0
+  // Under 'success' an absent entry is a genuine zero — the endpoint only
+  // returns apps that accrued time. Under 'pending'/'error' it is unknown.
+  const loadedMins = usageStatus === 'success' ? usedMins ?? 0 : null
 
-  // #1007 / #2747 — the ONE writer of exemptFromDaily on this row. Both surfaces
-  // that govern the flag call it: the "Counts toward daily limit" row checkbox
-  // (which inverts at the call site) and ScheduleRuleEditor's blocked-mode
-  // toggle (which passes the exemption through directly). Routing both here is
-  // what keeps their payloads from drifting. A time_limited app with no cap set
-  // yet has nothing to exempt from, so that case is a no-op.
+  // #1007 / #2747 — the ONE writer of exemptFromDaily on this row. Every
+  // surface that governs the flag calls it: the "Counts toward daily limit"
+  // checkbox in the limit drawer (which inverts at the call site), the #2764
+  // `counts` pill, and ScheduleRuleEditor's blocked-mode toggle (which passes
+  // the exemption through directly). Routing them all here is what keeps their
+  // payloads from drifting. A time_limited app with no cap set yet has nothing
+  // to exempt from, so that case is a no-op.
   async function writeExempt(nextExempt: boolean) {
     if (mode == null) return
     if (mode === 'time_limited' && current?.dailyMinutes == null) return
@@ -1998,6 +2108,15 @@ function AppRow({ app, profileId, onChanged, usedMins, blocklistNameById }: {
   async function toggleScheduleBlock(nextAllowed: boolean) {
     if (mode == null) return
     await apply(mode, current?.dailyMinutes ?? null, current?.exemptFromDaily, undefined, nextAllowed)
+  }
+
+  // #2764 — list membership IS the mode, so one button moves the row rather
+  // than a Block/Allow pair sitting on every row. Moving to Blocked drops the
+  // cap (a blocked app accrues nothing to cap); moving back to Allowed restores
+  // whatever allowedDuringScheduleBlock the assignment already carried, which
+  // is why it does not take the "+ Allow app" add-path default.
+  async function move() {
+    await apply(isAllowedList ? 'blocked' : 'allowed', null)
   }
 
   // Operator feedback: the old UX made you type minutes AND click a
@@ -2033,190 +2152,322 @@ function AppRow({ app, profileId, onChanged, usedMins, blocklistNameById }: {
     await apply('time_limited', n, current?.exemptFromDaily ?? true)
   }
 
-  const baseBtn = 'text-xs px-2.5 py-1 rounded-lg border transition-colors disabled:opacity-50'
-  const off = 'bg-brand-alt text-brand-text border-brand-border-strong hover:border-brand-border-strong'
-  const onBlocked = 'bg-red-500/20 text-red-700 border-red-500/40'
-  const onAllowed = 'bg-brand-accent/20 text-brand-accent border-brand-accent/40'
+  const tid = `app-row-${app.app.id}`
+  // A quiet, dashed affordance for a feature this app doesn't use yet — it
+  // reads as recessive until hovered or focused, so a row full of them still
+  // scans as one line of text.
+  const addAffordance = 'h-6 px-1.5 rounded-lg border border-dashed border-brand-border-strong text-[11px] font-medium text-brand-text-muted opacity-70 hover:opacity-100 hover:text-brand-accent hover:border-brand-accent focus-visible:opacity-100 transition-colors disabled:opacity-40'
+  const chipBase = 'inline-flex items-center gap-1 h-6 px-2 rounded-lg border text-[11px] font-medium tabular-nums disabled:opacity-50'
+  const pillBase = 'inline-flex items-center gap-1 h-[22px] px-1.5 rounded-full border text-[10.5px] font-semibold tracking-wide disabled:opacity-50'
+  const moveBase = 'h-6 px-2 rounded-lg border bg-white text-[11px] font-semibold transition-colors disabled:opacity-50'
 
   return (
     <div
-      data-testid={`app-row-${app.app.id}`}
-      className="bg-brand-surface border border-brand-border-strong rounded-xl p-3 space-y-2"
+      data-testid={tid}
+      className="bg-brand-card border border-brand-border rounded-xl"
     >
-      <div className="flex items-center gap-3">
-        <span className="w-7 text-center inline-flex items-center justify-center">
-          <AppIcon icon={app.app.icon} iconType={app.app.iconType} size="md" />
+      <div className="flex items-center gap-2.5 pl-2.5 pr-2 py-1.5 min-h-[40px]">
+        <span className="w-5 shrink-0 inline-flex items-center justify-center">
+          <AppIcon icon={app.app.icon} iconType={app.app.iconType} size="sm" />
         </span>
-        <div className="flex-1 min-w-0">
-          <p className="text-sm text-brand-ink font-medium truncate flex items-center gap-2">
-            {app.app.name}
-            <AppBlocklistWarningBadge blocklisted={app.blocklisted} nameById={blocklistNameById} />
-          </p>
-          <p className="text-xs text-brand-text-muted font-mono truncate">{app.hosts.length} host{app.hosts.length === 1 ? '' : 's'}</p>
+        <div className="flex-1 min-w-0 flex items-baseline gap-2">
+          <p className="text-[13px] text-brand-ink font-medium truncate">{app.app.name}</p>
+          <AppBlocklistWarningBadge blocklisted={app.blocklisted} nameById={blocklistNameById} />
+          <span className="text-[11px] text-brand-text-muted font-mono shrink-0">
+            {app.hosts.length} host{app.hosts.length === 1 ? '' : 's'}
+          </span>
         </div>
-        {mode != null && (
+
+        <div className="flex items-center gap-1.5 shrink-0">
+          {/* #1433 / #2764 — today's time-used for an app with no cap of its
+              own. Three states, never conflated: a pending query renders a
+              skeleton (NOT `0m`), a failed one says so, and a loaded zero
+              renders nothing at all — absence already reads as "nothing
+              today" and would otherwise be noise on most rows. */}
+          {!isTimeLimited && usageStatus === 'pending' && (
+            <span
+              data-testid={`${tid}-usage-loading`}
+              aria-label="Loading today's usage"
+              className="inline-block w-10 h-2.5 rounded-full bg-brand-alt animate-pulse"
+            />
+          )}
+          {!isTimeLimited && usageStatus === 'error' && (
+            <span data-testid={`${tid}-usage-error`} className="text-[11px] font-mono text-red-700">
+              usage unavailable
+            </span>
+          )}
+          {!isTimeLimited && loadedMins != null && loadedMins > 0 && (
+            <span data-testid={`${tid}-used`} className="text-[11px] font-mono text-brand-text-muted tabular-nums">
+              {formatMins(loadedMins)} today
+            </span>
+          )}
+
+          {/* #2764 exception pills. Both flags default to their permissive
+              value, so a pill is always an opted-into exception and always a
+              one-click revert. The title carries the explanation the row has
+              no room for; the label repeats the shipped checkbox wording
+              rather than introducing a third phrasing. */}
+          {isAllowedList && !exempt && (
+            <button
+              type="button"
+              data-testid={`${tid}-pill-counts`}
+              disabled={busy}
+              onClick={() => writeExempt(true)}
+              title={`Counts toward daily limit — ${app.app.name}'s minutes are spent from the profile's daily budget. It stays reachable either way; this only changes the maths. Click to make it exempt again.`}
+              className={`${pillBase} bg-amber-500/15 border-amber-500/40 text-amber-800 hover:bg-amber-500/25`}
+            >counts<span className="opacity-60">×</span></button>
+          )}
+          {isAllowedList && allowedDuringDowntime && (
+            <button
+              type="button"
+              data-testid={`${tid}-pill-ignores-downtime`}
+              disabled={busy}
+              onClick={() => toggleScheduleBlock(false)}
+              title={`Reachable during scheduled downtime — ${app.app.name} stays on when the profile is in a downtime window. Click to make it go off with everything else.`}
+              className={`${pillBase} bg-brand-accent/15 border-brand-accent/40 text-brand-accent hover:bg-brand-accent/25`}
+            >ignores downtime<span className="opacity-60">×</span></button>
+          )}
+
+          {/* Limit expander — allowed list only. A blocked app drops all
+              traffic, so it accrues nothing to cap and nothing to exempt. */}
+          {isAllowedList && (
+            isTimeLimited && currentMinutes != null ? (
+              <button
+                type="button"
+                data-testid={`${tid}-limit-toggle`}
+                aria-expanded={limitOpen}
+                disabled={busy}
+                onClick={() => setLimitOpen(v => !v)}
+                className={`${chipBase} ${
+                  loadedMins != null && loadedMins >= currentMinutes
+                    ? 'bg-red-500/15 border-red-500/40 text-red-700'
+                    : 'bg-amber-500/15 border-amber-500/40 text-amber-800'
+                }`}
+              >
+                {usageStatus === 'pending' ? (
+                  <span
+                    data-testid={`${tid}-usage-loading`}
+                    aria-label="Loading today's usage"
+                    className="inline-block w-7 h-2 rounded-full bg-amber-500/30 animate-pulse"
+                  />
+                ) : usageStatus === 'error' ? (
+                  <span data-testid={`${tid}-usage-error`}>—</span>
+                ) : (
+                  <span className="font-mono">{formatMins(loadedMins ?? 0)}</span>
+                )}
+                <span className="font-mono">/ {formatMins(currentMinutes)}</span>
+                <span className="text-[8px] opacity-60">{limitOpen ? '▲' : '▼'}</span>
+              </button>
+            ) : (
+              <button
+                type="button"
+                data-testid={`${tid}-limit-toggle`}
+                aria-expanded={limitOpen}
+                disabled={busy}
+                onClick={() => setLimitOpen(v => !v)}
+                className={`${addAffordance} ${limitOpen ? 'opacity-100 border-solid border-brand-accent text-brand-accent' : ''}`}
+              >+ limit</button>
+            )
+          )}
+
+          {/* Schedule expander. An app with no rules gets the small affordance
+              the issue asks for — no editor chrome at all until it is wanted. */}
+          {hasSchedule ? (
+            <button
+              type="button"
+              data-testid={`${tid}-schedule-toggle`}
+              aria-expanded={schedOpen}
+              disabled={busy}
+              onClick={() => setSchedOpen(v => !v)}
+              className={`${chipBase} bg-brand-alt border-brand-border-strong text-brand-text`}
+            >
+              <span aria-hidden="true">📅</span>
+              {scheduleRules.length}
+              <span className="text-[8px] opacity-60">{schedOpen ? '▲' : '▼'}</span>
+            </button>
+          ) : (
+            <button
+              type="button"
+              data-testid={`${tid}-schedule-toggle`}
+              aria-expanded={schedOpen}
+              disabled={busy}
+              onClick={() => setSchedOpen(v => !v)}
+              className={`${addAffordance} ${schedOpen ? 'opacity-100 border-solid border-brand-accent text-brand-accent' : ''}`}
+            >+ schedule</button>
+          )}
+
+          <span className="w-px h-4 bg-brand-border shrink-0" />
+
           <button
             type="button"
-            data-testid={`app-row-${app.app.id}-clear`}
+            data-testid={`${tid}-move`}
+            disabled={busy}
+            onClick={move}
+            title={isAllowedList ? `Move ${app.app.name} to the blocked list` : `Move ${app.app.name} to the allowed list`}
+            className={`${moveBase} ${isAllowedList
+              ? 'border-red-500/40 text-red-700 hover:bg-red-500/10'
+              : 'border-brand-accent/40 text-brand-accent hover:bg-brand-accent/10'}`}
+          >{isAllowedList ? 'Block' : 'Allow'}</button>
+          <button
+            type="button"
+            data-testid={`${tid}-clear`}
+            aria-label={`Remove ${app.app.name} from this profile`}
             disabled={busy}
             onClick={clear}
-            className={`${baseBtn} ${off}`}
-          >Remove</button>
-        )}
-      </div>
-      <div className="flex flex-wrap gap-2 items-center">
-        <button
-          type="button"
-          data-testid={`app-row-${app.app.id}-block`}
-          disabled={busy}
-          onClick={() => apply('blocked', null)}
-          className={`${baseBtn} ${mode === 'blocked' ? onBlocked : off}`}
-        >{mode === 'blocked' ? '✓ ' : ''}Block</button>
-        <button
-          type="button"
-          data-testid={`app-row-${app.app.id}-allow`}
-          disabled={busy}
-          onClick={() => apply('allowed', null)}
-          className={`${baseBtn} ${mode === 'allowed' ? onAllowed : off}`}
-        >{mode === 'allowed' ? '✓ ' : ''}Allow</button>
-        <div className="flex items-center gap-1">
-          <input
-            type="number"
-            min={1}
-            value={minutesDraft}
-            onChange={e => setMinutesDraft(e.target.value)}
-            onBlur={commitMinutes}
-            onKeyDown={e => {
-              if (e.key === 'Enter') {
-                e.preventDefault();
-                (e.currentTarget as HTMLInputElement).blur()
-              }
-            }}
-            disabled={busy}
-            placeholder="min"
-            aria-label="Daily time-limit minutes"
-            data-testid={`app-row-${app.app.id}-minutes`}
-            className={`w-16 rounded-lg px-2 py-1 text-brand-ink text-xs border transition-colors disabled:opacity-50 ${
-              isTimeLimited
-                ? 'bg-amber-500/10 border-amber-500/40 text-amber-800 placeholder-amber-200/40'
-                : 'bg-white border-brand-border-strong'
-            }`}
-          />
-          <span className="text-xs text-brand-text-muted">min/day</span>
+            className="w-5 h-6 rounded-lg text-brand-text-muted hover:text-red-700 hover:bg-red-500/10 text-sm leading-none disabled:opacity-50"
+          >×</button>
         </div>
       </div>
-      {/* #1061 — inline usage bar for time-limited apps. Mirrors the
-          profile-wide bar (w-full h-1, emerald on track, red over limit).
-          Hidden until today's usage is loaded; hidden entirely for apps
-          without a daily limit. */}
-      {isTimeLimited && currentMinutes != null && usedMins != null && (
-        <div
-          data-testid={`app-row-${app.app.id}-usage`}
-          className="flex items-center gap-2"
-        >
-          <div className="flex-1 h-1 bg-brand-alt rounded-full overflow-hidden">
-            <div
-              className={`h-full rounded-full ${
-                usedMins >= currentMinutes ? 'bg-red-500' : 'bg-brand-accent'
-              }`}
-              style={{
-                width: `${Math.min(100, Math.round((usedMins / currentMinutes) * 100))}%`,
+
+      {/* ---- limit & exceptions drawer -------------------------------- */}
+      {limitOpen && isAllowedList && (
+        <div data-testid={`${tid}-limit-drawer`} className="border-t border-brand-border px-3 py-2.5 bg-brand-surface rounded-b-xl">
+          <p className="text-[10.5px] font-bold uppercase tracking-wider text-brand-text-muted mb-2">
+            Daily limit
+          </p>
+          <div className="flex items-center gap-2 flex-wrap">
+            <input
+              type="number"
+              min={1}
+              value={minutesDraft}
+              onChange={e => setMinutesDraft(e.target.value)}
+              onBlur={commitMinutes}
+              onKeyDown={e => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  (e.currentTarget as HTMLInputElement).blur()
+                }
               }}
+              disabled={busy}
+              placeholder="min"
+              aria-label="Daily time-limit minutes"
+              data-testid={`${tid}-minutes`}
+              className={`w-16 rounded-lg px-2 py-1 text-xs border transition-colors disabled:opacity-50 ${
+                isTimeLimited
+                  ? 'bg-amber-500/10 border-amber-500/40 text-amber-800 placeholder-amber-200/40'
+                  : 'bg-white border-brand-border-strong text-brand-ink'
+              }`}
             />
+            <span className="text-xs text-brand-text-muted">
+              min/day{isTimeLimited ? '' : ' — leave empty for no limit'}
+            </span>
           </div>
-          <span className="text-xs font-mono text-brand-text shrink-0">
-            {formatMins(usedMins)} / {formatMins(currentMinutes)}
-          </span>
-        </div>
-      )}
-      {/* #1433 — surface today's time-used even for apps without a daily
-          limit, so the operator has at-a-glance usage visibility regardless
-          of whether a limit is set. Plain "Xm today" text — no cap and no
-          progress bar (the bar above is reserved for time-limited apps).
-          Hidden until usage loads and only when there is some to show. */}
-      {!isTimeLimited && usedMins != null && usedMins > 0 && (
-        <div
-          data-testid={`app-row-${app.app.id}-used`}
-          className="text-xs font-mono text-brand-text"
-        >
-          {formatMins(usedMins)} today
-        </div>
-      )}
-      {/* #1007 / #2747 — the single exempt-from-daily control for this app row.
-          Shown for time_limited AND allowed apps; NOT for blocked apps, which
-          drop all traffic and so accrue no usage to exempt (a blocked app
-          carved open by an allowed_during rule keeps the in-window toggle in
-          ScheduleRuleEditor instead). Polarity is positive-and-inverted:
-          checked ⇒ exemptFromDaily: false. */}
-      {(mode === 'time_limited' || mode === 'allowed') && (
-        <label className={`flex gap-2 text-xs text-brand-text cursor-pointer select-none ${
-          // Only the allowed row carries a wrapping explanation, so only it needs
-          // top alignment; the time_limited row keeps its shipped one-line layout.
-          mode === 'allowed' ? 'items-start' : 'items-center'
-        }`}>
-          <input
-            type="checkbox"
-            data-testid={`app-row-${app.app.id}-counts-toward-daily`}
-            checked={!(current?.exemptFromDaily ?? true)}
-            disabled={busy}
-            // Inverted: the label says "counts", the flag says "exempt".
-            onChange={e => writeExempt(!e.target.checked)}
-            className={`w-3.5 h-3.5 accent-amber-500 ${mode === 'allowed' ? 'mt-0.5' : ''}`}
-          />
-          <span>
-            Counts toward daily limit
-            {!(current?.exemptFromDaily ?? true) && (
-              <span className="ml-1 text-amber-700">(usage reduces overall remaining time)</span>
-            )}
-            {/* #2747 — spell the exempt side out only for an Allowed app, whose
-                default IS exempt and which has no cap of its own to reason from.
-                Budget ONLY: for a plain Allowed app the flag changes nothing about
-                reachability. `ProfileAppDispositions.enforcement` carves an
-                Allowed app's hosts into extraAllowed without ever consulting
-                capExhausted (that gate lives only on the allowed_during branch;
-                the one thing that can suppress the carve is #1679's
-                block-during-schedule opt-out, which is not the daily cap), and
-                `exemptUnderCapHosts` never sees it — `capGroups` filters
-                `state.perApp` to TimeLimited. So the app outlives the cap either
-                way; the flag decides only whether its usage counts. The
-                time_limited row is left exactly as it shipped. */}
-            {mode === 'allowed' && (current?.exemptFromDaily ?? true) && (
-              <span className="ml-1 text-brand-text-muted">
-                (exempt — this app's usage doesn't reduce the profile's remaining time)
+
+          {/* #1061 — usage bar for time-limited apps. Mirrors the profile-wide
+              bar (w-full h-1, accent on track, red over limit). Renders only
+              once today's usage has loaded; a pending query shows a skeleton
+              rather than an empty (0%) bar, which would read as a real zero. */}
+          {isTimeLimited && currentMinutes != null && usageStatus === 'pending' && (
+            <div className="flex items-center gap-2 mt-2">
+              <div className="flex-1 h-1 rounded-full bg-brand-alt animate-pulse" />
+              <span className="text-xs font-mono text-brand-text-muted shrink-0">loading…</span>
+            </div>
+          )}
+          {isTimeLimited && currentMinutes != null && loadedMins != null && (
+            <div data-testid={`${tid}-usage`} className="flex items-center gap-2 mt-2">
+              <div className="flex-1 h-1 bg-brand-alt rounded-full overflow-hidden">
+                <div
+                  className={`h-full rounded-full ${
+                    loadedMins >= currentMinutes ? 'bg-red-500' : 'bg-brand-accent'
+                  }`}
+                  style={{ width: `${Math.min(100, Math.round((loadedMins / currentMinutes) * 100))}%` }}
+                />
+              </div>
+              <span className="text-xs font-mono text-brand-text shrink-0">
+                {formatMins(loadedMins)} / {formatMins(currentMinutes)}
               </span>
-            )}
-          </span>
-        </label>
+            </div>
+          )}
+
+          <p className={`mt-2 px-2 py-1.5 rounded-lg text-[11px] leading-relaxed border ${
+            isTimeLimited
+              ? 'bg-amber-500/10 border-amber-500/30 text-amber-800'
+              : 'bg-brand-alt border-brand-border-strong text-brand-text'
+          }`}>
+            {isTimeLimited && currentMinutes != null
+              ? `At ${formatMins(currentMinutes)} ${app.app.name} is blocked for the rest of the day. It comes back at midnight.`
+              : `With no limit set, ${app.app.name} stays reachable all day. The exceptions below decide how the profile's budget and downtime apply to it.`}
+          </p>
+
+          <p className="text-[10.5px] font-bold uppercase tracking-wider text-brand-text-muted mt-3 pt-2.5 border-t border-dashed border-brand-border">
+            Exceptions
+          </p>
+          {/* #1007 / #2747 — the single exempt-from-daily control for this app.
+              Polarity is positive-and-inverted, exactly as shipped:
+              checked ⇒ exemptFromDaily: false. */}
+          <label className="flex items-start gap-2 text-xs text-brand-text cursor-pointer select-none mt-2">
+            <input
+              type="checkbox"
+              data-testid={`${tid}-counts-toward-daily`}
+              checked={!exempt}
+              disabled={busy}
+              // Inverted: the label says "counts", the flag says "exempt".
+              onChange={e => writeExempt(!e.target.checked)}
+              className="w-3.5 h-3.5 mt-0.5 accent-amber-500"
+            />
+            <span>
+              Counts toward daily limit
+              {!exempt && (
+                <span className="ml-1 text-amber-700">(usage reduces overall remaining time)</span>
+              )}
+              {/* #2747 — spell the exempt side out: the default IS exempt, and
+                  it is BUDGET-ONLY. For a plain Allowed app the flag changes
+                  nothing about reachability — `ProfileAppDispositions.enforcement`
+                  carves an Allowed app's hosts into extraAllowed without ever
+                  consulting capExhausted, and `exemptUnderCapHosts` never sees
+                  it (`capGroups` filters `state.perApp` to TimeLimited). The app
+                  outlives the cap either way; the flag decides only whether its
+                  usage counts. */}
+              {exempt && (
+                <span className="ml-1 text-brand-text-muted">
+                  (exempt — this app's usage doesn't reduce the profile's remaining time)
+                </span>
+              )}
+            </span>
+          </label>
+          {/* #1679 — block-during-downtime. Lives here rather than in the
+              schedule drawer because it is a property of the allowance, not of
+              any attached rule: an app with no schedule rules at all still has
+              to answer it. #2764 surfaces its exceptional value as a row pill. */}
+          <label className="flex items-start gap-2 text-xs text-brand-text cursor-pointer select-none mt-2">
+            <input
+              type="checkbox"
+              data-testid={`${tid}-block-during-schedule`}
+              checked={!allowedDuringDowntime}
+              disabled={busy}
+              onChange={e => toggleScheduleBlock(!e.target.checked)}
+              className="w-3.5 h-3.5 mt-0.5 accent-amber-500"
+            />
+            <span>
+              Block during scheduled downtime
+              {allowedDuringDowntime && (
+                <span className="ml-1 text-brand-text-muted">
+                  (off — {app.app.name} stays reachable through the profile's downtime windows)
+                </span>
+              )}
+            </span>
+          </label>
+        </div>
       )}
-      {/* #1679: block-during-schedule toggle — only shown for Allowed-mode apps,
-          where the extraAllowed carve-out is the relevant enforcement path. */}
-      {mode === 'allowed' && (
-        <label className="flex items-center gap-2 text-xs text-brand-text cursor-pointer select-none">
-          <input
-            type="checkbox"
-            data-testid={`app-row-${app.app.id}-block-during-schedule`}
-            checked={!(current?.allowedDuringScheduleBlock ?? true)}
-            disabled={busy}
-            onChange={e => toggleScheduleBlock(!e.target.checked)}
-            className="w-3.5 h-3.5 accent-amber-500"
+
+      {/* ---- schedule drawer ------------------------------------------ */}
+      {schedOpen && mode != null && (
+        <div className="border-t border-brand-border px-3 py-2.5 bg-brand-surface rounded-b-xl">
+          <ScheduleRuleEditor
+            appId={app.app.id}
+            rules={scheduleRules}
+            exemptFromDaily={exempt}
+            showExemptToggle={mode === 'blocked'}
+            busy={busy}
+            onAdd={addRule}
+            onRemove={removeRule}
+            onSetExempt={writeExempt}
           />
-          <span>Block during scheduled downtime</span>
-        </label>
+        </div>
       )}
-      {mode != null && (
-        <ScheduleRuleEditor
-          appId={app.app.id}
-          rules={scheduleRules}
-          exemptFromDaily={current?.exemptFromDaily ?? true}
-          showExemptToggle={mode === 'blocked'}
-          busy={busy}
-          onAdd={addRule}
-          onRemove={removeRule}
-          onSetExempt={writeExempt}
-        />
-      )}
+
       {localError && (
-        <p className="text-xs text-red-700" data-testid={`app-row-${app.app.id}-error`}>{localError}</p>
+        <p className="text-xs text-red-700 px-3 pb-2" data-testid={`${tid}-error`}>{localError}</p>
       )}
     </div>
   )
