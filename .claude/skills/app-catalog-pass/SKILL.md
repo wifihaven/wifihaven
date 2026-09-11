@@ -76,9 +76,26 @@ rm -f /tmp/wh_token.txt   # don't leave creds on disk
 
 ## Step 1 — Gap-check against existing apps
 
-List `_index.yml` slugs and the `*.yml` host-sets. For each high-byte apex in
-"Other", decide: already covered? adjacent to an existing app (extend that app's
-host-set instead of duplicating)? or a genuine gap?
+**Start from the server's own gap list, not a hand diff.**
+`GET /api/profiles/<id>/usage-by-app?from=YYYY-MM-DD&to=YYYY-MM-DD`
+(`UsageRoutes.scala:150`; `from` defaults to today, `to` defaults to `from`)
+returns `apps[]` — what IS attributed — and `orphanHosts[]`, every host carrying
+real time that no app covers, each with `proportionalSeconds`/`presenceSeconds`.
+That is already time-weighted, which the raw byte table is not.
+
+Two cautions before you treat an orphan as a gap:
+
+- **`orphanHosts` is not a clean "uncovered" list.** Per #1898
+  (`UsageRoutes.scala:801-807`) a host that IS in the catalog still contributes
+  its *unattributed* span to the orphan bucket, possibly alongside its own app
+  row. Confirm against `_index.yml` and the `*.yml` host-sets before authoring.
+- **Google/Apple platform infra dominates the top of the list.** That is the
+  usual skip pile (Step 2), not a finding.
+
+Then, for each surviving candidate, decide: already covered? adjacent to an
+existing app (extend that app's host-set instead of duplicating)? or a genuine
+gap? Use `recent-apexes` to scope the host-set — it is the endpoint that
+returns `subdomains[]`.
 
 ## Step 2 — Classify each cluster: app, blocklist, or skip
 
@@ -178,20 +195,35 @@ above is now wrong, fix the step too — don't just log around it.
   returns `apps[]` — what IS attributed, with per-host `proportionalMins` — AND
   `orphanHosts[]`: every host carrying real time that **no app covers**, each
   with `proportionalSeconds`/`presenceSeconds`. That is precisely the Step-1
-  gap-check, computed by the server, and it is strictly better than diffing
-  `recent-apexes` against `_index.yml` by hand because it is already
-  time-weighted and already excludes everything the catalog covers. Use it to
+  gap-check, computed by the server, and it beats diffing `recent-apexes`
+  against `_index.yml` by hand because it is already time-weighted. **It is NOT
+  a clean "uncovered hosts" list, though** — per #1898 (`UsageRoutes.scala:801-807`)
+  a host that IS in the catalog still contributes its *unattributed* span to the
+  orphan bucket, possibly alongside its own app row. So always confirm a
+  promising orphan is genuinely uncovered (grep `_index.yml` and the
+  `*.yml` host-sets) before authoring an app for it, or you will ship a
+  duplicate of an app that already exists. Use it to
   FIND candidates, then `recent-apexes` to scope the host-set (it's the one
   that returns `subdomains[]`). Verified live this pass: with `amazon` and
   `sportys` merged and seeding on prod, `unagi.amazon.com` still showed up as an
   orphan at 55 proportional minutes — the exact gap the `amazon-telemetry` app
   closes. Expect Google/Apple platform infra to dominate the top of the list;
   that's the usual skip pile, not a finding.
+- **2026-09-11 (#2762)** — "enforcement is unbounded" is only true of the
+  per-host path. dnsmasq's `nftset=/<host>/` suffix-matches without limit, and
+  `PolicyService.matchesAny` / `Presence.matchesAny` reach `matchesApex`
+  directly — but the CATEGORY path does not: `PolicyService` (`:1249`) calls
+  `HostMatch.hasApexMatch`, which is `apexTails(host, maxHops = 5).exists(...)`
+  (`HostMatch.scala:82-83`) — the same bound as `lookupApex`. So a
+  blocklist-category apex deeper than five labels from the queried host stops
+  matching on the ENFORCEMENT side too, not just in attribution. Don't
+  generalize "enforcement is unbounded" past per-host rules.
 - **2026-09-11 (#2762)** — A PR you opened THIS session can merge while you are
   still working, which silently turns its branch into a dead branch: a follow-up
   commit pushed there is unreachable from `main` and ships nothing. This
-  happened here — #2763 merged ~95 minutes before the `amazon-telemetry` commit
-  was pushed to its branch, and only the review caught it. **Re-check
+  happened here — #2763 merged at 22:53:35Z and the `amazon-telemetry` commit
+  was authored at 00:36:32Z, ~103 minutes later, onto the dead branch; only the
+  review caught it. **Re-check
   `gh pr view <n> --json state` immediately before pushing any follow-up, even
   one to a PR you opened minutes ago** — the standing "never push to a merged
   PR's branch" rule is usually read as being about OLD PRs, and that reading is
@@ -204,7 +236,6 @@ above is now wrong, fix the step too — don't just log around it.
   `jq '.[] | select(.slug==...)'` silently returns nothing and reads as "the
   template didn't seed." Confirm a seed with
   `jq -r '.[] | "\(.app.id) \(.app.slug)"'` before concluding a deploy failed.
-
 - **2026-09-10 (#2762)** — **A template's icon MUST be `icon_type: url` with an
   http URL** — `AppTemplatesSpec:271` pins it for EVERY starter template
   (#1041), so an `icon_type: emoji` template fails two tests even though
