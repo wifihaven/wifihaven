@@ -1698,7 +1698,7 @@ function listOf(mode: AppMode): 'allowed' | 'blocked' {
   return mode === 'blocked' ? 'blocked' : 'allowed'
 }
 
-function AppsSection({ profileId, isNew, apps, onChanged, testIdPrefix = 'apps-section', usedMinsByAppId, usageStatus = 'success' }: {
+function AppsSection({ profileId, isNew, apps, onChanged, testIdPrefix = 'apps-section', usedMinsByAppId, usageStatus }: {
   profileId: number | null
   isNew: boolean
   apps: AppDetail[]
@@ -1707,8 +1707,9 @@ function AppsSection({ profileId, isNew, apps, onChanged, testIdPrefix = 'apps-s
   // #1061 — per-app today usage, threaded down to AppRow so time-limited rows
   // can render a usage bar. Empty/undefined → bar simply doesn't render.
   usedMinsByAppId?: Map<number, number>
-  // #2764 — the state of the query behind `usedMinsByAppId`.
-  usageStatus?: UsageStatus
+  // #2764 — the state of the query behind `usedMinsByAppId`. Required, so a new
+  // call site cannot silently claim 'success' and render a loading zero.
+  usageStatus: UsageStatus
 }) {
   // #1007: only show apps that already have an assignment for this profile.
   // Unassigned apps stay manageable via the add-app picker below.
@@ -1797,7 +1798,11 @@ function AppsSection({ profileId, isNew, apps, onChanged, testIdPrefix = 'apps-s
           </span>
           <span className="ml-auto text-[11px] text-brand-text-muted">
             {list === 'allowed'
-              ? 'Reachable, unless a limit or schedule says otherwise'
+              // Deliberately "its own limit": a plain Allowed app outlives the
+              // PROFILE's daily cap (#2747 — `enforcement` carves its hosts into
+              // extraAllowed without consulting capExhausted). Only an app with a
+              // cap of its own goes off when that cap is spent.
+              ? "Reachable, unless its own limit or a schedule says otherwise"
               : 'Dropped at the router'}
           </span>
         </div>
@@ -1944,7 +1949,7 @@ function AppsSection({ profileId, isNew, apps, onChanged, testIdPrefix = 'apps-s
 //   • the move button (Block on an allowed row, Allow on a blocked one) —
 //     list membership IS the mode, so there is no Block/Allow pair any more
 //   • remove-from-profile
-function AppRow({ app, profileId, onChanged, usedMins, usageStatus = 'success', blocklistNameById }: {
+function AppRow({ app, profileId, onChanged, usedMins, usageStatus, blocklistNameById }: {
   app: AppDetail
   profileId: number
   onChanged: () => void | Promise<void>
@@ -1953,7 +1958,7 @@ function AppRow({ app, profileId, onChanged, usedMins, usageStatus = 'success', 
   // genuine zero (the endpoint omits apps with no usage), undefined under
   // 'pending' is simply not loaded yet.
   usedMins?: number
-  usageStatus?: UsageStatus
+  usageStatus: UsageStatus
   // #1983 — blocklist id → display name for the overlap-warning badge.
   blocklistNameById?: Map<string, string>
 }) {
@@ -2074,6 +2079,11 @@ function AppRow({ app, profileId, onChanged, usedMins, usageStatus = 'success', 
   // mode but 'allowed'. So the pill and the checkbox are gated on the mode —
   // on a time_limited row they would be a control that writes nothing.
   const downtimeFlagApplies = mode === 'allowed'
+  // #1007: a time_limited app with no cap set yet has nothing to exempt FROM,
+  // so `writeExempt` early-returns for it. Gate the pill on the same condition
+  // the writer uses, or it renders as a control whose click does nothing.
+  const budgetFlagApplies =
+    mode === 'allowed' || (mode === 'time_limited' && current?.dailyMinutes != null)
   const allowedDuringDowntime = current?.allowedDuringScheduleBlock ?? true
   const hasSchedule = scheduleRules.length > 0
   // Under 'success' an absent entry is a genuine zero — the endpoint only
@@ -2120,9 +2130,21 @@ function AppRow({ app, profileId, onChanged, usedMins, usageStatus = 'success', 
 
   // #2764 — list membership IS the mode, so one button moves the row rather
   // than a Block/Allow pair sitting on every row. Moving to Blocked drops the
-  // cap (a blocked app accrues nothing to cap); moving back to Allowed restores
-  // whatever allowedDuringScheduleBlock the assignment already carried, which
-  // is why it does not take the "+ Allow app" add-path default.
+  // cap: a blocked app accrues nothing to cap.
+  //
+  // It ALSO resets both flags, and not by our choice. The Block payload omits
+  // `exemptFromDaily` and `allowedDuringScheduleBlock` (the latter has no
+  // effect outside Allowed mode — see `downtimeFlagApplies`), and the server
+  // reads absent as DEFAULT rather than as unchanged: `AppRoutes.scala:154-157`
+  // does `.getOrElse(true)` on both and `Repos.scala:4545-4551` upserts them
+  // with `ON CONFLICT … = EXCLUDED.…`. So an app blocked and then allowed again
+  // comes back exempt and downtime-ignoring, whatever it was before.
+  //
+  // Verified against a live API, not inferred. This is pre-existing — the
+  // shipped Block button sent the identical payload — and fixing it belongs on
+  // the server, where absent should mean unchanged on an update: #2770. Do NOT
+  // "fix" it here by having the client resend the flags on every mode switch;
+  // that hides a partial-update bug every other client still has.
   async function move() {
     await apply(isAllowedList ? 'blocked' : 'allowed', null)
   }
@@ -2215,7 +2237,7 @@ function AppRow({ app, profileId, onChanged, usedMins, usageStatus = 'success', 
               one-click revert. The title carries the explanation the row has
               no room for; the label repeats the shipped checkbox wording
               rather than introducing a third phrasing. */}
-          {isAllowedList && !exempt && (
+          {budgetFlagApplies && !exempt && (
             <button
               type="button"
               data-testid={`${tid}-pill-counts`}
