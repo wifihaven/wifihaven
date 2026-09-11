@@ -210,10 +210,19 @@ above is now wrong, fix the step too — don't just log around it.
   argument against templating them is the `eb_` one `arduino.yml` makes for its
   own store, but the stronger one is the ALLOW side: per #1899 the block side
   takes distinctive hosts only, while `exemptUnderCapHosts` /
-  `timeLimitedUnderCapHosts` take the full set, so an app merely sitting UNDER A
-  TIME LIMIT puts its hosts in `ea_` — and `extraAllowed` beats every drop
-  (#421). Templating one Shopify store would carve EVERY Shopify store out of
-  every block for that MAC: #2369 in mirror image, on a non-Google pool.
+  `timeLimitedUnderCapHosts` take the full set, so the shared address reaches
+  `ea_` — and `extraAllowed` beats every drop it reaches (#421). Get the scope
+  right, because the two carves differ and #1627/#2747 is the repo's scar from
+  conflating them: a TIME-LIMITED app's carve is gated on the profile not being
+  whole-MAC blocked (`val timeLimitedUnderCap = if (state.blocked) Nil else …`,
+  `PolicyService.scala:1506-1507`), so it beats the `bl_`/`eb_` drops and
+  nothing else; the UNCONDITIONAL carve — past pause, schedule and daily limit
+  — needs `exemptFromDaily` (`exemptUnderCapHosts`, `:1579-1589`) or
+  Allowed-mode (`ProfileAppDispositions.enforcement`). Either way, templating
+  one Shopify store carves EVERY Shopify store out of the blocklist drops for
+  that MAC, and out of everything if the app is Allowed-mode or exempt: #2369
+  in mirror image, on a non-Google pool. The `eb_` half bites too — a brand
+  host is distinctive, so it lands there as well.
   **Before templating any brand, resolve `www.<brand>` and check whether the
   CNAME target is a platform-wide hostname** (`shops.myshopify.com`,
   `*.hosted-by-discourse.com`, `*.zendesk.com`, `wp.wpenginepowered.com`). If

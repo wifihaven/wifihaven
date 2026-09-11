@@ -29,7 +29,7 @@ Platform infra, IP literals and ad-tech removed; see the skip sections below.
 | 470 | 1 | `avatars.githubusercontent.com` | watch item |
 | 399 | 1 | `mouldkingcorp.com` | **skip** — shared Shopify origin |
 | 198 | 1 | `api.weather.com` | skip — OS weather backend |
-| 102 + 60 | 1 | `rebrickable.com`, `cdn.rebrickable.com` | **→ new `rebrickable` app** |
+| 162 | 1 | `rebrickable.com` (102) + `cdn.rebrickable.com` (60) | **→ new `rebrickable` app** |
 | 126 | 1 | `onenote.officeapps.live.com` | watch item |
 | 68 | 1 | `raw.githubusercontent.com` | watch item |
 
@@ -42,6 +42,14 @@ YouTube, and none of that time was reaching the app's budget.
 Evidence: 799 proportional minutes over the 14d window; 31.9 MB / **334 hits**
 over 30d on Kid Laptop, sole observed subdomain `www.youtube-nocookie.com`.
 Highest-minute genuine gap in the list.
+
+The entry added is the APEX, on a `www`-only observation. That is deliberate
+and follows the catalog's default convention — `HostMatch.matchesApex` and
+dnsmasq's `nftset=` are both pure suffix tests, so the apex is what attributes
+the observed `www.` traffic — but it does mean the apex itself becomes an
+enforcement target on evidence from one child. Accepted here because the zone is
+single-purpose by construction: `youtube-nocookie.com` exists only to serve
+privacy-enhanced embeds.
 
 This does **not** contradict the `youtubei.googleapis.com` exclusion the template
 already carries. That host is barred for riding the shared `*.googleapis.com`
@@ -107,12 +115,23 @@ traffic** — not a hypothetical about multi-tenancy.
 The usual form of this argument is the `eb_` one `arduino.yml` makes for its own
 store ("blocking Arduino must not drop every Shopify store"). The allow side is
 worse and is what decides it here: per #1899 the block side takes distinctive
-hosts only, but the allow side takes the full set
-(`PolicyService.exemptUnderCapHosts`, `timeLimitedUnderCapHosts`), so an app
-sitting **under a time limit** puts its hosts into `ea_` — and `extraAllowed`
-beats every drop (#421). Templating either shop would therefore carve every
-Shopify store on the internet out of every block for that MAC. That is #2369 in
-mirror image, on a non-Google pool.
+hosts only, but the allow side takes the full set, so the shared address
+reaches `ea_` — and `extraAllowed` beats every drop it reaches (#421).
+
+Scope the two carves correctly, since they differ and #1627/#2747 is this
+repo's scar from conflating them:
+
+| carve | gate | beats |
+| --- | --- | --- |
+| `timeLimitedUnderCapHosts` (`:1611-1615`) | `if (state.blocked) Nil else …` (`:1506-1507`) | the `bl_`/`eb_` drops, and nothing else |
+| `exemptUnderCapHosts` (`:1579-1589`) | requires `exemptFromDaily` | pause, schedule and daily limit too |
+| Allowed-mode (`ProfileAppDispositions.enforcement`) | mode | unconditional |
+
+So templating either shop carves every Shopify store out of the blocklist drops
+for that MAC, and out of everything if the app is Allowed-mode or
+`exemptFromDaily`. That is #2369 in mirror image, on a non-Google pool. The
+`eb_` half bites as well — a brand host is distinctive, so it lands there too,
+which is the form `arduino.yml` already documents for its own store.
 
 Contrast with `rebrickable`, which is why one is templated and these are not:
 Cloudflare's range is multi-tenant in the ordinary Class-2 way, but no address in

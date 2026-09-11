@@ -29,15 +29,19 @@ icon_type: url
 # *.googleapis.com VENDOR-API pool that also fronts Drive/OAuth/Calendar
 # (README Class 1; #1636). `youtube-nocookie.com` is a YouTube-owned CONTENT
 # domain, the same class as `youtube.com` itself, which this template has
-# always carried; it is not on the #2601 `SharedGfeHosts` ban list, and it
-# resolves via `youtube-ui.l.google.com` to Google frontend addresses — the
-# same kind of frontend `youtube.com` already answers on. The trade here is
-# the one this template already makes for its primary host, not a new one.
+# always carried, and it is not on the #2601 `SharedGfeHosts` ban list.
 #
-# Deliberately NOT justified by any claim about which IPs it does or does not
-# share with youtube.com: those answers are DNS-steered and move between
-# lookups, so a pool-overlap argument would be unverifiable. The case rests on
-# what the host IS — YouTube's own embed surface.
+# The concrete version of "same class", checkable with one `dig`:
+# `www.youtube-nocookie.com` CNAMEs to `youtube-ui.l.google.com` — the
+# IDENTICAL target `www.youtubekids.com` resolves through, an entry this
+# host-set has carried since #2596 and which has been enforcing in prod since.
+# So the marginal enforcement surface this adds is one an already-shipped
+# member of this same set already points at.
+#
+# Deliberately NOT justified by any claim about which IP ADDRESSES it shares
+# with youtube.com: those answers are DNS-steered and move between lookups, so
+# a pool-overlap argument would be unverifiable. The CNAME target is stable and
+# checkable; the addresses behind it are not.
 hosts:
   - youtube.com
   - youtu.be
