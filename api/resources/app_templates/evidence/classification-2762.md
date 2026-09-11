@@ -246,7 +246,7 @@ Two of those rows are hosts the catalog had already classified but had nowhere
 to put. `metrics.media-amazon.com` is the host that forces `amazon.yml` to list
 `media-amazon.com` by subdomain rather than as an apex — named there as
 telemetry and excluded — and `bdtelemetry.amazon` has been skipped from
-`blocklists/ads.yml` three separate times (`:229`, `:539`, `:653`) with the
+`blocklists/ads.yml` three separate times (`:229`, `:486`, `:539`) with the
 reason "Amazon first-party telemetry". Both were sorted into a category that did
 not exist until this app; they land here rather than being re-litigated on the
 next ads pass.
@@ -260,9 +260,13 @@ specifically. Enforcement suffix-matches without bound (dnsmasq, via the
 verbatim `nftset=/<host>/`), but attribution goes through
 `HostMatch.lookupApex` → `apexTails(host, maxHops = 5)`, which walks only the
 host plus five parents. The observed 8-label Minerva host finds the anchor at
-the 5th of the 6 tails that walk produces: it works, with one label of headroom.
-If Amazon adds another region or stage segment, the router would keep dropping
-the host while API-side attribution and budgeting silently stopped matching it.
+the 5th of the 6 tails that walk produces, so one more region/stage segment
+still resolves (the anchor becomes the 6th and last tail); two would push it
+past `maxHops`. If that happens the router keeps dropping the host —
+enforcement is unbounded — while the usage/rollup surfaces that call
+`lookupApex` silently stop attributing it. Per-app budgeting is unaffected:
+`Presence` matches via `HostMatch.matchesAny` (`Presence.scala:474,733`),
+which is unbounded suffix matching rather than the tail walk.
 
 `unagi.amazon.com` and `unagi-na.amazon.com` are BOTH listed: `unagi-na` CNAMEs
 from `unagi`, but suffix matching is `host == x || host.endsWith("." + x)`, and

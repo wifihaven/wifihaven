@@ -57,7 +57,7 @@ icon_type: url
 #                                gTLD; covers the observed
 #                                `api.mshop.bdtelemetry.amazon` (three devices).
 #                                `blocklists/ads.yml` has skipped this apex
-#                                three times over (`:229`, `:539`, `:653`) with
+#                                three times over (`:229`, `:486`, `:539`) with
 #                                the reason "Amazon first-party telemetry" — it
 #                                was classified into a category that didn't
 #                                exist yet. This app is that category, so it
@@ -78,13 +78,21 @@ icon_type: url
 #                                8-label host
 #                                `42fe2b06….us-east-1.prod.service.minerva.devices.a2z.com`
 #                                finds this entry at the 5th of the 6 tails the
-#                                walk produces — it works, with ONE label of
-#                                headroom. If Amazon ever adds another
-#                                region/stage segment, the router would keep
-#                                dropping the host while API-side attribution
-#                                and budgeting silently stopped matching it.
-#                                That failure mode is invisible unless you know
-#                                the bound exists, hence this note.
+#                                walk produces, so ONE more region/stage
+#                                segment still resolves (the anchor becomes the
+#                                6th and last tail); TWO would push it past
+#                                `maxHops` and it would stop matching. When
+#                                that happens the router keeps dropping the
+#                                host — enforcement is unbounded — while the
+#                                usage/rollup surfaces that call `lookupApex`
+#                                (`UsageTraffic`, `RollupRepo`, `UsageRoutes`)
+#                                silently stop attributing it. Per-app
+#                                BUDGETING is not affected: `Presence` matches
+#                                via `HostMatch.matchesAny`
+#                                (`Presence.scala:474,733`), which is unbounded
+#                                suffix matching, not the tail walk. That
+#                                split is invisible unless you know the bound
+#                                exists, hence this note.
 #   mshopbugsnag.irm.amazon.dev crash reporting for the Amazon shopping app
 #                                (covers `session.`, `trace.`, `event.`).
 #   mdcs.mshop.amazon.dev       shopping-app client telemetry (covers
@@ -109,7 +117,12 @@ icon_type: url
 # sample shows `redirect.prod.experiment.routing.cloudfront.aws.a2z.com` under
 # it. `render.lua` emits `nftset=/<host>/` verbatim per host and dnsmasq matches
 # by pure suffix, so an apex entry would sweep all of that in. Every entry above
-# is therefore a deep suffix, scoped to one service.
+# is therefore a deep suffix, scoped to one service — with one deliberate
+# exception. `bdtelemetry.amazon` IS a second-level apex, so it sweeps its whole
+# zone. That is safe for the same reason `amazon.yml` lists
+# `ssl-images-amazon.com` as an apex: it is a single-purpose, self-describing
+# zone on Amazon's own `.amazon` brand gTLD, so every child is telemetry by
+# construction. It is not an internal shared domain like `a2z.com`.
 #
 # Deliberately EXCLUDED:
 #   Amazon's ad surfaces — `sponsored-ads.amazon.com`,

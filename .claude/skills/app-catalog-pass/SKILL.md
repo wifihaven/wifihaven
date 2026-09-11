@@ -202,7 +202,6 @@ above is now wrong, fix the step too — don't just log around it.
   randomized per-device labels — the Minerva device-telemetry endpoints are
   63-hex-labelled per device, so `minerva.devices.a2z.com` is not a shortcut but
   a necessity.
-
 - **2026-09-10 (#2762)** — An operator-named pass ("create apps for amazon
   and sportys") still runs Step 0, just inverted: the traffic pull is no longer
   for *finding* candidates but for *scoping* the ones you were handed, and it
