@@ -2536,6 +2536,26 @@ describe('ProfilesPage — two-list app management (#2764)', () => {
     )
   })
 
+  // #1679 is an Allowed-MODE concept, not an allowed-LIST one. Server-side,
+  // `suppressedByScheduleToggle` only bites on `AppMode.Allowed` (or an active
+  // allowed_during rule); a plain TimeLimited app surfaces through the per-app
+  // cap path and the flag never reaches it. Client-side, `apply` omits the
+  // field for any mode but 'allowed'. So rendering the pill or the checkbox on
+  // a time_limited row would be a control that writes nothing.
+  it('neither the downtime pill nor its checkbox appears on a time-limited row', async () => {
+    (api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([
+      app(52, 'Minecraft', { mode: 'time_limited', dailyMinutes: 60, allowedDuringScheduleBlock: true }),
+    ])
+    const user = userEvent.setup()
+    await openApps(user)
+    await screen.findByTestId('app-row-52')
+    expect(screen.queryByTestId('app-row-52-pill-ignores-downtime')).not.toBeInTheDocument()
+    await openLimitDrawer(52, user)
+    expect(screen.queryByTestId('app-row-52-block-during-schedule')).not.toBeInTheDocument()
+    // The budget flag DOES apply to a time-limited app, so its control stays.
+    expect(screen.getByTestId('app-row-52-counts-toward-daily')).toBeInTheDocument()
+  })
+
   it('no pills are rendered on a blocked row — neither flag applies to it', async () => {
     (api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([
       app(51, 'TikTok', { mode: 'blocked', exemptFromDaily: false, allowedDuringScheduleBlock: true }),

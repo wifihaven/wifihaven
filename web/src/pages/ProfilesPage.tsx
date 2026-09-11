@@ -2066,6 +2066,14 @@ function AppRow({ app, profileId, onChanged, usedMins, usageStatus = 'success', 
   const currentMinutes = isTimeLimited ? current?.dailyMinutes ?? null : null
   const isAllowedList = mode != null && listOf(mode) === 'allowed'
   const exempt = current?.exemptFromDaily ?? true
+  // #1679 is an Allowed-MODE concept, not an allowed-LIST one. Server-side,
+  // `ProfileAppDispositions.enforcement` applies `suppressedByScheduleToggle`
+  // on the `AppMode.Allowed` branch (and on an active allowed_during rule); a
+  // plain TimeLimited app surfaces through the per-app cap path instead and the
+  // flag never reaches it. `apply` mirrors that by omitting the field for any
+  // mode but 'allowed'. So the pill and the checkbox are gated on the mode —
+  // on a time_limited row they would be a control that writes nothing.
+  const downtimeFlagApplies = mode === 'allowed'
   const allowedDuringDowntime = current?.allowedDuringScheduleBlock ?? true
   const hasSchedule = scheduleRules.length > 0
   // Under 'success' an absent entry is a genuine zero — the endpoint only
@@ -2217,7 +2225,7 @@ function AppRow({ app, profileId, onChanged, usedMins, usageStatus = 'success', 
               className={`${pillBase} bg-amber-500/15 border-amber-500/40 text-amber-800 hover:bg-amber-500/25`}
             >counts<span className="opacity-60">×</span></button>
           )}
-          {isAllowedList && allowedDuringDowntime && (
+          {downtimeFlagApplies && allowedDuringDowntime && (
             <button
               type="button"
               data-testid={`${tid}-pill-ignores-downtime`}
@@ -2428,7 +2436,10 @@ function AppRow({ app, profileId, onChanged, usedMins, usageStatus = 'success', 
           {/* #1679 — block-during-downtime. Lives here rather than in the
               schedule drawer because it is a property of the allowance, not of
               any attached rule: an app with no schedule rules at all still has
-              to answer it. #2764 surfaces its exceptional value as a row pill. */}
+              to answer it. #2764 surfaces its exceptional value as a row pill.
+              Allowed mode only, matching the shipped render condition — see
+              `downtimeFlagApplies`. */}
+          {downtimeFlagApplies && (
           <label className="flex items-start gap-2 text-xs text-brand-text cursor-pointer select-none mt-2">
             <input
               type="checkbox"
@@ -2447,6 +2458,7 @@ function AppRow({ app, profileId, onChanged, usedMins, usageStatus = 'success', 
               )}
             </span>
           </label>
+          )}
         </div>
       )}
 
