@@ -2661,6 +2661,11 @@ describe('ProfilesPage — two-list app management (#2764)', () => {
     await openLimitDrawer(52, user)
     expect(screen.getByTestId('app-row-52-limit-drawer')).toBeInTheDocument()
     expect(screen.queryByTestId('app-row-52-counts-toward-daily')).not.toBeInTheDocument()
+    // ...and no empty "Exceptions" heading promising controls that aren't there.
+    const drawer52 = screen.getByTestId('app-row-52-limit-drawer')
+    expect(drawer52.textContent).not.toMatch(/Exceptions/i)
+    expect(drawer52.textContent).not.toMatch(/exceptions below/i)
+    expect(screen.getByTestId('app-row-53-limit-drawer').textContent).toMatch(/Exceptions/i)
   })
 
   it('a time-limited app WITH a cap keeps its counts pill', async () => {

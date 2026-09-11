@@ -2098,6 +2098,7 @@ function AppRow({ app, profileId, onChanged, usedMins, usageStatus, blocklistNam
   // and conflating them makes that in-window toggle a dead control.
   const canWriteBudgetFlag =
     mode != null && !(mode === 'time_limited' && current?.dailyMinutes == null)
+  const hasExceptions = canWriteBudgetFlag || canWriteDowntimeFlag
   const allowedDuringDowntime = current?.allowedDuringScheduleBlock ?? true
   const hasSchedule = scheduleRules.length > 0
   // Under 'success' an absent entry is a genuine zero — the endpoint only
@@ -2431,12 +2432,19 @@ function AppRow({ app, profileId, onChanged, usedMins, usageStatus, blocklistNam
           }`}>
             {isTimeLimited && currentMinutes != null
               ? `At ${formatMins(currentMinutes)} ${app.app.name} is blocked for the rest of the day. It comes back at midnight.`
-              : `With no limit set, ${app.app.name} stays reachable all day. The exceptions below decide how the profile's budget and downtime apply to it.`}
+              : `With no limit set, ${app.app.name} stays reachable all day.${
+                  hasExceptions ? " The exceptions below decide how the profile's budget and downtime apply to it." : ''
+                }`}
           </p>
 
+          {/* A capless time_limited app can write neither flag, so it gets no
+              Exceptions section rather than an empty heading under prose
+              promising one. */}
+          {hasExceptions && (
           <p className="text-[10.5px] font-bold uppercase tracking-wider text-brand-text-muted mt-3 pt-2.5 border-t border-dashed border-brand-border">
             Exceptions
           </p>
+          )}
           {/* #1007 / #2747 — the single exempt-from-daily control for this app.
               Polarity is positive-and-inverted, exactly as shipped:
               checked ⇒ exemptFromDaily: false. */}
