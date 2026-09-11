@@ -118,18 +118,18 @@ worse and is what decides it here: per #1899 the block side takes distinctive
 hosts only, but the allow side takes the full set, so the shared address
 reaches `ea_` — and `extraAllowed` beats every drop it reaches (#421).
 
-The precise scope is subtle and three drafts of this evidence doc got it wrong,
-so what is recorded here is only what is verified and load-bearing: the carve
+The precise scope is subtle and two successive drafts of this evidence doc got
+it wrong, so what is recorded here is only what is verified and load-bearing: the carve
 exists, it reaches the `bl_`/`eb_` drops, and that alone makes templating either
 shop unsafe. The gates that kept being missed, for anyone who needs the exact
 scope later:
 
 | gate | source | effect |
 | --- | --- | --- |
-| `if (state.blocked) Nil else timeLimitedUnderCap` | `PolicyService.scala:1506-1507` | the time-limited carve does not survive a whole-MAC block |
-| `if (isHardPause) Nil` | `PolicyService.scala:1509-1511` (#1418) | zeroes ALL carves together, Allowed-mode included |
+| `val timeLimitedUnderCap = if (state.blocked) Nil else timeLimitedUnderCapHosts(state)` | `PolicyService.scala:1506-1507` | the time-limited carve does not survive a whole-MAC block |
+| `if (isHardPause) Nil` | `PolicyService.scala:1509-1511` (#1418) | zeroes all PER-PROFILE carves together, Allowed-mode included. `global.extraAllowed` survives by design (`:1486-1497`); an app template's hosts never land there |
 | `capGroups = perApp.filter(_.mode == AppMode.TimeLimited)` | `ProfileAppDispositions.scala:53-54` (#2747) | the exempt carve is TimeLimited-only, even with `exemptFromDaily` set |
-| `suppressedByScheduleToggle` | `ProfileAppDispositions.scala:145` (#1679) | withholds the Allowed-mode carve during a Schedule block |
+| `suppressedByScheduleToggle` | `ProfileAppDispositions.scala:145` (#1679) | withholds the Allowed-mode carve during a Schedule block, but only when the assignment opts out — `allowed_during_schedule_block` defaults TRUE (`V56__…sql:22`), so it does not fire on a default assignment |
 
 The `eb_` half bites regardless of any of that — a brand host is distinctive, so
 it lands in `eb_` too, which is the form `arduino.yml` already documents for its

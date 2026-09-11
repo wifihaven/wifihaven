@@ -211,14 +211,16 @@ above is now wrong, fix the step too — don't just log around it.
   own store, but the stronger one is the ALLOW side: per #1899 the block side
   takes distinctive hosts only, while the under-cap carves take the full set, so
   the shared address reaches `ea_` — and `extraAllowed` beats every drop it
-  reaches (#421). **Do not try to write the exact scope from memory; three
-  drafts of this entry got it wrong.** What is load-bearing for the skip is just
+  reaches (#421). **Do not try to write the exact scope from memory: two
+  successive drafts of this entry got it wrong and review caught both.** What is load-bearing for the skip is just
   that the carve exists and reaches the `bl_`/`eb_` drops. If a future decision
   actually turns on the precise scope, read `PolicyService.computeBlockRules`
   and `ProfileAppDispositions.enforcement` — the gates that kept getting missed
-  are `if (state.blocked) Nil else timeLimitedUnderCap` (`:1506-1507`),
-  `if (isHardPause) Nil` which zeroes ALL the carves together (`:1509-1511`,
-  #1418), `capGroups = perApp.filter(_.mode == AppMode.TimeLimited)`
+  are `val timeLimitedUnderCap = if (state.blocked) Nil else
+  timeLimitedUnderCapHosts(state)` (`:1506-1507`),
+  `if (isHardPause) Nil`, which zeroes all the PER-PROFILE carves together,
+  Allowed-mode included (`:1509-1511`, #1418) — `global.extraAllowed` survives it
+  by design (`:1486-1497`), though an app template's hosts never land there, `capGroups = perApp.filter(_.mode == AppMode.TimeLimited)`
   (`ProfileAppDispositions:53-54`) which makes the exempt carve TimeLimited-only
   even with `exemptFromDaily` set (#2747), and `suppressedByScheduleToggle`
   (`:145`, #1679). The `eb_` half bites regardless of any of this — a brand host
