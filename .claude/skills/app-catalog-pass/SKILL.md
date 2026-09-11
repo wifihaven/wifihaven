@@ -191,6 +191,65 @@ above is now wrong, fix the step too — don't just log around it.
 
 ## Learnings log (newest first)
 
+- **2026-09-11 (#2774)** — **First pass driven by `orphanHosts`, and the method
+  works: it put the single highest-value finding at the top of the list instead
+  of buried in a byte table.** `www.youtube-nocookie.com` — YouTube's
+  privacy-enhanced EMBED domain — was 799 unattributed proportional minutes and
+  had been missing from `youtube.yml` since the template was written. A
+  byte-ranked `recent-apexes` sweep had missed it across many passes because
+  31.9 MB is unremarkable; time-weighted, it was the biggest genuine gap in the
+  catalog. **When a brand serves the same content from a second domain for
+  privacy/embed/no-cookie reasons, that domain is a host-set gap by default** —
+  check for `-nocookie`, `-static`, `embed.` and regional-privacy variants of
+  every already-templated brand.
+- **2026-09-11 (#2774)** — **A shared multi-tenant ORIGIN is disqualifying in a
+  way a shared CDN edge is not, and the allow side is what makes it bite.** Two
+  unrelated shops in this household's own traffic — `mouldkingcorp.com` and
+  `thetraindepartment.com` — both CNAME to the literal hostname
+  `shops.myshopify.com` and answer on the identical `23.227.38.74`. The usual
+  argument against templating them is the `eb_` one `arduino.yml` makes for its
+  own store, but the stronger one is the ALLOW side: per #1899 the block side
+  takes distinctive hosts only, while the under-cap carves take the full set, so
+  the shared address reaches `ea_` — and `extraAllowed` beats every drop it
+  reaches (#421). **Do not try to write the exact scope from memory: two
+  successive drafts of this entry got it wrong and review caught both.** What is load-bearing for the skip is just
+  that the carve exists and reaches the `bl_`/`eb_` drops. If a future decision
+  actually turns on the precise scope, read `PolicyService.computeBlockRules`
+  and `ProfileAppDispositions.enforcement` — the gates that kept getting missed
+  are `val timeLimitedUnderCap = if (state.blocked) Nil else
+  timeLimitedUnderCapHosts(state)` (`:1506-1507`),
+  `if (isHardPause) Nil`, which zeroes all the PER-PROFILE carves together,
+  Allowed-mode included (`:1509-1511`, #1418) — `global.extraAllowed` survives it
+  by design (`:1486-1497`), though an app template's hosts never land there, `capGroups = perApp.filter(_.mode == AppMode.TimeLimited)`
+  (`ProfileAppDispositions:53-54`) which makes the exempt carve TimeLimited-only
+  even with `exemptFromDaily` set (#2747), and `suppressedByScheduleToggle`
+  (`:145`, #1679). The `eb_` half bites regardless of any of this — a brand host
+  is distinctive, so it lands there too.
+  **Before templating any brand, resolve `www.<brand>` and check whether the
+  CNAME target is a platform-wide hostname** (`shops.myshopify.com`,
+  `*.hosted-by-discourse.com`, `*.zendesk.com`, `wp.wpenginepowered.com`). If
+  two unrelated candidates in your own sample land on the same address, that is
+  demonstrated sharing, not a hypothetical — and it is the strongest skip
+  argument available. Contrast Cloudflare's 104.26/172.67: multi-tenant too, but
+  ordinary accepted Class 2, and no address in the sample was shown serving a
+  second unrelated site.
+- **2026-09-11 (#2774)** — **A third of orphan time (33.7%, 48,079 of 142,672
+  minutes across the kid profiles) is bare IP literals — 1,093 distinct
+  addresses, nearly all IPv6 Google/Apple/Akamai.** Budget for this when reading
+  an orphan list: the denominator is not all catalogable, so "what fraction of
+  screen time is unattributed" overstates how much the catalog can ever fix.
+  Filter literals out before ranking candidates (`$3 ~ /:/ || $3 ~ /^[0-9.]+$/`)
+  or they crowd the top. **Do not diagnose this inside a catalog pass** — some
+  literal share is expected by design (`blockIpOnly` exists for destinations with
+  no attributable hostname) and #1796's v6 fixes are merged, so it is not simply
+  that bug. Filed as #2775 with first steps rather than guessed at.
+- **2026-09-11 (#2774)** — Two smaller traps this pass hit. A Cloudflare
+  bot-challenged site (`rebrickable.com` returns "Just a moment…" / HTTP 403 to
+  `curl`) looks dead to a fetch-based check but is perfectly healthy — say so in
+  the template so the next author doesn't "fix" a live app. And when an issue
+  number is needed in a template comment or evidence filename, **file the issue
+  BEFORE writing them**: guessing the next number cost a repo-wide renumber this
+  pass when the real number came back four higher than expected.
 - **2026-09-11 (#2762)** — **There is a server-side gap list; stop deriving it
   by hand.** `GET /api/profiles/<id>/usage-by-app?from=YYYY-MM-DD&to=YYYY-MM-DD`
   (`UsageRoutes.scala:150`; `from` defaults to today, `to` defaults to `from`)
