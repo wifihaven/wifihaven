@@ -2071,18 +2071,24 @@ function AppRow({ app, profileId, onChanged, usedMins, usageStatus, blocklistNam
   const currentMinutes = isTimeLimited ? current?.dailyMinutes ?? null : null
   const isAllowedList = mode != null && listOf(mode) === 'allowed'
   const exempt = current?.exemptFromDaily ?? true
-  // #1679 is an Allowed-MODE concept, not an allowed-LIST one. Server-side,
-  // `ProfileAppDispositions.enforcement` applies `suppressedByScheduleToggle`
-  // on the `AppMode.Allowed` branch (and on an active allowed_during rule); a
-  // plain TimeLimited app surfaces through the per-app cap path instead and the
-  // flag never reaches it. `apply` mirrors that by omitting the field for any
-  // mode but 'allowed'. So the pill and the checkbox are gated on the mode —
-  // on a time_limited row they would be a control that writes nothing.
-  const downtimeFlagApplies = mode === 'allowed'
-  // #1007: a time_limited app with no cap set yet has nothing to exempt FROM,
-  // so `writeExempt` early-returns for it. Gate the pill on the same condition
-  // the writer uses, or it renders as a control whose click does nothing.
-  const budgetFlagApplies =
+  // Which of the two flags this row can actually WRITE. Both predicates are the
+  // complement of their writer's own guard, and each writer asserts its
+  // predicate rather than re-deriving the condition — a control we render but
+  // the writer refuses is a dead control, which is how the first cut of this
+  // redesign shipped a pill that did nothing when clicked.
+  //
+  // #1679 is settable for Allowed mode only. NOT because the flag is inert
+  // elsewhere — `ProfileAppDispositions.enforcement` reads
+  // `suppressedByScheduleToggle` on its `allowedActive` branch
+  // (ProfileAppDispositions.scala:145-148), which runs BEFORE the `d.mode`
+  // match, so a Blocked or TimeLimited assignment carved open by an active
+  // allowed_during rule does consult it. It is because `apply` only ever SENDS
+  // the field for mode 'allowed', mirroring the shipped #1679 render condition.
+  // Widening the control to the modes the flag can reach is a real gap, tracked
+  // separately in #2771; this PR keeps parity rather than changing enforcement.
+  const canWriteDowntimeFlag = mode === 'allowed'
+  // #1007: a time_limited app with no cap set yet has nothing to exempt FROM.
+  const canWriteBudgetFlag =
     mode === 'allowed' || (mode === 'time_limited' && current?.dailyMinutes != null)
   const allowedDuringDowntime = current?.allowedDuringScheduleBlock ?? true
   const hasSchedule = scheduleRules.length > 0
@@ -2098,8 +2104,7 @@ function AppRow({ app, profileId, onChanged, usedMins, usageStatus, blocklistNam
   // payloads from drifting. A time_limited app with no cap set yet has nothing
   // to exempt from, so that case is a no-op.
   async function writeExempt(nextExempt: boolean) {
-    if (mode == null) return
-    if (mode === 'time_limited' && current?.dailyMinutes == null) return
+    if (mode == null || !canWriteBudgetFlag) return
     await apply(mode, current?.dailyMinutes ?? null, nextExempt)
   }
 
@@ -2124,7 +2129,7 @@ function AppRow({ app, profileId, onChanged, usedMins, usageStatus, blocklistNam
   // #1679: toggle "block during scheduled downtime" for Allowed-mode apps.
   // nextAllowed = !checkbox.checked (checkbox is "block during schedule", NOT "allow during schedule").
   async function toggleScheduleBlock(nextAllowed: boolean) {
-    if (mode == null) return
+    if (mode == null || !canWriteDowntimeFlag) return
     await apply(mode, current?.dailyMinutes ?? null, current?.exemptFromDaily, undefined, nextAllowed)
   }
 
@@ -2133,9 +2138,9 @@ function AppRow({ app, profileId, onChanged, usedMins, usageStatus, blocklistNam
   // cap: a blocked app accrues nothing to cap.
   //
   // It ALSO resets both flags, and not by our choice. The Block payload omits
-  // `exemptFromDaily` and `allowedDuringScheduleBlock` (the latter has no
-  // effect outside Allowed mode — see `downtimeFlagApplies`), and the server
-  // reads absent as DEFAULT rather than as unchanged: `AppRoutes.scala:154-157`
+  // `exemptFromDaily` and `allowedDuringScheduleBlock` (the latter because
+  // `apply` only sends it for mode 'allowed' — see `canWriteDowntimeFlag`), and
+  // the server reads absent as DEFAULT rather than as unchanged: `AppRoutes.scala:154-157`
   // does `.getOrElse(true)` on both and `Repos.scala:4545-4551` upserts them
   // with `ON CONFLICT … = EXCLUDED.…`. So an app blocked and then allowed again
   // comes back exempt and downtime-ignoring, whatever it was before.
@@ -2237,7 +2242,7 @@ function AppRow({ app, profileId, onChanged, usedMins, usageStatus, blocklistNam
               one-click revert. The title carries the explanation the row has
               no room for; the label repeats the shipped checkbox wording
               rather than introducing a third phrasing. */}
-          {budgetFlagApplies && !exempt && (
+          {canWriteBudgetFlag && !exempt && (
             <button
               type="button"
               data-testid={`${tid}-pill-counts`}
@@ -2247,7 +2252,7 @@ function AppRow({ app, profileId, onChanged, usedMins, usageStatus, blocklistNam
               className={`${pillBase} bg-amber-500/15 border-amber-500/40 text-amber-800 hover:bg-amber-500/25`}
             >counts<span className="opacity-60">×</span></button>
           )}
-          {downtimeFlagApplies && allowedDuringDowntime && (
+          {canWriteDowntimeFlag && allowedDuringDowntime && (
             <button
               type="button"
               data-testid={`${tid}-pill-ignores-downtime`}
@@ -2460,8 +2465,8 @@ function AppRow({ app, profileId, onChanged, usedMins, usageStatus, blocklistNam
               any attached rule: an app with no schedule rules at all still has
               to answer it. #2764 surfaces its exceptional value as a row pill.
               Allowed mode only, matching the shipped render condition — see
-              `downtimeFlagApplies`. */}
-          {downtimeFlagApplies && (
+              `canWriteDowntimeFlag`. */}
+          {canWriteDowntimeFlag && (
           <label className="flex items-start gap-2 text-xs text-brand-text cursor-pointer select-none mt-2">
             <input
               type="checkbox"
