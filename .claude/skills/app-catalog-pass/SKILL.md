@@ -235,14 +235,16 @@ above is now wrong, fix the step too — don't just log around it.
   (`blocklists.render_shards`; format at `render.lua:527-531`) — dnsmasq suffix
   matching, as unbounded as the per-host `eb_` path. `grep -rn 'apexTails\|maxHops'
   openwrt/files` returns NOTHING: the agent has no bounded tail walk anywhere.
-  The bounded walk is an API-side *attribution and display* concern
-  (`lookupApex` in `UsageTraffic`/`RollupRepo`/`UsageRoutes`/`Repos`, and
-  `hasApexMatch` for the block-page reason); the unbounded suffix match is
-  enforcement (`PolicyService.matchesAny` at `:1240`, the `HostMatch.matchesAny`
-  calls in `Presence`, and every `nftset=` line the agent writes). **Before
-  writing that anything is bounded "on the enforcement side", check whether the
-  code you are reading is even on the enforcement plane** — an API decision
-  endpoint the router never calls is not.
+  **Before writing that anything is bounded "on the enforcement side", check
+  whether the code you are reading is even on the enforcement plane** — an API
+  decision endpoint the router never calls is not. Resist the urge to write the
+  tidy two-column taxonomy of which matcher is bounded and which plane it serves:
+  five drafts of this entry tried, and every one mis-sorted something, because
+  bounded-vs-unbounded (`apexTails` walk vs `matchesApex` suffix test) and
+  API-vs-enforcement are INDEPENDENT axes and most of the API-side matchers sit
+  in `decideDetailed` together regardless of which matcher they use. If you need
+  to know where a specific matcher runs, grep its call sites and read the
+  enclosing function — don't consult a summary, including this one.
 - **2026-09-11 (#2762)** — A PR you opened THIS session can merge while you are
   still working, which silently turns its branch into a dead branch: a follow-up
   commit pushed there is unreachable from `main` and ships nothing. This
