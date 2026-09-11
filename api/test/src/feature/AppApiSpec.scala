@@ -14,6 +14,8 @@ import zio.http.*
 import zio.json.*
 import zio.test.*
 
+import java.time.{LocalTime, ZoneId}
+
 /**
  * Feature tests for the apps CRUD HTTP endpoints (#762). Each test boots a fresh embedded Postgres
  * via [[TestDatabase]] and exercises the route stack end-to-end (no mocks).
@@ -22,6 +24,8 @@ object AppApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clo
 
   override val bootstrap =
     TestDatabase.layer ++ TestLayers.withClock(TestClock.schoolDayAfternoon)
+
+  private val utc = ZoneId.of("UTC")
 
   private val jwtCfg = JwtConfig(secret = "test-secret-at-least-32-chars!!x", expiryHours = 1)
 
@@ -420,6 +424,136 @@ object AppApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clo
             .addHeader(Header.ContentType(MediaType.application.json)),
         )
       } yield assertTrue(resp.status == Status.Forbidden)
+    },
+    // #2751: the /api/apps read path dropped an assignment's attached per-app
+    // schedule rules (#1379). `AppPolicyAssignment` carried no `scheduleRules`
+    // field and `AppRepo.scheduleRulesForAssignment` had no callers, so a rule
+    // written through PUT was invisible on the next read — and because the SPA
+    // re-seeds its editor state from the read and PUTs the full desired set with
+    // replace semantics, the next unrelated edit on that row DELETED it.
+    test("#2751 GET list+detail round-trip an assignment's attached schedule rules") {
+      for {
+        _        <- cleanDb
+        token    <- adminToken
+        rs       <- makeRoutes
+        appRepo  <- ZIO.service[AppRepo]
+        profileR <- ZIO.service[ProfileRepo]
+        nsRepo   <- ZIO.service[NamedScheduleRepo]
+        profiles <- profileR.listAllForHousehold(HouseholdId.Default)
+        pid = profiles.head.id
+        id      <- appRepo.create("YouTube", "youtube", None, None)
+        schedId <- nsRepo.create(
+          "Bedtime",
+          None,
+          List(ScheduleWindow(List("mon"), LocalTime.of(21, 0), LocalTime.of(23, 0), utc)),
+        )
+        body = UpsertAppAssignmentRequest(
+          mode = AppMode.Allowed,
+          dailyMinutes = None,
+          scheduleRules = List(AppScheduleRule(schedId, AppScheduleMode.AllowedDuring)),
+        ).toJson
+        put      <- rs.runZIO(
+          Request
+            .put(url(s"/api/apps/${id.value}/policy/${pid.value}"), Body.fromString(body))
+            .addHeader(Header.Authorization.Bearer(token))
+            .addHeader(Header.ContentType(MediaType.application.json)),
+        )
+        listResp <- rs.runZIO(
+          Request.get(url("/api/apps")).addHeader(Header.Authorization.Bearer(token)),
+        )
+        listBody <- listResp.body.asString
+        details  <- ZIO.fromEither(listBody.fromJson[List[AppDetail]])
+        listAsgn = details.find(_.app.id == id).get.assignments.head
+        oneResp <- rs.runZIO(
+          Request
+            .get(url(s"/api/apps/${id.value}"))
+            .addHeader(Header.Authorization.Bearer(token)),
+        )
+        oneBody <- oneResp.body.asString
+        one     <- ZIO.fromEither(oneBody.fromJson[AppDetail])
+        oneAsgn = one.assignments.head
+      } yield assertTrue(put.status == Status.Ok) &&
+        assertTrue(
+          listAsgn.scheduleRules.map(r => (r.scheduleId, r.mode)) ==
+            List((schedId, AppScheduleMode.AllowedDuring)),
+        ) &&
+        assertTrue(listAsgn.scheduleRules.head.assignmentId == listAsgn.id) &&
+        assertTrue(
+          oneAsgn.scheduleRules.map(r => (r.scheduleId, r.mode)) ==
+            List((schedId, AppScheduleMode.AllowedDuring)),
+        )
+    },
+    // #2751: the data-loss regression. This mirrors exactly what the SPA does —
+    // seed the editor from what GET returned, then PUT the full desired set on
+    // an UNRELATED edit (here: flipping exempt-from-daily). Before the read-path
+    // fix the seed was empty, so the PUT's replace semantics silently wiped a
+    // rule the operator never touched.
+    test("#2751 an unrelated edit re-sending the read's rules does not drop them") {
+      for {
+        _        <- cleanDb
+        token    <- adminToken
+        rs       <- makeRoutes
+        appRepo  <- ZIO.service[AppRepo]
+        profileR <- ZIO.service[ProfileRepo]
+        nsRepo   <- ZIO.service[NamedScheduleRepo]
+        profiles <- profileR.listAllForHousehold(HouseholdId.Default)
+        pid = profiles.head.id
+        id       <- appRepo.create("YouTube", "youtube", None, None)
+        schedId  <- nsRepo.create(
+          "Homework",
+          None,
+          List(ScheduleWindow(List("tue"), LocalTime.of(16, 0), LocalTime.of(18, 0), utc)),
+        )
+        _        <- rs.runZIO(
+          Request
+            .put(
+              url(s"/api/apps/${id.value}/policy/${pid.value}"),
+              Body.fromString(
+                UpsertAppAssignmentRequest(
+                  mode = AppMode.Blocked,
+                  exemptFromDaily = Some(true),
+                  scheduleRules = List(AppScheduleRule(schedId, AppScheduleMode.AllowedDuring)),
+                ).toJson,
+              ),
+            )
+            .addHeader(Header.Authorization.Bearer(token))
+            .addHeader(Header.ContentType(MediaType.application.json)),
+        )
+        // The SPA's seed: whatever GET reported for this assignment.
+        seedResp <- rs.runZIO(
+          Request.get(url("/api/apps")).addHeader(Header.Authorization.Bearer(token)),
+        )
+        seedBody <- seedResp.body.asString
+        seed     <- ZIO.fromEither(seedBody.fromJson[List[AppDetail]])
+        seeded = seed.find(_.app.id == id).get.assignments.head.scheduleRules
+        // The unrelated edit: exempt-from-daily flipped, rules echoed back as-is.
+        _      <- rs.runZIO(
+          Request
+            .put(
+              url(s"/api/apps/${id.value}/policy/${pid.value}"),
+              Body.fromString(
+                UpsertAppAssignmentRequest(
+                  mode = AppMode.Blocked,
+                  exemptFromDaily = Some(false),
+                  scheduleRules = seeded,
+                ).toJson,
+              ),
+            )
+            .addHeader(Header.Authorization.Bearer(token))
+            .addHeader(Header.ContentType(MediaType.application.json)),
+        )
+        afterR <- rs.runZIO(
+          Request.get(url("/api/apps")).addHeader(Header.Authorization.Bearer(token)),
+        )
+        afterB <- afterR.body.asString
+        after  <- ZIO.fromEither(afterB.fromJson[List[AppDetail]])
+        asgn = after.find(_.app.id == id).get.assignments.head
+      } yield assertTrue(seeded.map(_.scheduleId) == List(schedId)) &&
+        assertTrue(!asgn.exemptFromDaily) &&
+        assertTrue(
+          asgn.scheduleRules.map(r => (r.scheduleId, r.mode)) ==
+            List((schedId, AppScheduleMode.AllowedDuring)),
+        )
     },
     test("GET 404 for unknown app id") {
       for {
