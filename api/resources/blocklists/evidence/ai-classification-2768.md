@@ -77,8 +77,12 @@ shared vendor apex is never the block target — and here the *product* and the
 *shared surface* are the same hostname, so there is no product subdomain to
 scope to. **This is a structural limit of hostname enforcement, not a gap in
 the list.** It is also why this pass REMOVED `notebooklm.google.com` and
-`labs.google` after review: both front on the same shared GFE pool, so putting
-them in `bl_ai` risks dropping Drive/Docs for a child MAC (#2601). Google's own
+`labs.google` after review: both front on the same shared GFE pool. Resolved
+from three vantage points, `notebooklm.google.com` returned three different
+/24s, one of them Drive's exact six-address set (two are recorded in the #2772
+review thread; the third, `209.85.145.x`, is the author's own unrecorded
+observation) — so
+`bl_ai` risks dropping Drive/Docs for a child MAC (#2601). Google's own
 AI surfaces are a product decision tracked in **#2605**.
 
 ### Account-side controls, and what each does not cover
@@ -87,11 +91,29 @@ Sourced rather than asserted, per [verify-and-cite](../../../../AGENTS.md#verify
 Re-check before relying on these; vendor controls move.
 
 - **Gemini Apps** — `familylink.google.com` → child → Controls → Gemini →
-  Gemini Apps. On by default for eligible supervised accounts; turning it off
-  blocks sign-in to the Gemini app and Gemini on the web, account-wide (so it
-  also covers off-network use).
-  [Google For Families help](https://support.google.com/families/answer/16109150?hl=en),
-  [Gemini Apps help](https://support.google.com/gemini/answer/16109150?hl=en-SG).
+  Gemini Apps. The menu path is confirmed verbatim by the source below, as is
+  "You can change your child's access to Gemini Apps at any time." The same
+  page gives a SECOND verbatim path for older Family Link versions —
+  `Controls → Content restrictions → Gemini → Gemini Apps` — which an operator
+  on an older app will need instead.
+  **What the source does NOT say:** an earlier draft added that turning it off
+  "blocks sign-in to the Gemini app and Gemini on the web, account-wide (so it
+  also covers off-network use)." Neither cited page describes the off-state's
+  scope. That clause is withdrawn as unverified. It is the operationally
+  load-bearing half of this bullet — it is the reason to expect account-side
+  control to reach off-network use at all — so do not rely on it until sourced.
+  **Correction:** an earlier draft of this doc said Gemini Apps is "on by
+  default for eligible supervised accounts." The cited source contradicts that
+  for the under-13 band — "A parent must enable access before their child under
+  13 (or the applicable age in your country) can use Gemini Apps with a
+  supervised account" — i.e. default-OFF there. The default for supervised
+  **teens** is not established by this source; treat it as unverified rather
+  than assuming either way. The original claim came from secondary blog
+  coverage, not the vendor page, which is exactly the failure
+  [verify-and-cite](../../../../AGENTS.md#verify-and-cite) exists to prevent.
+  [Google For Families help](https://support.google.com/families/answer/16109150?hl=en)
+  (the `support.google.com/gemini/answer/16109150` URL is the same article in a
+  second help centre, not an independent second source).
 - **Gemini in Docs/Gmail** ("Help me write", "Refine") — NOT covered by the
   Gemini Apps toggle. For consumer accounts this rides the Gmail-settings
   "Google Workspace smart features" switch.
@@ -101,7 +123,8 @@ Re-check before relying on these; vendor controls move.
   [Kinzoo parent guide](https://www.kinzoo.com/blog/a-parents-guide-to-google-gemini-for-kids-everything-you-need-to-know).
 
 **Operator follow-up (2026-09-11): Gemini Apps was already disabled**, so it is
-not the explanation. That leaves the Workspace smart-features surface, AI
+not the explanation — consistent with the default-OFF the source describes.
+That leaves the Workspace smart-features surface, AI
 Overviews in Search, Apple Intelligence / Siri (`guzzoni.apple.com`,
 `api.smoot.apple.com` both appear in the sweep), and off-network use. Tracked in
 #2768, not resolved by this PR.
@@ -147,14 +170,43 @@ Largest clusters among the new hosts at authoring time:
 | Address | Hosts | Frontend |
 |---|---|---|
 | `76.76.21.21` | 12 | Vercel shared anycast |
-| `216.150.1.1` | 5 | shared |
-| `198.202.211.1` | 5 | shared |
+| `216.150.1.1` | 5 | Vercel (`VERCEL-09`, per whois) |
+| `198.202.211.1` | 5 | Webflow (per whois) |
 
 Resolving any one host in a cluster puts that address in `bl_ai`, dropping other
-tenants of the same frontend for that MAC. Accepted because `main` already
-carries four hosts on `76.76.21.21` (`pplx.ai`, `runwayml.com`, `udio.com`,
-`delphi.ai`) — the exposure is unchanged in kind, and the proportion is flat
-(~26/50 before, ~56/99 after). See #2369 for this class.
+tenants of the same frontend for that MAC. Accepted, with the claim scoped to
+the **50-host baseline** — not to `main`, which now includes this pass and so
+trivially carries all of these. That baseline already carried four hosts on
+`76.76.21.21` (`pplx.ai`, `runwayml.com`, `udio.com`, `delphi.ai`) and two on
+`198.202.211.1` (`jasper.ai`, `copy.ai`), so for those two addresses the
+exposure is unchanged in kind. **`216.150.1.1` is newly reached** — the
+baseline's nearest was `lumalabs.ai` on `216.150.1.129`, which whois places in
+the *same* `216.150.1.0/24` (`VERCEL-09`), so it is a neighbouring address in a
+block already touched rather than a new frontend.
+
+On the proportion. The method is stated below, but it is **not** exactly
+reproducible and the file should not pretend otherwise: it keys on exact A
+records, and CDN edge answers rotate per query and per vantage, so the count
+over CDN-fronted names is a snapshot. Measured 2026-09-10 from a single
+resolver; a re-measure one round later moved it by two hosts (`monica.im` and
+`pixai.art` landing on a shared CloudFront edge). Expect a couple either way.
+The method: counting a host as shared when at least one
+of its A records is also served for a **different host in the same list** — each
+half counted against its own version of the file, baseline against the 50 and
+added against the 147 — it is **13/50** before and **29/97** added. Counting
+instead by membership of published CDN anycast ranges (Cloudflare + Fastly + the
+three cluster addresses in the table above) gives **30/50** before and
+**66/97** added. Widening the range set (more Vercel/Google/CloudFront blocks)
+gives **36/50 → 70/97** — 72% → 72%, +0.2pt, the reading least favourable to
+the "goes up" framing, given here rather than gestured at.
+
+**The direction, stated honestly:** the shared proportion goes *up* slightly —
+26.0% → 29.9% (+3.9pt) by co-tenancy, 60% → 68% (+8.0pt) by narrow ranges. An
+earlier draft of this section said "flat" and "did not worsen" — Δ = 0 and
+Δ ≤ 0 respectively, both asserting a *non-increase*; no method produces one. The defensible claim is that it is unchanged
+in **order**, not that it improved. Note also that both figures in a pair must
+travel together — an earlier draft gave the range-method numerator with no
+baseline, leaving its own conclusion uncheckable. See #2369 for this class.
 
 ### Held out as dual-use
 

@@ -155,13 +155,47 @@ hosts:
   # it is NOT the same as "no shared-IP collateral" — enforcement matches on the
   # resolved IP, and many of these are single-tenant names fronting on shared
   # anycast. Measured at authoring time, the largest clusters among the new
-  # hosts are 76.76.21.21 (Vercel, 12 hosts), 216.150.1.1 (5) and 198.202.211.1
-  # (5). Resolving any one host in a cluster puts that address in `bl_ai`, so
-  # other tenants of the same frontend are dropped for that MAC. This is
-  # accepted, not overlooked: `main` already carries four hosts on 76.76.21.21
-  # (pplx.ai, runwayml.com, udio.com, delphi.ai), so the exposure is unchanged
-  # in kind, and the proportion is flat (~26/50 before, ~56/99 after). See #2369
-  # for the shared-IP class. Do not read the CDN-apex line as a clearance.
+  # hosts are 76.76.21.21 (Vercel, 12 hosts), 216.150.1.1 (Vercel, 5) and
+  # 198.202.211.1 (Webflow, 5). Resolving one host in a cluster puts that
+  # address in `bl_ai`, so other tenants of the same frontend are dropped for
+  # that MAC. This is accepted, not overlooked.
+  #
+  # Scope the claim to the 50-host BASELINE, never to
+  # `main` — #2772 merged, so `main` now includes this pass and would make the
+  # claim circular. That baseline already carried four hosts on 76.76.21.21
+  # (pplx.ai, runwayml.com, udio.com, delphi.ai), so for that address the
+  # exposure is unchanged in kind. It also already reached
+  # 198.202.211.1 (jasper.ai, copy.ai). 216.150.1.1 is an address the baseline
+  # did not touch — its nearest was lumalabs.ai on 216.150.1.129, the same
+  # Vercel /24 (whois VERCEL-09, 216.150.1.0/24), so a neighbouring address in
+  # the same shared block rather than a new frontend. Same class, still a newly
+  # reached address.
+  #
+  # Proportion, with the method stated. NOT exactly reproducible, and say so:
+  # this keys on exact A records, and CDN edge answers rotate per query and per
+  # vantage, so the count over CDN-fronted names is a SNAPSHOT. Measured
+  # 2026-09-10 from a single resolver; a re-measure a round later moved it by
+  # two hosts (monica.im, pixai.art landing on a shared CloudFront edge). Expect
+  # a couple either way and do not "correct" it in circles. Counting a host as
+  # "shared" when at least one of its A records is also served for a DIFFERENT
+  # host in the same list — each half counted against its OWN version of the
+  # file, baseline against the 50 and added against the 147 — gives 13/50
+  # before and 29/97 added. Counting instead by membership of published CDN
+  # anycast ranges (Cloudflare + Fastly + the three /24s above) gives 30/50
+  # before and 66/97 added. Widening the range set (more Vercel/Google/
+  # CloudFront blocks) gives 36/50 -> 70/97, i.e. 72% -> 72%, +0.2pt — the
+  # reading LEAST favourable to the "goes up" framing, given here rather than
+  # gestured at, since the rule below is that both figures in a pair travel
+  # together.
+  #
+  # State the direction honestly: the shared proportion goes UP slightly, not
+  # down — 26.0% -> 29.9% (+3.9pt) by co-tenancy, 60% -> 68% (+8.0pt) by narrow
+  # ranges. An earlier draft said "flat" and "did not worsen" — Δ = 0 and Δ <= 0
+  # respectively; both assert a NON-INCREASE, and no method produces one. The
+  # defensible claim is that it is
+  # unchanged in ORDER, not that it improved. Both figures in a pair must travel
+  # together or neither can be checked. See #2369, and do not read the CDN-apex
+  # line as a clearance.
   #
   # Same host-scoping rules as the header: apexes (suffix-matched at the
   # router), product subdomains for shared vendors.
@@ -187,10 +221,14 @@ hosts:
   # `labs.google` and `notebooklm.google.com` were in this block and have been
   # REMOVED (#2768 review). Suffix-safety was never the hazard — enforcement
   # matches on the RESOLVED IP, and both front on Google's shared GFE pool.
-  # Resolved from two different vantage points during review, notebooklm landed
-  # on Drive's exact six-address set from one and on a separate /24 from the
-  # other, i.e. the host<->pool mapping is resolver- and geo-dependent and
-  # cannot be relied on to stay disjoint from Drive/Docs. Putting it in `bl_ai`
+  # Resolved from three different vantage points during review, notebooklm
+  # returned three different /24s — 64.233.179.x (Drive's EXACT six-address set
+  # at that moment) and 74.125.69.x, both recorded in the #2772 review thread,
+  # plus 209.85.145.x from the author's own vantage, which is NOT in that
+  # thread and rests on a single unrecorded observation — i.e. the host<->pool
+  # mapping is resolver- and geo-dependent and cannot be relied on to stay
+  # disjoint from Drive/Docs. One disjoint observation is not evidence of
+  # safety; the observed collision is evidence of the hazard. Putting it in `bl_ai`
   # therefore risks dropping Google Drive for a kid MAC — precisely the #2601
   # collateral bug (see `api/test/src/SharedGfeHosts.scala` and
   # `evidence/google-gfe-collateral-2601.md`). This is the same structural limit
