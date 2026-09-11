@@ -1508,6 +1508,38 @@ describe('ProfilesPage — per-app schedule rules (#1380)', () => {
     expect(screen.getByTestId('app-row-50-counts-toward-daily')).toBeInTheDocument()
   })
 
+  // The blocked-app in-window exempt toggle is the THIRD caller of writeExempt,
+  // and the only one outside the limit drawer. A render-only assertion missed a
+  // regression that made it a dead control (the writer refused the write while
+  // the checkbox still rendered, so the box snapped back to server state), so
+  // this one clicks it and asserts the write.
+  it('clicking the blocked-app in-window exempt toggle actually writes', async () => {
+    const blockedWithRule = {
+      app: { id: 50, name: 'YouTube', slug: 'youtube', templateId: null, icon: '📺', createdAt: '2026-01-01' },
+      hosts: ['youtube.com'],
+      assignments: [
+        {
+          id: 2, appId: 50, profileId: 1, mode: 'blocked' as const, dailyMinutes: null,
+          exemptFromDaily: true, scheduleRules: [{ scheduleId: 10, mode: 'allowed_during' as const }],
+        },
+      ],
+    }
+    ;(api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([blockedWithRule])
+    ;(api.schedules.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([bedtime])
+    const user = userEvent.setup()
+    await openAppsSection(user)
+    const toggle = await screen.findByTestId('app-row-50-schedule-exempt')
+    await user.click(within(toggle).getByRole('checkbox'))
+    // exemptFromDaily is mode-independent server-side
+    // (ProfileAppDispositions.exemptPatterns), so a blocked app CAN be written.
+    await waitFor(() =>
+      expect(api.apps.setPolicy).toHaveBeenCalledWith(50, 1, expect.objectContaining({
+        mode: 'blocked',
+        exemptFromDaily: false,
+      })),
+    )
+  })
+
   // #2747 — a Blocked-mode app is only reachable inside an allowed_during
   // window, so the "reachable in-window even past the cap" copy is accurate
   // there and the schedule-editor toggle stays its home.

@@ -2087,9 +2087,17 @@ function AppRow({ app, profileId, onChanged, usedMins, usageStatus, blocklistNam
   // Widening the control to the modes the flag can reach is a real gap, tracked
   // separately in #2771; this PR keeps parity rather than changing enforcement.
   const canWriteDowntimeFlag = mode === 'allowed'
-  // #1007: a time_limited app with no cap set yet has nothing to exempt FROM.
+  // The budget flag is the wider of the two, and its writer's condition is NOT
+  // the pill's. `exemptFromDaily` is mode-independent server-side
+  // (`ProfileAppDispositions.exemptPatterns`, api/src/policy/…:30-36), and a
+  // BLOCKED app carved open by an allowed_during rule is written through
+  // ScheduleRuleEditor's own in-window toggle — the third caller of
+  // `writeExempt`. The only state that cannot be written is a time_limited app
+  // with no cap set yet, which has nothing to exempt FROM (#1007).
+  // Do NOT collapse this into the pill's condition: they differ on `blocked`,
+  // and conflating them makes that in-window toggle a dead control.
   const canWriteBudgetFlag =
-    mode === 'allowed' || (mode === 'time_limited' && current?.dailyMinutes != null)
+    mode != null && !(mode === 'time_limited' && current?.dailyMinutes == null)
   const allowedDuringDowntime = current?.allowedDuringScheduleBlock ?? true
   const hasSchedule = scheduleRules.length > 0
   // Under 'success' an absent entry is a genuine zero — the endpoint only
@@ -2242,7 +2250,9 @@ function AppRow({ app, profileId, onChanged, usedMins, usageStatus, blocklistNam
               one-click revert. The title carries the explanation the row has
               no room for; the label repeats the shipped checkbox wording
               rather than introducing a third phrasing. */}
-          {canWriteBudgetFlag && !exempt && (
+          {/* The pill is a row affordance, so it is additionally scoped to the
+              allowed list — a blocked row carries no pills. */}
+          {isAllowedList && canWriteBudgetFlag && !exempt && (
             <button
               type="button"
               data-testid={`${tid}-pill-counts`}
