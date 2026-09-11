@@ -393,6 +393,14 @@ case class AppPolicyAssignment(
     exemptFromDaily: Boolean = true,
     // #1679: toggle — false suppresses this app's extraAllowed carve-out during Schedule blocks.
     allowedDuringScheduleBlock: Boolean = true,
+    // #2751: the attached #1379 per-app schedule rules, populated on the `/api/apps` read path
+    // from `AppRepo.scheduleRulesForAssignments`. Additive with a `Nil` default, so older
+    // serialized payloads still decode and non-read callers (PolicyService, which resolves
+    // windows separately via `appScheduleWindowsForProfile`) construct assignments unchanged.
+    // Before this field existed the read dropped the rules entirely: they vanished from the SPA
+    // after a reload, and because the SPA re-seeds its editor from the read and PUTs the full
+    // desired set with replace semantics, the next unrelated edit on the row deleted them.
+    scheduleRules: List[AppScheduleRule] = Nil,
 ) derives JsonCodec
 
 // #1798: the app *definition* mutator endpoints (create / update name+icon /
