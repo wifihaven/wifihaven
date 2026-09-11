@@ -2440,6 +2440,12 @@ function AppRow({ app, profileId, onChanged, usedMins, usageStatus, blocklistNam
           {/* #1007 / #2747 — the single exempt-from-daily control for this app.
               Polarity is positive-and-inverted, exactly as shipped:
               checked ⇒ exemptFromDaily: false. */}
+          {/* Gated on the writer's own predicate: a capless time_limited app has
+              nothing to exempt FROM, so `writeExempt` refuses it and an ungated
+              checkbox would render a control that silently snaps back. (Shipped
+              that way on main; cheap to close while this drawer is being
+              written.) */}
+          {canWriteBudgetFlag && (
           <label className="flex items-start gap-2 text-xs text-brand-text cursor-pointer select-none mt-2">
             <input
               type="checkbox"
@@ -2470,6 +2476,7 @@ function AppRow({ app, profileId, onChanged, usedMins, usageStatus, blocklistNam
               )}
             </span>
           </label>
+          )}
           {/* #1679 — block-during-downtime. Lives here rather than in the
               schedule drawer because it is a property of the allowance, not of
               any attached rule: an app with no schedule rules at all still has

@@ -2629,8 +2629,13 @@ describe('ProfilesPage — two-list app management (#2764)', () => {
   })
 
   // #1007 — `writeExempt` early-returns for a time_limited app with no cap set,
-  // so a `counts` pill there would be a control whose click does nothing. The
-  // pill is gated on the same condition the writer uses.
+  // so a `counts` pill there would be a control whose click does nothing.
+  //
+  // The pill is NOT gated on the writer's condition — they differ on `blocked`,
+  // which the writer accepts (via ScheduleRuleEditor's in-window toggle) and the
+  // pill does not (a blocked row carries no pills). Believing they were the same
+  // predicate is what made that toggle a dead control for one commit. The pill
+  // is `isAllowedList && canWriteBudgetFlag`; the writer is the wider half.
   it('no counts pill on a time-limited app with no cap set — it would write nothing', async () => {
     (api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([
       app(52, 'Minecraft', { mode: 'time_limited', dailyMinutes: null, exemptFromDaily: false }),
@@ -2641,6 +2646,21 @@ describe('ProfilesPage — two-list app management (#2764)', () => {
     // Liveness anchor: a row that SHOULD carry the pill, in the same render.
     await screen.findByTestId('app-row-53-pill-counts')
     expect(screen.queryByTestId('app-row-52-pill-counts')).not.toBeInTheDocument()
+  })
+
+  it('a capless time-limited app renders no counts checkbox in its drawer either', async () => {
+    (api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([
+      app(52, 'Minecraft', { mode: 'time_limited', dailyMinutes: null }),
+      app(53, 'Duolingo', { mode: 'allowed' }),
+    ])
+    const user = userEvent.setup()
+    await openApps(user)
+    // Liveness anchor: a drawer that DOES carry the checkbox, same render.
+    await openLimitDrawer(53, user)
+    expect(screen.getByTestId('app-row-53-counts-toward-daily')).toBeInTheDocument()
+    await openLimitDrawer(52, user)
+    expect(screen.getByTestId('app-row-52-limit-drawer')).toBeInTheDocument()
+    expect(screen.queryByTestId('app-row-52-counts-toward-daily')).not.toBeInTheDocument()
   })
 
   it('a time-limited app WITH a cap keeps its counts pill', async () => {
@@ -2655,7 +2675,12 @@ describe('ProfilesPage — two-list app management (#2764)', () => {
     )
   })
 
-  it('no pills are rendered on a blocked row — neither flag applies to it', async () => {
+  // Not because neither flag applies — `exemptFromDaily` is mode-independent
+  // server-side (`ProfileAppDispositions.exemptPatterns`) and a blocked app can
+  // be exempt. It is because pills are an allowed-LIST affordance: a blocked
+  // app's exemption is reached through its schedule drawer instead, where the
+  // in-window copy is the accurate one (#2747).
+  it('no pills are rendered on a blocked row — pills are an allowed-list affordance', async () => {
     (api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([
       app(51, 'TikTok', { mode: 'blocked', exemptFromDaily: false, allowedDuringScheduleBlock: true }),
     ])
