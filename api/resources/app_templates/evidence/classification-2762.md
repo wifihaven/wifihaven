@@ -274,10 +274,14 @@ from `unagi`, but suffix matching is `host == x || host.endsWith("." + x)`, and
 not parent/child. Only `ipv6.unagi-na.amazon.com` is a true child, covered by
 the `unagi-na` entry.
 
-No apex is listed bare. `a2z.com` and `amazon.dev` are Amazon's internal shared
-domains (`a2z.com` alone fronts AWS, Alexa, devices and retail — the same sample
-has `redirect.prod.experiment.routing.cloudfront.aws.a2z.com` under it), so
-every entry is a deep per-service suffix.
+`a2z.com` and `amazon.dev` are NOT listed bare — they are Amazon's internal
+shared domains (`a2z.com` alone fronts AWS, Alexa, devices and retail; the same
+sample has `redirect.prod.experiment.routing.cloudfront.aws.a2z.com` under it),
+so every entry under them is a deep per-service suffix. The one apex entry is
+`bdtelemetry.amazon`, and it is deliberate: a single-purpose, self-describing
+zone on Amazon's own `.amazon` brand gTLD, where every child is telemetry by
+construction — the same argument `amazon.yml` makes for listing
+`ssl-images-amazon.com` as an apex, and not an IP-disjointness claim.
 
 Excluded: all of Amazon's ad surfaces (`sponsored-ads`,
 `aax-us-east-retail-direct`, `affiliate-program`, `tahoe-analytics…advertising`,

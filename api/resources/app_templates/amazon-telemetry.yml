@@ -83,10 +83,14 @@ icon_type: url
 #                                6th and last tail); TWO would push it past
 #                                `maxHops` and it would stop matching. When
 #                                that happens the router keeps dropping the
-#                                host — enforcement is unbounded — while the
-#                                usage/rollup surfaces that call `lookupApex`
-#                                (`UsageTraffic`, `RollupRepo`, `UsageRoutes`)
-#                                silently stop attributing it. Per-app
+#                                host — enforcement is unbounded — while every
+#                                surface that calls `lookupApex` silently stops
+#                                attributing it. That is `UsageTraffic`,
+#                                `RollupRepo`, `UsageRoutes` AND `Repos.scala`
+#                                (:3773-3801, the #857 query-log/activity app
+#                                resolution) — all on the default `maxHops`, so
+#                                treat the list as the blast radius, not as
+#                                three places to check. Per-app
 #                                BUDGETING is not affected: `Presence` matches
 #                                via `HostMatch.matchesAny`
 #                                (`Presence.scala:474,733`), which is unbounded
