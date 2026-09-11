@@ -58,16 +58,24 @@ object AppRoutes {
    * `app_policy_schedule_rules` and were written by `PUT /api/apps/:id/policy/:profileId` from the
    * start, but nothing read them back — so they vanished from the SPA on reload and the next
    * unrelated edit on the row wiped them (the SPA re-seeds from this read and PUTs the full desired
-   * set with replace semantics). Resolved in ONE batched query for the whole assignment set: a
-   * per-assignment read here would be an N+1 over apps x profiles on the list route.
+   * set with replace semantics).
+   *
+   * The attach is split from the fetch because the two read routes batch at different widths: the
+   * detail route resolves one app's assignments, while the list route resolves EVERY app's in a
+   * single query (a per-app fetch there would be an N+1 over apps x profiles). Both then attach
+   * through this one function, so the shape cannot drift between them.
    */
+  private def attachScheduleRules(
+      asgn: List[AppPolicyAssignment],
+      byId: Map[AppPolicyAssignmentId, List[AppScheduleRule]],
+  ): List[AppPolicyAssignment] =
+    asgn.map(a => a.copy(scheduleRules = byId.getOrElse(a.id, Nil)))
+
   private def withScheduleRules(
       appRepo: AppRepo,
       asgn: List[AppPolicyAssignment],
   ): Task[List[AppPolicyAssignment]] =
-    appRepo
-      .scheduleRulesForAssignments(asgn.map(_.id))
-      .map(byId => asgn.map(a => a.copy(scheduleRules = byId.getOrElse(a.id, Nil))))
+    appRepo.scheduleRulesForAssignments(asgn.map(_.id)).map(attachScheduleRules(asgn, _))
 
   private def detail(appRepo: AppRepo, blocklistRepo: BlocklistRepo, a: App): Task[AppDetail] =
     for {
@@ -95,6 +103,7 @@ object AppRoutes {
             // Fetch hosts + assignments per app, then compute the blocklist
             // overlap for ALL apps in a single batched query (#1983) rather
             // than one categoriesForDomains round-trip per app.
+            // Assignments as stored, before the #2751 schedule-rule attach below.
             raw   <- ZIO
               .foreach(apps) { a =>
                 for {
@@ -108,9 +117,7 @@ object AppRoutes {
             rules <- appRepo
               .scheduleRulesForAssignments(raw.flatMap((_, _, asgn) => asgn.map(_.id)))
               .mapError(ApiError.Db(_))
-            base = raw.map { (a, hosts, asgn) =>
-              (a, hosts, asgn.map(x => x.copy(scheduleRules = rules.getOrElse(x.id, Nil))))
-            }
+            base = raw.map((a, hosts, asgn) => (a, hosts, attachScheduleRules(asgn, rules)))
             overlap <- AppBlocklistOverlap
               .forApps(blocklistRepo, base.map((a, hosts, _) => a.id -> hosts).toMap)
               .mapError(ApiError.Db(_))
