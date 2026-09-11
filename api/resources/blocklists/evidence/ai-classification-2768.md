@@ -79,8 +79,9 @@ scope to. **This is a structural limit of hostname enforcement, not a gap in
 the list.** It is also why this pass REMOVED `notebooklm.google.com` and
 `labs.google` after review: both front on the same shared GFE pool. Resolved
 from three vantage points, `notebooklm.google.com` returned three different
-/24s, one of them Drive's exact six-address set — so `bl_ai` risks dropping
-Drive/Docs for a child MAC (#2601). Google's own
+/24s, one of them Drive's exact six-address set (two are recorded in the #2772
+review thread; the third is the author's own unrecorded observation) — so
+`bl_ai` risks dropping Drive/Docs for a child MAC (#2601). Google's own
 AI surfaces are a product decision tracked in **#2605**.
 
 ### Account-side controls, and what each does not cover
@@ -89,9 +90,14 @@ Sourced rather than asserted, per [verify-and-cite](../../../../AGENTS.md#verify
 Re-check before relying on these; vendor controls move.
 
 - **Gemini Apps** — `familylink.google.com` → child → Controls → Gemini →
-  Gemini Apps. Turning it off blocks sign-in to the Gemini app and Gemini on the
-  web, account-wide (so it also covers off-network use). The menu path is
-  confirmed verbatim by the source below.
+  Gemini Apps. The menu path is confirmed verbatim by the source below, as is
+  "You can change your child's access to Gemini Apps at any time."
+  **What the source does NOT say:** an earlier draft added that turning it off
+  "blocks sign-in to the Gemini app and Gemini on the web, account-wide (so it
+  also covers off-network use)." Neither cited page describes the off-state's
+  scope. That clause is withdrawn as unverified. It is the operationally
+  load-bearing half of this bullet — it is the reason to expect account-side
+  control to reach off-network use at all — so do not rely on it until sourced.
   **Correction:** an earlier draft of this doc said Gemini Apps is "on by
   default for eligible supervised accounts." The cited source contradicts that
   for the under-13 band — "A parent must enable access before their child under
@@ -113,7 +119,8 @@ Re-check before relying on these; vendor controls move.
   [Kinzoo parent guide](https://www.kinzoo.com/blog/a-parents-guide-to-google-gemini-for-kids-everything-you-need-to-know).
 
 **Operator follow-up (2026-09-11): Gemini Apps was already disabled**, so it is
-not the explanation — consistent with the default-OFF the source describes. That leaves the Workspace smart-features surface, AI
+not the explanation — consistent with the default-OFF the source describes.
+That leaves the Workspace smart-features surface, AI
 Overviews in Search, Apple Intelligence / Siri (`guzzoni.apple.com`,
 `api.smoot.apple.com` both appear in the sweep), and off-network use. Tracked in
 #2768, not resolved by this PR.
@@ -164,13 +171,24 @@ Largest clusters among the new hosts at authoring time:
 
 Resolving any one host in a cluster puts that address in `bl_ai`, dropping other
 tenants of the same frontend for that MAC. Accepted, with the claim scoped to
-what is actually true: `main` already carries four hosts on `76.76.21.21`
-(`pplx.ai`, `runwayml.com`, `udio.com`, `delphi.ai`) and two on `198.202.211.1`
-(`jasper.ai`, `copy.ai`), so for those two addresses the exposure is unchanged
-in kind. **`216.150.1.1` is new** — `main`'s nearest is `lumalabs.ai` on
-`216.150.1.193`, the same Vercel /16 but a different address — so this pass does
-add one shared address the list did not previously reach. The overall proportion
-is flat (~27/50 before, ~56/97 after). See #2369 for this class.
+the **50-host baseline** — not to `main`, which now includes this pass and so
+trivially carries all of these. That baseline already carried four hosts on
+`76.76.21.21` (`pplx.ai`, `runwayml.com`, `udio.com`, `delphi.ai`) and two on
+`198.202.211.1` (`jasper.ai`, `copy.ai`), so for those two addresses the
+exposure is unchanged in kind. **`216.150.1.1` is newly reached** — the
+baseline's nearest was `lumalabs.ai` on `216.150.1.129`, which whois places in
+the *same* `216.150.1.0/24` (`VERCEL-09`), so it is a neighbouring address in a
+block already touched rather than a new frontend.
+
+On the proportion, with the method stated so a later pass can reproduce it
+rather than "correct" it in circles: counting a host as shared when at least one
+of its A records is also served for a **different host in this same file**, it
+is **13/50** before and **29/97** added. Counting instead by membership of a
+CDN's published anycast ranges gives ~56-66/97 depending on which ranges are
+included, because most entries are single-tenant names on shared frontends that
+no other entry here happens to touch. Both readings agree the proportion did not
+worsen; they disagree on the absolute count, so always cite the definition with
+the figure. See #2369 for this class.
 
 ### Held out as dual-use
 
