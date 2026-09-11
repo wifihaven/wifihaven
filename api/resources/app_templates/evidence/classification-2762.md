@@ -192,8 +192,9 @@ kept host touches": the kept image hosts are DNS-steered across CDNs, Fastly
 included, so pool-disjointness here is unverified.
 
 `c.media-amazon.com` is kept because it is attributed directly, as its own
-name, on Sameer iPhone and Prima iPad (see the per-device table above). Two rationales were tried and are both wrong,
-recorded so they don't get re-derived: it is NOT "adds no incremental IPs"
+name, on Sameer iPhone and Prima iPad (see the per-device table above). Two
+rationales were tried and are both wrong, recorded so they don't get
+re-derived: it is NOT "adds no incremental IPs"
 (that holds only in the steering state where `m.` resolves through `c.`), and it
 is NOT "a CNAME target earns no attribution" — #1344/#1346 fold a re-queried
 CNAME target back onto its branded chain head, and `each_candidate_host` walks
@@ -237,11 +238,31 @@ anyone's activity — counts are devices-out-of-eight from the same 30d pull:
 | `fls-na.amazon.com` | 8 |
 | `unagi-na.amazon.com` | 4 |
 | `transient.amazon.com` | 3 |
+| `metrics.media-amazon.com` | 3 |
+| `api.mshop.bdtelemetry.amazon` | 3 |
 | `*.us-east-1.prod.service.minerva.devices.a2z.com` | 3 |
 
+Two of those rows are hosts the catalog had already classified but had nowhere
+to put. `metrics.media-amazon.com` is the host that forces `amazon.yml` to list
+`media-amazon.com` by subdomain rather than as an apex — named there as
+telemetry and excluded — and `bdtelemetry.amazon` has been skipped from
+`blocklists/ads.yml` three separate times (`:229`, `:539`, `:653`) with the
+reason "Amazon first-party telemetry". Both were sorted into a category that did
+not exist until this app; they land here rather than being re-litigated on the
+next ads pass.
+
 The Minerva hosts carry a 63-hex random label per device (`42fe2b06…`,
-`6e5351d7…`, `b79c6607…`), so they cannot be enumerated — `minerva.devices.a2z.com`
-is a suffix anchor, which is what both `nftset=/<host>/` and `matchesApex` do.
+`6e5351d7…`, `b79c6607…`), so they cannot be enumerated —
+`minerva.devices.a2z.com` is a suffix anchor.
+
+That anchor exposes an asymmetry worth recording, because it bites deep anchors
+specifically. Enforcement suffix-matches without bound (dnsmasq, via the
+verbatim `nftset=/<host>/`), but attribution goes through
+`HostMatch.lookupApex` → `apexTails(host, maxHops = 5)`, which walks only the
+host plus five parents. The observed 8-label Minerva host finds the anchor at
+the 5th of the 6 tails that walk produces: it works, with one label of headroom.
+If Amazon adds another region or stage segment, the router would keep dropping
+the host while API-side attribution and budgeting silently stopped matching it.
 
 `unagi.amazon.com` and `unagi-na.amazon.com` are BOTH listed: `unagi-na` CNAMEs
 from `unagi`, but suffix matching is `host == x || host.endsWith("." + x)`, and
@@ -267,16 +288,27 @@ that are hard to attribute later.
 Residual, verified against `ip-ranges.json`: unlike every other template here,
 these resolve to generic AWS EC2 addresses (44.192.0.0/11, 3.224.0.0/12,
 13.216.0.0/13, 54.152.0.0/16, 32.184.0.0/13, 52.44.0.0/15, 100.48.0.0/12,
-3.130.0.0/16) rather than CDN edges; only `data.amazon.com` is CloudFront
-(99.84.123.87). AWS recycles EC2 addresses between tenants, so an address that
-enters an `eb_` set can later belong to an unrelated service, and the set entry
-does not expire with the DNS record. That is a different risk from the Class-2
-CDN-edge risk — a future stranger on a recycled address rather than a present
-co-tenant — and it argues for re-resolving, not for dropping any host here.
+3.130.0.0/16) rather than CDN edges; `data.amazon.com` is CloudFront
+(99.84.123.87) and `metrics.media-amazon.com` is Fastly (199.232.65.51). AWS
+recycles EC2 addresses between tenants, so an address that enters an `eb_` set
+can later belong to an unrelated service — a future stranger on a recycled
+address rather than a present co-tenant behind a shared edge, which is a
+different risk from the Class-2 CDN-edge one.
+
+That exposure is already bounded, and this is recorded so the paragraph above
+isn't read as an unshipped follow-up. `eb_`/`eb6_` sets are declared `flags
+dynamic,timeout` with `timeout 1h` (`render.lua:1009-1018`), so an element ages
+out of the kernel an hour after it was last added, independent of the DNS TTL.
+`eb_refresh.lua` (#1658) re-resolves every `eb_` host on `eb_refresh_interval`,
+default 1800s (`wifihaven-agent:119`), deliberately below that 1h timeout so
+every live entry sees at least one refresh per ageing window. A recycled address
+can therefore be wrongly dropped for at most the residual of one ageing window
+after the host stops resolving to it. Nothing here argues for dropping a host.
 
 ## Validation (Step 5)
 
 `mill api.test.testOnly 'wifihaven.api.feature.AppTemplatesSpec'` — 38 tests
 passed, 0 failed. Seeder log confirms `slug=amazon (id=44, hosts=4)`,
-`slug=sportys (id=45, hosts=3)` and `slug=amazon-telemetry (id=46, hosts=10)`. `scalafmt --check --non-interactive` clean.
+`slug=sportys (id=45, hosts=3)` and `slug=amazon-telemetry (id=46,
+hosts=12)`. `scalafmt --check --non-interactive` clean.
 No blocklist files touched, so `BundledBlocklistsSpec` was not run.

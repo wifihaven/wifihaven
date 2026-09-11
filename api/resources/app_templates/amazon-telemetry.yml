@@ -16,8 +16,10 @@ icon_type: url
 #
 # These are DELIBERATELY not part of `amazon.yml`, and this is a separate app
 # rather than an extension of it. A time-limited app's host-set is ONE
-# aggregated budget (#1505), so folding telemetry into `amazon` would bill
-# background chatter to the shopping budget. None of these is a surface anyone
+# aggregated budget — stated in `_README.yml`, implemented as one cap group per
+# app spanning all its hosts (`ProfileAppDispositions.capGroupLabelHosts`,
+# #1505) — so folding telemetry into `amazon` would bill background chatter to
+# the shopping budget. None of these is a surface anyone
 # navigates to: they are metrics ingestion, clickstream, crash reporting and
 # device telemetry emitted by the Amazon app and site while (and after) they
 # run. Splitting them out means the operator can see that time, budget it
@@ -43,13 +45,46 @@ icon_type: url
 #   fls-na.amazon.com           clickstream; CNAME into
 #                                `*.forester.a2z.com`.
 #   transient.amazon.com        short-lived event ingestion.
+#   metrics.media-amazon.com    the host that forces `amazon.yml` to list
+#                                `media-amazon.com` by subdomain instead of as
+#                                an apex — it was named there as telemetry and
+#                                excluded, and this is the app that exists to
+#                                hold exactly that. Observed on Sameer iPhone,
+#                                Rachel iPhone and Rachel Mac. CNAMEs to
+#                                `ecp.map.fastly.net` (199.232.65.51), the only
+#                                non-AWS address in this set.
+#   bdtelemetry.amazon          shopping-app telemetry on Amazon's own `.amazon`
+#                                gTLD; covers the observed
+#                                `api.mshop.bdtelemetry.amazon` (three devices).
+#                                `blocklists/ads.yml` has skipped this apex
+#                                three times over (`:229`, `:539`, `:653`) with
+#                                the reason "Amazon first-party telemetry" — it
+#                                was classified into a category that didn't
+#                                exist yet. This app is that category, so it
+#                                lands here rather than being re-litigated on
+#                                the next ads pass.
 #   minerva.devices.a2z.com     device telemetry. The observed hosts carry a
 #                                63-hex random label per device
 #                                (`42fe2b06…`, `6e5351d7…`, `b79c6607…`), so
 #                                they cannot be enumerated — a suffix anchor is
-#                                the only way to cover them, and suffix
-#                                matching is exactly what both `nftset=/<host>/`
-#                                and `matchesApex` do.
+#                                the only way to cover them. NOTE the asymmetry
+#                                here, because it bites deep anchors
+#                                specifically: ENFORCEMENT suffix-matches
+#                                without bound (dnsmasq, via the verbatim
+#                                `nftset=/<host>/`), but ATTRIBUTION goes
+#                                through `HostMatch.lookupApex` ->
+#                                `apexTails(host, maxHops = 5)`, which walks
+#                                only the host plus five parents. The observed
+#                                8-label host
+#                                `42fe2b06….us-east-1.prod.service.minerva.devices.a2z.com`
+#                                finds this entry at the 5th of the 6 tails the
+#                                walk produces — it works, with ONE label of
+#                                headroom. If Amazon ever adds another
+#                                region/stage segment, the router would keep
+#                                dropping the host while API-side attribution
+#                                and budgeting silently stopped matching it.
+#                                That failure mode is invisible unless you know
+#                                the bound exists, hence this note.
 #   mshopbugsnag.irm.amazon.dev crash reporting for the Amazon shopping app
 #                                (covers `session.`, `trace.`, `event.`).
 #   mdcs.mshop.amazon.dev       shopping-app client telemetry (covers
@@ -57,8 +92,16 @@ icon_type: url
 #   insights.store.amazon.dev   store insights ingestion (covers
 #                                `na.ingest.`).
 #   telemetry.insights.video.a2z.com
-#                               Prime Video telemetry (covers
-#                                `global.` and its regional children).
+#                               Prime Video telemetry (covers `global.` and its
+#                                regional children). RESIDUAL, matching the one
+#                                `amazon.yml` records for `media-amazon.com`:
+#                                `amazon.yml` deliberately leaves Prime Video
+#                                out as a distinct service, so a future
+#                                `prime-video` template would want this host,
+#                                and the `minBy(appId)` tiebreak would keep
+#                                crediting it here. Move it then; it is
+#                                telemetry, so it belongs with telemetry until
+#                                that app exists.
 #
 # NONE of the three apexes involved is listed bare, and that matters more here
 # than usual. `a2z.com` and `amazon.dev` are Amazon's INTERNAL shared domains —
@@ -102,18 +145,31 @@ icon_type: url
 #   video telemetry   3.130.78.13     EC2 3.130.0.0/16    us-east-2
 #   data              99.84.123.87    CLOUDFRONT 99.84.0.0/16
 # AWS reassigns EC2 addresses between tenants, so an address that enters an
-# `eb_` set today can belong to an unrelated service later, and the set entry
-# does not expire with the DNS record. That is a different risk from the
-# Class-2 CDN-edge risk `_README.yml` describes: the collateral is a future
-# stranger on a recycled address rather than a present co-tenant behind a
-# shared edge. It argues for re-resolving rather than for dropping any host
-# here — the hosts themselves are correct.
+# `eb_` set can belong to an unrelated service later. That is a different risk
+# from the Class-2 CDN-edge risk `_README.yml` describes: the collateral is a
+# future stranger on a recycled address rather than a present co-tenant behind
+# a shared edge.
+#
+# The exposure is already BOUNDED, and this note exists so nobody reads the
+# paragraph above as an unshipped follow-up. `eb_`/`eb6_` sets are declared
+# `flags dynamic,timeout` with `timeout 1h`
+# (openwrt/.../render.lua:1009-1018), so an element ages out of the kernel on
+# its own an hour after it was last added — independent of the DNS TTL. And
+# `eb_refresh.lua` (#1658) re-resolves every `eb_` host on
+# `eb_refresh_interval`, default 1800s (openwrt/.../wifihaven-agent:119),
+# chosen to sit strictly below that 1h timeout so every live entry sees at
+# least one refresh per ageing window. So a recycled address can only be
+# wrongly dropped for at most the residual of one ageing window after the host
+# stops resolving to it. Nothing here argues for dropping a host — the
+# host-set is correct as listed.
 hosts:
   - unagi.amazon.com
   - unagi-na.amazon.com
   - data.amazon.com
   - fls-na.amazon.com
   - transient.amazon.com
+  - metrics.media-amazon.com
+  - bdtelemetry.amazon
   - minerva.devices.a2z.com
   - mshopbugsnag.irm.amazon.dev
   - mdcs.mshop.amazon.dev
