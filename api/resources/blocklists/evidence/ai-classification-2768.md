@@ -77,8 +77,10 @@ shared vendor apex is never the block target — and here the *product* and the
 *shared surface* are the same hostname, so there is no product subdomain to
 scope to. **This is a structural limit of hostname enforcement, not a gap in
 the list.** It is also why this pass REMOVED `notebooklm.google.com` and
-`labs.google` after review: both front on the same shared GFE pool, so putting
-them in `bl_ai` risks dropping Drive/Docs for a child MAC (#2601). Google's own
+`labs.google` after review: both front on the same shared GFE pool. Resolved
+from three vantage points, `notebooklm.google.com` returned three different
+/24s, one of them Drive's exact six-address set — so `bl_ai` risks dropping
+Drive/Docs for a child MAC (#2601). Google's own
 AI surfaces are a product decision tracked in **#2605**.
 
 ### Account-side controls, and what each does not cover
@@ -87,11 +89,21 @@ Sourced rather than asserted, per [verify-and-cite](../../../../AGENTS.md#verify
 Re-check before relying on these; vendor controls move.
 
 - **Gemini Apps** — `familylink.google.com` → child → Controls → Gemini →
-  Gemini Apps. On by default for eligible supervised accounts; turning it off
-  blocks sign-in to the Gemini app and Gemini on the web, account-wide (so it
-  also covers off-network use).
-  [Google For Families help](https://support.google.com/families/answer/16109150?hl=en),
-  [Gemini Apps help](https://support.google.com/gemini/answer/16109150?hl=en-SG).
+  Gemini Apps. Turning it off blocks sign-in to the Gemini app and Gemini on the
+  web, account-wide (so it also covers off-network use). The menu path is
+  confirmed verbatim by the source below.
+  **Correction:** an earlier draft of this doc said Gemini Apps is "on by
+  default for eligible supervised accounts." The cited source contradicts that
+  for the under-13 band — "A parent must enable access before their child under
+  13 (or the applicable age in your country) can use Gemini Apps with a
+  supervised account" — i.e. default-OFF there. The default for supervised
+  **teens** is not established by this source; treat it as unverified rather
+  than assuming either way. The original claim came from secondary blog
+  coverage, not the vendor page, which is exactly the failure
+  [verify-and-cite](../../../../AGENTS.md#verify-and-cite) exists to prevent.
+  [Google For Families help](https://support.google.com/families/answer/16109150?hl=en)
+  (the `support.google.com/gemini/answer/16109150` URL is the same article in a
+  second help centre, not an independent second source).
 - **Gemini in Docs/Gmail** ("Help me write", "Refine") — NOT covered by the
   Gemini Apps toggle. For consumer accounts this rides the Gmail-settings
   "Google Workspace smart features" switch.
@@ -101,7 +113,7 @@ Re-check before relying on these; vendor controls move.
   [Kinzoo parent guide](https://www.kinzoo.com/blog/a-parents-guide-to-google-gemini-for-kids-everything-you-need-to-know).
 
 **Operator follow-up (2026-09-11): Gemini Apps was already disabled**, so it is
-not the explanation. That leaves the Workspace smart-features surface, AI
+not the explanation — consistent with the default-OFF the source describes. That leaves the Workspace smart-features surface, AI
 Overviews in Search, Apple Intelligence / Siri (`guzzoni.apple.com`,
 `api.smoot.apple.com` both appear in the sweep), and off-network use. Tracked in
 #2768, not resolved by this PR.
@@ -147,14 +159,18 @@ Largest clusters among the new hosts at authoring time:
 | Address | Hosts | Frontend |
 |---|---|---|
 | `76.76.21.21` | 12 | Vercel shared anycast |
-| `216.150.1.1` | 5 | shared |
-| `198.202.211.1` | 5 | shared |
+| `216.150.1.1` | 5 | Vercel (`VERCEL-09`, per whois) |
+| `198.202.211.1` | 5 | Webflow (per whois) |
 
 Resolving any one host in a cluster puts that address in `bl_ai`, dropping other
-tenants of the same frontend for that MAC. Accepted because `main` already
-carries four hosts on `76.76.21.21` (`pplx.ai`, `runwayml.com`, `udio.com`,
-`delphi.ai`) — the exposure is unchanged in kind, and the proportion is flat
-(~26/50 before, ~56/99 after). See #2369 for this class.
+tenants of the same frontend for that MAC. Accepted, with the claim scoped to
+what is actually true: `main` already carries four hosts on `76.76.21.21`
+(`pplx.ai`, `runwayml.com`, `udio.com`, `delphi.ai`) and two on `198.202.211.1`
+(`jasper.ai`, `copy.ai`), so for those two addresses the exposure is unchanged
+in kind. **`216.150.1.1` is new** — `main`'s nearest is `lumalabs.ai` on
+`216.150.1.193`, the same Vercel /16 but a different address — so this pass does
+add one shared address the list did not previously reach. The overall proportion
+is flat (~27/50 before, ~56/97 after). See #2369 for this class.
 
 ### Held out as dual-use
 

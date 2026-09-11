@@ -155,13 +155,17 @@ hosts:
   # it is NOT the same as "no shared-IP collateral" — enforcement matches on the
   # resolved IP, and many of these are single-tenant names fronting on shared
   # anycast. Measured at authoring time, the largest clusters among the new
-  # hosts are 76.76.21.21 (Vercel, 12 hosts), 216.150.1.1 (5) and 198.202.211.1
-  # (5). Resolving any one host in a cluster puts that address in `bl_ai`, so
+  # hosts are 76.76.21.21 (Vercel, 12 hosts), 216.150.1.1 (Vercel, 5) and
+  # 198.202.211.1 (Webflow, 5). Resolving one host in a cluster puts that
+  # address in `bl_ai`, so
   # other tenants of the same frontend are dropped for that MAC. This is
   # accepted, not overlooked: `main` already carries four hosts on 76.76.21.21
   # (pplx.ai, runwayml.com, udio.com, delphi.ai), so the exposure is unchanged
-  # in kind, and the proportion is flat (~26/50 before, ~56/99 after). See #2369
-  # for the shared-IP class. Do not read the CDN-apex line as a clearance.
+  # in kind, and the proportion is flat (~27/50 before, ~56/97 after). Scope the
+  # claim honestly: `main` already reaches 76.76.21.21 and 198.202.211.1
+  # (jasper.ai, copy.ai), but 216.150.1.1 is an address this list did not
+  # previously touch — same class, still a new shared address. See #2369.
+  # Do not read the CDN-apex line as a clearance.
   #
   # Same host-scoping rules as the header: apexes (suffix-matched at the
   # router), product subdomains for shared vendors.
@@ -187,10 +191,12 @@ hosts:
   # `labs.google` and `notebooklm.google.com` were in this block and have been
   # REMOVED (#2768 review). Suffix-safety was never the hazard — enforcement
   # matches on the RESOLVED IP, and both front on Google's shared GFE pool.
-  # Resolved from two different vantage points during review, notebooklm landed
-  # on Drive's exact six-address set from one and on a separate /24 from the
-  # other, i.e. the host<->pool mapping is resolver- and geo-dependent and
-  # cannot be relied on to stay disjoint from Drive/Docs. Putting it in `bl_ai`
+  # Resolved from three different vantage points during review, notebooklm
+  # returned three different /24s — 64.233.179.x (Drive's EXACT six-address set
+  # at that moment), 209.85.145.x, and 74.125.69.x — i.e. the host<->pool
+  # mapping is resolver- and geo-dependent and cannot be relied on to stay
+  # disjoint from Drive/Docs. One disjoint observation is not evidence of
+  # safety; the observed collision is evidence of the hazard. Putting it in `bl_ai`
   # therefore risks dropping Google Drive for a kid MAC — precisely the #2601
   # collateral bug (see `api/test/src/SharedGfeHosts.scala` and
   # `evidence/google-gfe-collateral-2601.md`). This is the same structural limit

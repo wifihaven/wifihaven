@@ -472,8 +472,13 @@ object BundledBlocklistsSpec
         // #2768 review: these two front on Google's shared GFE pool, so putting
         // them in `bl_ai` can drop Drive/Docs for a kid MAC (the #2601 class).
         // Google's own AI surfaces are tracked in #2605, not added by a catalog
-        // pass. `SharedGfeHosts` guards the eight ad apexes mechanically; these
-        // are pinned here because they are AI hosts, not ad hosts.
+        // pass. `SharedGfeHosts` guards 15 ad/shared-frontend apexes mechanically
+        // (#2601's eight plus #2369's seven); these are pinned here instead
+        // because they are AI hosts, not ad hosts. The pin is therefore
+        // CATEGORY-SCOPED on purpose: adding either host to a different inline
+        // blocklist or an app template's host-set reproduces the same IP-plane
+        // collateral with nothing to catch it. Widening `SharedGfeHosts` would
+        // also reach `AppTemplatesSpec`, so that call belongs to #2605.
         assertTrue(!hosts.contains(Hostname.unsafe("notebooklm.google.com"))) &&
         assertTrue(!hosts.contains(Hostname.unsafe("labs.google"))) &&
         // #2768 review: dropped on re-check — no apex A/AAAA, and parked on
