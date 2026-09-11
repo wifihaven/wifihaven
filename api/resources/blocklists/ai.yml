@@ -121,3 +121,206 @@ hosts:
   # evidence/multi-category-classification-2759.md.
   - delphi.ai
   - deepai.org
+  #
+  # ── preemptive hardening (#2768), 2026-09-10 ────────────────────────────
+  #
+  # DEPARTURE FROM THE TRAFFIC-DRIVEN DEFAULT, and why it is justified here.
+  # Every prior addition to this file was traffic-driven: an apex showed up in
+  # a prod sweep, was classified, and was added. That discipline is right for
+  # `ads` (where the `-extended` StevenBlack feed carries the long tail and the
+  # curated list only needs the gaps) — but `ai` has NO upstream sibling feed,
+  # so this file is the category's ONLY coverage. A list that can only ever add
+  # what a kid has already successfully reached is, by construction, always one
+  # step behind: the first visit to every new service succeeds. That is the
+  # operator-reported failure mode this block addresses.
+  #
+  # The #2768 sweep (5 kid devices, 30d, ~80k connection events, 549 apexes)
+  # found ZERO drops against this category and ZERO traffic to any dedicated AI
+  # service — i.e. the curated list was NOT leaking. So these entries are
+  # explicitly preemptive, not observed. They were selected as the consumer AI
+  # surfaces a supervised minor is most likely to reach for, prioritising the
+  # "free, no login, works around a block" tier over B2B platforms.
+  #
+  # Verification, stated precisely (the first cut of this block overclaimed it).
+  # Every host below returned an A or AAAA record at the apex on re-check, and
+  # was identity-checked. Two candidates were DROPPED on that re-check rather
+  # than shipped: `play.ht` (no apex A/AAAA at all — the zone moved to Meta's
+  # nameservers) and `figgs.ai` (parked on 0.0.0.0; the service is defunct). A
+  # dead apex is not harmless here: a lapsed domain can be re-registered onto
+  # shared hosting, at which point the entry silently becomes an IP-enforcement
+  # target for someone else's infrastructure.
+  #
+  # COLLATERAL, stated honestly. No entry below is a CDN/cloud APEX
+  # (cloudfront/fastly/akamai/amazonaws). That is a hostname-level property and
+  # it is NOT the same as "no shared-IP collateral" — enforcement matches on the
+  # resolved IP, and many of these are single-tenant names fronting on shared
+  # anycast. Measured at authoring time, the largest clusters among the new
+  # hosts are 76.76.21.21 (Vercel, 12 hosts), 216.150.1.1 (5) and 198.202.211.1
+  # (5). Resolving any one host in a cluster puts that address in `bl_ai`, so
+  # other tenants of the same frontend are dropped for that MAC. This is
+  # accepted, not overlooked: `main` already carries four hosts on 76.76.21.21
+  # (pplx.ai, runwayml.com, udio.com, delphi.ai), so the exposure is unchanged
+  # in kind, and the proportion is flat (~26/50 before, ~56/99 after). See #2369
+  # for the shared-IP class. Do not read the CDN-apex line as a clearance.
+  #
+  # Same host-scoping rules as the header: apexes (suffix-matched at the
+  # router), product subdomains for shared vendors.
+  #
+  # Multi-model access — the highest-value bypass tier, because each one is a
+  # drop-in substitute for an already-blocked vendor. Mostly free/no-login
+  # (duck.ai, lmarena.ai, t3.chat); openrouter.ai / together.ai / deepinfra.com
+  # are API-key-gated inference platforms rather than that tier, kept because a
+  # key is trivially obtainable and each fronts the same frontier models.
+  - duck.ai
+  - lmarena.ai
+  - openrouter.ai
+  - groq.com
+  - together.ai
+  - deepinfra.com
+  - monica.im
+  - getmerlin.in
+  - yeschat.ai
+  - chathub.gg
+  - t3.chat
+  # Major assistants with no coverage yet.
+  #
+  # `labs.google` and `notebooklm.google.com` were in this block and have been
+  # REMOVED (#2768 review). Suffix-safety was never the hazard — enforcement
+  # matches on the RESOLVED IP, and both front on Google's shared GFE pool.
+  # Resolved from two different vantage points during review, notebooklm landed
+  # on Drive's exact six-address set from one and on a separate /24 from the
+  # other, i.e. the host<->pool mapping is resolver- and geo-dependent and
+  # cannot be relied on to stay disjoint from Drive/Docs. Putting it in `bl_ai`
+  # therefore risks dropping Google Drive for a kid MAC — precisely the #2601
+  # collateral bug (see `api/test/src/SharedGfeHosts.scala` and
+  # `evidence/google-gfe-collateral-2601.md`). This is the same structural limit
+  # §2 of evidence/ai-classification-2768.md describes for Search/Docs/Gmail.
+  # Blocking Google's own AI surfaces is a product decision tracked in #2605,
+  # not something to slip in via a catalog pass.
+  - qwen.ai
+  - kimi.com
+  - z.ai
+  - doubao.com
+  - minimax.io
+  - hailuo.ai
+  - manus.im
+  - genspark.ai
+  - moonshot.ai
+  # Homework / essay AI, and the "AI humanizer" tier built specifically to
+  # defeat AI-detection — the schoolwork-cheating vein, and the most
+  # age-specific gap in the list.
+  - gauthmath.com
+  - questionai.com
+  - studyx.ai
+  # quillbot.com is in while grammarly.com is held out below: QuillBot also
+  # ships non-AI grammar/citation tools, but its paraphraser — the product it
+  # leads with — is squarely the essay-rewriting use this group targets, and no
+  # school mandates it the way they mandate Grammarly.
+  - quillbot.com
+  - smodin.io
+  - caktus.ai
+  - undetectable.ai
+  - stealthgpt.ai
+  - humanizeai.pro
+  - sudowrite.com
+  - novelai.net
+  - rytr.me
+  - textcortex.com
+  - wordtune.com
+  # Companion / roleplay bots. The existing list covers only the four
+  # best-known (character.ai, janitorai, replika, chai); this is the tier that
+  # has grown fastest and is the largest child-safety gap, most entries being
+  # explicitly NSFW-permissive.
+  - crushon.ai
+  - spicychat.ai
+  - polybuzz.ai
+  - talkie-ai.com
+  - linky.ai
+  - chub.ai
+  - yodayo.com
+  - candy.ai
+  - joyland.ai
+  - botify.ai
+  - charstar.ai
+  - sakura.fm
+  - pephop.ai
+  - muah.ai
+  # Image / video generators. `perchance.org` is the standout: confirmed
+  # "free, no sign-up, no limits, unrestricted" text-to-image, which is exactly
+  # the profile that defeats a list built only from observed traffic. It is
+  # mildly DUAL-USE (the site also hosts non-AI random-text generators), an
+  # accepted trade here since its AI generators are its dominant draw.
+  - perchance.org
+  - craiyon.com
+  - pixai.art
+  - tensor.art
+  - seaart.ai
+  - nightcafe.studio
+  - openart.ai
+  - getimg.ai
+  - playgroundai.com
+  - dezgo.com
+  - clipdrop.co
+  - recraft.ai
+  - krea.ai
+  - kling.ai
+  - pika.art
+  - pixverse.ai
+  - vidu.com
+  - hedra.com
+  - heygen.com
+  - synthesia.io
+  - d-id.com
+  - deepswap.ai
+  - remini.ai
+  - photoroom.com
+  - magichour.ai
+  - invideo.io
+  - genmo.ai
+  - haiper.ai
+  # Audio / voice / music generation — same class as the already-curated
+  # elevenlabs.io / suno.com / udio.com. Voice-cloning entries
+  # (voice.ai, uberduck.ai, fakeyou.com, resemble.ai) carry a distinct
+  # impersonation risk beyond generic AI use.
+  - soundraw.io
+  - mubert.com
+  - boomy.com
+  - beatoven.ai
+  - voice.ai
+  - uberduck.ai
+  - fakeyou.com
+  - murf.ai
+  - lovo.ai
+  - resemble.ai
+  - musicfy.lol
+  - kits.ai
+  # AI coding assistants. Lowest-confidence tier in this block — genuinely
+  # useful to a kid learning to program, and this household's kid device shows
+  # heavy Arduino / EasyEDA / JLCPCB traffic. Kept because they are
+  # unambiguously AI generators and this category is per-profile (adult
+  # profiles do not subscribe to `ai`), but this is the first group to drop if
+  # the operator wants a narrower list.
+  - cursor.com
+  - codeium.com
+  - windsurf.com
+  - tabnine.com
+  - blackbox.ai
+  - v0.dev
+  - bolt.new
+  - lovable.dev
+  - qodo.ai
+  #
+  # HELD OUT as dual-use, deliberately NOT added (record so a later pass does
+  # not re-litigate):
+  #   grammarly.com   schools mandate it; writing-assist is a minority of use.
+  #   quizlet.com     flashcards are the dominant, legitimate use.
+  #   replit.com      general IDE/hosting; blocking it breaks non-AI coursework.
+  #   capcut.com      general video editor; AI features are incidental.
+  #   speechify.com   text-to-speech is a common IEP/dyslexia ACCOMMODATION —
+  #                   blocking it could cut off an access tool, not a toy.
+  #   bing.com        a general search engine (Copilot rides it) — same
+  #                   shared-surface reason the header gives for google.com.
+  #   freepik.com     stock-asset library first, AI suite second.
+  #   flux.ai         PCB-design CAD, NOT the Flux image model — standing
+  #                   exclusion, re-confirmed by this household's own
+  #                   easyeda.com / jlcpcb.com / pcb-hero.com traffic.
