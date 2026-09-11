@@ -241,8 +241,8 @@ above is now wrong, fix the step too — don't just log around it.
   tidy two-column taxonomy of which matcher is bounded and which plane it serves:
   five drafts of this entry tried, and every one mis-sorted something, because
   bounded-vs-unbounded (`apexTails` walk vs `matchesApex` suffix test) and
-  API-vs-enforcement are INDEPENDENT axes and most of the API-side matchers sit
-  in `decideDetailed` together regardless of which matcher they use. If you need
+  API-vs-enforcement are INDEPENDENT axes: a matcher's boundedness tells you
+  nothing about which plane it serves. If you need
   to know where a specific matcher runs, grep its call sites and read the
   enclosing function — don't consult a summary, including this one.
 - **2026-09-11 (#2762)** — A PR you opened THIS session can merge while you are
