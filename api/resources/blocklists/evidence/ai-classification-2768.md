@@ -80,7 +80,8 @@ the list.** It is also why this pass REMOVED `notebooklm.google.com` and
 `labs.google` after review: both front on the same shared GFE pool. Resolved
 from three vantage points, `notebooklm.google.com` returned three different
 /24s, one of them Drive's exact six-address set (two are recorded in the #2772
-review thread; the third is the author's own unrecorded observation) — so
+review thread; the third, `209.85.145.x`, is the author's own unrecorded
+observation) — so
 `bl_ai` risks dropping Drive/Docs for a child MAC (#2601). Google's own
 AI surfaces are a product decision tracked in **#2605**.
 
@@ -91,7 +92,10 @@ Re-check before relying on these; vendor controls move.
 
 - **Gemini Apps** — `familylink.google.com` → child → Controls → Gemini →
   Gemini Apps. The menu path is confirmed verbatim by the source below, as is
-  "You can change your child's access to Gemini Apps at any time."
+  "You can change your child's access to Gemini Apps at any time." The same
+  page gives a SECOND verbatim path for older Family Link versions —
+  `Controls → Content restrictions → Gemini → Gemini Apps` — which an operator
+  on an older app will need instead.
   **What the source does NOT say:** an earlier draft added that turning it off
   "blocks sign-in to the Gemini app and Gemini on the web, account-wide (so it
   also covers off-network use)." Neither cited page describes the off-state's
@@ -182,13 +186,20 @@ block already touched rather than a new frontend.
 
 On the proportion, with the method stated so a later pass can reproduce it
 rather than "correct" it in circles: counting a host as shared when at least one
-of its A records is also served for a **different host in this same file**, it
-is **13/50** before and **29/97** added. Counting instead by membership of a
-CDN's published anycast ranges gives ~56-66/97 depending on which ranges are
-included, because most entries are single-tenant names on shared frontends that
-no other entry here happens to touch. Both readings agree the proportion did not
-worsen; they disagree on the absolute count, so always cite the definition with
-the figure. See #2369 for this class.
+of its A records is also served for a **different host in the same list** — each
+half counted against its own version of the file, baseline against the 50 and
+added against the 147 — it is **13/50** before and **29/97** added. Counting
+instead by membership of published CDN anycast ranges (Cloudflare + Fastly + the
+three `/24`s above) gives **30/50** before and **66/97** added; widening the
+range set moves both together.
+
+**The direction, stated honestly:** the shared proportion goes *up* slightly —
+26.0% → 29.9% (+3.9pt) by co-tenancy, 60% → 68% (+8.0pt) by narrow ranges. An
+earlier draft of this section said "flat" and "did not worsen," which asserts a
+decrease; no method produces one. The defensible claim is that it is unchanged
+in **order**, not that it improved. Note also that both figures in a pair must
+travel together — an earlier draft gave the range-method numerator with no
+baseline, leaving its own conclusion uncheckable. See #2369 for this class.
 
 ### Held out as dual-use
 

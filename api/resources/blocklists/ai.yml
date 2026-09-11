@@ -158,27 +158,34 @@ hosts:
   # hosts are 76.76.21.21 (Vercel, 12 hosts), 216.150.1.1 (Vercel, 5) and
   # 198.202.211.1 (Webflow, 5). Resolving one host in a cluster puts that
   # address in `bl_ai`, so other tenants of the same frontend are dropped for
-  # that MAC. This is
-  # accepted, not overlooked: `main` already carries four hosts on 76.76.21.21
-  # (pplx.ai, runwayml.com, udio.com, delphi.ai), so the exposure is unchanged
-  # in kind. Scope the claim to the 50-host baseline (NOT to `main`, which now
-  # includes this pass): that baseline already reached 76.76.21.21 and
+  # that MAC. This is accepted, not overlooked.
+  #
+  # Scope the claim to the 50-host BASELINE, never to
+  # `main` — #2772 merged, so `main` now includes this pass and would make the
+  # claim circular. That baseline already carried four hosts on 76.76.21.21
+  # (pplx.ai, runwayml.com, udio.com, delphi.ai), so for that address the
+  # exposure is unchanged in kind. It also already reached
   # 198.202.211.1 (jasper.ai, copy.ai). 216.150.1.1 is an address the baseline
   # did not touch — its nearest was lumalabs.ai on 216.150.1.129, the same
   # Vercel /24 (whois VERCEL-09, 216.150.1.0/24), so a neighbouring address in
   # the same shared block rather than a new frontend. Same class, still a newly
   # reached address.
   #
-  # Proportion, with the method stated so it is reproducible: counting a host as
+  # Proportion, with the method stated so it is reproducible. Counting a host as
   # "shared" when at least one of its A records is also served for a DIFFERENT
-  # host in this same file, it is 13/50 before and 29/97 added — flat. Counting
-  # instead by membership of a CDN's published anycast ranges gives a much
-  # higher number (~56-66/97, depending on which ranges you include), because
-  # most of these are single-tenant names on shared frontends that no OTHER
-  # entry here happens to touch. Both readings agree the proportion did not
-  # worsen; they disagree on the absolute count, so cite the definition
-  # alongside any figure. See #2369. Do not read the CDN-apex line as a
-  # clearance.
+  # host in the same list — each half counted against its OWN version of the
+  # file, baseline against the 50 and added against the 147 — gives 13/50
+  # before and 29/97 added. Counting instead by membership of published CDN
+  # anycast ranges (Cloudflare + Fastly + the three /24s above) gives 30/50
+  # before and 66/97 added; widening the range set moves both together.
+  #
+  # State the direction honestly: the shared proportion goes UP slightly, not
+  # down — 26.0% -> 29.9% (+3.9pt) by co-tenancy, 60% -> 68% (+8.0pt) by narrow
+  # ranges. An earlier draft said "flat" and "did not worsen"; that asserts a
+  # decrease and no method produces one. The defensible claim is that it is
+  # unchanged in ORDER, not that it improved. Both figures in a pair must travel
+  # together or neither can be checked. See #2369, and do not read the CDN-apex
+  # line as a clearance.
   #
   # Same host-scoping rules as the header: apexes (suffix-matched at the
   # router), product subdomains for shared vendors.
