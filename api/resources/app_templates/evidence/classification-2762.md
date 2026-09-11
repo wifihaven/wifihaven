@@ -215,9 +215,68 @@ apps and Prime Video should be too if it ever needs a template.
 Residual: `media-amazon.com` also serves IMDb and Prime Video imagery, so a future
 Prime Video app would find some of its image bytes already attributed to `amazon`.
 
+## Third app: `amazon-telemetry` (operator follow-up)
+
+The operator saw the Amazon background endpoints rendering as loose per-site
+rows on a device page — `unagi.amazon.com` 28m, `data.amazon.com` 24m, a Minerva
+host 22m, `fls-na.amazon.com` 15m, `transient.amazon.com` 13m — and asked for an
+app to group them.
+
+Their exclusion from `amazon.yml` was deliberate, and they stay out of it: a
+time-limited app's host-set is one aggregated budget (#1505), so folding
+telemetry in would bill background chatter to the shopping budget. A separate
+app gives the operator the choice.
+
+Ubiquity is what confirms these are background infrastructure rather than
+anyone's activity — counts are devices-out-of-eight from the same 30d pull:
+
+| host | devices |
+| --- | ---: |
+| `unagi.amazon.com` | 8 |
+| `data.amazon.com` | 8 |
+| `fls-na.amazon.com` | 8 |
+| `unagi-na.amazon.com` | 4 |
+| `transient.amazon.com` | 3 |
+| `*.us-east-1.prod.service.minerva.devices.a2z.com` | 3 |
+
+The Minerva hosts carry a 63-hex random label per device (`42fe2b06…`,
+`6e5351d7…`, `b79c6607…`), so they cannot be enumerated — `minerva.devices.a2z.com`
+is a suffix anchor, which is what both `nftset=/<host>/` and `matchesApex` do.
+
+`unagi.amazon.com` and `unagi-na.amazon.com` are BOTH listed: `unagi-na` CNAMEs
+from `unagi`, but suffix matching is `host == x || host.endsWith("." + x)`, and
+`"unagi-na.amazon.com"` does not end in `".unagi.amazon.com"` — sibling labels,
+not parent/child. Only `ipv6.unagi-na.amazon.com` is a true child, covered by
+the `unagi-na` entry.
+
+No apex is listed bare. `a2z.com` and `amazon.dev` are Amazon's internal shared
+domains (`a2z.com` alone fronts AWS, Alexa, devices and retail — the same sample
+has `redirect.prod.experiment.routing.cloudfront.aws.a2z.com` under it), so
+every entry is a deep per-service suffix.
+
+Excluded: all of Amazon's ad surfaces (`sponsored-ads`,
+`aax-us-east-retail-direct`, `affiliate-program`, `tahoe-analytics…advertising`,
+`paets.advertising.amazon.dev`, `adsqtungsten.a9.amazon.dev`) — ad-tech belongs
+in `blocklists/ads.yml`, not in an app whose premise is that blocking it is
+safe. Also excluded: `weblab.a2z.com` and
+`redirect.prod.experiment.routing.cloudfront.aws.a2z.com`, which are experiment
+CONFIG and ROUTING rather than telemetry — nothing reads a telemetry response,
+so dropping it is safe, whereas dropping config can change app behaviour in ways
+that are hard to attribute later.
+
+Residual, verified against `ip-ranges.json`: unlike every other template here,
+these resolve to generic AWS EC2 addresses (44.192.0.0/11, 3.224.0.0/12,
+13.216.0.0/13, 54.152.0.0/16, 32.184.0.0/13, 52.44.0.0/15, 100.48.0.0/12,
+3.130.0.0/16) rather than CDN edges; only `data.amazon.com` is CloudFront
+(99.84.123.87). AWS recycles EC2 addresses between tenants, so an address that
+enters an `eb_` set can later belong to an unrelated service, and the set entry
+does not expire with the DNS record. That is a different risk from the Class-2
+CDN-edge risk — a future stranger on a recycled address rather than a present
+co-tenant — and it argues for re-resolving, not for dropping any host here.
+
 ## Validation (Step 5)
 
 `mill api.test.testOnly 'wifihaven.api.feature.AppTemplatesSpec'` — 38 tests
-passed, 0 failed. Seeder log confirms `slug=amazon (id=44, hosts=4)` and
-`slug=sportys (id=45, hosts=3)`. `scalafmt --check --non-interactive` clean.
+passed, 0 failed. Seeder log confirms `slug=amazon (id=44, hosts=4)`,
+`slug=sportys (id=45, hosts=3)` and `slug=amazon-telemetry (id=46, hosts=10)`. `scalafmt --check --non-interactive` clean.
 No blocklist files touched, so `BundledBlocklistsSpec` was not run.

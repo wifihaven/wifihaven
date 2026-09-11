@@ -172,6 +172,37 @@ above is now wrong, fix the step too — don't just log around it.
 
 ## Learnings log (newest first)
 
+- **2026-09-10 (#2762)** — **A template's icon MUST be `icon_type: url` with an
+  http URL** — `AppTemplatesSpec:271` pins it for EVERY starter template
+  (#1041), so an `icon_type: emoji` template fails two tests even though
+  `_README.yml` documents emoji as a valid type. Convention is
+  `https://icons.duckduckgo.com/ip3/<domain>.ico`; check it actually returns
+  200 first, because the service answers 404 with a generic placeholder PNG for
+  domains it doesn't know (`a2z.com` and `amazon.dev` both do). When the honest
+  favicon duplicates a sibling app's, take the duplicate — reaching for a
+  different brand's icon to look distinct (the AWS logo, here) mislabels the
+  app, and the NAME is what disambiguates in the list.
+- **2026-09-10 (#2762)** — Telemetry hosts an app template deliberately EXCLUDES
+  don't vanish; they surface as loose per-site rows on the device page, and at
+  real durations (`unagi.amazon.com` 28m, `data.amazon.com` 24m). That is worth
+  its own app rather than an extension of the brand's: a time-limited app's
+  host-set is ONE aggregated budget (#1505), so folding telemetry into the
+  shopping app would bill background chatter to the shopping budget, while a
+  sibling app lets the operator see and budget it separately. **Ubiquity is the
+  classifier** — `unagi`/`data`/`fls-na` on all eight devices is the tell that
+  it's background infrastructure, not anyone's activity. Keep the split honest
+  inside the new app too: ad surfaces go to `blocklists/ads.yml`, and experiment
+  CONFIG/ROUTING (`weblab.a2z.com`) stays out of a "telemetry" app, because
+  nothing reads a telemetry response but something does read config.
+- **2026-09-10 (#2762)** — A CNAME sibling is NOT covered by its parent-looking
+  name: `unagi.amazon.com` CNAMEs to `unagi-na.amazon.com`, but `matchesApex` is
+  `host == x || host.endsWith("." + x)`, and `"unagi-na.amazon.com"` does not
+  end in `".unagi.amazon.com"`. Both need listing; only `ipv6.unagi-na.` is a
+  true child. Conversely, a suffix anchor is the ONLY way to cover hosts with
+  randomized per-device labels — the Minerva device-telemetry endpoints are
+  63-hex-labelled per device, so `minerva.devices.a2z.com` is not a shortcut but
+  a necessity.
+
 - **2026-09-10 (#2762)** — An operator-named pass ("create apps for amazon
   and sportys") still runs Step 0, just inverted: the traffic pull is no longer
   for *finding* candidates but for *scoping* the ones you were handed, and it

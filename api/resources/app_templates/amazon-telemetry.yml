@@ -1,0 +1,121 @@
+slug: amazon-telemetry
+name: Amazon Telemetry
+icon: "https://icons.duckduckgo.com/ip3/amazon.com.ico"
+icon_type: url
+# Same favicon as `amazon.yml` on purpose. An emoji was tried first and the
+# pinned #1041 invariant rejected it — every starter template must carry
+# icon_type=url with an http icon (AppTemplatesSpec:271). `a2z.com` and
+# `amazon.dev` both 404 at the favicon service, and `aws.amazon.com` returns
+# the AWS logo, which would mislabel this as AWS. It is Amazon's own
+# telemetry, so the Amazon mark is the honest one; the NAME is what
+# distinguishes it in the app list.
+# Operator request (#2762): the Amazon background endpoints were showing up as
+# loose per-site rows on the device page — `unagi.amazon.com` 28m,
+# `data.amazon.com` 24m, a Minerva host 22m, `fls-na.amazon.com` 15m,
+# `transient.amazon.com` 13m — with no app to group them under.
+#
+# These are DELIBERATELY not part of `amazon.yml`, and this is a separate app
+# rather than an extension of it. A time-limited app's host-set is ONE
+# aggregated budget (#1505), so folding telemetry into `amazon` would bill
+# background chatter to the shopping budget. None of these is a surface anyone
+# navigates to: they are metrics ingestion, clickstream, crash reporting and
+# device telemetry emitted by the Amazon app and site while (and after) they
+# run. Splitting them out means the operator can see that time, budget it
+# separately, or block it without touching shopping.
+#
+# Present on EVERY non-IoT device in the household over a 30d window:
+# `unagi`, `data` and `fls-na` on all eight, `unagi-na` on four, `transient` on
+# three. That ubiquity is the tell — this is background infrastructure, not
+# anyone's activity.
+#
+# What each host is:
+#   unagi.amazon.com            Amazon's client-side metrics ingestion. CNAMEs
+#                                to `unagi-na.amazon.com`, but BOTH are listed:
+#                                `HostMatch.matchesApex` is a pure suffix test
+#                                (host == x || host.endsWith("." + x)), and
+#                                "unagi-na.amazon.com" does NOT end in
+#                                ".unagi.amazon.com" — sibling labels, not
+#                                parent/child.
+#   unagi-na.amazon.com         the North America metrics endpoint. This entry
+#                                DOES cover `ipv6.unagi-na.amazon.com`, which
+#                                is a true child.
+#   data.amazon.com             CNAME data-na -> CloudFront (99.84.123.87).
+#   fls-na.amazon.com           clickstream; CNAME into
+#                                `*.forester.a2z.com`.
+#   transient.amazon.com        short-lived event ingestion.
+#   minerva.devices.a2z.com     device telemetry. The observed hosts carry a
+#                                63-hex random label per device
+#                                (`42fe2b06…`, `6e5351d7…`, `b79c6607…`), so
+#                                they cannot be enumerated — a suffix anchor is
+#                                the only way to cover them, and suffix
+#                                matching is exactly what both `nftset=/<host>/`
+#                                and `matchesApex` do.
+#   mshopbugsnag.irm.amazon.dev crash reporting for the Amazon shopping app
+#                                (covers `session.`, `trace.`, `event.`).
+#   mdcs.mshop.amazon.dev       shopping-app client telemetry (covers
+#                                `prod-1.us-east-1.`, `prod-2.us-east-1.`).
+#   insights.store.amazon.dev   store insights ingestion (covers
+#                                `na.ingest.`).
+#   telemetry.insights.video.a2z.com
+#                               Prime Video telemetry (covers
+#                                `global.` and its regional children).
+#
+# NONE of the three apexes involved is listed bare, and that matters more here
+# than usual. `a2z.com` and `amazon.dev` are Amazon's INTERNAL shared domains —
+# `a2z.com` alone fronts AWS, Alexa, devices and retail, and the same 30d
+# sample shows `redirect.prod.experiment.routing.cloudfront.aws.a2z.com` under
+# it. `render.lua` emits `nftset=/<host>/` verbatim per host and dnsmasq matches
+# by pure suffix, so an apex entry would sweep all of that in. Every entry above
+# is therefore a deep suffix, scoped to one service.
+#
+# Deliberately EXCLUDED:
+#   Amazon's ad surfaces — `sponsored-ads.amazon.com`,
+#     `aax-us-east-retail-direct.amazon.com`, `affiliate-program.amazon.com`,
+#     `prod.tahoe-analytics.publishers.advertising.a2z.com`,
+#     `api.stores.us-east-1.prod.paets.advertising.amazon.dev`,
+#     `tungsten-service.prod.na.adsqtungsten.a9.amazon.dev`. Ad-tech belongs in
+#     `blocklists/ads.yml` (which already carries `amazon-adsystem.com`,
+#     `amazon-ads-attestation.com` and `paa-reporting-advertising.amazon`), not
+#     in an app whose whole point is that blocking it is safe.
+#   `weblab.a2z.com` (`com-amazon-amazon.triggers-v1.prod.mobile.`) — A/B
+#     experiment CONFIG, not telemetry. Telemetry is safe to drop because
+#     nothing reads the response; config is not, and blocking it could change
+#     app behaviour in ways that are hard to attribute later. Kept out so the
+#     app's name stays true to its contents.
+#   `redirect.prod.experiment.routing.cloudfront.aws.a2z.com` — experiment
+#     ROUTING, same reasoning, and it sits under an `aws.a2z.com` path.
+#   `api.amazon.com`, `arcus-uswest`, `msh.amazon.com` — Login with Amazon and
+#     Alexa/device infrastructure. Functional, not telemetry; `amazon.yml`
+#     already documents why they must not be dropped.
+#
+# RESIDUAL, and the reason to think before assigning this app a block rather
+# than a time limit: unlike every other template in this directory, these hosts
+# resolve to generic AWS EC2 addresses, not CDN edges — verified against AWS's
+# published https://ip-ranges.amazonaws.com/ip-ranges.json (`service` field):
+#   unagi / unagi-na  44.215.116.52   EC2 44.192.0.0/11   us-east-1
+#   fls-na            3.224.96.225    EC2 3.224.0.0/12    us-east-1
+#   transient         13.217.9.26     EC2 13.216.0.0/13   us-east-1
+#   minerva           54.152.212.152  EC2 54.152.0.0/16   us-east-1
+#   mshopbugsnag      32.188.113.182  EC2 32.184.0.0/13   us-west-2
+#   mdcs.mshop        52.45.112.134   EC2 52.44.0.0/15    us-east-1
+#   insights.store    100.62.217.242  EC2 100.48.0.0/12   us-east-1
+#   video telemetry   3.130.78.13     EC2 3.130.0.0/16    us-east-2
+#   data              99.84.123.87    CLOUDFRONT 99.84.0.0/16
+# AWS reassigns EC2 addresses between tenants, so an address that enters an
+# `eb_` set today can belong to an unrelated service later, and the set entry
+# does not expire with the DNS record. That is a different risk from the
+# Class-2 CDN-edge risk `_README.yml` describes: the collateral is a future
+# stranger on a recycled address rather than a present co-tenant behind a
+# shared edge. It argues for re-resolving rather than for dropping any host
+# here — the hosts themselves are correct.
+hosts:
+  - unagi.amazon.com
+  - unagi-na.amazon.com
+  - data.amazon.com
+  - fls-na.amazon.com
+  - transient.amazon.com
+  - minerva.devices.a2z.com
+  - mshopbugsnag.irm.amazon.dev
+  - mdcs.mshop.amazon.dev
+  - insights.store.amazon.dev
+  - telemetry.insights.video.a2z.com
