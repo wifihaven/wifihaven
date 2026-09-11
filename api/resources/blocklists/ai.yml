@@ -171,18 +171,28 @@ hosts:
   # the same shared block rather than a new frontend. Same class, still a newly
   # reached address.
   #
-  # Proportion, with the method stated so it is reproducible. Counting a host as
+  # Proportion, with the method stated. NOT exactly reproducible, and say so:
+  # this keys on exact A records, and CDN edge answers rotate per query and per
+  # vantage, so the count over CDN-fronted names is a SNAPSHOT. Measured
+  # 2026-09-10 from a single resolver; a re-measure a round later moved it by
+  # two hosts (monica.im, pixai.art landing on a shared CloudFront edge). Expect
+  # a couple either way and do not "correct" it in circles. Counting a host as
   # "shared" when at least one of its A records is also served for a DIFFERENT
   # host in the same list — each half counted against its OWN version of the
   # file, baseline against the 50 and added against the 147 — gives 13/50
   # before and 29/97 added. Counting instead by membership of published CDN
   # anycast ranges (Cloudflare + Fastly + the three /24s above) gives 30/50
-  # before and 66/97 added; widening the range set moves both together.
+  # before and 66/97 added. Widening the range set (more Vercel/Google/
+  # CloudFront blocks) gives 36/50 -> 70/97, i.e. 72% -> 72%, +0.2pt — the
+  # reading LEAST favourable to the "goes up" framing, given here rather than
+  # gestured at, since the rule below is that both figures in a pair travel
+  # together.
   #
   # State the direction honestly: the shared proportion goes UP slightly, not
   # down — 26.0% -> 29.9% (+3.9pt) by co-tenancy, 60% -> 68% (+8.0pt) by narrow
-  # ranges. An earlier draft said "flat" and "did not worsen"; that asserts a
-  # decrease and no method produces one. The defensible claim is that it is
+  # ranges. An earlier draft said "flat" and "did not worsen" — Δ = 0 and Δ <= 0
+  # respectively; both assert a NON-INCREASE, and no method produces one. The
+  # defensible claim is that it is
   # unchanged in ORDER, not that it improved. Both figures in a pair must travel
   # together or neither can be checked. See #2369, and do not read the CDN-apex
   # line as a clearance.

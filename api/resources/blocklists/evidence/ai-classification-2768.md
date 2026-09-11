@@ -184,19 +184,26 @@ baseline's nearest was `lumalabs.ai` on `216.150.1.129`, which whois places in
 the *same* `216.150.1.0/24` (`VERCEL-09`), so it is a neighbouring address in a
 block already touched rather than a new frontend.
 
-On the proportion, with the method stated so a later pass can reproduce it
-rather than "correct" it in circles: counting a host as shared when at least one
+On the proportion. The method is stated below, but it is **not** exactly
+reproducible and the file should not pretend otherwise: it keys on exact A
+records, and CDN edge answers rotate per query and per vantage, so the count
+over CDN-fronted names is a snapshot. Measured 2026-09-10 from a single
+resolver; a re-measure one round later moved it by two hosts (`monica.im` and
+`pixai.art` landing on a shared CloudFront edge). Expect a couple either way.
+The method: counting a host as shared when at least one
 of its A records is also served for a **different host in the same list** — each
 half counted against its own version of the file, baseline against the 50 and
 added against the 147 — it is **13/50** before and **29/97** added. Counting
 instead by membership of published CDN anycast ranges (Cloudflare + Fastly + the
-three `/24`s above) gives **30/50** before and **66/97** added; widening the
-range set moves both together.
+three cluster addresses in the table above) gives **30/50** before and
+**66/97** added. Widening the range set (more Vercel/Google/CloudFront blocks)
+gives **36/50 → 70/97** — 72% → 72%, +0.2pt, the reading least favourable to
+the "goes up" framing, given here rather than gestured at.
 
 **The direction, stated honestly:** the shared proportion goes *up* slightly —
 26.0% → 29.9% (+3.9pt) by co-tenancy, 60% → 68% (+8.0pt) by narrow ranges. An
-earlier draft of this section said "flat" and "did not worsen," which asserts a
-decrease; no method produces one. The defensible claim is that it is unchanged
+earlier draft of this section said "flat" and "did not worsen" — Δ = 0 and
+Δ ≤ 0 respectively, both asserting a *non-increase*; no method produces one. The defensible claim is that it is unchanged
 in **order**, not that it improved. Note also that both figures in a pair must
 travel together — an earlier draft gave the range-method numerator with no
 baseline, leaving its own conclusion uncheckable. See #2369 for this class.
