@@ -34,9 +34,9 @@ icon_type: url
 # The concrete version of "same class", checkable with one `dig`:
 # `www.youtube-nocookie.com` CNAMEs to `youtube-ui.l.google.com` — the
 # IDENTICAL target `www.youtubekids.com` resolves through, an entry this
-# host-set has carried since #2596 and which has been enforcing in prod since.
-# So the marginal enforcement surface this adds is one an already-shipped
-# member of this same set already points at.
+# host-set has carried since #2596 (commit 16774386). So the marginal
+# enforcement surface this adds is one an existing member of this same set
+# already points at.
 #
 # Deliberately NOT justified by any claim about which IP ADDRESSES it shares
 # with youtube.com: those answers are DNS-steered and move between lookups, so

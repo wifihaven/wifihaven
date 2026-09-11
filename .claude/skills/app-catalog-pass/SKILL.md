@@ -209,20 +209,20 @@ above is now wrong, fix the step too — don't just log around it.
   `shops.myshopify.com` and answer on the identical `23.227.38.74`. The usual
   argument against templating them is the `eb_` one `arduino.yml` makes for its
   own store, but the stronger one is the ALLOW side: per #1899 the block side
-  takes distinctive hosts only, while `exemptUnderCapHosts` /
-  `timeLimitedUnderCapHosts` take the full set, so the shared address reaches
-  `ea_` — and `extraAllowed` beats every drop it reaches (#421). Get the scope
-  right, because the two carves differ and #1627/#2747 is the repo's scar from
-  conflating them: a TIME-LIMITED app's carve is gated on the profile not being
-  whole-MAC blocked (`val timeLimitedUnderCap = if (state.blocked) Nil else …`,
-  `PolicyService.scala:1506-1507`), so it beats the `bl_`/`eb_` drops and
-  nothing else; the UNCONDITIONAL carve — past pause, schedule and daily limit
-  — needs `exemptFromDaily` (`exemptUnderCapHosts`, `:1579-1589`) or
-  Allowed-mode (`ProfileAppDispositions.enforcement`). Either way, templating
-  one Shopify store carves EVERY Shopify store out of the blocklist drops for
-  that MAC, and out of everything if the app is Allowed-mode or exempt: #2369
-  in mirror image, on a non-Google pool. The `eb_` half bites too — a brand
-  host is distinctive, so it lands there as well.
+  takes distinctive hosts only, while the under-cap carves take the full set, so
+  the shared address reaches `ea_` — and `extraAllowed` beats every drop it
+  reaches (#421). **Do not try to write the exact scope from memory; three
+  drafts of this entry got it wrong.** What is load-bearing for the skip is just
+  that the carve exists and reaches the `bl_`/`eb_` drops. If a future decision
+  actually turns on the precise scope, read `PolicyService.computeBlockRules`
+  and `ProfileAppDispositions.enforcement` — the gates that kept getting missed
+  are `if (state.blocked) Nil else timeLimitedUnderCap` (`:1506-1507`),
+  `if (isHardPause) Nil` which zeroes ALL the carves together (`:1509-1511`,
+  #1418), `capGroups = perApp.filter(_.mode == AppMode.TimeLimited)`
+  (`ProfileAppDispositions:53-54`) which makes the exempt carve TimeLimited-only
+  even with `exemptFromDaily` set (#2747), and `suppressedByScheduleToggle`
+  (`:145`, #1679). The `eb_` half bites regardless of any of this — a brand host
+  is distinctive, so it lands there too.
   **Before templating any brand, resolve `www.<brand>` and check whether the
   CNAME target is a platform-wide hostname** (`shops.myshopify.com`,
   `*.hosted-by-discourse.com`, `*.zendesk.com`, `wp.wpenginepowered.com`). If
@@ -248,7 +248,6 @@ above is now wrong, fix the step too — don't just log around it.
   number is needed in a template comment or evidence filename, **file the issue
   BEFORE writing them**: guessing the next number cost a repo-wide renumber this
   pass when the real number came back four higher than expected.
-
 - **2026-09-11 (#2762)** — **There is a server-side gap list; stop deriving it
   by hand.** `GET /api/profiles/<id>/usage-by-app?from=YYYY-MM-DD&to=YYYY-MM-DD`
   (`UsageRoutes.scala:150`; `from` defaults to today, `to` defaults to `from`)

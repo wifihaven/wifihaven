@@ -118,20 +118,22 @@ worse and is what decides it here: per #1899 the block side takes distinctive
 hosts only, but the allow side takes the full set, so the shared address
 reaches `ea_` — and `extraAllowed` beats every drop it reaches (#421).
 
-Scope the two carves correctly, since they differ and #1627/#2747 is this
-repo's scar from conflating them:
+The precise scope is subtle and three drafts of this evidence doc got it wrong,
+so what is recorded here is only what is verified and load-bearing: the carve
+exists, it reaches the `bl_`/`eb_` drops, and that alone makes templating either
+shop unsafe. The gates that kept being missed, for anyone who needs the exact
+scope later:
 
-| carve | gate | beats |
+| gate | source | effect |
 | --- | --- | --- |
-| `timeLimitedUnderCapHosts` (`:1611-1615`) | `if (state.blocked) Nil else …` (`:1506-1507`) | the `bl_`/`eb_` drops, and nothing else |
-| `exemptUnderCapHosts` (`:1579-1589`) | requires `exemptFromDaily` | pause, schedule and daily limit too |
-| Allowed-mode (`ProfileAppDispositions.enforcement`) | mode | unconditional |
+| `if (state.blocked) Nil else timeLimitedUnderCap` | `PolicyService.scala:1506-1507` | the time-limited carve does not survive a whole-MAC block |
+| `if (isHardPause) Nil` | `PolicyService.scala:1509-1511` (#1418) | zeroes ALL carves together, Allowed-mode included |
+| `capGroups = perApp.filter(_.mode == AppMode.TimeLimited)` | `ProfileAppDispositions.scala:53-54` (#2747) | the exempt carve is TimeLimited-only, even with `exemptFromDaily` set |
+| `suppressedByScheduleToggle` | `ProfileAppDispositions.scala:145` (#1679) | withholds the Allowed-mode carve during a Schedule block |
 
-So templating either shop carves every Shopify store out of the blocklist drops
-for that MAC, and out of everything if the app is Allowed-mode or
-`exemptFromDaily`. That is #2369 in mirror image, on a non-Google pool. The
-`eb_` half bites as well — a brand host is distinctive, so it lands there too,
-which is the form `arduino.yml` already documents for its own store.
+The `eb_` half bites regardless of any of that — a brand host is distinctive, so
+it lands in `eb_` too, which is the form `arduino.yml` already documents for its
+own store.
 
 Contrast with `rebrickable`, which is why one is templated and these are not:
 Cloudflare's range is multi-tenant in the ordinary Class-2 way, but no address in
