@@ -88,9 +88,9 @@ Two cautions before you treat an orphan as a gap:
 - **`orphanHosts` is not a clean "uncovered" list.** Per #1898
   (`UsageRoutes.scala:801-807`) a host declared under a template's
   `shared_hosts:` still contributes its *unattributed* span to the orphan
-  bucket, possibly alongside its own app row. A plain `hosts:` entry never
-  orphans. Confirm against `_index.yml` and the `*.yml` host-sets before
-  authoring.
+  bucket, possibly alongside its own app row. A plain `hosts:` entry that
+  matches a template never orphans, so most orphans ARE genuine gaps — but
+  confirm against `_index.yml` and the `*.yml` host-sets before authoring.
 - **Google/Apple platform infra dominates the top of the list.** That is the
   usual skip pile (Step 2), not a finding.
 
@@ -202,11 +202,16 @@ above is now wrong, fix the step too — don't just log around it.
   a clean "uncovered hosts" list, though** — per #1898 (`UsageRoutes.scala:801-807`)
   a host declared under a template's `shared_hosts:` still contributes its
   *unattributed* span to the orphan bucket, possibly alongside its own app row.
-  (Only `shared_hosts:` can do this: `allocByHost`, `UsageRoutes.scala:724-740`,
-  routes a host through `allocateSharedHostSeconds` — the only producer of the
-  `None` key — when `sharedAppsOf(h)` is non-empty, and that map is built from
-  `mappings.filter(_.shared)`. A plain `hosts:` entry resolves via
-  `distinctiveAppOf` and never orphans.) So always confirm a
+  Mechanically (`allocByHost`, `UsageRoutes.scala:724-740`) there are TWO ways a
+  host gets the `None` key, and only the first is the obvious one:
+  `distinctiveAppOf(h)` returns `Option[AppId]` (`:603-604`) and yields `None`
+  for a host in no template — the ordinary uncovered-host orphan you are
+  hunting for; and a host with a non-empty `sharedAppsOf(h)` (built from
+  `mappings.filter(_.shared)`) goes through `allocateSharedHostSeconds`, whose
+  `None`-keyed allocation is the #1898 leftover. A plain `hosts:` entry that
+  matches a template resolves to `Some(appId)` and never orphans. So the trap is
+  narrow but real: a `shared_hosts:` host can look like a gap while already
+  being in the catalog. So always confirm a
   promising orphan is genuinely uncovered (grep `_index.yml` and the
   `*.yml` host-sets) before authoring an app for it, or you will ship a
   duplicate of an app that already exists. Use it to
