@@ -4608,10 +4608,13 @@ class AppRepoLive(xa: Transactor[Task]) extends AppRepo {
   // #2751: ONE query for the whole assignment set, and one bind parameter for the whole set.
   // `= ANY($arr)` rather than an `IN (?, ?, …)` list: `GET /api/apps` passes every assignment id
   // across every app, and a per-id bind would hit PostgreSQL's 65535-parameter statement cap as a
-  // hard protocol error long before it became a slow query. Postgres rewrites an `IN` list to
-  // `= ANY` internally anyway, so the plan is unchanged — an index scan on
-  // `idx_app_policy_schedule_rules_assignment` (V51). `ORDER BY assignment_id, id` keeps each group
-  // in insertion order, so the route's per-assignment lists are stable across calls.
+  // hard protocol error long before it became a slow query. Postgres parses an `IN` list into
+  // `= ANY (ARRAY[...])` anyway, so the plan SHAPE is unchanged — an index scan on
+  // `idx_app_policy_schedule_rules_assignment` (V51) whenever the id set is a small fraction of the
+  // table, correctly degrading to a seq scan when it selects most of it. (Estimates can differ: a
+  // bound array loses per-value selectivity once the statement switches to a generic plan, where a
+  // literal list would not.) `ORDER BY assignment_id, id` keeps each group in insertion order, so
+  // the route's per-assignment lists are stable across calls.
   def scheduleRulesForAssignments(ids: List[AppPolicyAssignmentId]) =
     DbMetrics.timed("app.scheduleRulesForAssignments") {
       val arr = ids.distinct.map(_.value).toArray
