@@ -1,0 +1,38 @@
+slug: rebrickable
+name: Rebrickable
+icon: "https://icons.duckduckgo.com/ip3/rebrickable.com.ico"
+icon_type: url
+# Traffic-driven catalog pass. Rebrickable — the LEGO parts/set/MOC database,
+# where you record the sets you own and it tells you what alternate builds
+# (MOCs) those parts can make. Same cluster as the already-templated `lego`
+# (scoped to the LEGO Builder experience) and `moc-pilot` (a MOC build
+# catalog), and it sits squarely on the build side rather than the shop side.
+#
+# 119.8 MB / 88 hits over a 30d window on Kid Laptop, and it surfaced the way
+# this pass was meant to find things: as an `orphanHosts` row on
+# `GET /api/profiles/1/usage-by-app` — 102 proportional minutes against the
+# bare apex plus 60 against `cdn.`, over 14 days, attributed to no app.
+#
+# Apex entry, not subdomains. The zone is three hosts and single-purpose —
+# `rebrickable.com` and `www.rebrickable.com` on Cloudflare
+# (104.26.12.40/104.26.13.40/172.67.69.201), `cdn.rebrickable.com` CNAMEd to
+# `rebrickable.b-cdn.net` (BunnyCDN, 84.17.63.178). `api`/`static`/`img`/`shop`
+# do not resolve. Every child is Rebrickable's own content by construction, so
+# the apex carries no sub-experience split of the kind `lego.yml` needs.
+#
+# Cloudflare's 104.26/172.67 range is multi-tenant — the accepted Class-2
+# latent risk from _README.yml, the same trade `discordapp.net` makes there.
+# Note the CONTRAST with the two shops this pass skipped
+# (`mouldkingcorp.com`, `thetraindepartment.com`): those both CNAME to the
+# literal hostname `shops.myshopify.com` and answer on the identical address
+# 23.227.38.74, i.e. one address demonstrably serving two unrelated stores in
+# this household's own traffic. Rebrickable's addresses are not shared that
+# way, and the difference is the reason one is templated and the others are
+# not — see evidence/classification-2774.md.
+#
+# Note for a future author: `https://rebrickable.com/` returns a Cloudflare
+# bot challenge ("Just a moment…", HTTP 403) to `curl`, so a fetch-based check
+# will look like the site is down or gone. It isn't — the traffic above is
+# real and the DNS resolves normally.
+hosts:
+  - rebrickable.com

@@ -14,9 +14,34 @@ icon_type: url
 # youtubekids.com added from prod evidence (#2596: 2026-08-03 app-catalog
 # pass): www.youtubekids.com observed on 3 separate kid devices — the YouTube
 # Kids web app, same brand family as youtube.com.
+#
+# youtube-nocookie.com added from the #2774 orphan-driven pass. It is YouTube's
+# privacy-enhanced EMBED domain: a video embedded on a third-party page with
+# "enable privacy-enhanced mode" is served from
+# `www.youtube-nocookie.com/embed/<id>` instead of youtube.com. Watching one is
+# watching YouTube, so the time belongs in this app's budget — and it was not
+# landing there. Prod, 30d: 31.9 MB / 334 hits on Kid Laptop, and 799
+# proportional minutes over 14 days as an `orphanHosts` row attributed to no
+# app at all.
+#
+# Read the exclusion above carefully before assuming this contradicts it — it
+# does not. `youtubei.googleapis.com` is barred because it rides the shared
+# *.googleapis.com VENDOR-API pool that also fronts Drive/OAuth/Calendar
+# (README Class 1; #1636). `youtube-nocookie.com` is a YouTube-owned CONTENT
+# domain, the same class as `youtube.com` itself, which this template has
+# always carried; it is not on the #2601 `SharedGfeHosts` ban list, and it
+# resolves via `youtube-ui.l.google.com` to Google frontend addresses — the
+# same kind of frontend `youtube.com` already answers on. The trade here is
+# the one this template already makes for its primary host, not a new one.
+#
+# Deliberately NOT justified by any claim about which IPs it does or does not
+# share with youtube.com: those answers are DNS-steered and move between
+# lookups, so a pool-overlap argument would be unverifiable. The case rests on
+# what the host IS — YouTube's own embed surface.
 hosts:
   - youtube.com
   - youtu.be
   - ytimg.com
   - googlevideo.com
   - youtubekids.com
+  - youtube-nocookie.com

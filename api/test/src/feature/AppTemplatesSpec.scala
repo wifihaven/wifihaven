@@ -176,6 +176,8 @@ object AppTemplatesSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
           "sportys",
           // #2762: Amazon background telemetry, split out of `amazon`
           "amazon-telemetry",
+          // #2774: orphan-driven catalog pass
+          "rebrickable",
         )
         val slugs    = templates.map(_.slug.value).toSet
         assertTrue(slugs == expected) &&
