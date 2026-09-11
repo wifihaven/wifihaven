@@ -172,6 +172,39 @@ above is now wrong, fix the step too — don't just log around it.
 
 ## Learnings log (newest first)
 
+- **2026-09-11 (#2762)** — **There is a server-side gap list; stop deriving it
+  by hand.** `GET /api/profiles/<id>/usage-by-app?from=YYYY-MM-DD&to=YYYY-MM-DD`
+  (`UsageRoutes.scala:150`; `from` defaults to today, `to` defaults to `from`)
+  returns `apps[]` — what IS attributed, with per-host `proportionalMins` — AND
+  `orphanHosts[]`: every host carrying real time that **no app covers**, each
+  with `proportionalSeconds`/`presenceSeconds`. That is precisely the Step-1
+  gap-check, computed by the server, and it is strictly better than diffing
+  `recent-apexes` against `_index.yml` by hand because it is already
+  time-weighted and already excludes everything the catalog covers. Use it to
+  FIND candidates, then `recent-apexes` to scope the host-set (it's the one
+  that returns `subdomains[]`). Verified live this pass: with `amazon` and
+  `sportys` merged and seeding on prod, `unagi.amazon.com` still showed up as an
+  orphan at 55 proportional minutes — the exact gap the `amazon-telemetry` app
+  closes. Expect Google/Apple platform infra to dominate the top of the list;
+  that's the usual skip pile, not a finding.
+- **2026-09-11 (#2762)** — A PR you opened THIS session can merge while you are
+  still working, which silently turns its branch into a dead branch: a follow-up
+  commit pushed there is unreachable from `main` and ships nothing. This
+  happened here — #2763 merged ~95 minutes before the `amazon-telemetry` commit
+  was pushed to its branch, and only the review caught it. **Re-check
+  `gh pr view <n> --json state` immediately before pushing any follow-up, even
+  one to a PR you opened minutes ago** — the standing "never push to a merged
+  PR's branch" rule is usually read as being about OLD PRs, and that reading is
+  what makes this one easy to walk into. Recovery is cheap and lossless:
+  branch fresh off `origin/main`, `git cherry-pick <sha>`, open a new PR
+  referencing the old one.
+- **2026-09-11 (#2762)** — On prod, `GET /api/apps` returns rows nested under
+  `.app` (`{app: {id, slug, name, icon, iconType, templateId}, hosts: [...],
+  assignments, blocklisted}`), NOT a flat app object — a naive
+  `jq '.[] | select(.slug==...)'` silently returns nothing and reads as "the
+  template didn't seed." Confirm a seed with
+  `jq -r '.[] | "\(.app.id) \(.app.slug)"'` before concluding a deploy failed.
+
 - **2026-09-10 (#2762)** — **A template's icon MUST be `icon_type: url` with an
   http URL** — `AppTemplatesSpec:271` pins it for EVERY starter template
   (#1041), so an `icon_type: emoji` template fails two tests even though
