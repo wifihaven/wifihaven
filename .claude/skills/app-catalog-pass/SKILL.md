@@ -76,9 +76,28 @@ rm -f /tmp/wh_token.txt   # don't leave creds on disk
 
 ## Step 1 — Gap-check against existing apps
 
-List `_index.yml` slugs and the `*.yml` host-sets. For each high-byte apex in
-"Other", decide: already covered? adjacent to an existing app (extend that app's
-host-set instead of duplicating)? or a genuine gap?
+**Start from the server's own gap list, not a hand diff.**
+`GET /api/profiles/<id>/usage-by-app?from=YYYY-MM-DD&to=YYYY-MM-DD`
+(`UsageRoutes.scala:150`; `from` defaults to today, `to` defaults to `from`)
+returns `apps[]` — what IS attributed — and `orphanHosts[]`, every host carrying
+real time that no app covers, each with `proportionalSeconds`/`presenceSeconds`.
+That is already time-weighted, which the raw byte table is not.
+
+Two cautions before you treat an orphan as a gap:
+
+- **`orphanHosts` is not a clean "uncovered" list.** Per #1898
+  (`UsageRoutes.scala:801-807`) a host declared under a template's
+  `shared_hosts:` still contributes its *unattributed* span to the orphan
+  bucket, possibly alongside its own app row. A plain `hosts:` entry that
+  matches a template never orphans, so most orphans ARE genuine gaps — but
+  confirm against `_index.yml` and the `*.yml` host-sets before authoring.
+- **Google/Apple platform infra dominates the top of the list.** That is the
+  usual skip pile (Step 2), not a finding.
+
+Then, for each surviving candidate, decide: already covered? adjacent to an
+existing app (extend that app's host-set instead of duplicating)? or a genuine
+gap? Use `recent-apexes` to scope the host-set — it is the endpoint that
+returns `subdomains[]`.
 
 ## Step 2 — Classify each cluster: app, blocklist, or skip
 
@@ -172,6 +191,108 @@ above is now wrong, fix the step too — don't just log around it.
 
 ## Learnings log (newest first)
 
+- **2026-09-11 (#2762)** — **There is a server-side gap list; stop deriving it
+  by hand.** `GET /api/profiles/<id>/usage-by-app?from=YYYY-MM-DD&to=YYYY-MM-DD`
+  (`UsageRoutes.scala:150`; `from` defaults to today, `to` defaults to `from`)
+  returns `apps[]` — what IS attributed, with per-host `proportionalMins` — AND
+  `orphanHosts[]`: every host carrying real time that **no app covers**, each
+  with `proportionalSeconds`/`presenceSeconds`. That is precisely the Step-1
+  gap-check, computed by the server, and it beats diffing `recent-apexes`
+  against `_index.yml` by hand because it is already time-weighted. **It is NOT
+  a clean "uncovered hosts" list, though** — per #1898 (`UsageRoutes.scala:801-807`)
+  a host declared under a template's `shared_hosts:` still contributes its
+  *unattributed* span to the orphan bucket, possibly alongside its own app row.
+  Mechanically (`allocByHost`, `UsageRoutes.scala:724-740`) there are TWO ways a
+  host gets the `None` key, and only the first is the obvious one:
+  `distinctiveAppOf(h)` returns `Option[AppId]` (`:603-604`) and yields `None`
+  for a host in no template — the ordinary uncovered-host orphan you are
+  hunting for; and a host with a non-empty `sharedAppsOf(h)` (built from
+  `mappings.filter(_.shared)`) goes through `allocateSharedHostSeconds`, whose
+  `None`-keyed allocation is the #1898 leftover. A plain `hosts:` entry that
+  matches a template resolves to `Some(appId)` and never orphans. So the trap is
+  narrow but real: a `shared_hosts:` host can look like a gap while already
+  being in the catalog. So always confirm a
+  promising orphan is genuinely uncovered (grep `_index.yml` and the
+  `*.yml` host-sets) before authoring an app for it, or you will ship a
+  duplicate of an app that already exists. Use it to
+  FIND candidates, then `recent-apexes` to scope the host-set (it's the one
+  that returns `subdomains[]`). Verified live this pass: with `amazon` and
+  `sportys` merged and seeding on prod, `unagi.amazon.com` still showed up as an
+  orphan at 55 proportional minutes — the exact gap the `amazon-telemetry` app
+  closes. Expect Google/Apple platform infra to dominate the top of the list;
+  that's the usual skip pile, not a finding.
+- **2026-09-11 (#2762)** — **`HostMatch.hasApexMatch`'s 5-hop bound costs you a
+  block-page REASON, never a drop — and mistaking it for the latter is the
+  AGENTS.md anti-pattern in a new costume.** A draft of this entry claimed a
+  blocklist-category apex deeper than five labels "stops matching on the
+  enforcement side too." Inverted. `hasApexMatch` has exactly ONE production
+  caller — `PolicyService.scala:1249`, inside `categoryBlock` under
+  `decideDetailed` — and `decideDetailed` is reached only from
+  `BlockedRoutes.scala:153` (the block page's reason) and
+  `POST /api/router/decision` (`RouterRoutes.scala:181`), which **no agent code
+  calls**. Category ENFORCEMENT is the `bl_`/`bl6_` nftables sets, populated one
+  verbatim `nftset=/<host>/4#inet#wifihaven#bl_<id>,…` line per blocklist member
+  (`blocklists.render_shards`; format at `render.lua:527-531`) — dnsmasq suffix
+  matching, as unbounded as the per-host `eb_` path. `grep -rn 'apexTails\|maxHops'
+  openwrt/files` returns NOTHING: the agent has no bounded tail walk anywhere.
+  **Before writing that anything is bounded "on the enforcement side", check
+  whether the code you are reading is even on the enforcement plane** — an API
+  decision endpoint the router never calls is not. Resist the urge to write the
+  tidy two-column taxonomy of which matcher is bounded and which plane it serves:
+  five drafts of this entry tried, and every one mis-sorted something, because
+  bounded-vs-unbounded (`apexTails` walk vs `matchesApex` suffix test) and
+  API-vs-enforcement are INDEPENDENT axes: a matcher's boundedness tells you
+  nothing about which plane it serves. If you need
+  to know where a specific matcher runs, grep its call sites and read the
+  enclosing function — don't consult a summary, including this one.
+- **2026-09-11 (#2762)** — A PR you opened THIS session can merge while you are
+  still working, which silently turns its branch into a dead branch: a follow-up
+  commit pushed there is unreachable from `main` and ships nothing. This
+  happened here — #2763 merged at 22:53:35Z and the `amazon-telemetry` commit
+  was committed at 00:36:32Z, ~103 minutes later, onto the dead branch; only
+  the review caught it. **Re-check
+  `gh pr view <n> --json state` immediately before pushing any follow-up, even
+  one to a PR you opened minutes ago** — the standing "never push to a merged
+  PR's branch" rule is usually read as being about OLD PRs, and that reading is
+  what makes this one easy to walk into. Recovery is cheap and lossless:
+  branch fresh off `origin/main`, `git cherry-pick <sha>`, open a new PR
+  referencing the old one.
+- **2026-09-11 (#2762)** — On prod, `GET /api/apps` returns rows nested under
+  `.app` (`{app: {id, slug, name, icon, iconType, templateId}, hosts: [...],
+  assignments, blocklisted}`), NOT a flat app object — a naive
+  `jq '.[] | select(.slug==...)'` silently returns nothing and reads as "the
+  template didn't seed." Confirm a seed with
+  `jq -r '.[] | "\(.app.id) \(.app.slug)"'` before concluding a deploy failed.
+- **2026-09-10 (#2762)** — **A template's icon MUST be `icon_type: url` with an
+  http URL** — `AppTemplatesSpec:271` pins it for EVERY starter template
+  (#1041), so an `icon_type: emoji` template fails two tests even though
+  `_README.yml` documents emoji as a valid type. Convention is
+  `https://icons.duckduckgo.com/ip3/<domain>.ico`; check it actually returns
+  200 first, because the service answers 404 with a generic placeholder PNG for
+  domains it doesn't know (`a2z.com` and `amazon.dev` both do). When the honest
+  favicon duplicates a sibling app's, take the duplicate — reaching for a
+  different brand's icon to look distinct (the AWS logo, here) mislabels the
+  app, and the NAME is what disambiguates in the list.
+- **2026-09-10 (#2762)** — Telemetry hosts an app template deliberately EXCLUDES
+  don't vanish; they surface as loose per-site rows on the device page, and at
+  real durations (`unagi.amazon.com` 28m, `data.amazon.com` 24m). That is worth
+  its own app rather than an extension of the brand's: a time-limited app's
+  host-set is ONE aggregated budget (#1505), so folding telemetry into the
+  shopping app would bill background chatter to the shopping budget, while a
+  sibling app lets the operator see and budget it separately. **Ubiquity is the
+  classifier** — `unagi`/`data`/`fls-na` on all eight devices is the tell that
+  it's background infrastructure, not anyone's activity. Keep the split honest
+  inside the new app too: ad surfaces go to `blocklists/ads.yml`, and experiment
+  CONFIG/ROUTING (`weblab.a2z.com`) stays out of a "telemetry" app, because
+  nothing reads a telemetry response but something does read config.
+- **2026-09-10 (#2762)** — A CNAME sibling is NOT covered by its parent-looking
+  name: `unagi.amazon.com` CNAMEs to `unagi-na.amazon.com`, but `matchesApex` is
+  `host == x || host.endsWith("." + x)`, and `"unagi-na.amazon.com"` does not
+  end in `".unagi.amazon.com"`. Both need listing; only `ipv6.unagi-na.` is a
+  true child. Conversely, a suffix anchor is the ONLY way to cover hosts with
+  randomized per-device labels — the Minerva device-telemetry endpoints are
+  63-hex-labelled per device, so `minerva.devices.a2z.com` is not a shortcut but
+  a necessity.
 - **2026-09-10 (#2762)** — An operator-named pass ("create apps for amazon
   and sportys") still runs Step 0, just inverted: the traffic pull is no longer
   for *finding* candidates but for *scoping* the ones you were handed, and it

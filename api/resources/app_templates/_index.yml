@@ -66,3 +66,6 @@ slugs:
   # operator request: Amazon shopping + Sporty's pilot shop / online training
   - amazon
   - sportys
+  # #2762: Amazon's background telemetry, split out of `amazon` so it gets its
+  # own budget rather than billing background chatter to the shopping app
+  - amazon-telemetry
