@@ -211,6 +211,18 @@ beforeEach(() => {
 
 // #972 — cards are collapse-by-default; tests that need the expanded body
 // (Edit / Delete / Pause buttons, devices, linked users) must expand first.
+// #2764 — the minutes input, the two exception checkboxes and the
+// schedule-rule editor now live behind per-row expanders. Behaviour
+// assertions below are unchanged; reaching the control costs one click.
+async function openLimitDrawer(appId: number, user: ReturnType<typeof userEvent.setup>) {
+  await user.click(await screen.findByTestId(`app-row-${appId}-limit-toggle`))
+  return screen.findByTestId(`app-row-${appId}-limit-drawer`)
+}
+async function openScheduleDrawer(appId: number, user: ReturnType<typeof userEvent.setup>) {
+  await user.click(await screen.findByTestId(`app-row-${appId}-schedule-toggle`))
+  return screen.findByTestId(`app-row-${appId}-schedules`)
+}
+
 async function expand(pid: number, user = userEvent.setup()) {
   await user.click(screen.getByTestId(`profile-row-toggle-${pid}`))
 }
@@ -1044,9 +1056,11 @@ describe('ProfilesPage — apps section (#767)', () => {
     await user.click(screen.getByTestId('profile-apps-toggle-1'))
     await screen.findByTestId('app-row-50')
     expect(screen.getByTestId('app-row-51')).toBeInTheDocument()
-    // TikTok is currently blocked for profile 1; the block button shows checked state.
-    const tiktokBlock = screen.getByTestId('app-row-51-block')
-    expect(tiktokBlock.textContent).toMatch(/✓/)
+    // #2764 — list membership IS the mode. TikTok is blocked for profile 1, so
+    // its row sits in the blocked list and its move button offers "Allow".
+    const blocked = screen.getByTestId('profile-1-apps-section-blocked-list')
+    expect(within(blocked).getByTestId('app-row-51')).toBeInTheDocument()
+    expect(screen.getByTestId('app-row-51-move').textContent).toMatch(/Allow/)
   })
 
   // #1007: only assigned apps appear in the per-profile picker by default.
@@ -1061,7 +1075,7 @@ describe('ProfilesPage — apps section (#767)', () => {
     // YouTube has no assignment → row hidden.
     expect(screen.queryByTestId('app-row-50')).not.toBeInTheDocument()
     // Picker reveals it.
-    await user.click(screen.getByTestId('profile-1-apps-section-add'))
+    await user.click(screen.getByTestId('profile-1-apps-section-add-allowed'))
     const picker = await screen.findByTestId('profile-1-apps-section-picker')
     expect(within(picker).getByTestId('profile-1-apps-section-picker-add-50')).toBeInTheDocument()
     expect(within(picker).queryByTestId('profile-1-apps-section-picker-add-51')).not.toBeInTheDocument()
@@ -1096,12 +1110,14 @@ describe('ProfilesPage — apps section (#767)', () => {
     await expand(1, user)
     await user.click(screen.getByTestId('profile-apps-toggle-1'))
     await screen.findByTestId('app-row-51')
-    await user.click(screen.getByTestId('profile-1-apps-section-add'))
+    await user.click(screen.getByTestId('profile-1-apps-section-add-allowed'))
     await user.type(screen.getByTestId('profile-1-apps-section-picker-filter'), 'slack')
     expect(screen.getByTestId('profile-1-apps-section-picker-add-52')).toBeInTheDocument()
     expect(screen.queryByTestId('profile-1-apps-section-picker-add-50')).not.toBeInTheDocument()
   })
 
+  // #2764 — "+ Allow app" also pins allowedDuringScheduleBlock=false so a
+  // freshly allowed app obeys the profile's downtime windows.
   it('adding from picker calls setPolicy with mode=allowed', async () => {
     (api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([youtubeUnassigned, tiktok])
     const user = userEvent.setup()
@@ -1110,10 +1126,12 @@ describe('ProfilesPage — apps section (#767)', () => {
     await expand(1, user)
     await user.click(screen.getByTestId('profile-apps-toggle-1'))
     await screen.findByTestId('app-row-51')
-    await user.click(screen.getByTestId('profile-1-apps-section-add'))
+    await user.click(screen.getByTestId('profile-1-apps-section-add-allowed'))
     await user.click(await screen.findByTestId('profile-1-apps-section-picker-add-50'))
     await waitFor(() =>
-      expect(api.apps.setPolicy).toHaveBeenCalledWith(50, 1, { mode: 'allowed', dailyMinutes: null }),
+      expect(api.apps.setPolicy).toHaveBeenCalledWith(50, 1, {
+        mode: 'allowed', dailyMinutes: null, allowedDuringScheduleBlock: false,
+      }),
     )
   })
 
@@ -1132,7 +1150,8 @@ describe('ProfilesPage — apps section (#767)', () => {
     await screen.findByTestId('profile-card-1')
     await expand(1, user)
     await user.click(screen.getByTestId('profile-apps-toggle-1'))
-    const cb = await screen.findByTestId('app-row-60-counts-toward-daily') as HTMLInputElement
+    await openLimitDrawer(60, user)
+    const cb = screen.getByTestId('app-row-60-counts-toward-daily') as HTMLInputElement
     expect(cb.checked).toBe(false)
     await user.click(cb)
     await waitFor(() =>
@@ -1161,7 +1180,8 @@ describe('ProfilesPage — apps section (#767)', () => {
     await screen.findByTestId('profile-card-1')
     await expand(1, user)
     await user.click(screen.getByTestId('profile-apps-toggle-1'))
-    const cb = await screen.findByTestId('app-row-50-block-during-schedule') as HTMLInputElement
+    await openLimitDrawer(50, user)
+    const cb = screen.getByTestId('app-row-50-block-during-schedule') as HTMLInputElement
     // default allowedDuringScheduleBlock=true → checkbox is NOT checked (not blocking during schedule)
     expect(cb.checked).toBe(false)
   })
@@ -1177,7 +1197,8 @@ describe('ProfilesPage — apps section (#767)', () => {
     await screen.findByTestId('profile-card-1')
     await expand(1, user)
     await user.click(screen.getByTestId('profile-apps-toggle-1'))
-    const cb = await screen.findByTestId('app-row-50-block-during-schedule') as HTMLInputElement
+    await openLimitDrawer(50, user)
+    const cb = screen.getByTestId('app-row-50-block-during-schedule') as HTMLInputElement
     expect(cb.checked).toBe(true)
   })
 
@@ -1188,8 +1209,8 @@ describe('ProfilesPage — apps section (#767)', () => {
     await screen.findByTestId('profile-card-1')
     await expand(1, user)
     await user.click(screen.getByTestId('profile-apps-toggle-1'))
-    const cb = await screen.findByTestId('app-row-50-block-during-schedule')
-    await user.click(cb)
+    await openLimitDrawer(50, user)
+    await user.click(screen.getByTestId('app-row-50-block-during-schedule'))
     // current.exemptFromDaily=true is preserved; allowedDuringScheduleBlock flips to false.
     await waitFor(() =>
       expect(api.apps.setPolicy).toHaveBeenCalledWith(50, 1, {
@@ -1212,31 +1233,68 @@ describe('ProfilesPage — apps section (#767)', () => {
     expect(screen.queryByTestId('app-row-51-block-during-schedule')).not.toBeInTheDocument()
   })
 
-  it('clicking block calls setPolicy with mode=blocked', async () => {
+  // #2764 — the Block/Allow pair on every row collapsed into one move button,
+  // since list membership IS the mode. The writes it makes are unchanged.
+  it('moving an allowed app calls setPolicy with mode=blocked', async () => {
     (api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([youtube])
     const user = userEvent.setup()
     renderPage()
     await screen.findByTestId('profile-card-1')
     await expand(1, user)
     await user.click(screen.getByTestId('profile-apps-toggle-1'))
-    await user.click(await screen.findByTestId('app-row-50-block'))
+    await user.click(await screen.findByTestId('app-row-50-move'))
     await waitFor(() =>
       expect(api.apps.setPolicy).toHaveBeenCalledWith(50, 1, { mode: 'blocked', dailyMinutes: null }),
     )
   })
 
-  it('clicking allow calls setPolicy with mode=allowed', async () => {
-    (api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([youtube])
+  it('moving a blocked app calls setPolicy with mode=allowed, carrying the assignment\'s stored downtime flag', async () => {
+    const tiktokIgnoringDowntime = {
+      ...tiktok,
+      assignments: [{ ...tiktok.assignments[0], allowedDuringScheduleBlock: false }],
+    }
+    ;(api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([tiktokIgnoringDowntime])
     const user = userEvent.setup()
     renderPage()
     await screen.findByTestId('profile-card-1')
     await expand(1, user)
     await user.click(screen.getByTestId('profile-apps-toggle-1'))
-    await user.click(await screen.findByTestId('app-row-50-allow'))
-    // #1679: allowedDuringScheduleBlock is always included for mode='allowed' (defaults true).
+    await user.click(await screen.findByTestId('app-row-51-move'))
+    // #1679: allowedDuringScheduleBlock is always included for mode='allowed',
+    // and carries the value the assignment currently holds — `false` here, NOT
+    // the `?? true` fallback, which is what makes this assertion meaningful.
     await waitFor(() =>
-      expect(api.apps.setPolicy).toHaveBeenCalledWith(50, 1, { mode: 'allowed', dailyMinutes: null, allowedDuringScheduleBlock: true }),
+      expect(api.apps.setPolicy).toHaveBeenCalledWith(51, 1, { mode: 'allowed', dailyMinutes: null, allowedDuringScheduleBlock: false }),
     )
+  })
+
+  // #2770 — but by the time you can move it back there is usually nothing left
+  // to carry. The Block payload omits BOTH flags, and the server reads absent as
+  // DEFAULT rather than unchanged (`AppRoutes.scala:154-157` .getOrElse(true),
+  // upserted with ON CONFLICT … = EXCLUDED), so blocking an app resets its
+  // exemption and its downtime flag to true. Verified against a live API.
+  //
+  // This is pre-existing — the shipped Block button sent exactly this payload —
+  // and the fix belongs on the server. Pinned here so the payload cannot quietly
+  // change shape while #2770 is open, and so the data loss is documented at the
+  // one place a reader would look for it.
+  it('#2770: the Block payload carries neither flag, so the server resets both', async () => {
+    const configured = {
+      ...youtube,
+      assignments: [{ ...youtube.assignments[0], exemptFromDaily: false, allowedDuringScheduleBlock: false }],
+    }
+    ;(api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([configured])
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByTestId('profile-card-1')
+    await expand(1, user)
+    await user.click(screen.getByTestId('profile-apps-toggle-1'))
+    await user.click(await screen.findByTestId('app-row-50-move'))
+    await waitFor(() => expect(api.apps.setPolicy).toHaveBeenCalled())
+    const body = (api.apps.setPolicy as unknown as ReturnType<typeof vi.fn>).mock.calls[0][2]
+    expect(body).toEqual({ mode: 'blocked', dailyMinutes: null })
+    expect(body).not.toHaveProperty('exemptFromDaily')
+    expect(body).not.toHaveProperty('allowedDuringScheduleBlock')
   })
 
   it('typing a positive value into the minutes input then blurring saves as time_limited', async () => {
@@ -1246,7 +1304,8 @@ describe('ProfilesPage — apps section (#767)', () => {
     await screen.findByTestId('profile-card-1')
     await expand(1, user)
     await user.click(screen.getByTestId('profile-apps-toggle-1'))
-    const input = await screen.findByTestId('app-row-50-minutes') as HTMLInputElement
+    await openLimitDrawer(50, user)
+    const input = screen.getByTestId('app-row-50-minutes') as HTMLInputElement
     await user.type(input, '45')
     // Tab away — the input IS the time-limit control, no separate button.
     await user.tab()
@@ -1262,7 +1321,8 @@ describe('ProfilesPage — apps section (#767)', () => {
     await screen.findByTestId('profile-card-1')
     await expand(1, user)
     await user.click(screen.getByTestId('profile-apps-toggle-1'))
-    const input = await screen.findByTestId('app-row-50-minutes') as HTMLInputElement
+    await openLimitDrawer(50, user)
+    const input = screen.getByTestId('app-row-50-minutes') as HTMLInputElement
     await user.type(input, '0')
     await user.tab()
     expect(api.apps.setPolicy).not.toHaveBeenCalled()
@@ -1276,7 +1336,8 @@ describe('ProfilesPage — apps section (#767)', () => {
     await screen.findByTestId('profile-card-1')
     await expand(1, user)
     await user.click(screen.getByTestId('profile-apps-toggle-1'))
-    const input = await screen.findByTestId('app-row-50-minutes')
+    await openLimitDrawer(50, user)
+    const input = screen.getByTestId('app-row-50-minutes')
     await user.click(input)
     await user.tab()
     expect(api.apps.setPolicy).not.toHaveBeenCalled()
@@ -1297,7 +1358,8 @@ describe('ProfilesPage — apps section (#767)', () => {
     await screen.findByTestId('profile-card-1')
     await expand(1, user)
     await user.click(screen.getByTestId('profile-apps-toggle-1'))
-    const input = await screen.findByTestId('app-row-60-minutes') as HTMLInputElement
+    await openLimitDrawer(60, user)
+    const input = screen.getByTestId('app-row-60-minutes') as HTMLInputElement
     expect(input.value).toBe('60')
     await user.clear(input)
     await user.tab()
@@ -1366,6 +1428,8 @@ describe('ProfilesPage — per-app schedule rules (#1380)', () => {
     await expand(1, user)
     await user.click(screen.getByTestId('profile-apps-toggle-1'))
     await screen.findByTestId('app-row-50')
+    // #2764 — the rule editor is behind the row's schedule expander now.
+    await openScheduleDrawer(50, user)
   }
 
   it('renders attached schedule rules with their schedule name and mode', async () => {
@@ -1439,9 +1503,41 @@ describe('ProfilesPage — per-app schedule rules (#1380)', () => {
     ;(api.schedules.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([bedtime])
     const user = userEvent.setup()
     await openAppsSection(user)
-    const row = await screen.findByTestId('app-row-50-counts-toward-daily')
-    expect(row).toBeInTheDocument()
     expect(screen.queryByTestId('app-row-50-schedule-exempt')).not.toBeInTheDocument()
+    await openLimitDrawer(50, user)
+    expect(screen.getByTestId('app-row-50-counts-toward-daily')).toBeInTheDocument()
+  })
+
+  // The blocked-app in-window exempt toggle is the THIRD caller of writeExempt,
+  // and the only one outside the limit drawer. A render-only assertion missed a
+  // regression that made it a dead control (the writer refused the write while
+  // the checkbox still rendered, so the box snapped back to server state), so
+  // this one clicks it and asserts the write.
+  it('clicking the blocked-app in-window exempt toggle actually writes', async () => {
+    const blockedWithRule = {
+      app: { id: 50, name: 'YouTube', slug: 'youtube', templateId: null, icon: '📺', createdAt: '2026-01-01' },
+      hosts: ['youtube.com'],
+      assignments: [
+        {
+          id: 2, appId: 50, profileId: 1, mode: 'blocked' as const, dailyMinutes: null,
+          exemptFromDaily: true, scheduleRules: [{ scheduleId: 10, mode: 'allowed_during' as const }],
+        },
+      ],
+    }
+    ;(api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([blockedWithRule])
+    ;(api.schedules.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([bedtime])
+    const user = userEvent.setup()
+    await openAppsSection(user)
+    const toggle = await screen.findByTestId('app-row-50-schedule-exempt')
+    await user.click(within(toggle).getByRole('checkbox'))
+    // exemptFromDaily is mode-independent server-side
+    // (ProfileAppDispositions.exemptPatterns), so a blocked app CAN be written.
+    await waitFor(() =>
+      expect(api.apps.setPolicy).toHaveBeenCalledWith(50, 1, expect.objectContaining({
+        mode: 'blocked',
+        exemptFromDaily: false,
+      })),
+    )
   })
 
   // #2747 — a Blocked-mode app is only reachable inside an allowed_during
@@ -1464,6 +1560,8 @@ describe('ProfilesPage — per-app schedule rules (#1380)', () => {
     await openAppsSection(user)
     const exempt = await screen.findByTestId('app-row-50-schedule-exempt')
     expect(exempt.textContent).toMatch(/daily (time )?limit/i)
+    // A blocked app has no limit drawer at all, so there is no second control.
+    expect(screen.queryByTestId('app-row-50-limit-toggle')).not.toBeInTheDocument()
     expect(screen.queryByTestId('app-row-50-counts-toward-daily')).not.toBeInTheDocument()
   })
 })
@@ -1517,7 +1615,8 @@ describe('ProfilesPage — exempt-from-daily for Allowed apps with no schedule r
     (api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([allowedApp(true)])
     const user = userEvent.setup()
     await openApps(user)
-    const cb = await screen.findByTestId('app-row-50-counts-toward-daily') as HTMLInputElement
+    await openLimitDrawer(50, user)
+    const cb = screen.getByTestId('app-row-50-counts-toward-daily') as HTMLInputElement
     expect(cb.checked).toBe(false)
   })
 
@@ -1533,7 +1632,8 @@ describe('ProfilesPage — exempt-from-daily for Allowed apps with no schedule r
     (api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([allowedApp(true)])
     const user = userEvent.setup()
     await openApps(user)
-    const label = (await screen.findByTestId('app-row-50-counts-toward-daily')).closest('label')!
+    await openLimitDrawer(50, user)
+    const label = screen.getByTestId('app-row-50-counts-toward-daily').closest('label')!
     expect(label.textContent).toMatch(/Counts toward daily limit/i)
     expect(label.textContent).toMatch(/exempt/i)
     expect(label.textContent).toMatch(/doesn't reduce the profile's remaining time/i)
@@ -1545,7 +1645,8 @@ describe('ProfilesPage — exempt-from-daily for Allowed apps with no schedule r
     (api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([allowedApp(true)])
     const user = userEvent.setup()
     await openApps(user)
-    await user.click(await screen.findByTestId('app-row-50-counts-toward-daily'))
+    await openLimitDrawer(50, user)
+    await user.click(screen.getByTestId('app-row-50-counts-toward-daily'))
     await waitFor(() =>
       expect(api.apps.setPolicy).toHaveBeenCalledWith(50, 1, {
         mode: 'allowed',
@@ -1560,7 +1661,8 @@ describe('ProfilesPage — exempt-from-daily for Allowed apps with no schedule r
     (api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([allowedApp(false)])
     const user = userEvent.setup()
     await openApps(user)
-    const cb = await screen.findByTestId('app-row-50-counts-toward-daily') as HTMLInputElement
+    await openLimitDrawer(50, user)
+    const cb = screen.getByTestId('app-row-50-counts-toward-daily') as HTMLInputElement
     expect(cb.checked).toBe(true)
     await user.click(cb)
     await waitFor(() =>
@@ -1579,7 +1681,8 @@ describe('ProfilesPage — exempt-from-daily for Allowed apps with no schedule r
     (api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([allowedApp(true)])
     const user = userEvent.setup()
     await openApps(user)
-    const cb = await screen.findByTestId('app-row-50-counts-toward-daily')
+    await openLimitDrawer(50, user)
+    const cb = screen.getByTestId('app-row-50-counts-toward-daily')
     expect(api.time.summaryAll).toHaveBeenCalledTimes(1)
     await user.click(cb)
     await waitFor(() => expect(api.apps.setPolicy).toHaveBeenCalled())
@@ -1782,6 +1885,9 @@ describe('ProfilesPage — per-app usage bar in Apps section (#1061)', () => {
     await screen.findByTestId('profile-card-1')
     await expand(1, user)
     await user.click(screen.getByTestId('profile-apps-toggle-1'))
+    // #2764 — the used/cap bar moved into the limit drawer; the collapsed row
+    // carries the same numbers on its chip.
+    await openLimitDrawer(50, user)
     const bar = await screen.findByTestId('app-row-50-usage')
     // 1800s → 30m of 60m limit.
     expect(bar).toHaveTextContent('30m')
@@ -1807,6 +1913,7 @@ describe('ProfilesPage — per-app usage bar in Apps section (#1061)', () => {
     await screen.findByTestId('profile-card-1')
     await expand(1, user)
     await user.click(screen.getByTestId('profile-apps-toggle-1'))
+    await openLimitDrawer(50, user)
     const bar = await screen.findByTestId('app-row-50-usage')
     const fill = bar.querySelectorAll('div')[1] as HTMLDivElement
     // 70m > 60m → clamped to 100%, painted red.
@@ -1937,7 +2044,8 @@ describe('ProfilesPage — app-policy edits refresh the profile-wide time bar (#
     (api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([khanTimeLimited])
     const user = userEvent.setup()
     await openApps(user)
-    const cb = await screen.findByTestId('app-row-60-counts-toward-daily')
+    await openLimitDrawer(60, user)
+    const cb = screen.getByTestId('app-row-60-counts-toward-daily')
     expect(api.time.summaryAll).toHaveBeenCalledTimes(1)
     await user.click(cb)
     await waitFor(() =>
@@ -1950,7 +2058,7 @@ describe('ProfilesPage — app-policy edits refresh the profile-wide time bar (#
     (api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([khanTimeLimited])
     const user = userEvent.setup()
     await openApps(user)
-    await user.click(await screen.findByTestId('app-row-60-block'))
+    await user.click(await screen.findByTestId('app-row-60-move'))
     await waitFor(() =>
       expect(api.apps.setPolicy).toHaveBeenCalledWith(60, 1, { mode: 'blocked', dailyMinutes: null }),
     )
@@ -2286,5 +2394,340 @@ describe('ProfilesPage — adult capability (#2522)', () => {
     await expand(1, user)
     expect(screen.queryByRole('button', { name: /New Profile/ })).not.toBeInTheDocument()
     expect(screen.queryByTestId('profile-category-toggle-1-social')).not.toBeInTheDocument()
+  })
+})
+
+// #2764 — per-profile app management as two compact lists (allowed / blocked)
+// with progressive disclosure for the daily limit and for schedule rules.
+//
+// The mode mapping is UNCHANGED: the allowed list holds `allowed` and
+// `time_limited` assignments, the blocked list holds `blocked` ones. List
+// membership IS the mode, so the row carries a single move button rather than
+// a Block/Allow pair. Everything else — minutes, the exempt-from-daily
+// checkbox, the #1679 block-during-downtime checkbox, the schedule-rule
+// editor — moves behind an expander that costs no vertical space when unused.
+describe('ProfilesPage — two-list app management (#2764)', () => {
+  const bedtime = { id: 10, name: 'Bedtime', description: null, windows: [] }
+
+  function app(
+    id: number,
+    name: string,
+    assignment: Partial<{
+      mode: 'allowed' | 'blocked' | 'time_limited'
+      dailyMinutes: number | null
+      exemptFromDaily: boolean
+      allowedDuringScheduleBlock: boolean
+      scheduleRules: { scheduleId: number; mode: 'allowed_during' | 'blocked_during' }[]
+    }> | null,
+  ) {
+    return {
+      app: { id, name, slug: name.toLowerCase(), templateId: null, icon: '📺', createdAt: '2026-01-01' },
+      hosts: [`${name.toLowerCase()}.com`],
+      assignments: assignment == null ? [] : [{
+        id: id + 1000,
+        appId: id,
+        profileId: 1,
+        mode: 'allowed' as const,
+        dailyMinutes: null,
+        exemptFromDaily: true,
+        allowedDuringScheduleBlock: true,
+        ...assignment,
+      }],
+    }
+  }
+
+  async function openApps(user: ReturnType<typeof userEvent.setup>) {
+    renderPage()
+    await screen.findByTestId('profile-card-1')
+    await expand(1, user)
+    await user.click(screen.getByTestId('profile-apps-toggle-1'))
+  }
+
+  it('splits assigned apps into an allowed list and a blocked list', async () => {
+    (api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([
+      app(50, 'YouTube', { mode: 'allowed' }),
+      app(51, 'TikTok', { mode: 'blocked' }),
+      app(52, 'Minecraft', { mode: 'time_limited', dailyMinutes: 60 }),
+    ])
+    const user = userEvent.setup()
+    await openApps(user)
+
+    const allowed = await screen.findByTestId('profile-1-apps-section-allowed-list')
+    const blocked = screen.getByTestId('profile-1-apps-section-blocked-list')
+    // time_limited is an allowed app with a cap — it belongs in the allowed list.
+    expect(within(allowed).getByTestId('app-row-50')).toBeInTheDocument()
+    expect(within(allowed).getByTestId('app-row-52')).toBeInTheDocument()
+    expect(within(blocked).getByTestId('app-row-51')).toBeInTheDocument()
+    expect(within(allowed).queryByTestId('app-row-51')).not.toBeInTheDocument()
+  })
+
+  it('a plain allowed row renders no limit input, no checkboxes and no schedule editor', async () => {
+    (api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([app(50, 'YouTube', { mode: 'allowed' })])
+    const user = userEvent.setup()
+    await openApps(user)
+    await screen.findByTestId('app-row-50')
+
+    expect(screen.queryByTestId('app-row-50-minutes')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('app-row-50-counts-toward-daily')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('app-row-50-block-during-schedule')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('app-row-50-schedules')).not.toBeInTheDocument()
+  })
+
+  it('the limit expander reveals minutes and both exception checkboxes', async () => {
+    (api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([app(50, 'YouTube', { mode: 'allowed' })])
+    const user = userEvent.setup()
+    await openApps(user)
+    await user.click(await screen.findByTestId('app-row-50-limit-toggle'))
+
+    expect(await screen.findByTestId('app-row-50-minutes')).toBeInTheDocument()
+    expect(screen.getByTestId('app-row-50-counts-toward-daily')).toBeInTheDocument()
+    expect(screen.getByTestId('app-row-50-block-during-schedule')).toBeInTheDocument()
+  })
+
+  it('a blocked row has no limit expander, while an allowed row in the same render does', async () => {
+    (api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([
+      app(51, 'TikTok', { mode: 'blocked' }),
+      app(50, 'YouTube', { mode: 'allowed' }),
+    ])
+    const user = userEvent.setup()
+    await openApps(user)
+    await screen.findByTestId('app-row-51')
+    // The allowed row is the liveness anchor: without it this absence assertion
+    // would pass just as happily against a render that produced no expanders at
+    // all (or no rows), which is no assertion.
+    expect(screen.getByTestId('app-row-50-limit-toggle')).toBeInTheDocument()
+    expect(screen.queryByTestId('app-row-51-limit-toggle')).not.toBeInTheDocument()
+  })
+
+  it('a time-limited row summarises used/cap on the collapsed chip', async () => {
+    (api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([
+      app(52, 'Minecraft', { mode: 'time_limited', dailyMinutes: 60 }),
+    ])
+    ;(api.profiles.usageByApp as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+      profileId: 1, from: '2026-01-01', to: '2026-01-01',
+      apps: [{ appId: 52, appName: 'Minecraft', proportionalSeconds: 1500, totalBytes: 0 }],
+    })
+    const user = userEvent.setup()
+    await openApps(user)
+    const chip = await screen.findByTestId('app-row-52-limit-toggle')
+    // 1500s → 25m of a 60m cap, rendered through formatMins ("1:00").
+    await waitFor(() => expect(chip.textContent).toMatch(/25m\s*\/\s*1:00/))
+  })
+
+  it('never shows 0m on the limit chip while usage is still loading (#loading-states)', async () => {
+    (api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([
+      app(52, 'Minecraft', { mode: 'time_limited', dailyMinutes: 60 }),
+    ])
+    ;(api.profiles.usageByApp as unknown as ReturnType<typeof vi.fn>).mockReturnValue(new Promise(() => {}))
+    const user = userEvent.setup()
+    await openApps(user)
+    const chip = await screen.findByTestId('app-row-52-limit-toggle')
+    expect(chip.textContent).not.toMatch(/0m/)
+    expect(screen.getByTestId('app-row-52-usage-loading')).toBeInTheDocument()
+  })
+
+  it('an app with no schedule rules shows the add-a-schedule affordance, not the editor', async () => {
+    (api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([
+      app(50, 'YouTube', { mode: 'allowed', scheduleRules: [] }),
+    ])
+    ;(api.schedules.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([bedtime])
+    const user = userEvent.setup()
+    await openApps(user)
+
+    const toggle = await screen.findByTestId('app-row-50-schedule-toggle')
+    expect(toggle.textContent).toMatch(/schedule/i)
+    expect(screen.queryByTestId('app-row-50-schedules')).not.toBeInTheDocument()
+    await user.click(toggle)
+    expect(await screen.findByTestId('app-row-50-schedules')).toBeInTheDocument()
+  })
+
+  it('an app with schedule rules shows a chip carrying the rule count', async () => {
+    (api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([
+      app(50, 'YouTube', { mode: 'allowed', scheduleRules: [{ scheduleId: 10, mode: 'allowed_during' }] }),
+    ])
+    ;(api.schedules.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([bedtime])
+    const user = userEvent.setup()
+    await openApps(user)
+    const toggle = await screen.findByTestId('app-row-50-schedule-toggle')
+    expect(toggle.textContent).toMatch(/1/)
+  })
+
+  it('the move button writes the other mode and re-homes the row in the other list', async () => {
+    const youtube = app(50, 'YouTube', { mode: 'allowed' })
+    ;(api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([youtube])
+    ;(api.apps.setPolicy as unknown as ReturnType<typeof vi.fn>).mockImplementation(async () => {
+      youtube.assignments[0].mode = 'blocked'
+    })
+    const user = userEvent.setup()
+    await openApps(user)
+
+    const allowed = await screen.findByTestId('profile-1-apps-section-allowed-list')
+    expect(within(allowed).getByTestId('app-row-50')).toBeInTheDocument()
+    await user.click(screen.getByTestId('app-row-50-move'))
+    await waitFor(() =>
+      expect(api.apps.setPolicy).toHaveBeenCalledWith(50, 1, { mode: 'blocked', dailyMinutes: null }),
+    )
+    await waitFor(() =>
+      expect(within(screen.getByTestId('profile-1-apps-section-blocked-list')).getByTestId('app-row-50')).toBeInTheDocument(),
+    )
+  })
+
+  // Variant A: a flag at its ordinary value shows nothing; only the exception
+  // earns a pill, and the pill clears it.
+  it('the counts pill renders only when the app is NOT exempt, and clears back to exempt', async () => {
+    (api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([
+      app(50, 'YouTube', { mode: 'allowed', exemptFromDaily: false }),
+      app(53, 'Duolingo', { mode: 'allowed', exemptFromDaily: true }),
+    ])
+    const user = userEvent.setup()
+    await openApps(user)
+
+    await screen.findByTestId('app-row-50-pill-counts')
+    expect(screen.queryByTestId('app-row-53-pill-counts')).not.toBeInTheDocument()
+
+    await user.click(screen.getByTestId('app-row-50-pill-counts'))
+    await waitFor(() =>
+      expect(api.apps.setPolicy).toHaveBeenCalledWith(50, 1, expect.objectContaining({ exemptFromDaily: true })),
+    )
+  })
+
+  it('the ignores-downtime pill renders only when the app punches through downtime', async () => {
+    (api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([
+      app(50, 'YouTube', { mode: 'allowed', allowedDuringScheduleBlock: true }),
+      app(53, 'Duolingo', { mode: 'allowed', allowedDuringScheduleBlock: false }),
+    ])
+    const user = userEvent.setup()
+    await openApps(user)
+
+    await screen.findByTestId('app-row-50-pill-ignores-downtime')
+    expect(screen.queryByTestId('app-row-53-pill-ignores-downtime')).not.toBeInTheDocument()
+
+    await user.click(screen.getByTestId('app-row-50-pill-ignores-downtime'))
+    await waitFor(() =>
+      expect(api.apps.setPolicy).toHaveBeenCalledWith(50, 1, expect.objectContaining({ allowedDuringScheduleBlock: false })),
+    )
+  })
+
+  // #1679 is an Allowed-MODE concept, not an allowed-LIST one. Server-side,
+  // `suppressedByScheduleToggle` only bites on `AppMode.Allowed` (or an active
+  // allowed_during rule); a plain TimeLimited app surfaces through the per-app
+  // cap path and the flag never reaches it. Client-side, `apply` omits the
+  // field for any mode but 'allowed'. So rendering the pill or the checkbox on
+  // a time_limited row would be a control that writes nothing.
+  it('neither the downtime pill nor its checkbox appears on a time-limited row', async () => {
+    (api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([
+      app(52, 'Minecraft', { mode: 'time_limited', dailyMinutes: 60, allowedDuringScheduleBlock: true }),
+    ])
+    const user = userEvent.setup()
+    await openApps(user)
+    await screen.findByTestId('app-row-52')
+    expect(screen.queryByTestId('app-row-52-pill-ignores-downtime')).not.toBeInTheDocument()
+    await openLimitDrawer(52, user)
+    expect(screen.queryByTestId('app-row-52-block-during-schedule')).not.toBeInTheDocument()
+    // The budget flag DOES apply to a time-limited app, so its control stays.
+    expect(screen.getByTestId('app-row-52-counts-toward-daily')).toBeInTheDocument()
+  })
+
+  // #1007 — `writeExempt` early-returns for a time_limited app with no cap set,
+  // so a `counts` pill there would be a control whose click does nothing.
+  //
+  // The pill is NOT gated on the writer's condition — they differ on `blocked`,
+  // which the writer accepts (via ScheduleRuleEditor's in-window toggle) and the
+  // pill does not (a blocked row carries no pills). Believing they were the same
+  // predicate is what made that toggle a dead control for one commit. The pill
+  // is `isAllowedList && canWriteBudgetFlag`; the writer is the wider half.
+  it('no counts pill on a time-limited app with no cap set — it would write nothing', async () => {
+    (api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([
+      app(52, 'Minecraft', { mode: 'time_limited', dailyMinutes: null, exemptFromDaily: false }),
+      app(53, 'Duolingo', { mode: 'allowed', exemptFromDaily: false }),
+    ])
+    const user = userEvent.setup()
+    await openApps(user)
+    // Liveness anchor: a row that SHOULD carry the pill, in the same render.
+    await screen.findByTestId('app-row-53-pill-counts')
+    expect(screen.queryByTestId('app-row-52-pill-counts')).not.toBeInTheDocument()
+  })
+
+  it('a capless time-limited app renders no counts checkbox in its drawer either', async () => {
+    (api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([
+      app(52, 'Minecraft', { mode: 'time_limited', dailyMinutes: null }),
+      app(53, 'Duolingo', { mode: 'allowed' }),
+    ])
+    const user = userEvent.setup()
+    await openApps(user)
+    // Liveness anchor: a drawer that DOES carry the checkbox, same render.
+    await openLimitDrawer(53, user)
+    expect(screen.getByTestId('app-row-53-counts-toward-daily')).toBeInTheDocument()
+    await openLimitDrawer(52, user)
+    expect(screen.getByTestId('app-row-52-limit-drawer')).toBeInTheDocument()
+    expect(screen.queryByTestId('app-row-52-counts-toward-daily')).not.toBeInTheDocument()
+    // ...and no empty "Exceptions" heading promising controls that aren't there.
+    const drawer52 = screen.getByTestId('app-row-52-limit-drawer')
+    // /Exceptions/i already subsumes the prose clause ("the exceptions below
+    // decide…"), so one assertion covers heading and copy alike.
+    expect(drawer52.textContent).not.toMatch(/Exceptions/i)
+    expect(screen.getByTestId('app-row-53-limit-drawer').textContent).toMatch(/Exceptions/i)
+  })
+
+  it('a time-limited app WITH a cap keeps its counts pill', async () => {
+    (api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([
+      app(52, 'Minecraft', { mode: 'time_limited', dailyMinutes: 60, exemptFromDaily: false }),
+    ])
+    const user = userEvent.setup()
+    await openApps(user)
+    await user.click(await screen.findByTestId('app-row-52-pill-counts'))
+    await waitFor(() =>
+      expect(api.apps.setPolicy).toHaveBeenCalledWith(52, 1, expect.objectContaining({ exemptFromDaily: true })),
+    )
+  })
+
+  // Not because neither flag applies — `exemptFromDaily` is mode-independent
+  // server-side (`ProfileAppDispositions.exemptPatterns`) and a blocked app can
+  // be exempt. It is because pills are an allowed-LIST affordance: a blocked
+  // app's exemption is reached through its schedule drawer instead, where the
+  // in-window copy is the accurate one (#2747).
+  it('no pills are rendered on a blocked row — pills are an allowed-list affordance', async () => {
+    (api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([
+      app(51, 'TikTok', { mode: 'blocked', exemptFromDaily: false, allowedDuringScheduleBlock: true }),
+    ])
+    const user = userEvent.setup()
+    await openApps(user)
+    await screen.findByTestId('app-row-51')
+    expect(screen.queryByTestId('app-row-51-pill-counts')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('app-row-51-pill-ignores-downtime')).not.toBeInTheDocument()
+  })
+
+  // The one deliberate behaviour change in #2764: a newly allowed app obeys
+  // scheduled downtime rather than punching through it. Client-side only —
+  // the schema and wire defaults are untouched, and existing assignments keep
+  // whatever they already have.
+  it('"+ Allow app" adds with allowedDuringScheduleBlock=false so the app obeys downtime', async () => {
+    (api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([
+      app(50, 'YouTube', { mode: 'allowed' }),
+      app(54, 'Libby', null),
+    ])
+    const user = userEvent.setup()
+    await openApps(user)
+    await user.click(await screen.findByTestId('profile-1-apps-section-add-allowed'))
+    await user.click(await screen.findByTestId('profile-1-apps-section-picker-add-54'))
+    await waitFor(() =>
+      expect(api.apps.setPolicy).toHaveBeenCalledWith(54, 1, {
+        mode: 'allowed', dailyMinutes: null, allowedDuringScheduleBlock: false,
+      }),
+    )
+  })
+
+  it('"+ Block app" adds straight into the blocked list', async () => {
+    (api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([
+      app(50, 'YouTube', { mode: 'allowed' }),
+      app(54, 'Libby', null),
+    ])
+    const user = userEvent.setup()
+    await openApps(user)
+    await user.click(await screen.findByTestId('profile-1-apps-section-add-blocked'))
+    await user.click(await screen.findByTestId('profile-1-apps-section-picker-add-54'))
+    await waitFor(() =>
+      expect(api.apps.setPolicy).toHaveBeenCalledWith(54, 1, { mode: 'blocked', dailyMinutes: null }),
+    )
   })
 })
