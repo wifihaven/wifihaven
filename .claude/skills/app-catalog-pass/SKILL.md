@@ -86,9 +86,11 @@ That is already time-weighted, which the raw byte table is not.
 Two cautions before you treat an orphan as a gap:
 
 - **`orphanHosts` is not a clean "uncovered" list.** Per #1898
-  (`UsageRoutes.scala:801-807`) a host that IS in the catalog still contributes
-  its *unattributed* span to the orphan bucket, possibly alongside its own app
-  row. Confirm against `_index.yml` and the `*.yml` host-sets before authoring.
+  (`UsageRoutes.scala:801-807`) a host declared under a template's
+  `shared_hosts:` still contributes its *unattributed* span to the orphan
+  bucket, possibly alongside its own app row. A plain `hosts:` entry never
+  orphans. Confirm against `_index.yml` and the `*.yml` host-sets before
+  authoring.
 - **Google/Apple platform infra dominates the top of the list.** That is the
   usual skip pile (Step 2), not a finding.
 
@@ -198,8 +200,13 @@ above is now wrong, fix the step too — don't just log around it.
   gap-check, computed by the server, and it beats diffing `recent-apexes`
   against `_index.yml` by hand because it is already time-weighted. **It is NOT
   a clean "uncovered hosts" list, though** — per #1898 (`UsageRoutes.scala:801-807`)
-  a host that IS in the catalog still contributes its *unattributed* span to the
-  orphan bucket, possibly alongside its own app row. So always confirm a
+  a host declared under a template's `shared_hosts:` still contributes its
+  *unattributed* span to the orphan bucket, possibly alongside its own app row.
+  (Only `shared_hosts:` can do this: `allocByHost`, `UsageRoutes.scala:724-740`,
+  routes a host through `allocateSharedHostSeconds` — the only producer of the
+  `None` key — when `sharedAppsOf(h)` is non-empty, and that map is built from
+  `mappings.filter(_.shared)`. A plain `hosts:` entry resolves via
+  `distinctiveAppOf` and never orphans.) So always confirm a
   promising orphan is genuinely uncovered (grep `_index.yml` and the
   `*.yml` host-sets) before authoring an app for it, or you will ship a
   duplicate of an app that already exists. Use it to
@@ -209,21 +216,34 @@ above is now wrong, fix the step too — don't just log around it.
   orphan at 55 proportional minutes — the exact gap the `amazon-telemetry` app
   closes. Expect Google/Apple platform infra to dominate the top of the list;
   that's the usual skip pile, not a finding.
-- **2026-09-11 (#2762)** — "enforcement is unbounded" is only true of the
-  per-host path. dnsmasq's `nftset=/<host>/` suffix-matches without limit, and
-  `PolicyService.matchesAny` / `Presence.matchesAny` reach `matchesApex`
-  directly — but the CATEGORY path does not: `PolicyService` (`:1249`) calls
-  `HostMatch.hasApexMatch`, which is `apexTails(host, maxHops = 5).exists(...)`
-  (`HostMatch.scala:82-83`) — the same bound as `lookupApex`. So a
-  blocklist-category apex deeper than five labels from the queried host stops
-  matching on the ENFORCEMENT side too, not just in attribution. Don't
-  generalize "enforcement is unbounded" past per-host rules.
+- **2026-09-11 (#2762)** — **`HostMatch.hasApexMatch`'s 5-hop bound costs you a
+  block-page REASON, never a drop — and mistaking it for the latter is the
+  AGENTS.md anti-pattern in a new costume.** A draft of this entry claimed a
+  blocklist-category apex deeper than five labels "stops matching on the
+  enforcement side too." Inverted. `hasApexMatch` has exactly ONE production
+  caller — `PolicyService.scala:1249`, inside `categoryBlock` under
+  `decideDetailed` — and `decideDetailed` is reached only from
+  `BlockedRoutes.scala:153` (the block page's reason) and
+  `POST /api/router/decision` (`RouterRoutes.scala:181`), which **no agent code
+  calls**. Category ENFORCEMENT is the `bl_`/`bl6_` nftables sets, populated one
+  verbatim `nftset=/<host>/4#inet#wifihaven#bl_<id>,…` line per blocklist member
+  (`blocklists.render_shards`; format at `render.lua:527-531`) — dnsmasq suffix
+  matching, as unbounded as the per-host `eb_` path. `grep -rn 'apexTails\|maxHops'
+  openwrt/files` returns NOTHING: the agent has no bounded tail walk anywhere.
+  The bounded walk is an API-side *attribution and display* concern
+  (`lookupApex` in `UsageTraffic`/`RollupRepo`/`UsageRoutes`/`Repos`, and
+  `hasApexMatch` for the block-page reason); the unbounded suffix match is
+  enforcement (`PolicyService.matchesAny` at `:1240`, the `HostMatch.matchesAny`
+  calls in `Presence`, and every `nftset=` line the agent writes). **Before
+  writing that anything is bounded "on the enforcement side", check whether the
+  code you are reading is even on the enforcement plane** — an API decision
+  endpoint the router never calls is not.
 - **2026-09-11 (#2762)** — A PR you opened THIS session can merge while you are
   still working, which silently turns its branch into a dead branch: a follow-up
   commit pushed there is unreachable from `main` and ships nothing. This
   happened here — #2763 merged at 22:53:35Z and the `amazon-telemetry` commit
-  was authored at 00:36:32Z, ~103 minutes later, onto the dead branch; only the
-  review caught it. **Re-check
+  was committed at 00:36:32Z, ~103 minutes later, onto the dead branch; only
+  the review caught it. **Re-check
   `gh pr view <n> --json state` immediately before pushing any follow-up, even
   one to a PR you opened minutes ago** — the standing "never push to a merged
   PR's branch" rule is usually read as being about OLD PRs, and that reading is
