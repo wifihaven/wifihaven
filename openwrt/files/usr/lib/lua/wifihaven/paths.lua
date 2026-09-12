@@ -112,13 +112,28 @@ M.ws_outbound = "/tmp/wifihaven-ws-outbound.jsonl"
 -- `ws_spool.tmp_path(spool)`, alongside `ws_spool.ledger_path` — deliberately
 -- not duplicated here.
 
--- ws-health sentinel: the sidecar touches this file's mtime on every successful
--- send/recv while the socket is up, and removes it on disconnect. The main agent
--- stats it on its tick: a FRESH sentinel (mtime within ws_fallback_after) means
--- "the sidecar owns outbound" → tee usage/events to the spool above; a STALE or
--- absent sentinel means the link is down past the fallback window → the agent
--- resumes HTTP posting (design §3.1). Absent unless the sidecar is running, so
--- a crashed sidecar reads as "link down" and the agent falls back (#2608).
+-- ws-health sentinel: the sidecar writes os.time() INTO this file on every
+-- successful send/recv, and on each heartbeat pong (#2731), while the socket is
+-- up; it removes the file on disconnect. The agent reads the file's CONTENT, not
+-- its mtime — stock busybox has no `stat -c %Y`, which is why the sentinel
+-- carries a timestamp rather than relying on one.
+--
+-- #2736: this used to decide whether to tee outbound over ws or resume HTTP
+-- posting, against `ws.fallback_after`. Both are gone with the REST path. The
+-- agent is websocket-only, so usage/events ALWAYS go to the spool above and
+-- there is nothing to fall back to. The sentinel now has two readers, and its
+-- staleness bound is derived from the heartbeat cadence that refreshes it
+-- (3×, `ws_outbound.stale_after`) rather than a standalone key:
+--   * the #331/#422 failover edge — a stale or absent sentinel means we are out
+--     of contact with the API, so closed-mode profiles close. Enforcement
+--     otherwise CONTINUES off the last on-disk snapshot; it degrades, it does
+--     not stop.
+--   * the `ws_health_age_seconds` gauge, reported as -1 when the file is absent.
+--     Alert W15 fires on it, which is what makes a dead socket loud rather than
+--     silent — and it reaches the server because the metrics push deliberately
+--     stayed on HTTP.
+-- Absent unless the sidecar has connected, so a crashed sidecar reads as "link
+-- down" within one staleness window.
 M.ws_health = "/tmp/wifihaven-ws-health"
 
 -- ws metrics tally: the sidecar has no metrics registry of its own (like the
