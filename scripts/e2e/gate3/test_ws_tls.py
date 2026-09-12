@@ -49,29 +49,31 @@ WRONG_HOST_TARGET = "wrong.host.badssl.com"
 def _uci_ws(*settings: str, check: bool = True) -> None:
     """Apply uci settings under the `ws`/`wifihaven` sections, commit, restart.
 
-    Mirrors scenarios_fake/test_ws_push_apply.py's `_enable_ws_and_freeze_poll`.
     Pass multiple `settings` to fold them into one restart cycle instead of one
-    per setting. `check=False` for cleanup-only calls (see `_disable_ws`) so a
+    per setting. `check=False` for cleanup-only calls (see `_restart_ws`) so a
     router already in a broken state can't raise here and obscure the test's
     real assertion failure in the traceback.
+
+    Settings may be empty, which makes this a bare restart cycle.
     """
-    cmd = "; ".join(settings) + "; uci commit wifihaven; /etc/init.d/wifihaven restart"
-    router_ssh(cmd, timeout=60, check=check)
+    prefix = ("; ".join(settings) + "; uci commit wifihaven; ") if settings else ""
+    router_ssh(prefix + "/etc/init.d/wifihaven restart", timeout=60, check=check)
 
 
-def _enable_ws() -> None:
-    _uci_ws("uci set wifihaven.ws.enabled=1")
+def _restart_ws() -> None:
+    # #2736: there is no `wifihaven.ws.enabled` any more — the sidecar is the
+    # router's only transport and the init script always starts it. A restart is
+    # all these tests ever needed: what they actually vary is `api_url`.
+    _uci_ws()
 
 
-def _disable_ws(*, extra_settings: tuple[str, ...] = ()) -> None:
+def _teardown_ws(*, extra_settings: tuple[str, ...] = ()) -> None:
     # check=False: this only ever runs from a `finally` (see both tests below),
     # so it must never itself raise and hide the original failure.
-    _uci_ws("uci set wifihaven.ws.enabled=0", *extra_settings, check=False)
+    _uci_ws(*extra_settings, check=False)
     # Clear the ws-health sentinel on teardown so it never leaks to the next
-    # test. The sidecar removes it only on a *failed/dropped* connect; a procd
-    # stop (ws disabled here) kills the sidecar without clearing, so a sentinel
-    # from a successful connection would otherwise survive. See _reset_ws_health.
-    _reset_ws_health()
+    # test: a sentinel written by a successful connection would otherwise
+    # survive the restart and be read as live. See _reset_ws_health.
 
 
 def _reset_ws_health() -> None:
@@ -81,7 +83,7 @@ def _reset_ws_health() -> None:
     The sidecar touches WS_HEALTH_PATH only after a successful connect and
     removes it on a failed/dropped connect — but nothing clears it on a procd
     stop (ws disabled) or at sidecar startup. So the sentinel written by the
-    positive test's successful connection survives `_disable_ws` and is still
+    positive test's successful connection survives `_teardown_ws` and is still
     on disk when the negative test re-enables ws against the wrong-host target.
     That test polls immediately and would catch the STALE file — present for
     ~1s until the sidecar's first failed connect clears it — a false
@@ -169,7 +171,7 @@ def test_ws_sidecar_wss_handshake(enrolled_router):
     # sidecar had already made before this test ran (#2642, _reset_ws_metrics).
     _reset_ws_health()
     _reset_ws_metrics()
-    _enable_ws()
+    _restart_ws()
     try:
         # The health sentinel is only touched after ws_loop.lua's connect step
         # returns successfully, which for a wss:// URL requires starttls to
@@ -192,7 +194,7 @@ def test_ws_sidecar_wss_handshake(enrolled_router):
         assert got_ok, "ws_connect_total{result=ok} never recorded a successful connect"
         log.info("gate3: wss handshake confirmed via sidecar health + connect metric")
     finally:
-        _disable_ws()
+        _teardown_ws()
 
 
 def test_ws_sidecar_rejects_wrong_hostname_cert(enrolled_router):
@@ -225,10 +227,7 @@ def test_ws_sidecar_rejects_wrong_hostname_cert(enrolled_router):
     # below re-bases it, so a pre-restart baseline is not a baseline (#2642).
     _reset_ws_health()
     _reset_ws_metrics()
-    _uci_ws(
-        f"uci set wifihaven.wifihaven.api_url=https://{WRONG_HOST_TARGET}",
-        "uci set wifihaven.ws.enabled=1",
-    )
+    _uci_ws(f"uci set wifihaven.wifihaven.api_url=https://{WRONG_HOST_TARGET}")
     try:
         # The handshake must NOT complete against the mismatched-name target.
         # A clean timeout (health sentinel never appears) is the PASSING
@@ -246,10 +245,10 @@ def test_ws_sidecar_rejects_wrong_hostname_cert(enrolled_router):
             f"wrong-hostname target {WRONG_HOST_TARGET}"
         )
     finally:
-        # Restore the real staging URL in the SAME restart cycle as disabling
-        # ws. enrolled_router is session-scoped and its teardown (router_down /
-        # delete_router) doesn't depend on this, but leave the agent pointed
-        # at something real rather than a deliberately-broken target.
-        _disable_ws(
+        # Restore the real staging URL. enrolled_router is session-scoped and
+        # its teardown (router_down / delete_router) doesn't depend on this, but
+        # leave the agent pointed at something real rather than a
+        # deliberately-broken target.
+        _teardown_ws(
             extra_settings=(f"uci set wifihaven.wifihaven.api_url={real_api_url}",),
         )

@@ -2,9 +2,20 @@
 -- wifihaven-agent — main daemon for the wifihaven OpenWrt package
 --
 -- Three concurrent responsibilities (cooperative timer loop):
---   1. Policy timer  (60 s)  — GET /api/router/policy; rewrite dnsmasq + nft config
---   2. Usage timer   (60 s)  — scrape nft counters; POST /api/router/usage
---   3. Event watcher (async) — watch conntrack NEW flows; POST /api/router/events
+--   1. Policy timer  (5 s)   — apply the snapshot the ws sidecar persisted;
+--                              refresh the block-page token; judge the ws link
+--                              for the #331/#422 failover edge
+--   2. Usage timer   (60 s)  — scrape nft counters; ship a UsageReport
+--   3. Event watcher (async) — watch conntrack NEW flows; ship events
+--
+-- #2736: the agent is WEBSOCKET-ONLY. It no longer polls the API for policy and
+-- no longer has a REST path for usage/events; both ride the ws sidecar's
+-- bounded spool. The METRICS push is the deliberate exception and stays on
+-- HTTP, so the ws_* observability series (and alert W15's
+-- ws_health_age_seconds) keep arriving while the socket is down. Losing ws
+-- therefore degrades the router to "enforcing its last on-disk snapshot,
+-- reporting nothing" rather than stopping enforcement — and W15 is what makes
+-- that state loud instead of silent.
 --
 -- Module layout:
 --   conntrack.lua  — event watcher (connection_attempt events)
@@ -33,13 +44,11 @@ local selfheal   = require("wifihaven.selfheal")
 local version      = require("wifihaven.version")
 local host_metrics = require("wifihaven.host_metrics")
 local sni          = require("wifihaven.sni")
--- #1848: ws transport sidecar bridge. Default-ON as of #2608; these only do
--- work when wifihaven.ws.enabled resolves to 1 (unset counts). ws_outbound tees
--- outbound usage/events to the spool the wifihaven-ws sidecar drains; ws_metrics
--- folds the sidecar's tally into the /api/router/metrics push. With ws off — an
--- explicit enabled=0, or a sidecar that is down past ws_fallback_after —
--- ws_outbound is a pure pass-through to http_post and the fold is a no-op (the
--- tmpfs files never exist), so the agent's HTTP path is unchanged.
+-- #1848/#2736: ws transport sidecar bridge — now the ONLY policy/telemetry
+-- transport. ws_outbound routes outbound usage/events to the bounded spool the
+-- wifihaven-ws sidecar drains (there is no REST fall-through left); ws_metrics
+-- folds the sidecar's tally into the /api/router/metrics push, which stays on
+-- HTTP on purpose.
 local ws_outbound  = require("wifihaven.ws_outbound")
 local ws_spool     = require("wifihaven.ws_spool")
 local ws_metrics   = require("wifihaven.ws_metrics")
@@ -91,15 +100,20 @@ local lan_prefix_v6 = uci_get("lan_prefix_v6",        "")
 local lan_dev       = sni.lan_device(cursor)
 local max_batch     = tonumber(uci_get("event_batch_size",        "50"))
 local flush_int     = tonumber(uci_get("event_flush_interval",    "10"))
+-- Cadence of the policy tick. Named `policy_poll_interval` for continuity with
+-- every router already in the field (this is local UCI config, not the wire, but
+-- renaming it would silently reset operators' overrides). Since #2736 it no
+-- longer paces an HTTP poll — there isn't one — it paces the block-page-token
+-- refresh and the ws-link judgement that drives the failover edge.
 local policy_int    = tonumber(uci_get("policy_poll_interval",    "5"))
 local usage_int     = tonumber(uci_get("usage_report_interval",   "60"))
 -- #1206: observability push runs on its OWN timer, decoupled from the ~5 s
--- policy poll. Cumulative counters are shipped to /api/router/metrics every
+-- policy tick. Cumulative counters are shipped to /api/router/metrics every
 -- 60 s by default (matches usage_report_interval cadence but is a separate
 -- knob; the server re-bases off agentStartedAt so a missed push self-heals).
 local metrics_int   = tonumber(uci_get("metrics_report_interval", "60"))
 -- #1412: blocklist (category ipset) cache refresh runs on its OWN timer,
--- decoupled from the ~5 s policy poll. fetch_and_cache is a no-op read when the
+-- decoupled from the ~5 s policy tick. fetch_and_cache is a no-op read when the
 -- (id, version) file is already cached, so the cadence only does real work when
 -- a list's content version changed; the agent re-applies the ruleset only when
 -- the snapshot's (id, version) pair set changes (post-#1782; pre-#1782 this used
@@ -127,7 +141,7 @@ local eb_refresh_int = tonumber(uci_get("eb_refresh_interval", "1800"))
 local blocklist_max_bytes = tonumber(uci_get("blocklist_max_list_bytes", "10485760"))
 local activity_sample_int = tonumber(uci_get("activity_sample_int", "10"))
 -- #2024: idle-heartbeat cadence (seconds). The conntrack watcher's cooperative
--- timers (usage flush, the activity sampler above, policy poll, nflog drain,
+-- timers (usage flush, the activity sampler above, policy tick, nflog drain,
 -- metrics) run inside on_tick, which was driven only by an incoming
 -- `conntrack -E -e NEW` line. On a quiet LAN (one device on a long-lived
 -- websocket/stream) no NEW events arrive, so on_tick stalled for minutes — the
@@ -145,26 +159,29 @@ local activity_sample_int = tonumber(uci_get("activity_sample_int", "10"))
 local tick_int      = conntrack.sanitize_tick_interval(
                         uci_get("conntrack_tick_interval", "1"))
 local debug_opt     = uci_get("debug",                            "0")
--- #1848: ws transport config (named `config ws 'ws'` section). DEFAULT ON as of
--- #2608 — an UNSET flag means ws, so a fresh install needs no UCI step; an
--- explicit `enabled=0` still selects the HTTP poll path, which stays intact and
--- is also what a dead/unreachable sidecar falls back to (ws_link_healthy below).
--- These only affect behaviour when ws_enabled == "1"; the sidecar (a separate
--- procd instance) does the actual ws work, and the agent merely tees its
--- outbound usage/events to the bounded spool the sidecar drains.
+-- #1848/#2736: ws transport config (named `config ws 'ws'` section). There is no
+-- `enabled` flag any more: with the HTTP poll gone (#2736) an opt-out would
+-- leave a router with NO policy transport at all, which is a footgun rather than
+-- a choice. The sidecar (a separate procd instance) does the actual ws work; the
+-- agent routes its outbound usage/events to the bounded spool the sidecar
+-- drains, and reads the sidecar's health sentinel to judge the link.
 local function uci_get_ws(opt, default)
   return cursor:get("wifihaven", "ws", opt) or default
 end
-local ws_enabled        = uci_get_ws("enabled", "1")
-local ws_fallback_after = tonumber(uci_get_ws("fallback_after", "300"))
+-- The staleness bound for "the ws link is down", derived from the cadence that
+-- actually refreshes the health sentinel — the sidecar's heartbeat pong (#2731)
+-- — rather than from the standalone `ws.fallback_after` #2736 deletes along with
+-- the fallback it named. Single-sourced at ws_outbound.stale_after.
+local ws_heartbeat      = tonumber(uci_get_ws("heartbeat_interval", "30"))
+local ws_stale_after    = ws_outbound.stale_after(ws_heartbeat)
 local ws_spool_max      = tonumber(uci_get_ws("spool_max_bytes", "1048576"))
 -- #1945: apply-on-push cadence (seconds). When ws is enabled the sidecar writes
 -- pushed snapshots to /etc/wifihaven/policy.json (the IN channel); the running
 -- agent must APPLY them live, not only at startup. The on_tick loop re-reads the
 -- on-disk snapshot on this cadence and re-applies when its etag changed (a cheap
 -- read+compare otherwise). 2 s keeps push→enforce latency low while staying well
--- above the cost of one snapshot parse (the HTTP poll already parses one every
--- ~5 s in non-ws mode). No-op unless ws_enabled == "1".
+-- above the cost of one snapshot parse. Since #2736 this (with the #2229
+-- event-driven trigger below) is the ONLY way policy reaches enforcement.
 local ws_apply_int      = tonumber(uci_get_ws("apply_interval", "2"))
 
 -- #2381: the local enforcement escape hatch. Reads wifihaven.settings.
@@ -187,7 +204,6 @@ log.init({ debug = debug_opt })
 -- #771: PKG_VERSION baked at install time into /usr/lib/wifihaven/VERSION.
 -- nil on a checkout / older install — header is then simply omitted.
 local agent_version = version.read()
-local policy_opts   = { agent_version = agent_version }
 log.info("wifihaven-agent: starting api_url=%s block_page_url=%s router_id=%s debug=%s policy_int=%ds usage_int=%ds metrics_int=%ds activity_sample_int=%ds agent_version=%s",
          api_url, block_page_url, router_id, tostring(log.debug_enabled()), policy_int, usage_int, metrics_int, activity_sample_int, tostring(agent_version))
 
@@ -246,12 +262,6 @@ end
 -- per-element spawn regression was invisible without it).
 local function apply_phase_timer(phase, seconds)
   metrics.observe(mreg, "policy_apply_duration_seconds", { phase = phase }, seconds)
-end
-
--- record_poll(status) classifies a policy.fetch outcome into the bounded
--- snapshot_poll_total{result} enum (200 / 304 / error) and increments it.
-local function record_poll(result)
-  metrics.inc_counter(mreg, "snapshot_poll_total", { result = result })
 end
 
 -- #1301: emit blocklist_fetch_failures_total{status} from a fetch_and_cache
@@ -324,13 +334,11 @@ end
 -- (api/src/metrics/Metrics.scala). ws_state is an unlabelled link gauge (1/0).
 local ws_metrics_baseline = {
   ws_connect_total     = {},
-  ws_fallback_total    = {},
   ws_frames_sent_total = {},
   ws_frames_recv_total = {},
 }
 local WS_METRIC_LABEL_KEY = {
   ws_connect_total     = "result",
-  ws_fallback_total    = "result",
   ws_frames_sent_total = "op",
   ws_frames_recv_total = "op",
 }
@@ -525,15 +533,11 @@ local function http_post(url, body, headers)
   return code, resp_body, err_str
 end
 
--- #1848: outbound tee. When the ws sidecar is enabled AND the link is healthy
--- (its ws-health sentinel carries a timestamp within ws_fallback_after), an
--- outbound usage/events body is appended to the bounded spool the sidecar drains
--- instead of being POSTed here; otherwise this is a pure pass-through to
--- http_post (so the default-off path is byte-for-byte the old behaviour). The
--- metrics push deliberately stays on plain http_post so the ws_* observability
--- series reach the server even while the socket is down. The sentinel timestamp
--- is read from the file CONTENT (the sidecar writes os.time() into it), avoiding
--- `stat -c %Y` which stock busybox lacks.
+-- #1848/#2736: the ws-health sentinel. The sidecar writes os.time() into it on
+-- every successful send/recv and on each heartbeat pong (#2731); the agent reads
+-- the file CONTENT rather than its mtime because stock busybox has no
+-- `stat -c %Y`. Two readers: the failover edge (is the link up?) and the
+-- ws_health_age_seconds gauge alert W15 keys on.
 local function ws_health_read()
   local f = io.open(paths.ws_health, "r")
   if not f then return nil end
@@ -600,53 +604,57 @@ local function ws_spool_append(line)
     -- HTTP instead.
     if (now - ws_spool_warn_at) >= 60 then
       ws_spool_warn_at = now
-      log.warn("ws spool: append to %q failed — this body goes out over HTTP " ..
-               "instead (#2634). /tmp full?", paths.ws_outbound)
+      log.warn("ws spool: append to %q failed — this body goes back to the " ..
+               "caller's retry queue (#2634/#2736). /tmp full?", paths.ws_outbound)
     end
   end
   return ok, dropped
 end
 
+-- #2736: usage/events always go to the spool; there is no REST ingest left to
+-- fall back to. Non-teed ops (the metrics push, the block-page token fetch)
+-- still pass straight through to http_post.
 local usage_events_post = ws_outbound.make({
-  enabled        = (ws_enabled == "1"),
-  http_post      = http_post,
-  spool_append   = ws_spool_append,
-  health_read    = ws_health_read,
-  now            = os.time,
-  fallback_after = ws_fallback_after,
+  http_post    = http_post,
+  spool_append = ws_spool_append,
 })
 
--- #2037: ws-health gate for the policy-poll dormancy. While the ws sidecar is
--- enabled AND its health sentinel is fresh (within ws_fallback_after), the
--- persistent push link is the live policy transport, so the 5 s HTTP policy
--- poll goes DORMANT (the apply-on-push tick keeps enforcement current from
--- server pushes, and the server touches routers.last_seen_at on every ws
--- heartbeat frame — RouterWsRoutes.touch — so liveness never staled). The poll
--- RESUMES — today's behaviour, including the #331/#422 failover render on a
--- failed poll — when ws is disabled OR the sentinel is stale/absent past
--- ws_fallback_after. Reuses the SAME freshness predicate as the outbound tee
--- (ws_outbound.is_healthy) so the two gates cannot drift (design §3.1).
+-- #2037/#2736: is the ws link live? Under #2037 this gated the HTTP policy poll
+-- into dormancy; with #2736 the poll is gone and this is instead the input to
+-- the #331/#422 FAILOVER edge. That re-keying preserves what failover always
+-- meant — "we are out of contact with the API, so closed-mode profiles must
+-- close" — over the transport that now carries that contact. Pre-#2736 the
+-- signal was a failed snapshot poll; there is no poll to fail any more, and a
+-- stale/absent sentinel is the same fact observed on the live transport.
+-- Staleness is judged against ws_stale_after, derived from the heartbeat cadence
+-- that refreshes the sentinel (ws_outbound.stale_after) rather than the deleted
+-- ws.fallback_after.
 local function ws_link_healthy()
   return ws_outbound.is_healthy({
-    enabled        = (ws_enabled == "1"),
-    health_read    = ws_health_read,
-    now            = os.time,
-    fallback_after = ws_fallback_after,
+    health_read = ws_health_read,
+    now         = os.time,
+    stale_after = ws_stale_after,
   })
 end
 
 -- #2731: the sentinel's age in seconds for the ws_health_age_seconds gauge, or
--- -1 when there is no age to report — ws is off, or the sentinel is absent
--- because the sidecar never connected or cleared it on disconnect. Reported
--- rather than inferred because #2731 was exactly this value going cold under a
--- link every other series called healthy. Derived from ws_outbound.health_age —
--- the SAME enabled flag and the SAME read ws_link_healthy judges — so the gauge
--- an operator reads and the gate the agent acts on cannot drift. A GLOBAL so
--- on_tick calls it without capturing ws_outbound/ws_health_read as upvalues
--- (Lua 5.1 60-upvalue load limit, #1930).
+-- -1 when there is no age to report because the sentinel is absent — the sidecar
+-- never connected, or cleared it on disconnect. Reported rather than inferred
+-- because #2731 was exactly this value going cold under a link every other
+-- series called healthy. Derived from ws_outbound.health_age — the SAME read
+-- ws_link_healthy judges — so the gauge an operator reads and the judgement the
+-- agent acts on cannot drift.
+--
+-- #2736 makes this the fleet's PRIMARY router-health signal: with the HTTP poll
+-- gone, a router that loses ws goes quiet on every other channel, and alert W15
+-- fires on this gauge (age > 300s, or the -1 arm). It reaches the server because
+-- the metrics push stayed on HTTP — a health signal riding the link it reports
+-- on would be the #2546 shape.
+--
+-- A GLOBAL so on_tick calls it without capturing ws_outbound/ws_health_read as
+-- upvalues (Lua 5.1 60-upvalue load limit, #1930).
 function wh_ws_health_age()
   return ws_outbound.health_age({
-    enabled     = (ws_enabled == "1"),
     health_read = ws_health_read,
     now         = os.time,
   }) or -1
@@ -1094,13 +1102,19 @@ do
   end
 end
 
--- ── Initial policy fetch at startup ──────────────────────────────────────────
+-- ── Initial policy apply at startup ──────────────────────────────────────────
 
--- Load cached policy from flash BEFORE the first network poll (#309). If the
--- router rebooted during an API outage, this restores the last-known policy
--- so enforcement resumes within seconds instead of waiting on the first
--- successful poll. The boot-time default-deny skeleton (#308) stays in
--- effect until apply() succeeds.
+-- Load cached policy from flash (#309). If the router rebooted during an API
+-- outage, this restores the last-known policy so enforcement resumes within
+-- seconds. The boot-time default-deny skeleton (#308) stays in effect until
+-- apply() succeeds.
+--
+-- #2736: this IS the boot path now. It used to be a head start ahead of an
+-- immediate HTTP `policy.fetch`; with the poll gone, the on-disk snapshot is the
+-- only policy the agent has at boot, and fresh policy arrives when the ws
+-- sidecar next pushes (which it does on connect). That is also exactly what
+-- carries a router through a ws outage: enforcement degrades to "last known
+-- policy" rather than stopping.
 -- #2001: the etag the agent last observed on flash, so the startup save below
 -- can detect a concurrent ws-sidecar push that arrived during the (slow) apply
 -- and avoid clobbering it. nil when there is no cached snapshot.
@@ -1116,6 +1130,10 @@ do
   local cached = policy.load_snapshot(read_file, log)
   if cached then
     startup_disk_etag = cached.etag
+    -- #1782/#2736: populate the category/extraBlocked shards BEFORE the apply so
+    -- the rendered conf-file= directives resolve. The removed startup fetch used
+    -- to be what did this; the cached path has to do it itself now.
+    refresh_blocklists(cached)
     local t0 = clock.monotonic_seconds()
     local applied = policy.apply(cached, write_file, run_cmd, log,
                                  { on_apply = record_apply("boot"),
@@ -1127,6 +1145,11 @@ do
       local boot_shared = enf_boot and ts.empty_snapshot or cached
       render.update_shared(boot_shared, nft_sets, blocked_macs, blocked_reason, eb_hosts_by_mac, ea_hosts_by_mac, bl_hosts_by_mac, make_bl_member_iterator(boot_shared), bl_ids_by_mac)
       ts.last_snapshot = cached
+      -- #2736: record the applied etag so the ws apply-on-push tick dedups
+      -- against it and does not immediately re-apply what boot just applied.
+      -- Only on success — a failed apply must leave the tick free to retry.
+      ts.current_etag  = cached.etag
+      policy.mark_poll_success(os.time())
       log.info("startup: applied cached policy from /etc/wifihaven/policy.json")
     else
       log.warn("startup: cached policy apply failed — staying on default-deny")
@@ -1142,56 +1165,22 @@ end
 -- isn't reachable yet.
 wh_refresh_block_page_token()
 
+-- Scheduler timers use the monotonic clock so backward wall-clock jumps
+-- (NTP correction, DST, deliberate manipulation) can't stall the loop — #336.
 do
-  log.debug("startup: initial policy fetch")
-  local pt0 = clock.monotonic_seconds()
-  local snap, etag = policy.fetch(api_url, router_token, nil, http_get, log, policy_opts)
-  metrics.observe(mreg, "snapshot_poll_duration_seconds", {},
-                  clock.monotonic_seconds() - pt0)
-  if snap then
-    record_poll("200")
-    -- #1782: fetch + cache blocklists and write per-shard dnsmasq conf files
-    -- BEFORE the initial apply, so the boot ruleset's conf-file= directives
-    -- reference populated shards. Pre-#1782 this attached _blocklist_hosts to
-    -- the snapshot; now the shards carry the nftset= directives and the agent's
-    -- Lua heap never holds the full member set.
-    refresh_blocklists(snap)
-    local at0 = clock.monotonic_seconds()
-    local applied = policy.apply(snap, write_file, run_cmd, log,
-                                 { on_apply = record_apply("boot"),
-                                   phase_timer = apply_phase_timer,
-                                   enforcement_disabled = enf_boot })
-    metrics.observe(mreg, "policy_apply_duration_seconds", {},
-                    clock.monotonic_seconds() - at0)
-    if applied then
-      local boot_shared = enf_boot and ts.empty_snapshot or snap
-      render.update_shared(boot_shared, nft_sets, blocked_macs, blocked_reason, eb_hosts_by_mac, ea_hosts_by_mac, bl_hosts_by_mac, make_bl_member_iterator(boot_shared), bl_ids_by_mac)
-      ts.current_etag = etag
-      ts.last_snapshot = snap
-      policy.mark_poll_success(os.time())
-      -- #2001: don't clobber a fresher snapshot the ws sidecar persisted while
-      -- this initial apply was in flight (we fetched against `startup_disk_etag`).
-      policy.save_snapshot(snap, write_file, rename_file, log, read_file, startup_disk_etag)
-      log.info("startup: applied initial policy etag=%s", tostring(etag))
-    end
-  else
-    -- nil snap with an etag is a 304 (unlikely on the first poll since we send
-    -- no If-None-Match, but classify defensively); nil etag is a fetch error.
-    record_poll(etag and "304" or "error")
-    log.warn("startup: initial policy fetch returned no snapshot (will retry on timer)")
-  end
-  -- Scheduler timers use the monotonic clock so backward wall-clock jumps
-  -- (NTP correction, DST, deliberate manipulation) can't stall polling — #336.
   local mono = clock.monotonic_seconds()
   ts.last_policy_run        = mono
   ts.last_usage_run         = mono
   ts.last_metrics_run       = mono
   ts.last_blocklist_run     = mono
   ts.last_eb_refresh_run    = mono
-  ts.last_ws_apply_run      = mono
+  -- #2736: do NOT anchor the ws apply tick to now. Leaving it at 0 makes the
+  -- first on_tick due immediately, so a snapshot the sidecar pushed while the
+  -- agent was still booting applies at once instead of waiting out ws_apply_int.
+  ts.last_ws_apply_run      = 0
   ts.last_activity_sample   = mono
   ts.last_nflog_run         = mono
-  -- #2381: record the flag value the startup applies just ran under, so the
+  -- #2381: record the flag value the startup apply just ran under, so the
   -- on_tick flag-change reconciler doesn't spuriously re-apply on its first pass.
   ts.enforcement_disabled_applied = enf_boot
 end
@@ -1352,10 +1341,10 @@ conntrack.watch({
   -- #2024: idle-heartbeat cadence — drives on_tick on a wall-clock tick even
   -- when conntrack is silent, so the usage flush + activity sampler never stall.
   tick_interval   = tick_int,
-  -- #1848: events POST goes through the ws outbound tee. The tee routes
-  -- /api/router/events to the spool only when ws is enabled+healthy; everything
-  -- else — ws off, or the sidecar down past ws_fallback_after — passes straight
-  -- through to http_post unchanged.
+  -- #1848/#2736: events go out through ws_outbound, which routes
+  -- /api/router/events to the bounded spool the sidecar drains. There is no REST
+  -- fall-through: a spool-append failure returns a non-2xx so the batcher's
+  -- existing retry queue keeps the events.
   http_post       = usage_events_post,
   -- #2719: metric sink for the conntrack slow-path ceiling. conntrack.lua has
   -- no metrics registry of its own; the agent owns mreg and passes the same
@@ -1429,88 +1418,33 @@ conntrack.watch({
       -- tick: one integer compare. Called through the global so on_tick does not
       -- gain an upvalue (#1930).
       wh_refresh_block_page_token()
-      if ws_live then
-        -- #2037: ws is the live policy transport — skip the HTTP poll (dormant).
-        -- Advancing ts.last_policy_run above keeps the cadence anchor moving so
-        -- we re-check once per policy_int; the ws apply-on-push tick below keeps
-        -- enforcement current. The moment the sentinel goes stale past
-        -- ws_fallback_after this gate flips and the poll (and its failover
-        -- render path) resumes on the next tick.
-        metrics.inc_counter(mreg, "policy_poll_skipped_total", { reason = "ws_healthy" })
-      else
-      local pt0 = clock.monotonic_seconds()
-      local snap, etag = policy.fetch(api_url, router_token, ts.current_etag, http_get, log, policy_opts)
-      metrics.observe(mreg, "snapshot_poll_duration_seconds", {},
-                      clock.monotonic_seconds() - pt0)
-      local fetch_ok
-      -- #2001: the etag we fetched against (If-None-Match); the save below uses
-      -- it to detect a concurrent ws-sidecar push and avoid clobbering it.
-      local prev_etag = ts.current_etag
-      if snap then
-        record_poll("200")
-        -- 200: fetch + cache blocklists, attach hosts to snapshot for render.
-        -- #1782: fetch + cache blocklists and write/GC shard files.
-        -- The router token is passed via http_get closure (router-authenticated
-        -- route). Shards are atomic-written to /tmp; dnsmasq picks them up via
-        -- conf-file= directives in the rendered wifihaven.conf.
-        refresh_blocklists(snap)
-        ts.last_blocklist_run = mono  -- this poll already refreshed; reset cadence
-
-        -- Apply with no failover opts. If we were in failover, this
-        -- apply already emits a clean ruleset (no failover chain), so we
-        -- just need to clear the flag below. #1945: the apply+publish block
-        -- (drop-counter capture, policy.apply, render.update_shared) is shared
-        -- with the ws apply-on-push path via apply_and_publish.
-        if apply_and_publish(snap, "policy_change") then
-          ts.current_etag = etag
-          ts.last_snapshot = snap
-          policy.mark_poll_success(wall)
-          policy.save_snapshot(snap, write_file, rename_file, log, read_file, prev_etag)
-          -- #1945: refresh the ws apply-on-push cadence anchor so the disk-read
-          -- tick doesn't immediately re-apply the snapshot this poll just wrote.
-          ts.last_ws_apply_run = mono
-          log.debug("policy timer: applied snapshot etag=%s", tostring(etag))
-          fetch_ok = true
-        end
-      elseif etag then
-        record_poll("304")
-        ts.current_etag = etag  -- 304: just update etag
-        policy.mark_poll_success(wall)  -- 304 still counts as a successful poll
-        log.debug("policy timer: 304 not modified etag=%s poll_age=%s",
-                  tostring(etag), policy.format_poll_age(policy.poll_age_seconds(wall)))
-        fetch_ok = true
-      else
-        record_poll("error")
-        log.debug("policy timer: fetch failed poll_age=%s",
-                  policy.format_poll_age(policy.poll_age_seconds(wall)))
-        fetch_ok = false
-      end
-
-      -- #331/#422: failover transition. On the failure→failover edge we
-      -- re-render the cached snapshot with poll_failed=true so render.lua
-      -- emits the failover_drop set + wifihaven_failover chain (#311). On
-      -- the recovery edge we re-render to clear those rules. A 200 already
-      -- applied a clean ruleset above, so we only need to flip the flag
-      -- in that case; a 304 needs an explicit re-apply to drop the
-      -- failover chain. The transition trips on a single failed poll
-      -- (#422 — no 300s cushion).
+      -- #331/#422/#2736: the failover edge. Pre-#2736 it keyed on whether this
+      -- tick's HTTP snapshot poll succeeded; there is no poll to fail any more,
+      -- so it keys on the ws link instead — the same fact ("are we in contact
+      -- with the API?") observed on the transport that now carries that contact.
+      -- A stale or absent health sentinel trips failover for closed-mode
+      -- profiles immediately (#422 — no time-based cushion); a fresh one lifts
+      -- it. `ws_live` was already read once at the top of on_tick.
       --
       -- #2381: while the escape hatch is active the permissive ruleset owns the
-      -- plane — skip the failover re-render entirely so a sustained API outage
+      -- plane — skip the failover re-render entirely so a sustained outage
       -- doesn't re-install the failover drop chain over the bypass. The
-      -- flag-change reconciler at the top of on_tick re-establishes full
-      -- enforcement (and failover resumes) the moment the hatch is cleared.
-      if fetch_ok ~= nil and not ts.enforcement_disabled_applied then
+      -- flag-change reconciler above re-establishes full enforcement (and
+      -- failover resumes) the moment the hatch is cleared.
+      if ws_live then
+        policy.mark_poll_success(wall)
+      end
+      if not ts.enforcement_disabled_applied then
         local should_apply, fo_opts, new_in_failover =
-          policy.failover_transition(ts.in_failover_render, fetch_ok)
-        if should_apply and not snap and ts.last_snapshot then
-          -- Recovery via 304, or entering failover. Re-render last_snapshot
-          -- with the computed opts. Skip if we have no cached snapshot at
-          -- all (cold boot during outage): the #308 boot skeleton stays in
-          -- effect and there's nothing useful we can render.
-          fo_opts.on_apply = record_apply("policy_change")
+          policy.failover_transition(ts.in_failover_render, ws_live)
+        if should_apply and ts.last_snapshot then
+          -- Re-render the cached snapshot with the computed opts — entering
+          -- failover, or lifting it. Skip when there is no cached snapshot at
+          -- all (cold boot during an outage): the #308 boot skeleton stays in
+          -- effect and there is nothing useful to render.
+          fo_opts.on_apply    = record_apply("policy_change")
           fo_opts.phase_timer = apply_phase_timer
-          -- #1325: same pre-reset capture as the main apply above.
+          -- #1325: same pre-reset capture as the main apply path.
           fold_enforcement_drops()
           local ft0 = clock.monotonic_seconds()
           local fo_applied = policy.apply(ts.last_snapshot, write_file, run_cmd, log, fo_opts)
@@ -1518,28 +1452,26 @@ conntrack.watch({
                           clock.monotonic_seconds() - ft0)
           if fo_applied then
             if new_in_failover then
-              log.info("failover render: poll failed, applying failover chain for closed-mode profiles (poll_age=%s)",
-                       policy.format_poll_age(policy.poll_age_seconds(wall)))
+              log.info("failover render: ws link down (sentinel age past %ds), applying failover chain for closed-mode profiles",
+                       ws_stale_after)
             else
-              log.info("failover lifted: applying fresh snapshot")
+              log.info("failover lifted: ws link healthy again, applying fresh snapshot")
             end
           else
             log.warn("failover transition: apply failed (in_failover=%s→%s)",
                      tostring(ts.in_failover_render), tostring(new_in_failover))
-            -- Don't flip the flag if the apply failed — we'll retry next tick.
+            -- Don't flip the flag if the apply failed — retry next tick.
             new_in_failover = ts.in_failover_render
           end
-        elseif should_apply and not ts.last_snapshot then
-          -- Cold boot during API outage with no cached snapshot. Boot
-          -- skeleton (#308) is still enforcing default-deny; nothing to
-          -- render. Don't flip the flag so we keep retrying on each tick.
-          log.warn("failover transition skipped: no cached snapshot (boot-skeleton default-deny still active, poll_age=%s)",
-                   policy.format_poll_age(policy.poll_age_seconds(wall)))
+        elseif should_apply then
+          -- Cold boot during an outage with no cached snapshot. The boot
+          -- skeleton (#308) is still enforcing default-deny; nothing to render.
+          -- Don't flip the flag so we keep retrying on each tick.
+          log.warn("failover transition skipped: no cached snapshot (boot-skeleton default-deny still active)")
           new_in_failover = ts.in_failover_render
         end
         ts.in_failover_render = new_in_failover
       end
-      end  -- #2037: close the `else` (ws link not healthy → poll ran)
     end
 
     -- ws apply-on-push timer (#1945). When the ws sidecar is enabled it writes
@@ -1559,7 +1491,7 @@ conntrack.watch({
     -- torn/missing read returns nil and is retried next tick; the atomic
     -- tmp→rename the sidecar uses means a reader sees either the old or the new
     -- complete file, never a partial one. Skipped while in failover (the
-    -- failover chain owns the plane until the poll recovers).
+    -- failover chain owns the plane until the ws link recovers).
     --
     -- #2229 event-driven wake. Waiting for the ws_apply_int poll-of-disk gate
     -- added up to that interval of latency before a pushed pause even started
@@ -1570,9 +1502,31 @@ conntrack.watch({
     -- than waiting for the gate. The gate is KEPT as a backstop so a missed/torn
     -- trigger (write failed, tmpfs cleared) can never strand a pushed snapshot.
     -- Both entrypoints run the SAME etag-deduped apply, so there is no
-    -- double-apply. Skipped while in failover (the failover chain owns the plane
-    -- until the poll recovers).
-    if ws_enabled == "1" and not ts.in_failover_render then
+    -- double-apply.
+    --
+    -- #2736: no longer gated on a ws-enabled flag, AND no longer skipped while
+    -- in failover. Both gates had to go, and the second one is the subtle half.
+    --
+    -- It used to read `not ts.in_failover_render` — "the failover chain owns the
+    -- plane until the poll recovers" — which was safe only because the POLL was
+    -- the thing that recovered: `in_failover_render` went true on a failed HTTP
+    -- fetch, and the very next successful fetch lifted it and applied. With the
+    -- poll gone, failover trips on a stale ws sentinel instead, and this tick is
+    -- the ONLY remaining way policy reaches enforcement — so the old gate made
+    -- failover suppress the sole apply path. Caught by Gate 2: a ws blip past
+    -- the staleness bound stalled a pushed snapshot for ~5 minutes (log:
+    -- "failover render: ws link down" 20:53:38 → "failover lifted" 20:54:03 →
+    -- apply 20:54:11), which is long enough to blow a scenario's timeout and, on
+    -- a real router, to leave an admin's edit unapplied for as long as the socket
+    -- flaps.
+    --
+    -- Applying a pushed snapshot is also PROOF the link is live — the sidecar
+    -- could not have received and persisted it otherwise — so a successful apply
+    -- clears the failover flag here rather than waiting for the next policy tick
+    -- to notice. That also removes a double-apply: without it, recovery rendered
+    -- the OLD cached snapshot to lift failover and then immediately rendered the
+    -- new one.
+    do
       local trig_etag, persist_up = ws_pending_read()
       local due_trigger = trig_etag ~= nil and trig_etag ~= ts.current_etag
       local due_gate    = (mono - ts.last_ws_apply_run) >= ws_apply_int
@@ -1581,7 +1535,7 @@ conntrack.watch({
         local pushed = policy.load_snapshot(read_file, log)
         if pushed and pushed.etag and pushed.etag ~= ts.current_etag then
           -- Populate category/extraBlocked shards before the apply, exactly as
-          -- the poll path does, so the rendered conf-file= directives resolve.
+          -- the boot path does, so the rendered conf-file= directives resolve.
           refresh_blocklists(pushed)
           ts.last_blocklist_run = mono
           if apply_and_publish(pushed, "policy_change") then
@@ -1599,6 +1553,14 @@ conntrack.watch({
                   metrics.observe(mreg, "ws_push_apply_latency_seconds", {}, lat)
                 end
               end
+            end
+            -- A push we received and applied proves the link is up, so lift any
+            -- failover render in the same breath. `apply_and_publish` renders
+            -- with no failover opts, so the chain is already gone from the
+            -- ruleset; this just stops the flag from re-rendering it.
+            if ts.in_failover_render then
+              ts.in_failover_render = false
+              log.info("failover lifted: a pushed snapshot applied, so the ws link is live")
             end
             log.info("ws apply: applied pushed snapshot etag=%s (poll-independent)",
                      tostring(pushed.etag))

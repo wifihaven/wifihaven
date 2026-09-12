@@ -11,15 +11,17 @@ it, leaving a router that silently never auto-updates. If both paths fail
 the only signal is a router that drifts further out of date every day —
 exactly the kind of regression Gate 2 should fail loudly on.
 
-#2608 adds the transport asserts. Its two acceptance criteria are both
-install-time health properties, so they live here rather than in a new suite:
-a brand-new install must come up on the websocket with NO manual UCI step,
-and a router whose sidecar has died must still have a transport — the HTTP
-poll — rather than nothing at all. The VM is the real target for both: real
-procd, real libuci, real Lua 5.1, and the uci-defaults migration running at
-first boot exactly as it does on hardware.
+#2608 added the transport asserts and #2736 reshaped them, because the fallback
+they described is gone. Both criteria are install-time health properties, so
+they live here rather than in a new suite: a brand-new install must come up on
+the websocket with NO manual UCI step, and a router whose sidecar has died must
+keep ENFORCING its last on-disk snapshot while making no HTTP policy fetch at
+all — there is no longer any code that could. The VM is the real target for
+both: real procd, real libuci, real Lua 5.1, real nftables.
 """
 from __future__ import annotations
+
+import time
 
 import pytest
 
@@ -39,6 +41,45 @@ WS_BIN = "/usr/sbin/wifihaven-ws"
 # … ; pkill -f '[w]ifihaven-ws'` and the pkill SIGKILLed its own parent, so the
 # loop ran once and the `rm` after it never executed.
 WS_PATTERN = "[w]ifihaven-ws"
+
+# How long to watch for an HTTP policy fetch that must never come. The removed
+# poll ran at `policy_poll_interval` (5s shipped), so 30s is six windows it
+# would have used — long enough that a surviving poll shows up, short enough not
+# to stretch the scenario.
+POLL_ABSENCE_WINDOW_S = 30.0
+
+
+def _wifihaven_nft_ruleset() -> str:
+    """The agent's installed nftables table, or "" if it is not there.
+
+    Enforcement lives in `table inet wifihaven`; its presence is the observable
+    for "this router is still blocking", independent of any transport.
+    """
+    res = router_ssh(
+        "nft list table inet wifihaven 2>/dev/null || true", check=False, timeout=30
+    )
+    return (res.stdout or "").strip()
+
+
+def _fake_api_reachable_from_router() -> bool:
+    """Can the router reach the very endpoint the removed poll used to call?
+
+    The liveness anchor for the no-poll assertion. Curls the agent's own
+    configured `api_url` + /api/router/policy WITHOUT a bearer token and checks
+    for a real HTTP status rather than curl's 000 (no connection). Unauthenticated
+    is deliberate on both counts: it proves the network path without needing the
+    token, and the fake rejects it at `_require_bearer` BEFORE recording a fetch,
+    so this probe cannot itself pollute the list we are about to assert is empty.
+    """
+    res = router_ssh(
+        "u=$(uci -q get wifihaven.wifihaven.api_url); "
+        'curl -s -o /dev/null -m 10 -w "%{http_code}" "$u/api/router/policy" '
+        "2>/dev/null || echo 000",
+        check=False,
+        timeout=40,
+    )
+    code = (res.stdout or "").strip().splitlines()[-1:] or ["000"]
+    return code[0] not in ("", "000")
 
 
 def test_wifihaven_update_cron_entry_present(router):
@@ -69,37 +110,26 @@ def _ws_sidecar_pids() -> list[str]:
     return [p for p in (res.stdout or "").split() if p.strip()]
 
 
-def test_ws_is_the_default_transport_after_install(router):
-    """#2608 acceptance: a fresh install comes up on ws with no manual UCI step.
+def test_ws_is_the_only_transport_after_install(router):
+    """#2608/#2736 acceptance: a fresh install comes up on ws with no UCI step.
 
-    Three observables, all on the real target:
+    Two observables, both on the real target:
 
-    * `wifihaven.ws.enabled` is UNSET. The shipped conffile deliberately writes
-      no value; "unset" is the state every reader turns into 1, and keeping it
-      absent is what lets the migration tell "nobody chose this" apart from a
-      hand-authored opt-out.
-    * `wifihaven.ws.default_on_migrated` is 1, i.e. the one-shot uci-defaults
-      migration actually ran on this box (at first boot here; via postinst on an
-      in-place upgrade). Its presence is what makes any FUTURE `enabled=0`
-      durable — the script never rewrites the key again.
-    * The `wifihaven-ws` procd instance is actually running. The init script's
-      `config_get ws_enabled ws enabled '1'` is the third reader of the default,
-      and this is the only place it gets exercised against real procd.
+    * There is NO `wifihaven.ws.enabled` key to consult. #2736 removed the
+      toggle along with the HTTP poll it selected — with the poll gone, an
+      opt-out would leave the router unable to receive policy or report usage at
+      all. This asserts the shipped conffile carries no such option, so nothing
+      can be "off" by configuration.
+    * The `wifihaven-ws` procd instance is actually running. The init script now
+      starts it unconditionally, and this is the only place that gets exercised
+      against real procd.
     """
     enabled = router_ssh(
         "uci -q get wifihaven.ws.enabled || true", check=False, timeout=20
     ).stdout.strip()
     assert enabled == "", (
-        "a fresh install must leave wifihaven.ws.enabled unset so the default "
-        f"applies; got {enabled!r}"
-    )
-
-    marker = router_ssh(
-        "uci -q get wifihaven.ws.default_on_migrated || true", check=False, timeout=20
-    ).stdout.strip()
-    assert marker == "1", (
-        "the #2608 uci-defaults migration did not run (or did not record its "
-        f"marker); wifihaven.ws.default_on_migrated={marker!r}"
+        "#2736 removed the ws.enabled toggle; a fresh install must ship no such "
+        f"key, got {enabled!r}"
     )
 
     pids = wait_until(
@@ -110,17 +140,29 @@ def test_ws_is_the_default_transport_after_install(router):
     assert pids, f"no {WS_BIN} process"
 
 
-def test_dead_ws_sidecar_falls_back_to_the_http_poll(router, fake_api):
-    """#2608 acceptance: killing the sidecar leaves the router still reporting.
+def test_dead_ws_sidecar_keeps_enforcing_and_never_polls(router, fake_api):
+    """#2736 acceptance: losing ws degrades the router, it does not stop it.
 
-    This is the failure mode that makes the default flip safe. We simulate a
-    sidecar that cannot stay up — move the binary aside, then kill it, so every
-    procd respawn fails its exec and procd gives up after its retry budget — and
-    then clear the health sentinel the way a clean sidecar exit would. The agent
-    reads an absent sentinel as "the link is down", which un-dormants the policy
-    poll (`ws_outbound.is_healthy`, #2037) and puts the outbound tee back on
-    `http_post`. A fresh `GET /api/router/policy` arriving at the fake AFTER the
-    sidecar is gone is the proof: the router still has a transport.
+    This is the trade #2736 makes, asserted on the real target. Before #2736 a
+    dead sidecar un-dormanted the HTTP snapshot poll and the router carried on
+    over REST. That fallback is gone, so what must hold now is:
+
+      1. enforcement KEEPS RUNNING off the last on-disk snapshot — the nftables
+         ruleset the agent last applied is still installed, and
+      2. NO HTTP policy fetch ever reaches the API, because there is no code
+         left that could make one.
+
+    Point 2 is an absence, so it gets a LIVENESS ANCHOR: point 1 is checked
+    through the same SSH channel in the same window, and the fake is proven
+    reachable from the router before we look for the fetch that must not be
+    there. A dead harness fails those first rather than passing the absence for
+    free.
+
+    We simulate a sidecar that cannot stay up — move the binary aside, then kill
+    it, so every procd respawn fails its exec and procd gives up after its retry
+    budget — and then clear the health sentinel the way a clean sidecar exit
+    would, so the agent sees the link as down immediately rather than waiting out
+    the staleness window.
 
     The kill loop is sized off the init script's own budget: `procd_set_param
     respawn 3600 5 5` (openwrt/files/etc/init.d/wifihaven, the ws instance) means
@@ -137,6 +179,15 @@ def test_dead_ws_sidecar_falls_back_to_the_http_poll(router, fake_api):
         _ws_sidecar_pids,
         timeout_s=120,
         description="the ws sidecar to come up before we kill it",
+    )
+
+    # ANCHOR, part 1: the agent has actually applied a snapshot, so "still
+    # enforcing" below is a statement about real installed rules rather than
+    # about an agent that never enforced anything.
+    ruleset_before = _wifihaven_nft_ruleset()
+    assert ruleset_before, (
+        "the agent had installed no wifihaven nft table before the sidecar was "
+        "killed — nothing to prove survives the outage"
     )
 
     # Both paths are assembled in the REMOTE shell from split string literals, so
@@ -162,12 +213,12 @@ def test_dead_ws_sidecar_falls_back_to_the_http_poll(router, fake_api):
         f"for i in 1 2 3 4 5 6 7; do "
         f"for p in $(pgrep -f '{WS_PATTERN}'); do kill -9 \"$p\" 2>/dev/null; done; "
         f"sleep 5; done; "
-        # Clearing the sentinel is what makes the fallback immediate: an ABSENT
-        # sentinel is never fresh (ws_outbound.lua), while a stale-but-present one
-        # would make the agent wait out ws_fallback_after (300s, longer than this
-        # test's budget). This must run — it is why the kill above must not take
-        # its own shell down with it. The sentinel is /tmp/wifihaven-ws-health,
-        # assembled into "$h" above rather than named here for the same reason.
+        # Clearing the sentinel makes the link read as down at once: an ABSENT
+        # sentinel is never fresh (ws_outbound.lua), while a stale-but-present
+        # one would make the agent wait out the staleness window first. This must
+        # run — it is why the kill above must not take its own shell down with
+        # it. The sentinel is /tmp/wifihaven-ws-health, assembled into "$h" above
+        # rather than named here for the same reason.
         'rm -f "$h"; '
         # Fail loudly if the sentinel somehow survived, rather than leaving the
         # assertion below to time out with a misleading message.
@@ -179,6 +230,7 @@ def test_dead_ws_sidecar_falls_back_to_the_http_poll(router, fake_api):
     assert WS_PATTERN.replace("[", "").replace("]", "") not in kill_cmd, (
         f"kill command must not contain the plain sidecar name: {kill_cmd!r}"
     )
+    after = fake_api.latest_fetch_id()
     router_ssh(kill_cmd, check=True, timeout=180)
 
     wait_until(
@@ -187,18 +239,34 @@ def test_dead_ws_sidecar_falls_back_to_the_http_poll(router, fake_api):
         description="the ws sidecar to stay dead (procd respawn budget exhausted)",
     )
 
-    # Require an HTTP-transport fetch specifically. The fake records ws pushes in
-    # the same list (#2608, so wait_for_etag_served stays transport-agnostic), so
-    # asserting only "a new record appeared" could be satisfied by a last push
-    # racing the kill — which would prove nothing about the poll resuming.
-    after = fake_api.latest_fetch_id()
-    wait_until(
-        lambda: [
-            f
-            for f in (fake_api.policy_fetches(since_id=after).get("fetches") or [])
-            if f.get("transport") == "http"
-        ],
-        timeout_s=180,
-        interval_s=2.0,
-        description="the HTTP policy poll to resume after the sidecar died",
+    # (1) Enforcement survives the outage: the ruleset the agent applied before
+    # the sidecar died is still installed. This is the whole reason removing the
+    # poll is acceptable — the router degrades to "last known policy", it does
+    # not stop blocking.
+    ruleset_after = _wifihaven_nft_ruleset()
+    assert ruleset_after, (
+        "the wifihaven nft table disappeared after the ws sidecar died — losing "
+        "the socket must degrade enforcement to the last snapshot, not end it"
+    )
+
+    # ANCHOR, part 2: the API is reachable from the router right now, so a fetch
+    # COULD have landed. Without this, "no fetch arrived" would also be satisfied
+    # by a wedged VM with no network.
+    assert _fake_api_reachable_from_router(), (
+        "the fake API is not reachable from the router, so the no-poll assertion "
+        "below would pass for free"
+    )
+
+    # (2) No HTTP policy fetch, ever. The fake records ws pushes in the same list
+    # (#2608, so wait_for_etag_served stays transport-agnostic), so this filters
+    # on transport rather than on "a new record appeared".
+    time.sleep(POLL_ABSENCE_WINDOW_S)
+    http_fetches = [
+        f
+        for f in (fake_api.policy_fetches(since_id=after).get("fetches") or [])
+        if f.get("transport") == "http"
+    ]
+    assert not http_fetches, (
+        "the agent made an HTTP policy fetch after the sidecar died — #2736 "
+        f"removed that code path entirely: {http_fetches!r}"
     )

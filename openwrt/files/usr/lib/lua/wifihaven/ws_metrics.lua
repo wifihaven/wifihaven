@@ -16,7 +16,7 @@
 --
 -- The metric NAMES + bounded label enums here MUST match the API allowlist
 -- (api/src/metrics/Metrics.scala MetricGuard.Allowed) — off-allowlist series are
--- dropped server-side. Series: ws_connect_total{result}, ws_fallback_total{result},
+-- dropped server-side. Series: ws_connect_total{result},
 -- ws_frames_sent_total{op}, ws_frames_recv_total{op} (counters); ws_state (gauge).
 
 local M = {}

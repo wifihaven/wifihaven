@@ -32,8 +32,8 @@ lan_prefix.placeholder = "192.168.1."
 
 -- ── Cadence (see #748) ──────────────────────────────────────────────────────
 
-local policy_int = s:option(Value, "policy_poll_interval", translate("Policy poll interval (s)"),
-  translate("How often to GET /api/router/policy. Lower = faster propagation of admin changes, more API load. Suggested 3–30."))
+local policy_int = s:option(Value, "policy_poll_interval", translate("Policy tick interval (s)"),
+  translate("Cadence of the agent's policy tick. Since #2736 there is no HTTP policy poll — the WebSocket sidecar pushes snapshots and the agent applies them from disk — so this paces the block-page-token refresh and the WebSocket-link check behind failover. The UCI key keeps its old name so existing overrides survive. Suggested 3–30."))
 policy_int.datatype = "uinteger"
 policy_int.placeholder = "5"
 
@@ -43,7 +43,7 @@ usage_int.datatype = "uinteger"
 usage_int.placeholder = "60"
 
 local metrics_int = s:option(Value, "metrics_report_interval", translate("Metrics push interval (s)"),
-  translate("How often to push the agent's cumulative observability metrics to /api/router/metrics. Independent of the policy poll; counters self-heal on a missed push. Suggested 30–300."))
+  translate("How often to push the agent's cumulative observability metrics to /api/router/metrics. This is the one channel that deliberately stays on HTTP, so router health stays visible while the WebSocket is down. Counters self-heal on a missed push. Suggested 30–300."))
 metrics_int.datatype = "uinteger"
 metrics_int.placeholder = "60"
 
@@ -66,30 +66,13 @@ local debug_opt = s:option(Flag, "debug", translate("Verbose logging"),
   translate("Emit debug-level entries to syslog."))
 debug_opt.default = "0"
 
--- ── WebSocket transport (see #1023 / #2037 / #2608) ─────────────────────────
--- The ws sidecar toggle lives in its own named `config ws 'ws'` section
--- (read as wifihaven.ws.<opt>), so it needs a NamedSection distinct from the
--- anonymous default `wifihaven` section above. Flipping this replaces the CLI
--- `uci set wifihaven.ws.enabled=…`; the init script starts the sidecar unless
--- the flag is explicitly 0, so a service restart is required (same note as the
--- cadences). #2608 made ws the default transport, so the label no longer says
--- "experimental" and the Flag defaults to on — matching what an unset key means
--- to the agent, the sidecar and the init script. Turning it OFF here writes an
--- explicit `enabled=0` (rmempty=false), which the one-shot uci-defaults
--- migration then leaves alone forever. rmempty stays FALSE deliberately: with
--- rmempty=true, unchecking the box would DELETE the key, and an absent key now
--- means ON — so the toggle could never turn ws off. The cost is that saving this
--- page also pins an explicit `enabled=1` for someone who never touched the
--- field. That is benign: it writes the value the default already resolves to,
--- and the migration marker means the migration would not have rewritten the key
--- either way.
-local ws = m:section(NamedSection, "ws", "ws", translate("WebSocket transport"))
-ws.addremove = false
-
-local ws_enabled = ws:option(Flag, "enabled", translate("Enable WebSocket transport"),
-  translate("When on, the agent maintains a persistent WebSocket to the API for live policy push plus usage/event upload, and the HTTP poll goes dormant (see #2037). Default on. Turning it off puts this router back on HTTP polling — which is also the automatic fallback whenever the WebSocket is down. Requires a wifihaven service restart to take effect."))
-ws_enabled.default = "1"
-ws_enabled.rmempty = false
+-- ── WebSocket transport (see #1023 / #2037 / #2608 / #2736) ────────────────
+-- There is deliberately NO toggle here. #2736 removed the agent's HTTP snapshot
+-- poll, so the WebSocket is the router's only policy and telemetry transport and
+-- switching it off would leave the box unable to receive policy or report usage
+-- at all. The sidecar's tuning knobs (heartbeat_interval, poll_interval,
+-- max_frame_bytes, connect_timeout, spool_max_bytes) stay CLI-only in
+-- `config ws 'ws'` — they are diagnostic dials, not household settings.
 
 -- ── Emergency: disable all enforcement (escape hatch, #2381) ─────────────────
 -- Lives in its own named `config settings 'settings'` section

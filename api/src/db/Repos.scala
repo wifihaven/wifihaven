@@ -1198,6 +1198,24 @@ trait RouterRepo {
   def touchEtag(id: RouterId, etag: ETag): Task[Unit]
 
   /**
+   * #2736: write `agent_version` ALONE, leaving `last_seen_at` untouched — the same carve-out
+   * `touchEtag` makes above, for a different reason.
+   *
+   * The agent's version used to arrive on the `X-WifiHaven-Agent-Version` header of the REST policy
+   * poll, whose `touch` legitimately refreshed `last_seen_at` too. #2736 made the OpenWrt agent
+   * websocket-only, so it now arrives on the 60 s metrics push instead — and routing THAT through
+   * `touch` would quietly change what `last_seen_at` means. The metrics push deliberately stays on
+   * HTTP precisely so it survives a dead websocket, so stamping liveness from it would keep
+   * `agent_connected_routers` green for a fleet that has lost its policy/telemetry transport
+   * entirely, and C7 ("no policy polls, no usage, no events") would stop covering exactly the
+   * outage it was written for. Alert W15 covers the per-router case at 30m; C7's 10m fleet-wide arm
+   * has to stay honest.
+   *
+   * `COALESCE`-free: the caller skips an empty version, so a value reaching here is always real.
+   */
+  def recordAgentVersion(id: RouterId, agentVersion: String): Task[Unit]
+
+  /**
    * #1204: routers whose last_seen_at is at or after `cutoff`. Drives the agent_connected_routers
    * gauge.
    */
@@ -2903,6 +2921,14 @@ class RouterRepoLive(xa: Transactor[Task]) extends RouterRepo {
               last_etag=COALESCE($etag,last_etag),
               agent_version=COALESCE($agentVersion,agent_version)
           WHERE id=$id""".update.run
+        .transact(xa)
+        .unit,
+    )
+  // #2736: agent_version only — deliberately NOT last_seen_at. See the trait's scaladoc: the
+  // metrics push outlives a dead websocket, so it must not stamp liveness.
+  def recordAgentVersion(id: RouterId, agentVersion: String)                         =
+    DbMetrics.timed("router.recordAgentVersion")(
+      sql"UPDATE routers SET agent_version=$agentVersion WHERE id=$id".update.run
         .transact(xa)
         .unit,
     )

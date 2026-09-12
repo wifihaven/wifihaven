@@ -8,13 +8,14 @@
 -- built on the spike-proven (#1845) cqueues + luaossl + hand-rolled RFC 6455
 -- client (ws_client.lua) and the ws_loop.lua state machine.
 --
--- Default ON as of #2608: the init script starts this instance unless
--- `wifihaven.ws.enabled` is explicitly `0`. With it explicitly off — or whenever
--- this sidecar is dead, cannot complete the TLS handshake, or reaches a server
--- that does not speak ws — the agent's HTTP poll/POST path is the transport,
--- byte-for-byte unchanged; the sidecar simply stops refreshing the health
--- sentinel and the agent's fallback window (`ws_fallback_after`) expires. When
--- up, this sidecar: opens wss://…/api/router/ws with the bearer token in the upgrade
+-- #2736: this is the router's ONLY policy/telemetry transport. The init script
+-- always starts it (the `wifihaven.ws.enabled` opt-out is gone with the HTTP
+-- poll it selected). When this sidecar is dead, cannot complete the TLS
+-- handshake, or reaches a server that does not speak ws, it stops refreshing the
+-- health sentinel — the agent then keeps enforcing its last on-disk snapshot but
+-- receives no policy and reports nothing, and alert W15 fires on the sentinel's
+-- age (which still reaches the server, because the agent's metrics push
+-- deliberately stayed on HTTP). When up, this sidecar: opens wss://…/api/router/ws with the bearer token in the upgrade
 -- Authorization header; reconnects with exp backoff + jitter (§5.1); drains the
 -- agent's outbound usage/events spool OUT as frames (splitting an oversized
 -- UsageReport, the #1017 fix §5.3); writes a pushed `policy` frame IN to the
@@ -51,8 +52,6 @@ end
 local api_url      = uci_get("api_url", "http://192.168.1.1:8080")
 local router_token = uci_get("router_token", "")
 local router_id    = uci_get("router_id", "")
--- #2608: unset ⇒ "1" (ws is the default transport); only an explicit "0" opts out.
-local ws_enabled   = uci_get_ws("enabled", "1")
 local heartbeat    = tonumber(uci_get_ws("heartbeat_interval", "30"))
 -- #2620: the loop tick / recv timeout, decoupled from the heartbeat. The
 -- default has ONE home (ws_loop.DEFAULT_POLL_INTERVAL — the shipped UCI file
@@ -62,20 +61,12 @@ local heartbeat    = tonumber(uci_get_ws("heartbeat_interval", "30"))
 -- operator ends up debugging against a cadence that was never in effect.
 local poll_raw     = uci_get_ws("poll_interval", tostring(ws_loop.DEFAULT_POLL_INTERVAL))
 local poll_int     = ws_loop.sanitize_poll_interval(poll_raw, heartbeat)
-local fallback     = tonumber(uci_get_ws("fallback_after", "300"))
 local max_frame    = tonumber(uci_get_ws("max_frame_bytes", "65536"))
 local connect_to   = tonumber(uci_get_ws("connect_timeout", "10"))
 local debug_opt    = uci_get("debug", "0")
 
 log.init({ debug = debug_opt })
 
-if ws_enabled ~= "1" then
-  -- The init script gates the instance on this flag, so we normally never reach
-  -- here with it off; if we do (manual run / race), idle quietly instead of
-  -- exiting fast and tripping procd's respawn throttle.
-  log.info("wifihaven-ws: ws.enabled != 1 — sidecar disabled, idling")
-  while true do os.execute("sleep 3600") end
-end
 if router_token == "" or router_id == "" then
   log.err("wifihaven-ws: router not enrolled (token/id unset) — exiting")
   os.exit(1)
@@ -105,8 +96,8 @@ elseif tostring(poll_int) ~= tostring(tonumber(poll_raw)) then
            tostring(poll_raw), tostring(poll_int),
            tostring(ws_loop.MIN_POLL_INTERVAL), heartbeat)
 end
-log.info("wifihaven-ws: starting url=%s router_id=%s heartbeat=%ds poll=%ss fallback_after=%ds max_frame=%dB",
-         ws_url, router_id, heartbeat, tostring(poll_int), fallback, max_frame)
+log.info("wifihaven-ws: starting url=%s router_id=%s heartbeat=%ds poll=%ss max_frame=%dB",
+         ws_url, router_id, heartbeat, tostring(poll_int), max_frame)
 
 -- Seed the jitter PRNG. ws_backoff.delay uses cfg.rng; vary the seed by pid +
 -- monotime so a fleet that all reconnect at once doesn't share a jitter phase.
@@ -133,13 +124,12 @@ local function flush_metrics() ws_metrics.flush(mstate, paths.ws_metrics) end
 
 local metrics_sink = {
   connect    = function(result) ws_metrics.inc(mstate, "ws_connect_total", result); flush_metrics() end,
-  fallback   = function(result) ws_metrics.inc(mstate, "ws_fallback_total", result); flush_metrics() end,
   frame_sent = function(op)     ws_metrics.inc(mstate, "ws_frames_sent_total", op); flush_metrics() end,
   frame_recv = function(op)     ws_metrics.inc(mstate, "ws_frames_recv_total", op); flush_metrics() end,
   state      = function(v)      ws_metrics.set(mstate, "ws_state", v); flush_metrics() end,
 }
 
--- ── health sentinel (the agent's outbound tee + fallback decision, §3.1) ──────
+-- ── health sentinel (the agent's failover edge + the W15 gauge, §3.2) ────────
 local function touch_health()
   local f = io.open(paths.ws_health, "w")
   if f then f:write(tostring(os.time())); f:close() end
@@ -236,7 +226,6 @@ local cfg = {
   metrics      = metrics_sink,
   heartbeat_interval = heartbeat,
   poll_interval      = poll_int,
-  fallback_after     = fallback,
   rng          = math.random,
   log          = log,
 }

@@ -244,7 +244,9 @@ def router_session(fake_server, fake_api) -> EnrolledRouter:
         name=f"e2e-fake-router-{uuid.uuid4().hex[:8]}",
     )
     _wait_for_fake_slirp_ready(port=fake_server.port, timeout_s=120)
-    # Confirm the agent has issued at least one policy poll before snapshotting.
+    # Confirm the agent has taken delivery of at least one policy snapshot
+    # before snapshotting. Since #2736 that is always the fake's
+    # first-policy-on-connect ws push (#1849) — there is no HTTP poll left.
     fake_api.wait_for_policy_fetch(timeout_s=180)
     # Take the base snapshot on a warm WAN so restores start from a healthy
     # upstream (#2390). Larger budget here — a cold base snapshot would poison

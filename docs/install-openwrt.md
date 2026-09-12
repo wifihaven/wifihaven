@@ -204,7 +204,7 @@ On a healthy start you should see lines like:
 
 Then check the admin UI: **Routers → `<your router name>`** should show a
 fresh `last_seen_at`, updating roughly every 60 seconds (the usage-report
-cadence; the policy poll itself is faster, ~5 s).
+cadence; the websocket heartbeat touches it more often still, every ~30 s).
 
 For a deeper end-to-end check that mirrors the VM e2e suite — enrollment,
 allowed browsing, blocking, pause, schedule, time limits, usage reporting,
@@ -343,8 +343,8 @@ unrestricted internet.
 The drop is not instantaneous, and it can't be. The rule is keyed to the MAC, so
 the device has to exist before there is anything to key on: the router reports
 the new MAC on its next event flush (`event_flush_interval`, 10 s), the API
-creates the device row, and the router picks up the rule on its next policy poll
-(`policy_poll_interval`, 5 s) — defaults in
+creates the device row, and the API pushes the new rule over the router's
+websocket, which the agent applies within `ws.apply_interval` (2 s) — defaults in
 [`openwrt/files/etc/config/wifihaven`](../openwrt/files/etc/config/wifihaven).
 Expect a window of roughly a quarter-minute in which the new device has ordinary
 internet, then goes dark.

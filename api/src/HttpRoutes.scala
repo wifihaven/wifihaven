@@ -75,7 +75,7 @@ object HttpRoutes {
       // POST /api/access-requests (they are two halves of one page and must agree). Signed with the
       // API's existing JWT secret, domain-separated by BlockPageToken — no new secret to provision.
       blockPageHousehold = new BlockPageHouseholdLive(cfg.jwt.secret, routerRepo)
-      routerMetrics           <- RouterMetricsService.make
+      routerMetrics           <- RouterMetricsService.make(routerRepo)
       // #2079: per-source-IP rate limit on the unauthenticated login route — 10
       // attempts / 15 min. #2081: per-source-IP rate limit on the unauthenticated
       // access-requests route (block-page kid request) — 20 / 5 min, on top of the

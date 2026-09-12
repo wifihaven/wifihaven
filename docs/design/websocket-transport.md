@@ -46,7 +46,7 @@ single foreground Lua process with no async I/O**. Its structure
 (`conntrack.watch{…, on_tick=…}`) is:
 
 ```
-conntrack -E  ──blocking read──▶  on_tick()  ─▶ policy poll / usage / metrics timers
+conntrack -E  ──blocking read──▶  on_tick()  ─▶ policy tick / usage / metrics timers
    (one line at a time)             (cooperative, fires per conntrack line)
 ```
 
@@ -347,40 +347,72 @@ first real shape change needs it — which is exactly the property #376 wanted.
 
 ---
 
-## 3. Fallback — agents/proxies that can't do websocket
+## 3. Fallback — HISTORY, retired by [#2736](https://github.com/wifihaven/wifihaven/issues/2736)
 
-Auto-update is not instant; mismatched versions run in the field for hours-to-
-days. The REST endpoints therefore **stay fully live** for the entire epic and
-the deprecation window after it (§9, sub-issue G). No agent is ever forced onto
-the websocket.
+> **Read this section as the record of a cutover that has completed, not as a
+> description of the agent today.** The OpenWrt agent is **websocket-only** as of
+> #2736: `policy.fetch` and the REST usage/events fall-through are deleted, and
+> so are `ws.enabled` and `ws.fallback_after`. What follows is why the fallback
+> existed and how it was retired; §3.2 states the shape that replaced it.
+>
+> The **server** still serves the REST endpoints. Retiring those is
+> [#1850](https://github.com/wifihaven/wifihaven/issues/1850) and must wait until
+> the whole fleet has self-updated — a router that stops CALLING an endpoint the
+> server still serves is the safe direction across the wire contract, and the
+> reverse is not.
 
-### 3.1 The agent decides per-boot; the server supports both forever (until deprecation)
+Auto-update is not instant; mismatched versions ran in the field for
+hours-to-days. The REST endpoints therefore stayed fully live for the whole
+epic. The agent chose its transport per boot, defaulted to ws as of
+[#2608](https://github.com/wifihaven/wifihaven/issues/2608), and fell back to the
+HTTP poll whenever the sidecar's health sentinel aged past `ws.fallback_after`.
 
-> **Default (as of [#2608](https://github.com/wifihaven/wifihaven/issues/2608)):
-> ws.** The UCI flag `wifihaven.ws.enabled` defaults to **1 when unset**, so a
-> fresh install and an upgraded router both land on the websocket with no manual
-> step. Only an explicit `enabled=0` selects the HTTP path up front — and the
-> shipped `/etc/config/wifihaven` deliberately writes no value, so "unset" stays
-> observable. The one-shot `/etc/uci-defaults/97-wifihaven-ws-default-on`
-> migration moves pre-#2608 routers over and records a
-> `wifihaven.ws.default_on_migrated` marker; once that marker exists the
-> migration never rewrites `enabled` again, which is what makes an operator's
-> opt-out durable. **Nothing else in this section changes** — every fallback
-> below is exactly as it was, and it is what keeps the default flip safe.
+### 3.1 How the cutover was gated
+
+The fallback was removed only once prod measurement showed nothing was using it,
+in three steps:
+
+1. **#2608** made ws the default (unset ⇒ on), with a marker-guarded
+   uci-defaults migration for existing routers.
+2. **Bake**, then [#2731](https://github.com/wifihaven/wifihaven/issues/2731),
+   which fixed the suppression gap below (a quiet link latching into permanent
+   polling) and added `ws_health_age_seconds` so the gate's own input was
+   finally observable.
+3. **#2736**, on 2026-08-23, once prod read `sum(increase(snapshot_poll_total[24h]))`
+   = 0 and the same over 48h, on both routers, while
+   `policy_poll_skipped_total` climbed 28,100 in 24h and
+   `ws_health_age_seconds` sat at 9–12 s against the 300 s window. The skip
+   counter is the liveness anchor: it is what makes the zero "alive and
+   declining to poll" rather than the silence of a dead agent.
+
+### 3.2 What replaced it
 
 ```
 agent boot
   │
-  ├─ ws-transport enabled in UCI?  ── explicit 0 ──▶  HTTP poll/POST path (today's code, untouched)
-  │            │ yes
-  ├─ open wss://…/api/router/ws
-  │     ├─ 101 + first policy frame within connect_timeout?  ── no ──▶  log, mark ws-unhealthy, HTTP path  (no `ready` — handshake won't-do, §2)
-  │     │            │ yes
-  │     └─ run ws sidecar; main agent's HTTP poll timer goes dormant
+  ├─ apply the last snapshot from /etc/wifihaven/policy.json  (enforcement up in seconds)
   │
-  └─ ws drops & won't re-establish for `ws_fallback_after` (e.g. 5 min)?
-        └─▶ main agent resumes HTTP polling until ws re-establishes (belt-and-suspenders)
+  ├─ ws sidecar (always started) opens wss://…/api/router/ws
+  │     ├─ 101 + first policy frame  ──▶  sidecar persists it; the agent applies on its next tick
+  │     └─ handshake fails / socket drops  ──▶  sentinel cleared or left to age
+  │
+  └─ sentinel stale past 3 × ws.heartbeat_interval?
+        ├─▶ the #331/#422 failover edge trips: closed-mode profiles close
+        ├─▶ the apply-on-push tick KEEPS RUNNING — a push that lands lifts
+        │   failover, because receiving one proves the link is live. Gating it
+        │   on the failover flag (as the pre-#2736 code did, safely, while the
+        │   poll was what recovered) would make failover suppress the only
+        │   remaining apply path.
+        ├─▶ enforcement otherwise CONTINUES off the last on-disk snapshot
+        └─▶ alert W15 fires on ws_health_age_seconds (the metrics push stays
+            on HTTP, so the signal survives the outage it reports)
 ```
+
+There is no transport choice left to make, which is deliberate: with the poll
+gone, an `enabled=0` router would have no way to receive policy or report usage
+at all. That is a footgun, not a configuration option, so the toggle went with
+the poll — and the uci-defaults migration whose only job was to flip that key
+went with both.
 
 - **The server runs both transports in parallel.** `RouterRoutes` (REST) and the
   new `RouterWsRoutes` are both mounted. A router may use either; nothing on the
@@ -528,13 +560,18 @@ surface.
   reconnect. That was #2731: 9% poll suppression on a fleet whose links were up
   the whole time. A benign read timeout deliberately does NOT refresh the
   sentinel — it proves nothing about the peer, so a black-holed connection must
-  still age out into the poll fallback.
-- While disconnected longer than `ws_fallback_after`, the main agent resumes
-  HTTP polling (§3.1) so enforcement never goes stale waiting on a flapping
-  socket. Failover/boot-deny semantics (`docs/resilience.md §1/§4`) are
-  **unchanged** — a stale policy still ages into the per-profile failure mode
-  exactly as it does under HTTP polling, because that logic lives in the main
-  agent, not the transport.
+  still age out.
+- **Post-#2736 the sentinel matters more, not less.** It no longer gates a poll
+  (there isn't one); it is now read by the #331/#422 failover edge and by the
+  `ws_health_age_seconds` gauge that alert W15 pages on, against a bound derived
+  from `ws.heartbeat_interval` (3×, `ws_outbound.stale_after`) rather than the
+  deleted `ws.fallback_after`.
+- While disconnected, the agent keeps ENFORCING its last on-disk snapshot —
+  enforcement degrades, it does not stop — and reports nothing until the socket
+  returns. Failover/boot-deny semantics (`docs/resilience.md §1/§4`) are
+  unchanged in effect: a lost link still ages into the per-profile failure mode,
+  because that logic lives in the main agent, not the transport. What changed is
+  only the signal it reads.
 
 ### 5.2 Backpressure & buffering
 
@@ -721,7 +758,7 @@ Grafana panel per the dashboard rule — sub-issue tasks include the panel):
 | --- | --- | --- |
 | `ws_connect_total` | `result` (`ok`/`upgrade_fail`/`auth_fail`/`timeout`) | reconnect health |
 | `ws_state` | — (gauge) | 1 connected / 0 disconnected |
-| `ws_fallback_total` | `result` (`to_http`/`back_to_ws`) | how often the agent fell back (§3.1) |
+| `ws_fallback_total` | `result` (`to_http`/`back_to_ws`) | **RETIRED by [#2736](https://github.com/wifihaven/wifihaven/issues/2736)** — it counted "the agent resumed HTTP polling", a transition that can no longer happen. The link is still fully observable via `ws_state`, `ws_connect_total{result}` and `ws_health_age_seconds` (the one alert W15 pages on). The server still accepts the series for pre-#2736 agents. |
 | `ws_frames_sent_total` / `ws_frames_recv_total` | `op` | agent-side throughput |
 
 The `op`, `dir`, `result`, `transport` label spaces are small fixed enums —
@@ -769,7 +806,7 @@ and whatever minimal handshake it actually needs at that point.)
 | **D0** | **Spike: Lua websocket library viability on OpenWRT** — pick/prove a library, long-soak a TLS ws on real/qemu hardware, confirm Render limits. Gate for C. | yes (spike, no prod code) | n/a |
 | **A** | **API `/api/router/ws` endpoint + envelope demux + connection registry** — `RouterWsRoutes`, extract transport-agnostic ingest service from `RouterIngestRoutes` (no behavior change), per-frame structured logging, server metrics (§7). REST untouched. | yes | additive — new route only |
 | **B** | ~~**Capability handshake + `snapshotVersion` + Evolution-policy doc** — `hello`/`ready` frames, `min`-version rule, ignore-unknown rules.~~ **WON'T-DO ([#1847](https://github.com/wifihaven/wifihaven/issues/1847) closed 2026-06-23, see §2 status).** ws inherits the REST additive + ignore-unknown contract verbatim; the handshake gated zero behavior. Unknown-`op` forward-compat shipped in #1846. Version machinery deferred to F against a concrete need. | n/a (not built) | n/a |
-| **C** | **Agent websocket sidecar (`wifihaven-ws`)** — new procd instance, ws client over the proven library, drains existing tmpfs spools out / writes pushed `policy` in, HTTP-fallback wiring (§3.1), agent metrics. Gated on D0. **SHIPPED ([#1848](https://github.com/wifihaven/wifihaven/issues/1848)):** `wifihaven-ws` is a default-off (`wifihaven.ws.enabled=0`) procd instance built on the spike-proven `ws_client.lua` driven by `ws_loop.lua`; it reconnects with exp backoff+jitter (§5.1), heartbeats (§5.5), drains the agent's outbound usage/events bodies over a bounded tmpfs spool (the agent tees them when ws is healthy, else POSTs as before), splits an oversized `UsageReport` across `usage` frames (§5.3/#1017), writes a pushed `policy` to the snapshot file (dormant until the server push lands in #1849), and folds `ws_connect_total`/`ws_state`/`ws_fallback_total`/`ws_frames_{sent,recv}_total` into the `/metrics` push (§7). The main agent's HTTP poll/POST path is byte-for-byte unchanged with the flag off. `cqueues` + `luaossl` became hard package DEPENDS in [#2036](https://github.com/wifihaven/wifihaven/issues/2036), and [#2608](https://github.com/wifihaven/wifihaven/issues/2608) made ws the **default** transport (unset ⇒ on) with a marker-guarded upgrade migration, so a fresh install comes up on ws with no `apk add` and no UCI step. | yes (behind UCI flag; default off until proven, default ON as of #2608) | additive — main agent HTTP path unchanged |
+| **C** *(superseded by #2736: ws is no longer a flag, it is the only transport)* | **Agent websocket sidecar (`wifihaven-ws`)** — new procd instance, ws client over the proven library, drains existing tmpfs spools out / writes pushed `policy` in, HTTP-fallback wiring (§3.1), agent metrics. Gated on D0. **SHIPPED ([#1848](https://github.com/wifihaven/wifihaven/issues/1848)):** `wifihaven-ws` is a default-off (`wifihaven.ws.enabled=0`) procd instance built on the spike-proven `ws_client.lua` driven by `ws_loop.lua`; it reconnects with exp backoff+jitter (§5.1), heartbeats (§5.5), drains the agent's outbound usage/events bodies over a bounded tmpfs spool (the agent tees them when ws is healthy, else POSTs as before), splits an oversized `UsageReport` across `usage` frames (§5.3/#1017), writes a pushed `policy` to the snapshot file (dormant until the server push lands in #1849), and folds `ws_connect_total`/`ws_state`/`ws_fallback_total`/`ws_frames_{sent,recv}_total` into the `/metrics` push (§7). The main agent's HTTP poll/POST path is byte-for-byte unchanged with the flag off. `cqueues` + `luaossl` became hard package DEPENDS in [#2036](https://github.com/wifihaven/wifihaven/issues/2036), and [#2608](https://github.com/wifihaven/wifihaven/issues/2608) made ws the **default** transport (unset ⇒ on) with a marker-guarded upgrade migration, so a fresh install comes up on ws with no `apk add` and no UCI step. | yes (behind UCI flag; default off until proven, default ON as of #2608) | additive — main agent HTTP path unchanged |
 | **E** | **Push-on-change + computed-snapshot cache in `PolicyService`** (#1512) — cache + invalidation + time-boundary ticker; registry push on change; REST poll also reads the cache. | yes (improves REST path even with zero ws agents) | behavior-preserving (same snapshot bytes) |
 | **F** | **(deferred #376) per-field snapshot capability gating + `snapshotVersion ≥ 2` machinery** — only when the first breaking shape change needs it. (B is won't-do, so F lands both the version machinery **and** whatever minimal handshake it actually needs at that point — it no longer builds on a B handshake.) | yes, later | additive |
 | **G** | **Deprecate the REST poll** — after the operator confirms the ws path healthy across the fleet (the `router_transport` dashboard shows 100% ws), add a one-release deprecation log to the REST poll, then remove in a later release per the wire-contract deprecation window. | yes, last | the *only* non-additive step, gated on fleet rollover |

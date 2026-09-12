@@ -2122,10 +2122,10 @@ describe("render blockIpOnly enforcement (#353)", function()
 
   -- ── failover allow-all suppression (mirrors eb_/bl_ pattern) ────────────
 
-  it("suppresses blockIpOnly drops + DNAT for allow-all-failover MACs (poll_failed=true)", function()
+  it("suppresses blockIpOnly drops + DNAT for allow-all-failover MACs (link_failed=true)", function()
     local s = snap_bio()
     s.profiles["3"].failureMode = "allow-all"
-    local nft = render.nft(s, { poll_failed = true })
+    local nft = render.nft(s, { link_failed = true })
     -- Set declarations are still emitted (cheap; population is a no-op since
     -- the dnsmasq tag is still wired). But forward-chain drops and DNAT for
     -- these MACs must be gone.
@@ -2441,7 +2441,7 @@ describe("render extraAllowed enforcement (#421)", function()
   it("suppresses eb_/bl_ drops (including their ea exception) under allow-all failover", function()
     local s = snap_ea()
     s.profiles["3"].failureMode = "allow-all"
-    local nft = render.nft(s, { poll_failed = true })
+    local nft = render.nft(s, { link_failed = true })
     -- No eb / bl drops at all for the kid MAC.
     assert.is_nil(nft:find(
       "ether saddr aa:bb:cc:11:22:33 ip daddr @eb_tiktok_com", 1, true))

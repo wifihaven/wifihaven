@@ -30,123 +30,11 @@ local SNAPSHOT_JSON = [[{
   "blocklists": {}
 }]]
 
--- ── policy.fetch ──────────────────────────────────────────────────────────
-
-describe("policy.fetch", function()
-
-  it("returns decoded snapshot and etag on HTTP 200", function()
-    local function get_fn(_url, _hdrs)
-      return 200, SNAPSHOT_JSON, { etag = "sha256:abc123" }
-    end
-    local snap, etag = policy.fetch("http://api:8080", "rt_tok", nil, get_fn)
-    assert.not_nil(snap)
-    assert.equal("sha256:abc123", etag)
-    assert.equal("kids",     snap.profiles["3"].name)
-    assert.equal("kid-ipad", snap.devices["aa:bb:cc:11:22:33"].name)
-  end)
-
-  it("returns nil snapshot (no rewrite needed) and unchanged etag on HTTP 304", function()
-    local function get_fn(_url, _hdrs)
-      return 304, "", {}
-    end
-    local snap, etag = policy.fetch("http://api:8080", "rt_tok", "sha256:abc123", get_fn)
-    assert.is_nil(snap)
-    assert.equal("sha256:abc123", etag)
-  end)
-
-  it("sends If-None-Match header when a prior etag is available", function()
-    local sent_hdrs
-    local function get_fn(_url, hdrs)
-      sent_hdrs = hdrs
-      return 304, "", {}
-    end
-    policy.fetch("http://api:8080", "rt_tok", "sha256:prev", get_fn)
-    assert.equal("sha256:prev", sent_hdrs["If-None-Match"])
-  end)
-
-  it("sends Authorization: Bearer header with the router token", function()
-    local sent_hdrs
-    local function get_fn(_url, hdrs)
-      sent_hdrs = hdrs
-      return 200, SNAPSHOT_JSON, {}
-    end
-    policy.fetch("http://api:8080", "rt_tok_xyz", nil, get_fn)
-    assert.equal("Bearer rt_tok_xyz", sent_hdrs["Authorization"])
-  end)
-
-  it("includes the etag in the request URL as ?since= param", function()
-    local called_url
-    local function get_fn(url, _hdrs)
-      called_url = url
-      return 304, "", {}
-    end
-    policy.fetch("http://api:8080", "rt_tok", "sha256:prev", get_fn)
-    assert.truthy(called_url:find("sha256:prev", 1, true))
-  end)
-
-  it("URL-encodes the etag in the ?since= param so quotes are not literal", function()
-    local called_url
-    local function get_fn(url, _hdrs)
-      called_url = url
-      return 304, "", {}
-    end
-    -- Canonical HTTP etag includes surrounding double quotes.
-    policy.fetch("http://api:8080", "rt_tok", '"sha256:abc123"', get_fn)
-    assert.truthy(called_url)
-    assert.is_nil(called_url:find('"', 1, true),
-      "URL must not contain literal double-quote characters: " .. tostring(called_url))
-    -- Sanity: the encoded form should appear.
-    assert.truthy(called_url:find("%22", 1, true),
-      "expected percent-encoded quote (%22) in URL: " .. tostring(called_url))
-  end)
-
-  it("returns nil, nil on a 5xx error", function()
-    local function get_fn(_url, _hdrs) return 503, "unavailable", {} end
-    local snap, etag = policy.fetch("http://api:8080", "rt_tok", nil, get_fn)
-    assert.is_nil(snap)
-    assert.is_nil(etag)
-  end)
-
-  it("returns nil, nil when get_fn returns nil status (connection failure)", function()
-    local function get_fn(_url, _hdrs) return nil, "", {} end
-    local snap, etag = policy.fetch("http://api:8080", "rt_tok", nil, get_fn)
-    assert.is_nil(snap)
-    assert.is_nil(etag)
-  end)
-
-  it("sends X-WifiHaven-Agent-Version header when opts.agent_version is set (#771)", function()
-    local sent_hdrs
-    local function get_fn(_url, hdrs)
-      sent_hdrs = hdrs
-      return 200, SNAPSHOT_JSON, {}
-    end
-    policy.fetch("http://api:8080", "rt_tok", nil, get_fn, nil, { agent_version = "0.1.0" })
-    assert.equal("0.1.0", sent_hdrs["X-WifiHaven-Agent-Version"])
-  end)
-
-  it("omits the version header when opts.agent_version is nil/empty (#771)", function()
-    local sent_hdrs
-    local function get_fn(_url, hdrs)
-      sent_hdrs = hdrs
-      return 200, SNAPSHOT_JSON, {}
-    end
-    policy.fetch("http://api:8080", "rt_tok", nil, get_fn, nil, { agent_version = "" })
-    assert.is_nil(sent_hdrs["X-WifiHaven-Agent-Version"])
-    policy.fetch("http://api:8080", "rt_tok", nil, get_fn)
-    assert.is_nil(sent_hdrs["X-WifiHaven-Agent-Version"])
-  end)
-
-  it("requests /api/router/policy endpoint", function()
-    local called_url
-    local function get_fn(url, _hdrs)
-      called_url = url
-      return 200, SNAPSHOT_JSON, {}
-    end
-    policy.fetch("http://api:8080", "rt_tok", nil, get_fn)
-    assert.truthy(called_url:find("/api/router/policy", 1, true))
-  end)
-
-end)
+-- #2736: policy.fetch (GET /api/router/policy) is gone — the agent is
+-- websocket-only and loads policy from the snapshot the ws sidecar persists.
+-- Its coverage moved to test/ws_only_transport_spec.lua, which pins the ABSENCE
+-- of the poll (with liveness anchors, since an absence assertion otherwise
+-- passes for free on a dead harness).
 
 -- ── policy.apply ──────────────────────────────────────────────────────────
 
@@ -594,12 +482,12 @@ describe("policy.apply", function()
       end,
       function(_cmd) return 0 end,
       nil,
-      { poll_failed = true })
+      { link_failed = true })
     assert.truthy(nft_content)
     assert.truthy(nft_content:find("set failover_drop", 1, true),
-      "expected failover_drop set when opts.poll_failed=true")
+      "expected failover_drop set when opts.link_failed=true")
     assert.truthy(nft_content:find("wifihaven_failover", 1, true),
-      "expected wifihaven_failover chain when opts.poll_failed=true")
+      "expected wifihaven_failover chain when opts.link_failed=true")
     assert.truthy(nft_content:find("aa:aa:aa:00:00:01", 1, true),
       "expected the Closed-profile device MAC inside the failover set")
   end)
@@ -633,7 +521,7 @@ describe("policy.failover_transition (#422)", function()
   it("trips failover immediately on a single failed fetch (#422)", function()
     local should, opts, new = policy.failover_transition(false, false)
     assert.is_true(should)
-    assert.is_true(opts.poll_failed)
+    assert.is_true(opts.link_failed)
     assert.is_true(new)
   end)
 
@@ -644,10 +532,10 @@ describe("policy.failover_transition (#422)", function()
     assert.is_true(new)
   end)
 
-  it("lifts failover on next successful fetch with opts.poll_failed=false", function()
+  it("lifts failover on next successful fetch with opts.link_failed=false", function()
     local should, opts, new = policy.failover_transition(true, true)
     assert.is_true(should)
-    assert.is_false(opts.poll_failed)
+    assert.is_false(opts.link_failed)
     assert.is_false(new)
   end)
 
@@ -657,10 +545,10 @@ describe("policy.failover_transition (#422)", function()
     assert.is_true(s1); assert.is_true(nif1)
     -- success → lift
     local s2, opts2, nif2 = policy.failover_transition(nif1, true)
-    assert.is_true(s2); assert.is_false(opts2.poll_failed); assert.is_false(nif2)
+    assert.is_true(s2); assert.is_false(opts2.link_failed); assert.is_false(nif2)
     -- fail #2 → trip again
     local s3, opts3, nif3 = policy.failover_transition(nif2, false)
-    assert.is_true(s3); assert.is_true(opts3.poll_failed); assert.is_true(nif3)
+    assert.is_true(s3); assert.is_true(opts3.link_failed); assert.is_true(nif3)
   end)
 
 end)

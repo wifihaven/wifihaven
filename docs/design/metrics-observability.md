@@ -126,13 +126,22 @@ Rationale:
   into those bodies couples an observability concern to an already-strained
   data path; a metrics batch that fails to parse should never risk a usage
   bucket. Keep them independent.
-- **The policy poll is a GET.** Smuggling a metrics body into the
-  ETag-conditional `GET /api/router/policy` would turn a cache-friendly
+- **The policy poll was a GET.** Smuggling a metrics body into the
+  ETag-conditional `GET /api/router/policy` would have turned a cache-friendly
   conditional GET into a side-effecting request — exactly the kind of
   thing the 304-fast-path ([#414](https://github.com/wifihaven/wifihaven/issues/414))
-  exists to keep cheap.
+  existed to keep cheap. ([#2736](https://github.com/wifihaven/wifihaven/issues/2736)
+  removed the agent's poll entirely; the reasoning is kept as the record of why
+  the metrics push was never folded into it.)
 - **Cadence independence.** Metrics want their own batching window (§3.3)
-  decoupled from both the ~5 s policy poll and the ~60 s usage report.
+  decoupled from both the ~5 s policy tick and the ~60 s usage report.
+- **[#2736] The metrics push STAYS ON HTTP, and that is now load-bearing.**
+  `ws_outbound.lua` routes only `usage` and `events` to the ws spool. With the
+  websocket as the router's sole policy/telemetry transport, a router that loses
+  the socket would otherwise go completely silent — including on
+  `ws_health_age_seconds`, the very signal alert W15 pages on. A health signal
+  riding the link it reports on is the #2546 shape, where silence reads as
+  health. Do not move the metrics push onto ws.
 
 The endpoint lives under `/api/router/*` alongside the existing agent
 surface and reuses `RouterAuth` (§3.4).
@@ -198,9 +207,9 @@ Notes:
 
 ### 3.3 Batching cadence
 
-**Every 60 s**, on its own timer — not coupled to the ~5 s policy poll.
+**Every 60 s**, on its own timer — not coupled to the ~5 s policy tick.
 
-- The policy poll is intentionally hot (5 s) for low policy-apply latency;
+- The policy tick is intentionally hot (5 s) for low policy-apply latency;
   shipping a metrics body 12×/minute is pure waste for data that is
   graphed at minute resolution.
 - 60 s matches the existing usage-report cadence operators already reason
@@ -326,9 +335,10 @@ suggestions to be tuned during implementation.
 | `dnsmasq_restarts_total` | counter | `reason` ∈ {`policy_change`, `boot`, `manual`} | The motivating metric. dnsmasq is **restarted, not reloaded**, on every conf-fragment change because SIGHUP doesn't re-read `conf-dir` ([#341](https://github.com/wifihaven/wifihaven/issues/341), fixes #328). #341's discussion suspected restarts fire more often than the PR claimed; #414 added the byte-for-byte short-circuit so most applies are nft-only. This counter is how we *measure* the real-world restart cadence and confirm #414 is doing its job. |
 | `policy_apply_total` | counter | `result` ∈ {`ok`, `write_failed`, `nft_failed`, `smoke_warn`} | One increment per policy timer apply. `smoke_warn` ties to #341's post-restart `dig` smoke probe. |
 | `policy_apply_duration_seconds` | histogram | — | Snapshot-fetch-to-ruleset-loaded wall time. Buckets ~ `0.01,0.05,0.1,0.5,1,5`. |
-| `snapshot_poll_total` | counter | `result` ∈ {`200`, `304`, `error`} | Per policy poll. `304` should dominate (ETag fast-path); a `200` spike means policy churn, an `error` spike means the link is degraded. |
-| `snapshot_poll_duration_seconds` | histogram | — | Round-trip incl. the 304-not-modified path. |
-| `ws_health_age_seconds` | gauge | — | Seconds since the ws sidecar last touched its health sentinel — the sole input to the poll-dormancy gate. `-1` means the sentinel is absent (ws off, or cleared on disconnect). Added by [#2731](https://github.com/wifihaven/wifihaven/issues/2731), where the sentinel sat 80 minutes stale under a live, heartbeating socket: `ws_state` read `1`, frames had flowed earlier in the day, and nothing reported the one value the gate actually consults, so diagnosing a router that was quietly polling every 5 s took an SSH. |
+| `snapshot_poll_total` | counter | `result` ∈ {`200`, `304`, `error`} | **RETIRED by [#2736](https://github.com/wifihaven/wifihaven/issues/2736)** — the agent no longer polls, so an updated router emits this no more. It was per policy poll, `304` dominating via the ETag fast-path. The server still ACCEPTS it: pre-#2736 agents in the field keep pushing it during the ~48 h jittered self-update window, and historical series stay queryable. |
+| `snapshot_poll_duration_seconds` | histogram | — | **RETIRED by #2736**, with `snapshot_poll_total`. Was the poll round-trip incl. the 304 path. |
+| `policy_poll_skipped_total` | counter | `reason` ∈ {`ws_healthy`} | **RETIRED by #2736.** Added by #2037 to count polls suppressed by a healthy ws link, and it is what made the cutover measurable: 28,100 suppressions in 24 h against zero polls is what proved the agents were alive and declining to poll rather than dead and silent. With no poll left there is nothing to skip. |
+| `ws_health_age_seconds` | gauge | — | Seconds since the ws sidecar last touched its health sentinel. `-1` means the sentinel is absent (never connected, or cleared on disconnect). Added by [#2731](https://github.com/wifihaven/wifihaven/issues/2731) as the poll-dormancy gate's input, where it sat 80 minutes stale under a live, heartbeating socket: `ws_state` read `1`, frames had flowed earlier in the day, and nothing reported the one value the gate actually consults, so diagnosing a router that was quietly polling every 5 s took an SSH. **Since [#2736](https://github.com/wifihaven/wifihaven/issues/2736) it is the fleet's primary router-health signal**: with no poll left, a router that loses ws goes quiet on every other channel, so alert **W15** fires on this gauge (age > 300 s, or the `-1` arm). It reaches the server because the metrics push stayed on HTTP. |
 | `agent_uptime_seconds` | gauge | — | Resets to ~0 on agent restart; pairs with `agentStartedAt` reset detection. |
 | `agent_version` | gauge (info, value `1`) | `version` | One series per (router, version); flips when an agent upgrades. Drives a fleet-version panel. |
 | `dns_queries_total` | counter | `result` ∈ {`resolved`, `nxdomain`, `blocked_at_nft`, `served_local`} | Folded from the existing `dns_log.lua` event stream. **Cardinality-gated:** `result` only — never `domain`. Include only if the agent can emit it cheaply; otherwise defer. |
@@ -353,7 +363,8 @@ suggestions to be tuned during implementation.
   `agent_connected_routers`).
 - **dnsmasq restart rate per router** sparkline — the direct callback to
   the #341 motivating discussion.
-- `snapshot_poll_total` 304-vs-200 ratio (validates #414).
+- `snapshot_poll_total` 304-vs-200 ratio (validated #414; retired with the poll
+  in #2736 — the panel remains for historical range and for pre-#2736 agents).
 - Agent-version distribution across the fleet.
 
 ---

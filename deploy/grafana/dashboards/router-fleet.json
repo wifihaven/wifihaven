@@ -115,7 +115,7 @@
     {
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "title": "Snapshot poll rate by result",
-      "description": "sum by (result) (rate(snapshot_poll_total[5m])) — result ∈ {200, 304, error}. 304 dominates in steady state (ETag unchanged); a rising error rate means agents can't reach the API and will trip per-profile failover.",
+      "description": "RETIRED BY #2736 — the agent is websocket-only and no longer polls, so this reads flat 0 for an updated router. The panel stays for historical range and for pre-#2736 agents still rolling forward over the ~48h jittered self-update window. sum by (result) (rate(snapshot_poll_total[5m])) — result ∈ {200, 304, error}. 304 dominates in steady state (ETag unchanged); a rising error rate means agents can't reach the API and will trip per-profile failover.",
       "type": "timeseries",
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
       "id": 4,
@@ -144,7 +144,7 @@
     {
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "title": "Snapshot poll duration (p50 / p95)",
-      "description": "histogram_quantile over snapshot_poll_duration_seconds_bucket (boundaries 0.01→5s, SnapshotPollDurationBoundaries). Round-trip time of GET /api/router/policy as seen from the agent.",
+      "description": "RETIRED BY #2736 — the agent is websocket-only and no longer polls, so this reads flat 0 for an updated router. The panel stays for historical range and for pre-#2736 agents still rolling forward over the ~48h jittered self-update window. histogram_quantile over snapshot_poll_duration_seconds_bucket (boundaries 0.01→5s, SnapshotPollDurationBoundaries). Round-trip time of GET /api/router/policy as seen from the agent.",
       "type": "timeseries",
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
       "id": 5,

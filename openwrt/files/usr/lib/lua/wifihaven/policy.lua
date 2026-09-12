@@ -1,16 +1,14 @@
--- policy.lua — policy snapshot fetcher and atomic config applier
+-- policy.lua — policy snapshot loader and atomic config applier
+--
+-- #2736: `policy.fetch` (GET /api/router/policy) is GONE. The agent is
+-- websocket-only: the ws sidecar receives pushed snapshots and persists them to
+-- /etc/wifihaven/policy.json, and this module's job is to load that file and
+-- apply it. The server still SERVES the REST endpoint — retiring it is #1850,
+-- and it must wait until the whole fleet has self-updated (the router↔API wire
+-- is a public contract; a router that stops CALLING an endpoint the server
+-- still serves is the safe direction, the reverse is not).
 --
 -- Public API:
---   policy.fetch(api_url, router_token, etag, http_get_fn, log, opts)
---     → snapshot_table|nil, etag|nil
---     http_get_fn(url, headers) → status_code, body, response_headers
---     Returns (nil, etag) on 304, (nil, nil) on error, (snapshot, etag) on 200.
---     opts (optional table):
---       opts.agent_version → string sent as `X-WifiHaven-Agent-Version`
---                            header so the API can record which package
---                            version this router is running (#771). Absent
---                            on legacy callers — the header is just omitted.
---
 --   policy.apply(snapshot, write_fn, reload_fn, log, opts)
 --     → bool (true on success)
 --     write_fn(path, content) → ok, err
@@ -32,12 +30,14 @@
 --                                   sinkhole-shaped answer means dnsmasq
 --                                   is still applying a stale rendering
 --                                   (failed restart) and triggers a WARN.
---       opts.poll_failed → forwarded to render.nft for the #385/#422
+--       opts.link_failed → forwarded to render.nft for the #385/#422
 --                                 failover branch (three modes: block-all,
---                                 allow-all, last-known-good). True iff
---                                 the most-recent poll attempt did not
---                                 succeed; failover trips immediately on
---                                 a single failure (no 300s cushion).
+--                                 allow-all, last-known-good). True iff we are
+--                                 out of contact with the API. Pre-#2736 that
+--                                 meant "the last snapshot poll failed"; with
+--                                 the poll gone it means the ws link's health
+--                                 sentinel is stale or absent. Failover trips
+--                                 immediately (no 300s cushion).
 
 local M = {}
 
@@ -77,87 +77,6 @@ local function default_log()
   }
 end
 
--- Percent-encode characters that would break a query-string value:
--- the canonical HTTP etag is wrapped in literal `"` characters, which a raw
--- concatenation would emit into the URL and break server-side routing.
--- Encodes `"`, space, `?`, `#`, `&`, `=`, `+`, `%`, control bytes, and any
--- non-ASCII byte. Leaves `:` and other pchars (e.g. in `sha256:abc`) alone.
-local function urlencode(s)
-  return (s:gsub("[%c%z\"%%%+%&%=%?%# ]", function(c)
-    return string.format("%%%02X", string.byte(c))
-  end):gsub("[\128-\255]", function(c)
-    return string.format("%%%02X", string.byte(c))
-  end))
-end
-
--- ---------------------------------------------------------------------------
--- policy.fetch
--- ---------------------------------------------------------------------------
-function M.fetch(api_url, router_token, etag, http_get_fn, log, opts)
-  log = log or default_log()
-  opts = opts or {}
-  local url = api_url .. "/api/router/policy"
-  if etag then
-    url = url .. "?since=" .. urlencode(etag)
-  end
-
-  local hdrs = { ["Authorization"] = "Bearer " .. router_token }
-  if etag then
-    hdrs["If-None-Match"] = etag
-  end
-  -- #771: report the agent's baked PKG_VERSION on every checkin so the
-  -- API can slice telemetry by version. Optional — older callers omit it.
-  if opts.agent_version and opts.agent_version ~= "" then
-    hdrs["X-WifiHaven-Agent-Version"] = opts.agent_version
-  end
-
-  log.debug("policy.fetch: GET url=%s etag=%s", url, tostring(etag))
-  local status, body, _resp_headers = http_get_fn(url, hdrs)
-  log.debug("policy.fetch: response status=%s bodyLen=%d",
-            tostring(status), body and #body or 0)
-
-  if status == 304 then
-    return nil, etag
-  elseif status == 200 then
-    local ok, snap_or_err = pcall(function()
-      local jsonc = require("luci.jsonc")
-      local parsed = jsonc.parse(body)
-      if parsed == nil then
-        error("luci.jsonc.parse returned nil (invalid JSON)")
-      end
-      return parsed
-    end)
-    if ok and snap_or_err then
-      local snap = snap_or_err
-      local new_etag = (snap.etag ~= nil) and snap.etag or etag
-      local function count_keys(t)
-        if type(t) ~= "table" then return 0 end
-        local n = 0
-        for _ in pairs(t) do n = n + 1 end
-        return n
-      end
-      log.debug("policy.fetch: parsed snapshot devices=%d profiles=%d etag=%s",
-                count_keys(snap.devices),
-                count_keys(snap.profiles),
-                tostring(new_etag))
-      return snap, new_etag
-    end
-    -- snap_or_err holds the error message when pcall returns false (e.g. the
-    -- luci.jsonc require itself failed, or parse raised/returned nil).
-    local body_str = body and tostring(body) or ""
-    if #body_str > 200 then body_str = body_str:sub(1, 200) .. "...(truncated)" end
-    log.err("policy.fetch: JSON parse failed: %s (body=%q)",
-            tostring(snap_or_err), body_str)
-    return nil, nil
-  else
-    local body_str = body and tostring(body) or ""
-    if #body_str > 200 then body_str = body_str:sub(1, 200) .. "...(truncated)" end
-    log.err("policy.fetch: unexpected status %s body=%q",
-            tostring(status), body_str)
-    return nil, nil
-  end
-end
-
 -- ---------------------------------------------------------------------------
 -- policy.apply
 -- ---------------------------------------------------------------------------
@@ -173,9 +92,9 @@ end
 -- (`0.0.0.0`, `::`, empty / NXDOMAIN) means dnsmasq is still running a
 -- stale config that has DNS-layer blocks in it, which is the failure mode
 -- we want to catch.
--- opts.poll_failed (#331/#422): forwarded to render.nft so the agent's
--- failover-edge re-render can request the closed-mode drop chain on the
--- first failed poll (and clear it on the next success).
+-- opts.link_failed (#331/#422/#2736): forwarded to render.nft so the agent's
+-- failover-edge re-render can request the closed-mode drop chain the moment we
+-- lose contact with the API (and clear it on recovery).
 
 -- Default reader for the change-detection check (#414). Returns nil if the
 -- file is absent — first apply on a fresh boot treats that as "changed".
@@ -659,26 +578,28 @@ end
 --
 -- Inputs:
 --   in_failover : bool — was the last apply rendered with failover opts?
---   fetch_ok    : bool — did this tick's poll succeed (200 or 304)?
+--   link_ok     : bool — are we in contact with the API right now? Since
+--                        #2736 that is the ws link's health sentinel being
+--                        fresh, not a poll result.
 -- Returns:
 --   should_apply    : bool       — re-render is needed this tick
 --   apply_opts      : table|nil  — opts to pass to policy.apply
 --   new_in_failover : bool       — updated state flag
 --
--- Semantics (#422): failover trips immediately on a failed poll and lifts
--- immediately on a successful poll. There is no time-based cushion — the
+-- Semantics (#422): failover trips immediately on losing contact and lifts
+-- immediately on regaining it. There is no time-based cushion — the
 -- previous 300s gate contradicted the per-profile failureMode design intent
 -- (block-all should drop traffic the moment we can't reach the API).
 -- ---------------------------------------------------------------------------
-function M.failover_transition(in_failover, fetch_ok)
-  if fetch_ok then
+function M.failover_transition(in_failover, link_ok)
+  if link_ok then
     if in_failover then
-      return true, { poll_failed = false }, false
+      return true, { link_failed = false }, false
     end
     return false, nil, false
   end
   if not in_failover then
-    return true, { poll_failed = true }, true
+    return true, { link_failed = true }, true
   end
   return false, nil, true
 end

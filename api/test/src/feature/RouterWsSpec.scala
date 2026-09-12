@@ -147,7 +147,7 @@ object RouterWsSpec
       cRepo   <- ZIO.service[ConnectionEventRepo]
       aRepo   <- ZIO.service[AlertRepo]
       hsr     <- ZIO.service[HouseholdSettingsRepo]
-      metrics <- RouterMetricsService.make
+      metrics <- RouterMetricsService.make(rRepo)
       reg     <- RouterWsRegistry.make(rRepo.touchEtag)
       // #1849: a PolicyService so the ws endpoint can push the current snapshot on connect. Cache
       // off here (the `apply` default) — the connect push reads `snapshot`, which builds fresh.

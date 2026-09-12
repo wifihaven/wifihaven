@@ -2,7 +2,7 @@
 --
 -- ws_loop.lua owns the websocket event loop: connect → (apply pushed policy in
 -- / drain outbound frames out) → heartbeat → reconnect with exp backoff + jitter
--- → HTTP-fallback signalling (design §3.1, §5.1, §5.3, §5.5). The cqueues TLS
+-- → reconnect (design §3.2, §5.1, §5.3, §5.5). The cqueues TLS
 -- client is INJECTED (cfg.connect), so this whole state machine is exercised on
 -- the dev host against a scripted fake client; the real client + cqueues loop
 -- are validated live on plex.lan (Lua 5.1) via spike/ws-1845/e2e_test.sh.
@@ -15,11 +15,10 @@ local ws_frame = require("wifihaven.ws_frame")
 
 -- ── a recording metrics sink ────────────────────────────────────────────────
 local function new_metrics()
-  local m = { connect = {}, fallback = {}, sent = {}, recv = {}, state = {} }
+  local m = { connect = {}, sent = {}, recv = {}, state = {} }
   return {
     rec = m,
     connect      = function(r) m.connect[#m.connect + 1] = r end,
-    fallback     = function(r) m.fallback[#m.fallback + 1] = r end,
     frame_sent   = function(op) m.sent[#m.sent + 1] = op end,
     frame_recv   = function(op) m.recv[#m.recv + 1] = op end,
     state        = function(v) m.state[#m.state + 1] = v end,
@@ -81,7 +80,6 @@ local function base_cfg(overrides)
     split_usage = function(f) return { f } end,   -- no split by default
     heartbeat_interval = 30,
     poll_interval = 1,
-    fallback_after = 300,
     rng = function() return 1 end,
     log = { info = function() end, warn = function() end, err = function() end, debug = function() end },
   }
@@ -142,13 +140,9 @@ describe("ws_loop.sanitize_poll_interval (#2620)", function()
   end)
 end)
 
-describe("ws_loop.should_fallback", function()
-  it("is false before the threshold and true at/after it", function()
-    assert.is_false(ws_loop.should_fallback(120, 300))
-    assert.is_true(ws_loop.should_fallback(300, 300))
-    assert.is_true(ws_loop.should_fallback(901, 300))
-  end)
-end)
+-- #2736 removed ws_loop.should_fallback: it signalled "resume HTTP polling",
+-- and there is no poll to resume. The link's state is still covered below by
+-- ws_state, ws_connect_total and the health sentinel.
 
 describe("ws_loop.run — connect failure path", function()
   it("meters the connect result, drops ws_state to 0, clears health, and backs off", function()
@@ -170,20 +164,6 @@ describe("ws_loop.run — connect failure path", function()
     assert.is_true(slept[1] > 0)
   end)
 
-  it("emits a single ws_fallback_total{to_http} once disconnected past fallback_after", function()
-    local t = 0
-    local m = new_metrics()
-    -- time advances 200s per failed attempt; threshold 300 → fallback on attempt 2.
-    local cfg = base_cfg({
-      connect = function() return nil, "connect: connection refused" end,
-      now = function() return t end,
-      sleep = function() t = t + 200 end,
-      metrics = m,
-      stop = (function() local n = 0; return function() n = n + 1; return n > 3 end end)(),
-    })
-    ws_loop.run(cfg)
-    assert.are.same({ "to_http" }, m.rec.fallback)   -- exactly once, not per-attempt
-  end)
 end)
 
 describe("ws_loop.run — successful connect", function()
@@ -205,24 +185,6 @@ describe("ws_loop.run — successful connect", function()
     assert.is_true(client.closed)
   end)
 
-  it("emits ws_fallback_total{back_to_ws} when it reconnects after a prior fallback", function()
-    local m = new_metrics()
-    local attempt = 0
-    local t = 0
-    local cfg = base_cfg({
-      now = function() return t end,
-      sleep = function() t = t + 400 end,           -- one failure crosses the 300 threshold
-      connect = function()
-        attempt = attempt + 1
-        if attempt == 1 then return nil, "connect: refused" end
-        return new_client({ { drop = "closed" } }), nil
-      end,
-      metrics = m,
-      stop = (function() local n = 0; return function() n = n + 1; return n > 2 end end)(),
-    })
-    ws_loop.run(cfg)
-    assert.are.same({ "to_http", "back_to_ws" }, m.rec.fallback)
-  end)
 end)
 
 describe("ws_loop.run — outbound drain", function()
@@ -440,7 +402,7 @@ end)
 -- Before this change the health sentinel was refreshed ONLY by connect and by
 -- application frames in either direction. The agent's outbound tee only spools
 -- application frames while the sentinel is already fresh, so any gap in
--- application traffic longer than fallback_after latched the router into HTTP
+-- application traffic longer than the staleness window latched the router into HTTP
 -- polling for the life of an otherwise perfectly healthy connection: nothing
 -- was spooled, so nothing was sent, so nothing was acked, so nothing touched
 -- the sentinel. Measured on prod as an 80-minute-stale sentinel under a live
@@ -541,7 +503,7 @@ describe("ws_loop.serve — #2731 heartbeat liveness refreshes the health sentin
     assert.are.equal(0, #client._recvs)
   end)
 
-  it("a genuinely dead link still drops out and clears health (fallback intact)", function()
+  it("a genuinely dead link still drops out and clears health", function()
     local touches, clears = 0, 0
     local client = new_client({ { control = ws_frame.RECV_PONG }, { drop = "eof" } })
     local cfg = base_cfg({

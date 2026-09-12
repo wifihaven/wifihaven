@@ -66,6 +66,7 @@ object DbFailureSpec extends ZIOSpecDefault {
     def completeEnrollment(id: RouterId, h: Sha256Hex)                        = throwing
     def touch(id: RouterId, etag: Option[ETag], agentVersion: Option[String]) = throwing
     def touchEtag(id: RouterId, etag: ETag)                                   = throwing
+    def recordAgentVersion(id: RouterId, v: String)                           = throwing
     def delete(id: RouterId)                                                  = throwing
   }
 

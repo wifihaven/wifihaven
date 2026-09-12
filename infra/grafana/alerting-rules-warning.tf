@@ -1,6 +1,7 @@
-# Warning (notify, look-today) alert rules — W1–W14
+# Warning (notify, look-today) alert rules — W1–W15
 # (W1–W5: #1405, parent #1381. W6–W7: #2416. W8: #2488. W9: #2553. W10: #2646.
-#  W11–W12: #2477. W13: #2517. W14: #2646 follow-up, W10's absence arm.)
+#  W11–W12: #2477. W13: #2517. W14: #2646 follow-up, W10's absence arm.
+#  W15: #2736, the ws-cutover safety net — read its block before touching it.)
 # Implements docs/design/alerting.md §7.2.
 #
 # Every expression is grounded in a series emitted today (§2 "alert only on
@@ -40,7 +41,7 @@
 # are CONNECTED. Do not fold them into one rule; they need different reference
 # signals and different `for` durations.
 #
-# All fourteen carry severity=warning + env=prod labels, which the notification
+# All fifteen carry severity=warning + env=prod labels, which the notification
 # policy in alerting.tf routes to the wifihaven-warning (email) contact point.
 # None of these are ratio queries, so unlike the critical set (§7.1) they need
 # no zero-traffic guard — a counter that never increments is simply absent
@@ -51,16 +52,24 @@
 # rather than relying on a no_data verdict the group template does not — and for
 # W10's sake must not — provide.
 #
+# W15 (#2736) is a liveness rule too, but it deliberately does NOT make that
+# inversion, and the difference is worth being exact about. Its signal
+# (`ws_health_age_seconds`) is per-router and agent-pushed, so absence means the
+# whole agent stopped — a strictly larger failure than the one W15 detects, and
+# one no `or vector(0)` could attribute to a router id anyway. So absence
+# correctly lands in no_data → OK there, and the residual is written down in
+# W15's own block rather than papered over.
+#
 # Threshold model: each rule is a two-node Grafana managed condition — an
 # instant Prometheus query (ref A) feeding a threshold expression (ref C, the
 # condition). The `gt` evaluator parameter is the design's threshold; `for`
 # and the rate/increase window come straight from §7.2.
 
 locals {
-  # Keyed w1..w14 (stable resource addressing). `window_s` bounds the data fetch
+  # Keyed w1..w15 (stable resource addressing). `window_s` bounds the data fetch
   # and must cover the rate/increase window in `expr` (for W10, its
-  # `last_over_time` lookback; W14 has no range selector at all and takes the
-  # file minimum). `paused` ships W5 off.
+  # `last_over_time` lookback; W14 and W15 have no range selector at all and take
+  # the file minimum). `paused` ships W5 off.
   warning_rules = {
     w1 = {
       title    = "W1 Rollup failures"
@@ -546,6 +555,112 @@ locals {
       for     = "6h"
       paused  = false
       summary = "Fewer routers are pushing metrics than are holding a live websocket to us — at least one router is CONNECTED and silent, and has been for 6h. This is the door W10 cannot watch: W10 keys off the presence of an agent_version series, so a router that reports nothing vanishes from its comparison instead of being flagged by it, and the stuck-agent detector is silently off for that box. Observed live on prod 2026-08-15 (2 connected, 1 reporting). WHICH ROUTER: the rule cannot name it (a per-router server-derived label is out of bounds under the cardinality firewall in docs/process/instrumentation.md — see W10's cardinality note for why agent_version's own router_id is the documented exception) — open the router-ws-transport dashboard's \"Routers connected vs reporting metrics\" panel to confirm the gap, then the router-fleet dashboard's \"Agent versions across the fleet\" panel, which is the one that carries router_id (the \"Fleet agent-version distribution\" panel next to it counts by version only and CANNOT identify a router); the silent box is the enrolled router missing from that list. THEN: the box is up (it is holding a socket), so this is the metrics push specifically, not the agent. Check POST /api/router/metrics in the API log for that router, and on the box check the agent's metrics reporter and `logread | grep wifihaven`. If instead ALL routers went silent at once (the panel shows reporting at 0), suspect the ingest route or the metrics pipeline rather than any single router."
+    }
+    # W15 (#2736) — THE ws CUTOVER'S SAFETY NET. A router whose websocket has
+    # gone stale or dropped, while the box itself is still alive and talking to
+    # us over HTTP.
+    #
+    # WHY THIS RULE HAD TO EXIST BEFORE #2736 COULD SHIP. Until #2736 the agent
+    # carried its own recovery: when the ws-health sentinel aged past
+    # `ws.fallback_after` the HTTP snapshot poll woke back up and the router kept
+    # receiving policy and reporting usage/events over REST. #2736 removes that
+    # poll, so ws is the ONLY policy/telemetry transport. A router that loses the
+    # socket now keeps ENFORCING its last on-disk snapshot (enforcement degrades
+    # rather than stops) but receives no policy and reports no usage — and it
+    # does so silently. Deleting a fallback is only acceptable if the state the
+    # fallback used to absorb is loudly alerted instead; this is that alert.
+    #
+    # NOTHING ELSE COVERED IT — checked against the deployed rules, not just this
+    # file, on 2026-08-23:
+    #   - C7 keys on `agent_connected_routers < 1`. That is the WHOLE fleet going
+    #     dark; one router of two losing ws leaves it at 1 and C7 stays silent.
+    #   - W14 uses `router_ws_connections_active` as its REFERENCE (right-hand)
+    #     operand. A router that loses its socket LOWERS that reference, so W14's
+    #     comparison stays balanced and it goes quiet — the exact failure-mode
+    #     inversion its own comment block documents, and the row already recorded
+    #     as an uncovered gap in docs/design/alerting.md §8.
+    #   - W10 keys off `agent_version`, a never-cleared info gauge; per #2646 it
+    #     is not a health signal at all (both the 0.3.30 and 0.3.31 series report
+    #     1 at the same time), and it says nothing about the socket.
+    #
+    # WHY `ws_health_age_seconds` IS THE RIGHT SIGNAL, and this is the crux: it
+    # rides a transport that SURVIVES the failure it reports. #2736 removes the
+    # REST snapshot poll and the REST usage/events fall-through, but the metrics
+    # push deliberately stays on HTTP (openwrt/files/usr/lib/lua/wifihaven/
+    # ws_outbound.lua tees only `usage` and `events`), precisely so the ws_*
+    # observability series still reach the server while the socket is down. A
+    # signal carried over the broken link would be the #2546 shape — silence
+    # reading as health. This one is not.
+    # It is also the ONE value the agent actually acts on: the same sentinel age
+    # that #2731 found sitting 80 minutes stale under a live, heartbeating socket
+    # while every other series said the link was fine.
+    #
+    # IT CAN NAME THE ROUTER, unlike W14. `router_id` here is AGENT-pushed, which
+    # is the documented exception to the cardinality firewall in
+    # docs/process/instrumentation.md (same exception W10 relies on) — not a
+    # server-derived per-router label. So the alert instance carries the id and
+    # the operator does not have to go cross-reference a dashboard panel.
+    #
+    # TWO ARMS, SUMMED, because they are the two ways the gate reads unhealthy
+    # and a bare `> 300` would miss the worse one:
+    #   - `> bool 300` — the socket is up but has gone cold (the #2731 shape).
+    #   - `< bool 0`  — the gauge's `-1` sentinel: the health file is ABSENT.
+    #     The sidecar clears it on disconnect, so this is the clean "the
+    #     websocket is DOWN" case, and it is a negative number that no
+    #     greater-than threshold can ever catch.
+    # The arms are mutually exclusive, so the sum is 0 or 1 and `gt = 0` is a
+    # true boolean test. Both operands carry the same `router_id` label set, so
+    # the vector match is one-to-one per router.
+    #
+    # THRESHOLD 300s. Ten times the sidecar's 30s heartbeat/pong cadence, which
+    # is what refreshes the sentinel (#2731). It is also the value
+    # `ws.fallback_after` carried, so the number an operator already associates
+    # with "the link is gone" does not move under them — even though the config
+    # key itself is deleted by #2736 and the agent now derives its own staleness
+    # bound from `ws.heartbeat_interval`.
+    # THE AGENT'S BOUND AND THIS ONE ARE INDEPENDENT ON PURPOSE. The agent
+    # declares the link down at 3 x heartbeat (90 s by default,
+    # ws_outbound.STALE_HEARTBEATS) because its failover edge must react fast —
+    # a closed-mode profile should close as soon as we are out of contact. A
+    # PAGE must not fire on a blip, so this sits at 300 s with for = 30 m. The
+    # consequence to remember: lowering ws.heartbeat_interval on a router
+    # tightens ITS failover and does nothing to when you get paged. That is
+    # deliberate, not drift, and the same note is on the constant in
+    # openwrt/files/usr/lib/lua/wifihaven/ws_outbound.lua.
+    #
+    # for = 30m, AND BE HONEST ABOUT THE CALIBRATION WINDOW. Unlike W14 there is
+    # no fortnight of history to replay: `ws_health_age_seconds` only started
+    # being emitted with #2731 (PR #2732), so retention holds 2.1 days —
+    # 2026-08-21T16:04Z → 08-23T18:34Z, 1213 samples across both routers at 300s
+    # step, no gaps. Over that whole window the gauge never left [0, 31] and the
+    # shipping expression above evaluated to 0 on every single sample for both
+    # routers: zero false positives, but also no benign excursion to calibrate
+    # AGAINST. So 30m is chosen from the cadences rather than fitted to data:
+    # 300s + 30m means the socket has been provably dead for ~35 minutes, which
+    # is 70x the heartbeat and comfortably clears an agent upgrade or a router
+    # reboot (both of which stop the metrics push too, landing in no_data → OK
+    # rather than firing). Revisit once a few months of the series exist.
+    #
+    # WHAT IT STILL DOES NOT COVER, stated so absence is not read as health: a
+    # router that dies COMPLETELY stops pushing metrics, so this series goes
+    # absent and no_data_state = OK keeps the rule silent. That residual is
+    # PRE-EXISTING and unchanged by #2736 (a dead agent never polled either), and
+    # it is the same open row in §8 that W14 could not close. W15 covers the
+    # state #2736 actually creates — box alive, socket gone — which is the one
+    # the deleted fallback used to handle.
+    #
+    # QUERY COST: two instant gauge reads per evaluation, no range selector, so
+    # `window_s` takes the file minimum (same as W14; #2650 does not apply).
+    w15 = {
+      title    = "W15 A router's websocket is stale or down"
+      expr     = "((max by (router_id) (ws_health_age_seconds{env=\"prod\"}) > bool 300) + (max by (router_id) (ws_health_age_seconds{env=\"prod\"}) < bool 0))"
+      window_s = 300
+      # gt = 0 against a sum of two `bool` comparisons: 1 when the link is stale
+      # or the sentinel is absent, 0 otherwise. Boolean test — tune `for`, not this.
+      gt      = 0
+      for     = "30m"
+      paused  = false
+      summary = "Router {{ $labels.router_id }} has had no live websocket to the API for ~35 minutes (its ws-health sentinel is stale past 300s, or absent entirely). Since #2736 the websocket is the ONLY policy and telemetry transport: this router is still ENFORCING its last on-disk snapshot, so blocking has not stopped, but it is receiving no policy updates and reporting no usage or connection events, and it will stay that way until the socket comes back. This alert exists because #2736 deleted the HTTP snapshot-poll fallback that used to absorb exactly this state. WHY IT CAN BE TRUSTED: the value rides the agent's metrics push, which deliberately stayed on HTTP, so it is still arriving while the socket is down. FIRST: check router_ws_connections_active and the 'ws health sentinel age' panel on the router-ws-transport dashboard to see whether the server ever had the channel. THEN on the box: logread | grep wifihaven-ws (TLS failure, connect timeout, a NAT/CGNAT rebind that killed the socket without a close handshake) and /etc/init.d/wifihaven status to confirm the sidecar is actually running. A -1 age means the sidecar cleared the sentinel on a clean disconnect; a large positive age means it holds the socket but the heartbeat pong is not landing (the #2731 shape). If instead EVERY router fires at once, suspect the API's /api/router/ws endpoint or the ingress, not the fleet."
     }
   }
 }
