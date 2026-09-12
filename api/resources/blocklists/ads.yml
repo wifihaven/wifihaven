@@ -495,3 +495,188 @@ hosts:
   - anzu-rtb.live
   - pem-teads.tv
   - admixer.net
+  # traffic-driven additions (#2742): 30-day prod recent-apexes sweep (26
+  # devices, 2026-08-25). tpdads.com (The Publisher Desk ad infra —
+  # cdn./prebid. subdomains observed) and ad.gt (Audigent, an audience
+  # advertising-intelligence platform, confirmed via netify) were both
+  # HELD OUT unverified in prior passes (#2122, #2503) for lack of identity
+  # confirmation; this run found a clear confirmed identity for each, so
+  # they move from held-out to added. broadstreetads.com (Broadstreet Ads,
+  # a publisher ad-manager platform), blogherads.com (BlogHer Ads, owned by
+  # Penske/SHE Media), admetricspro.com (AdMetricsPro, a programmatic ad
+  # network connecting publishers to ad exchanges), and ad-delivery.net
+  # (flagged "Risky Advertiser" by Netify — obfuscated ad-delivery infra,
+  # same obfuscated-but-confirmed-function class as the Bigo Ads domains)
+  # are all newly-confirmed ad-tech gaps. html-load.com / html-load.cc are a
+  # documented adware/malvertising pair that displays fake "ad blocker
+  # broke this page" prompts to coerce users into disabling ad blockers —
+  # confirmed ad-adjacent nuisance infra, not a legitimate site feature.
+  # blisspointmedia.com (Bliss Point Media, now part of Tinuiti) is an
+  # algorithmic TV/OTT media-buying agency — same attribution/media-buying
+  # class as the already-curated everesttech.net/ml314.com. Dual-use /
+  # wrong-category SKIPPED (no change from the standing #2503 call):
+  # bounceexchange.com (Wunderkind/BounceX on-site personalization tool).
+  # HELD OUT as UNVERIFIED this run: ad-score.com (name is shared by at
+  # least three unrelated "AdScore" companies — ad-fraud detection,
+  # automotive-ad compliance, marketing analytics — could not confirm which
+  # owns this exact domain), akiads.net (no identifiable owner found),
+  # adapexads.io (distinct domain from the confirmed ad-tech company
+  # Adapex/adapex.io — no direct confirmation the "ads" variant is the same
+  # company), brainlyads.com (weak/unconfirmed "advertising services"
+  # description only), adsensecustomsearchads.com (confirmed Google-owned
+  # AdSense-for-Search serving domain, but held out rather than risk
+  # reproducing the #2601 shared-GFE-collateral failure mode without IP-level
+  # confirmation it sits on dedicated, non-shared frontends).
+  # Re-confirmed already-documented HELD-OUT (no change): desync.com,
+  # powerad.ai, componecat.ai, conduit.ai, connectmachine.ai, e-volution.ai,
+  # elixion.ai, betrad.com. Re-confirmed already-documented SKIPs (no
+  # change): hs-analytics.net, synchrony.com/synchronycredit.com/
+  # mysynchrony.com, stageagent.com, myfitnesspal.com, tagsrvcs.com (HUMAN
+  # Security), imganalytics.com, opentrackr.org, popcorn-tracker.org,
+  # googletagmanager.com/googletagservices.com/google-analytics.com/
+  # googleadservices.com/app-analytics-services.com (banned shared-GFE
+  # apexes, see SharedGfeHosts.scala), app-ads-services.com,
+  # bdtelemetry.amazon (Amazon first-party telemetry). False positives
+  # (name matched a category regex, not ad-tech): 4kdownload.com,
+  # tinkercad.com, badssl.com, landspace.com (Chinese rocket company —
+  # matched via "dsp" inside "lanDSPace"), insiad.com (redirects to
+  # INSEAD business school), hellometrics.co (a marketing agency's own
+  # corporate site, not embedded tracking infra). See
+  # evidence/multi-category-classification-2742.md.
+  - tpdads.com
+  - ad.gt
+  - broadstreetads.com
+  - blogherads.com
+  - admetricspro.com
+  - ad-delivery.net
+  - html-load.com
+  - html-load.cc
+  - blisspointmedia.com
+  # traffic-driven additions (#2756): 30-day prod recent-apexes sweep (28
+  # devices, 2026-09-01). Two new ad networks specifically built to embed
+  # sponsored placements inside AI-chatbot/AI-app output: trygravity.ai
+  # ("Gravity — The Ad Network for AI"; its own docs URL is a
+  # api.trygravity.ai/track/click redirect) and koah.ai ("Koah — The Ad
+  # Network Built for AI" / "AdSense for AI", $26M+ raised, TechCrunch/
+  # AdWeek/SiliconANGLE-confirmed). Same ".ai-TLD-but-the-product-is-ads"
+  # trap as axon.ai/programmaticx.ai (#2599/#2742) — these are ad infra,
+  # not consumer AI products, so ads.yml not ai.yml. adpushup.com (AdPushup,
+  # a Google Certified Publishing Partner ad-revenue-optimization + adblock-
+  # recovery platform, acquired by Geniee) and btloader.com (Blockthrough,
+  # the market-leading adblock-revenue-recovery script loader) are both
+  # anti-adblock/ad-enablement infra — same function class as the
+  # getadmiral.com precedent (#2503). adlightning.com (Ad Lightning, now
+  # rebranded Boltive — a programmatic ad-quality/ad-security platform used
+  # by publishers, SSPs and DSPs), s4mdsp.com (S4M, a Paris-founded
+  # mobile-native DSP with 500+ advertisers), adelement.com (AdElement, an
+  # AI-native app-focused DSP; Inc 5000 company, "Google Agency of the
+  # Year" — confirmed via its own site, stronger evidence than the
+  # "plausible but unconfirmed" hold-out in #2212/#2348), adentifi.com
+  # (AdTheorent, a predictive-advertising firm, confirmed via netify —
+  # bm./px. subdomains are its interest-based-ad opt-out + pixel infra),
+  # advanseads.com (Advanse, a creative-automation-for-advertisers
+  # platform), mediatradecraft.com (Media Tradecraft, an ad-tech
+  # monetization/programmatic-consulting firm — Digiday/AdExchanger award
+  # winner), and playdigo.live (Playdigo, a mobile user-acquisition DSP;
+  # sibling of the already-curated ssp.playdigo.com family) are all
+  # confirmed ad-tech companies. osdrtb.net (cdn./trk. subdomains, "rtb" in
+  # the apex — textbook RTB-bidder shape, same as the gamaibids.com
+  # precedent #2122) is a genuine gap despite no public company page.
+  # displayio.cloud is a sibling apex of the already-curated display.io
+  # (an in-app ad-monetization platform) — same multi-apex pattern as the
+  # Verve Group precedent (#1923). playwire.com (Playwire's RAMP ad-
+  # monetization platform for casual/browser games, used by sites including
+  # the already-curated Coolmath Games) is pure ad-monetization infra riding
+  # on top of game content, not the content itself — not the same
+  # content-collateral class as target-video.com/brid.tv, which serve the
+  # actual video.
+  # HELD OUT / REJECTED this run: claude.com — despite surfacing again in
+  # traffic, this is a documented standing exclusion (#2348, #2503): it is
+  # WifiHaven's own Anthropic-vendor infra AND the bare corporate apex
+  # rather than the product subdomain per the ai.yml host-scoping
+  # convention (the product itself is the already-curated claude.ai) — not
+  # an ads.yml candidate at all, noted here only to record it was
+  # re-examined and correctly excluded again. lazybumblebee.com — despite a
+  # weak, unauthoritative forum post this run suggesting a link to Bumble's
+  # d.lazybumblebee.com deep-link domain, FOUR prior passes (#2212, #2348,
+  # #2503, #2729) investigated this apex's actual site content and
+  # confirmed it is an unrelated lifestyle blog, not evidence of Bumble
+  # ownership — the standing "not a social-media candidate at all" verdict
+  # stands; a single ambiguous forum answer does not meet the bar to
+  # reverse a repeatedly-investigated rejection. akiads.net — re-observed
+  # (loader./serve. subdomains, "ads" substring in apex) but this is the
+  # SAME apex #2742 explicitly held out as "no identifiable owner found"
+  # with near-identical traffic volume; a subdomain-naming pattern alone is
+  # not new corroborating evidence over a company/product identity, so it
+  # stays held out rather than being added on inference. See
+  # evidence/multi-category-classification-2756.md.
+  - trygravity.ai
+  - koah.ai
+  - adpushup.com
+  - btloader.com
+  - adlightning.com
+  - s4mdsp.com
+  - adelement.com
+  - adentifi.com
+  - advanseads.com
+  - mediatradecraft.com
+  - playdigo.live
+  - osdrtb.net
+  - displayio.cloud
+  - playwire.com
+  #
+  # traffic-driven additions (#2759): observed but unblocked ads infra,
+  # 30-day prod recent-apexes sweep across all 28 devices, 2026-09-08.
+  # adspostx.com (AdsPostX, a retail-media post-transaction ad network),
+  # progrtblive.com (self-descriptive "programmatic RTB live" name shape —
+  # same reasoning as gamaibids.com/osdrtb.net, no company page found but
+  # absent from ads-extended entirely so a genuine gap either way),
+  # tradplusad.com (TradPlus — Chinese mobile ad-mediation SDK, 40+ ad
+  # networks integrated, 50B+ daily ad requests), connectad.io (ConnectAd —
+  # independent European SSP), ethicalads.io (EthicalAds — privacy-focused
+  # ad network for developer sites, e.g. Flask/ESLint/daily.dev docs; still
+  # ad-serving infra regardless of its "ethical" framing), microad.jp
+  # (MicroAd — established Japanese DSP/SSP, founded 2007), exelbid.com
+  # (ExelBid — Korea's #1 mobile ad exchange, OpenRTB-based), bidence.net
+  # (Bidence — OpenRTB ad exchange, est. 2016), mathads.com (confirmed via
+  # two independent sources as a MediaMath apex — same company as the
+  # well-known mathtag.com ad-tag domain), bids.ws (programmatic ad system
+  # with sellers.json entries), tvpixel.com (Nielsen/D+M TV ad-tracking
+  # pixel), ladsp.com (F@N Communications' ad tracking/personalization
+  # domain — Japanese ad-tech, heavy third-party cookie usage), gsspat.jp
+  # (Geniee's ad-delivery domain — Geniee is the same company behind the
+  # already-curated adpushup.com, #2756), mediayo.ai (MediaYo — AI-driven
+  # programmatic ad-tech / DCO company; a ".ai"-TLD ad-tech company, same
+  # trap class as trygravity.ai/koah.ai/programmaticx.ai — belongs in
+  # ads.yml, not ai.yml), paa-reporting-advertising.amazon (Amazon's own
+  # ad-reporting/pixel infrastructure for Amazon Ads — distinct from the
+  # bdtelemetry.amazon first-party-telemetry skip; this one is literally
+  # Amazon Ads' reporting pixel), epicgameshubham.com (a scam/phishing
+  # domain impersonating Epic Games — 25/100 trust score, blacklisted,
+  # tracked in AdGuard's filter lists as adware/malvertising; confirmed NOT
+  # affiliated with the real Epic Games so no collateral risk, same
+  # "malvertising flag doesn't disqualify" reasoning as gamaibids.com,
+  # #2122). connectad.io/microad.jp/mathads.com/tvpixel.com/ladsp.com/
+  # gsspat.jp/paa-reporting-advertising.amazon all corroborated by presence
+  # of a subdomain in the StevenBlack ads-extended feed (the curated apex
+  # entry is still the stronger block per the #2122 precedent);
+  # adspostx.com/progrtblive.com/tradplusad.com/ethicalads.io/exelbid.com/
+  # bidence.net/bids.ws/mediayo.ai/epicgameshubham.com are absent from the
+  # feed entirely (highest-value gaps). See
+  # evidence/multi-category-classification-2759.md.
+  - adspostx.com
+  - progrtblive.com
+  - tradplusad.com
+  - connectad.io
+  - ethicalads.io
+  - microad.jp
+  - exelbid.com
+  - bidence.net
+  - mathads.com
+  - bids.ws
+  - tvpixel.com
+  - ladsp.com
+  - gsspat.jp
+  - mediayo.ai
+  - paa-reporting-advertising.amazon
+  - epicgameshubham.com

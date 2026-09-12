@@ -4350,10 +4350,17 @@ trait AppRepo {
       rules: List[(NamedScheduleId, AppScheduleMode)],
   ): Task[Unit]
 
-  /** The schedule rules attached to a single assignment (no window resolution). */
-  def scheduleRulesForAssignment(
-      assignmentId: AppPolicyAssignmentId,
-  ): Task[List[AppScheduleRule]]
+  /**
+   * The schedule rules attached to a set of assignments (no window resolution) — #2751, backing the
+   * `/api/apps` read path. Batched deliberately: `GET /api/apps` returns every app with every
+   * assignment, so a per-assignment read would be an N+1 over apps x profiles. This resolves the
+   * whole set in one `assignment_id = ANY(...)` query, covered by V51's
+   * `idx_app_policy_schedule_rules_assignment`. Assignments with no rules are absent from the map
+   * (callers default to `Nil`); an empty `ids` short-circuits without a round-trip.
+   */
+  def scheduleRulesForAssignments(
+      ids: List[AppPolicyAssignmentId],
+  ): Task[Map[AppPolicyAssignmentId, List[AppScheduleRule]]]
 
   /**
    * For every assignment under `profileId`, the flattened (mode, window) pairs of its schedule
@@ -4624,13 +4631,30 @@ class AppRepoLive(xa: Transactor[Task]) extends AppRepo {
     (del *> ins).transact(xa).unit
   }
 
-  def scheduleRulesForAssignment(assignmentId: AppPolicyAssignmentId) =
-    sql"""SELECT id, assignment_id, schedule_id, mode
-          FROM app_policy_schedule_rules WHERE assignment_id=$assignmentId ORDER BY id"""
-      .query[(AppScheduleRuleId, AppPolicyAssignmentId, NamedScheduleId, AppScheduleMode)]
-      .map { case (id, aid, sid, mode) => AppScheduleRule(sid, mode, id, aid) }
-      .to[List]
-      .transact(xa)
+  // #2751: ONE query for the whole assignment set, and one bind parameter for the whole set.
+  // `= ANY($arr)` rather than an `IN (?, ?, …)` list: `GET /api/apps` passes every assignment id
+  // across every app, and a per-id bind would hit PostgreSQL's 65535-parameter statement cap as a
+  // hard protocol error long before it became a slow query. Postgres parses an `IN` list into
+  // `= ANY (ARRAY[...])` anyway, so the plan SHAPE is unchanged — an index scan on
+  // `idx_app_policy_schedule_rules_assignment` (V51) whenever the id set is a small fraction of the
+  // table, correctly degrading to a seq scan when it selects most of it. (Estimates can differ: a
+  // bound array loses per-value selectivity once the statement switches to a generic plan, where a
+  // literal list would not.) `ORDER BY assignment_id, id` keeps each group in insertion order, so
+  // the route's per-assignment lists are stable across calls.
+  def scheduleRulesForAssignments(ids: List[AppPolicyAssignmentId]) =
+    DbMetrics.timed("app.scheduleRulesForAssignments") {
+      val arr = ids.distinct.map(_.value).toArray
+      if arr.isEmpty then ZIO.succeed(Map.empty)
+      else
+        sql"""SELECT id, assignment_id, schedule_id, mode
+              FROM app_policy_schedule_rules WHERE assignment_id = ANY($arr)
+              ORDER BY assignment_id, id"""
+          .query[(AppScheduleRuleId, AppPolicyAssignmentId, NamedScheduleId, AppScheduleMode)]
+          .map { case (id, aid, sid, mode) => AppScheduleRule(sid, mode, id, aid) }
+          .to[List]
+          .transact(xa)
+          .map(_.groupBy(_.assignmentId))
+    }
 
   // Resolve each assignment's rules to flattened (mode, window) pairs in one join:
   // app_policy_schedule_rules -> assignment (for the profile filter) -> schedule_windows.

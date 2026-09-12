@@ -165,6 +165,19 @@ object AppTemplatesSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
           "connectivity-test",
           // #2699: traffic-driven catalog pass
           "zoom",
+          // operator request: GeoFS browser flight simulator + Arduino maker platform
+          "geofs",
+          "arduino",
+          // #2754: traffic-driven catalog pass
+          "canva",
+          "instructables",
+          // operator request: Amazon shopping + Sporty's pilot shop / online training
+          "amazon",
+          "sportys",
+          // #2762: Amazon background telemetry, split out of `amazon`
+          "amazon-telemetry",
+          // #2774: orphan-driven catalog pass
+          "rebrickable",
         )
         val slugs    = templates.map(_.slug.value).toSet
         assertTrue(slugs == expected) &&

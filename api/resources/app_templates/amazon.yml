@@ -1,0 +1,113 @@
+slug: amazon
+name: Amazon
+icon: "https://icons.duckduckgo.com/ip3/amazon.com.ico"
+icon_type: url
+# Operator request: Amazon — the SHOPPING surface (www.amazon.com and the two
+# static-image CDNs that render its pages). Present on every non-IoT device in
+# the house over a 30d window; `www.amazon.com` is the one `amazon.com`
+# subdomain all eight of them hit. Storefront images dominate the bytes:
+# ssl-images-amazon.com alone is 3.09 GB / 422 hits on Kid Laptop, 2.77 GB /
+# 155 on Prima iPad and 1.44 GB / 172 on Octavius iPad.
+#
+# Bare `amazon.com` is EXCLUDED, and this is the clearest case in the catalog
+# for it. render.lua emits `nftset=/<host>/` verbatim per host and dnsmasq
+# matches by pure suffix, so an apex entry would sweep every child of a
+# whole-company zone into the `eb_` drop set. These are not hypothetical
+# children — every one below was observed in this household's own 30d traffic:
+#   aws.amazon.com, d2c.aws.amazon.com,
+#   vs.aws.amazon.com           the AWS console and docs, on Sameer iPhone.
+#                                Blocking a kid's Amazon shopping must not take
+#                                out an adult's cloud console.
+#   api.amazon.com              Login with Amazon — a shared vendor API that
+#                                signs users into unrelated third-party sites
+#                                and backs Alexa integrations. Exactly the
+#                                shape _README.yml's Class 1 warns about, and
+#                                it resolves onto the same 98.82.x AWS range as
+#                                the apex itself.
+#   arcus-uswest.amazon.com,
+#   msh.amazon.com              Alexa / connected-device infrastructure.
+#   read.amazon.com,
+#   music.amazon.com            Kindle and Amazon Music (Rachel Mac).
+#   watch.amazon.com,
+#   prime.amazon.com,
+#   atv-ps.amazon.com           Prime Video — a distinct service that should
+#                                get its own template if it ever needs one,
+#                                the same way netflix/youtube/twitch are
+#                                separate apps rather than one "streaming" app.
+#   apay-us.amazon.com          Amazon Pay (Kid Laptop).
+#   pharmacy.amazon.com         Amazon Pharmacy (Rachel iPhone).
+# Telemetry (`fls-na`, `unagi`, `unagi-na`, `ipv6.unagi-na`, `data`,
+# `transient`) and Amazon's ad surfaces (`sponsored-ads`,
+# `aax-us-east-retail-direct`, `affiliate-program`) were observed too. The ad
+# domains are already handled where they belong — `amazon-adsystem.com`,
+# `amazon-ads-attestation.com` and `paa-reporting-advertising.amazon` are
+# entries in `blocklists/ads.yml`, not app surface.
+#
+# Two residuals to record so a later author doesn't "fix" this by adding the
+# apex back, identical to the ones `arduino.yml` documents:
+#   1. Over plain HTTP the bare apex redirects to `www`, and that redirect
+#      completes because the apex's IPs are in no `eb_` set — the drop lands on
+#      the follow-on `www` request, so the user sees a failed TLS handshake
+#      rather than the port-80 DNAT block page.
+#   2. Bytes to bare `amazon.com` go unattributed against the app's budget:
+#      `HostMatch.matchesApex` (shared/src/types/HostMatch.scala) matches it
+#      against none of the hosts below.
+#
+# `ssl-images-amazon.com` IS listed as an apex, and the contrast with
+# `amazon.com` is the whole point: it is a single-purpose static-image zone, so
+# every child is storefront imagery by construction. That is the whole argument
+# — deliberately NOT "it adds no IP exposure", which would be the same kind of
+# unverifiable IP-set claim about DNS-steered CDN hosts that the `metrics.`
+# note below warns against.
+#
+# `media-amazon.com` is NOT listed as an apex, because one of its three
+# observed children is telemetry:
+#   m.media-amazon.com        storefront image/media CDN — kept
+#   c.media-amazon.com        kept because it is attributed directly, as its
+#                              own name, on Sameer iPhone and Prima iPad (see
+#                              the per-device table in
+#                              evidence/classification-2762.md).
+#                              Do NOT justify this as "a CNAME target earns no
+#                              attribution" — that is false: #1344/#1346 fold a
+#                              re-queried CNAME target back onto its branded
+#                              chain head, and `each_candidate_host` walks that
+#                              recovered head as well as the answered name
+#                              (openwrt/.../dns_tail_sets.lua). The reason an
+#                              explicit entry is still worth having is that
+#                              the alias edge is TTL-bounded (`resolve_head`)
+#                              and capped with oldest-learned eviction
+#                              (`evict_oldest_alias`), both in dns_log.lua, so
+#                              the fold-back is best-effort, not guaranteed.
+#   metrics.media-amazon.com  EXCLUDED: it is telemetry, and this template
+#                              carries only hosts whose bytes are storefront
+#                              imagery. Same call as excluding
+#                              `telemetry.canva.com` and `sgtm.arduino.cc`.
+#                              (It was observed CNAMEing to `ecp.map.fastly.net`
+#                              -> 199.232.65.51. Do NOT restate that as "a pool
+#                              no kept host touches": the kept image hosts are
+#                              DNS-steered across CDNs, Fastly included, so
+#                              pool-disjointness here is unverified and is not
+#                              what the exclusion rests on.)
+#
+# Amazon steers these image hosts between CDNs by DNS: `m.media-amazon.com` was
+# seen answering on Akamai (23.215.223.x, via a.media-amazon.com.akamaized.net)
+# and, minutes later, on CloudFront (13.226.249.165 / 99.84.98.145) via
+# `c.media-amazon.com`. Treat any single `dig` of these hosts as a sample, not
+# as the host's IP set — their resolved IPs are multi-tenant edges either way.
+# That is the accepted Class-2 latent risk from _README.yml: it IS where this
+# app's bytes live, and stripping it would defeat both the block and the time
+# budget.
+#
+# Residual worth naming: `media-amazon.com` also serves imagery for IMDb and
+# Prime Video, so if a Prime Video app is ever templated, some of its image
+# bytes will already be attributed here.
+# Note for a future author diffing observed subdomains against this host-set:
+# `ssl-images-amazon.com` has no A record of its own and no traffic will ever be
+# attributed to that exact name. It is a pure suffix anchor — both
+# `nftset=/<host>/` and `HostMatch.matchesApex` match on the suffix, not on the
+# entry resolving — so it is doing its job, not a dead entry.
+hosts:
+  - www.amazon.com
+  - ssl-images-amazon.com
+  - m.media-amazon.com
+  - c.media-amazon.com

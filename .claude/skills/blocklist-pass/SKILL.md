@@ -203,6 +203,154 @@ that edit in the same PR.** If a step above is now wrong, fix the step too.
 
 ## Learnings log (newest first)
 
+- **2026-09-08** (#2759) — **A `.ai`-TLD company whose actual product is AI-
+  driven programmatic ad delivery (Dynamic Creative Optimization) is a third
+  confirmed instance of the `axon.ai`/`programmaticx.ai`/`trygravity.ai`/
+  `koah.ai` trap — check `ads.yml` criteria before defaulting to `ai.yml` on
+  TLD alone.** `mediayo.ai` ("MediaYo — AI-driven programmatic advertising")
+  surfaced in the `ai.yml` `.ai`-TLD sweep but its entire business is
+  AI-optimized ad creative delivery — an ads.yml candidate. This pattern is
+  now common enough (4 instances across 3 passes) that it's worth checking
+  first for ANY `.ai` apex whose own marketing centers on "advertising",
+  "ad network", "programmatic", or "DCO" — the TLD is never the signal, the
+  product description is.
+- **2026-09-08** (#2759) — **A confirmed scam/phishing domain that
+  impersonates a well-known game brand (blacklisted, tracked in AdGuard's
+  filter lists as adware) is an `ads.yml` malvertising add, not a
+  `games.yml` candidate — even though it matches the games keyword sweep on
+  the brand name.** `epicgameshubham.com` matched the "Epic Games" substring
+  in the games sweep but a trust-score/blacklist check confirmed it is NOT
+  affiliated with the real Epic Games — a scam clone site. Since it's
+  confirmed illegitimate (no collateral risk) and independently tracked as
+  adware/malvertising, it belongs with the `gamaibids.com`-class
+  "malvertising flag doesn't disqualify — still ad-category" reasoning
+  (#2122), filed in `ads.yml`, not held out and not filed under the brand's
+  actual category.
+- **2026-09-08** (#2759) — **A first-party analytics SDK a category's own
+  content creators embed in their own products (game-dev analytics, not
+  third-party ad infra riding on top) belongs in the same dual-use skip
+  bucket as `app-measurement.com`/Firebase — check who integrates the SDK
+  before assuming "analytics substring in a `games`-adjacent apex = ad
+  infra."** `gameanalytics.com` is a legitimate SDK game *developers*
+  embed in their own titles to understand their own players; blocking it
+  doesn't stop ads, it silently breaks developer telemetry inside
+  otherwise-fine games. Held out as dual-use, not added to any category.
+- **2026-09-08** (#2759) — **Cross-check a self-descriptive-name-only
+  candidate (no confirmed company page) against the StevenBlack
+  `ads-extended` feed before deciding whether to add it — apex-absent from
+  the feed is itself corroborating signal that it's a genuine, previously
+  unknown gap, not proof it's illegitimate.** `progrtblive.com` had no
+  public company page (same shape as `osdrtb.net`/`gamaibids.com` in prior
+  passes) but is also completely absent from `ads-extended`, meaning no
+  other curated source has flagged it either way — consistent with "small
+  new RTB shop," not disqualifying. Contrast with `mathads.com`, where a
+  *conflicting* identity signal (search results partly describing the
+  unrelated `math-aids.com` worksheets site) was resolved by finding TWO
+  independent sources confirming MediaMath ownership (the `creative.
+  mathads.com` subdomain shape + a direct mathtag.com/MediaMath ownership
+  search) before adding — a single ambiguous source is not enough, but two
+  independent confirmations of the same specific claim is.
+- **2026-09-01** (#2756) — **Check every candidate's history against
+  `evidence/*.md`, not just the current `.yml` content, BEFORE running a
+  fresh identity search — a domain can be a documented standing exclusion
+  even though it isn't in the curated list.** `claude.com` resurfaced in
+  traffic this run (unsurprising — the operator runs Claude Code heavily)
+  and a fresh websearch would happily confirm "yes, this is Anthropic's
+  domain" — but #2348 and #2503 had already ruled it out twice: it's
+  WifiHaven's own vendor infra, and separately the wrong *tier* of apex per
+  the `ai.yml` host-scoping convention (bare corporate apex vs. the
+  already-curated product subdomain `claude.ai`). Grepping
+  `evidence/*.md` for the exact candidate caught this before it got
+  re-added as a "new" gap. Same pattern, different resolution:
+  `lazybumblebee.com` — a weak, unauthoritative forum post this run
+  suggested a link to Bumble's dating app via its `d.lazybumblebee.com`
+  subdomain, but FOUR prior passes (#2212, #2348, #2503, #2729) had
+  already investigated the apex's actual site content directly and found
+  it to be an unrelated lifestyle blog — one ambiguous forum answer isn't
+  strong enough new evidence to reverse a repeatedly re-investigated
+  rejection, so it stayed held out. Contrast with `adelement.com`, which
+  *was* correctly promoted from a two-pass "plausible but unconfirmed"
+  hold-out (#2212, #2348) to added — because this run's evidence was a
+  first-party company website with concrete self-description (own domain,
+  funding, employee count, Inc 5000 ranking), which is categorically
+  stronger than the earlier "name sounds plausible" signal. The rule: a
+  standing rejection needs comparably strong NEW evidence to reverse, not
+  just any evidence.
+- **2026-09-01** (#2756) — **A `.ai`-TLD company whose actual product is an
+  ad network built for OTHER AI apps belongs in `ads.yml`, not `ai.yml` —
+  a second confirmed instance of the trap `axon.ai`/`programmaticx.ai`
+  first flagged (#2599/#2742).** `trygravity.ai` ("Gravity — The Ad
+  Network for AI") and `koah.ai` ("Koah — AdSense for AI") both surfaced
+  in the `ai.yml` keyword sweep (`.ai` TLD) but their entire business is
+  embedding sponsored placements into other companies' AI-chat/AI-app
+  output — that's an ads.yml candidate wearing an AI-branded TLD. This is
+  now a recurring enough pattern (3 instances across 2 passes) that any
+  `.ai` apex whose own marketing describes itself as an "ad network" /
+  "AdSense for X" should be checked against `ads.yml` criteria first,
+  before defaulting to `ai.yml` on TLD alone.
+- **2026-09-01** (#2756) — **An ad-monetization platform that serves ONLY
+  ads within game/content pages it doesn't otherwise deliver (Playwire's
+  RAMP) is a clean ads.yml add, not games.yml content-collateral —
+  contrast with a video CDN that also carries the actual content stream
+  (target-video.com/brid.tv, mmvideocdn.com).** The distinguishing
+  question from the ads-collateral rule: does blocking the apex drop
+  content the household is trying to consume, or only the ad slot layered
+  on top of content served from elsewhere? `playwire.com` monetizes the
+  already-curated Coolmath Games and other casual-game sites but doesn't
+  deliver the games themselves — safe to add.
+- **2026-08-25** (#2742) — **A hand-written `grep -oE '^  - [a-zA-Z0-9._-]+$'`
+  extraction anchored with `$` silently drops any host line carrying a
+  trailing inline `# comment`** — `social-media.yml` and `games.yml` both use
+  inline comments on some host lines (`- acebet.cc # Acebet.cc US sweepstakes
+  social casino`), and the anchored regex under-counted `gambling.yml` by 4
+  hosts, `games.yml` by 1, and `social-media.yml` by 10 — enough to make
+  `acebet.cc` (already curated) look like a fresh gap. Fix: strip the
+  trailing comment first (`sed -E 's/^  - //; s/[[:space:]]*#.*$//'`) rather
+  than anchoring the match on it. This is the same class of bug the
+  #2122 `\s`-on-macOS lesson warns about — always smoke-test extraction
+  against a known sentinel that HAS an inline comment, not just one that
+  doesn't.
+- **2026-08-25** (#2742) — **A candidate can be a "genuine gap" for the
+  category it keyword-matched on while already being fully enforced under a
+  DIFFERENT category's file — check membership across every curated file,
+  not just the one the sweep bucketed it into.** `ads-twitter.com` and the
+  `tiktokpangle-b.us`/`tiktokpangle-cdn-us.com`/`tiktokpangle.us` cluster
+  all matched the social-media keyword sweep (Twitter/TikTok branding) but
+  are correctly curated in `ads.yml` (X's ad-conversion pixel; Pangle is
+  ByteDance's ad network, not TikTok content). Checking only
+  `social-media.yml`'s host set would have re-added them as "gaps" when
+  they're already dropped. Same applies in reverse — `axon.ai` and
+  `programmaticx.ai` both keyword-matched the `ai` sweep (`.ai` TLD) but are
+  correctly curated in `ads.yml` (ad-tech companies that happen to use a
+  `.ai` domain, not consumer AI products).
+- **2026-08-25** (#2742) — **A domain HELD OUT as "unverified — no identity
+  confirmation" in a prior pass is not permanently stuck there — a fresh
+  websearch that lands a specific, named-source identification (a netify.ai
+  company profile, not just a suggestive URL snippet) is legitimate grounds
+  to move it from held-out to added.** `tpdads.com` (held out in #2122) and
+  `ad.gt` (held out in #2503, explicitly for "no identity confirmation")
+  both resolved this run to clear, sourced identities (The Publisher Desk;
+  Audigent via netify.ai) and were added. Contrast with the standing
+  `bounceexchange.com` SKIP (already explicitly classified dual-use in a
+  live `ads.yml` comment, not just held-out) — that is a settled call, not
+  an open question, and was left alone per the xlgmedia.com precedent
+  (#2503) of respecting a prior pass's explicit classification over a fresh
+  guess.
+- **2026-08-25** (#2742) — **A confirmed brand name is not enough when
+  multiple unrelated companies share it, or when copycat/squatting sites
+  reuse it for an unrelated product — check that THIS domain, not just the
+  brand string, is the real owner.** `ad-score.com` matched three distinct
+  "AdScore" companies (ad-fraud detection, automotive-ad compliance,
+  marketing analytics) with no way to tell which owns the hyphenated domain
+  — held out. `poki.io` looked like a natural sibling of the already-curated
+  `poki.com`/`poki-cdn.com`, but a search surfaced several unrelated
+  brand-squatting clone sites reusing "Poki" for copycat game portals
+  (`poki.us.com`, `poki.us.org`, `poki.to`, `pokigames2.com`) and the bare
+  `poki.io` apex didn't even resolve — held out despite the tempting naming
+  pattern. `poki-gdn.com` (a CDN-suffix sibling, Amazon-registrar +
+  Cloudflare infra matching the confirmed `poki-cdn.com`) was added instead;
+  the naming-pattern signal is much stronger when it's a distinctive
+  suffix/infra match, not just brand-substring reuse.
 - **2026-08-18** (#2729) — **Before trusting a fresh websearch's top result
   for an ambiguous apex, check the CURRENT curated file first — a prior pass
   may have already resolved the SAME apex to a different, correct identity.**

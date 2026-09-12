@@ -76,9 +76,28 @@ rm -f /tmp/wh_token.txt   # don't leave creds on disk
 
 ## Step 1 — Gap-check against existing apps
 
-List `_index.yml` slugs and the `*.yml` host-sets. For each high-byte apex in
-"Other", decide: already covered? adjacent to an existing app (extend that app's
-host-set instead of duplicating)? or a genuine gap?
+**Start from the server's own gap list, not a hand diff.**
+`GET /api/profiles/<id>/usage-by-app?from=YYYY-MM-DD&to=YYYY-MM-DD`
+(`UsageRoutes.scala:150`; `from` defaults to today, `to` defaults to `from`)
+returns `apps[]` — what IS attributed — and `orphanHosts[]`, every host carrying
+real time that no app covers, each with `proportionalSeconds`/`presenceSeconds`.
+That is already time-weighted, which the raw byte table is not.
+
+Two cautions before you treat an orphan as a gap:
+
+- **`orphanHosts` is not a clean "uncovered" list.** Per #1898
+  (`UsageRoutes.scala:801-807`) a host declared under a template's
+  `shared_hosts:` still contributes its *unattributed* span to the orphan
+  bucket, possibly alongside its own app row. A plain `hosts:` entry that
+  matches a template never orphans, so most orphans ARE genuine gaps — but
+  confirm against `_index.yml` and the `*.yml` host-sets before authoring.
+- **Google/Apple platform infra dominates the top of the list.** That is the
+  usual skip pile (Step 2), not a finding.
+
+Then, for each surviving candidate, decide: already covered? adjacent to an
+existing app (extend that app's host-set instead of duplicating)? or a genuine
+gap? Use `recent-apexes` to scope the host-set — it is the endpoint that
+returns `subdomains[]`.
 
 ## Step 2 — Classify each cluster: app, blocklist, or skip
 
@@ -172,6 +191,292 @@ above is now wrong, fix the step too — don't just log around it.
 
 ## Learnings log (newest first)
 
+- **2026-09-11 (#2774)** — **First pass driven by `orphanHosts`, and the method
+  works: it put the single highest-value finding at the top of the list instead
+  of buried in a byte table.** `www.youtube-nocookie.com` — YouTube's
+  privacy-enhanced EMBED domain — was 799 unattributed proportional minutes and
+  had been missing from `youtube.yml` since the template was written. A
+  byte-ranked `recent-apexes` sweep had missed it across many passes because
+  31.9 MB is unremarkable; time-weighted, it was the biggest genuine gap in the
+  catalog. **When a brand serves the same content from a second domain for
+  privacy/embed/no-cookie reasons, that domain is a host-set gap by default** —
+  check for `-nocookie`, `-static`, `embed.` and regional-privacy variants of
+  every already-templated brand.
+- **2026-09-11 (#2774)** — **A shared multi-tenant ORIGIN is disqualifying in a
+  way a shared CDN edge is not, and the allow side is what makes it bite.** Two
+  unrelated shops in this household's own traffic — `mouldkingcorp.com` and
+  `thetraindepartment.com` — both CNAME to the literal hostname
+  `shops.myshopify.com` and answer on the identical `23.227.38.74`. The usual
+  argument against templating them is the `eb_` one `arduino.yml` makes for its
+  own store, but the stronger one is the ALLOW side: per #1899 the block side
+  takes distinctive hosts only, while the under-cap carves take the full set, so
+  the shared address reaches `ea_` — and `extraAllowed` beats every drop it
+  reaches (#421). **Do not try to write the exact scope from memory: two
+  successive drafts of this entry got it wrong and review caught both.** What is load-bearing for the skip is just
+  that the carve exists and reaches the `bl_`/`eb_` drops. If a future decision
+  actually turns on the precise scope, read `PolicyService.computeBlockRules`
+  and `ProfileAppDispositions.enforcement` — the gates that kept getting missed
+  are `val timeLimitedUnderCap = if (state.blocked) Nil else
+  timeLimitedUnderCapHosts(state)` (`:1506-1507`),
+  `if (isHardPause) Nil`, which zeroes all the PER-PROFILE carves together,
+  Allowed-mode included (`:1509-1511`, #1418) — `global.extraAllowed` survives it
+  by design (`:1486-1497`), though an app template's hosts never land there, `capGroups = perApp.filter(_.mode == AppMode.TimeLimited)`
+  (`ProfileAppDispositions:53-54`) which makes the exempt carve TimeLimited-only
+  even with `exemptFromDaily` set (#2747), and `suppressedByScheduleToggle`
+  (`:145`, #1679). The `eb_` half bites regardless of any of this — a brand host
+  is distinctive, so it lands there too.
+  **Before templating any brand, resolve `www.<brand>` and check whether the
+  CNAME target is a platform-wide hostname** (`shops.myshopify.com`,
+  `*.hosted-by-discourse.com`, `*.zendesk.com`, `wp.wpenginepowered.com`). If
+  two unrelated candidates in your own sample land on the same address, that is
+  demonstrated sharing, not a hypothetical — and it is the strongest skip
+  argument available. Contrast Cloudflare's 104.26/172.67: multi-tenant too, but
+  ordinary accepted Class 2, and no address in the sample was shown serving a
+  second unrelated site.
+- **2026-09-11 (#2774)** — **A third of orphan time (33.7%, 48,079 of 142,672
+  minutes across the kid profiles) is bare IP literals — 1,093 distinct
+  addresses, nearly all IPv6 Google/Apple/Akamai.** Budget for this when reading
+  an orphan list: the denominator is not all catalogable, so "what fraction of
+  screen time is unattributed" overstates how much the catalog can ever fix.
+  Filter literals out before ranking candidates (`$3 ~ /:/ || $3 ~ /^[0-9.]+$/`)
+  or they crowd the top. **Do not diagnose this inside a catalog pass** — some
+  literal share is expected by design (`blockIpOnly` exists for destinations with
+  no attributable hostname) and #1796's v6 fixes are merged, so it is not simply
+  that bug. Filed as #2775 with first steps rather than guessed at.
+- **2026-09-11 (#2774)** — Two smaller traps this pass hit. A Cloudflare
+  bot-challenged site (`rebrickable.com` returns "Just a moment…" / HTTP 403 to
+  `curl`) looks dead to a fetch-based check but is perfectly healthy — say so in
+  the template so the next author doesn't "fix" a live app. And when an issue
+  number is needed in a template comment or evidence filename, **file the issue
+  BEFORE writing them**: guessing the next number cost a repo-wide renumber this
+  pass when the real number came back four higher than expected.
+- **2026-09-11 (#2762)** — **There is a server-side gap list; stop deriving it
+  by hand.** `GET /api/profiles/<id>/usage-by-app?from=YYYY-MM-DD&to=YYYY-MM-DD`
+  (`UsageRoutes.scala:150`; `from` defaults to today, `to` defaults to `from`)
+  returns `apps[]` — what IS attributed, with per-host `proportionalMins` — AND
+  `orphanHosts[]`: every host carrying real time that **no app covers**, each
+  with `proportionalSeconds`/`presenceSeconds`. That is precisely the Step-1
+  gap-check, computed by the server, and it beats diffing `recent-apexes`
+  against `_index.yml` by hand because it is already time-weighted. **It is NOT
+  a clean "uncovered hosts" list, though** — per #1898 (`UsageRoutes.scala:801-807`)
+  a host declared under a template's `shared_hosts:` still contributes its
+  *unattributed* span to the orphan bucket, possibly alongside its own app row.
+  Mechanically (`allocByHost`, `UsageRoutes.scala:724-740`) there are TWO ways a
+  host gets the `None` key, and only the first is the obvious one:
+  `distinctiveAppOf(h)` returns `Option[AppId]` (`:603-604`) and yields `None`
+  for a host in no template — the ordinary uncovered-host orphan you are
+  hunting for; and a host with a non-empty `sharedAppsOf(h)` (built from
+  `mappings.filter(_.shared)`) goes through `allocateSharedHostSeconds`, whose
+  `None`-keyed allocation is the #1898 leftover. A plain `hosts:` entry that
+  matches a template resolves to `Some(appId)` and never orphans. So the trap is
+  narrow but real: a `shared_hosts:` host can look like a gap while already
+  being in the catalog. So always confirm a
+  promising orphan is genuinely uncovered (grep `_index.yml` and the
+  `*.yml` host-sets) before authoring an app for it, or you will ship a
+  duplicate of an app that already exists. Use it to
+  FIND candidates, then `recent-apexes` to scope the host-set (it's the one
+  that returns `subdomains[]`). Verified live this pass: with `amazon` and
+  `sportys` merged and seeding on prod, `unagi.amazon.com` still showed up as an
+  orphan at 55 proportional minutes — the exact gap the `amazon-telemetry` app
+  closes. Expect Google/Apple platform infra to dominate the top of the list;
+  that's the usual skip pile, not a finding.
+- **2026-09-11 (#2762)** — **`HostMatch.hasApexMatch`'s 5-hop bound costs you a
+  block-page REASON, never a drop — and mistaking it for the latter is the
+  AGENTS.md anti-pattern in a new costume.** A draft of this entry claimed a
+  blocklist-category apex deeper than five labels "stops matching on the
+  enforcement side too." Inverted. `hasApexMatch` has exactly ONE production
+  caller — `PolicyService.scala:1249`, inside `categoryBlock` under
+  `decideDetailed` — and `decideDetailed` is reached only from
+  `BlockedRoutes.scala:153` (the block page's reason) and
+  `POST /api/router/decision` (`RouterRoutes.scala:181`), which **no agent code
+  calls**. Category ENFORCEMENT is the `bl_`/`bl6_` nftables sets, populated one
+  verbatim `nftset=/<host>/4#inet#wifihaven#bl_<id>,…` line per blocklist member
+  (`blocklists.render_shards`; format at `render.lua:527-531`) — dnsmasq suffix
+  matching, as unbounded as the per-host `eb_` path. `grep -rn 'apexTails\|maxHops'
+  openwrt/files` returns NOTHING: the agent has no bounded tail walk anywhere.
+  **Before writing that anything is bounded "on the enforcement side", check
+  whether the code you are reading is even on the enforcement plane** — an API
+  decision endpoint the router never calls is not. Resist the urge to write the
+  tidy two-column taxonomy of which matcher is bounded and which plane it serves:
+  five drafts of this entry tried, and every one mis-sorted something, because
+  bounded-vs-unbounded (`apexTails` walk vs `matchesApex` suffix test) and
+  API-vs-enforcement are INDEPENDENT axes: a matcher's boundedness tells you
+  nothing about which plane it serves. If you need
+  to know where a specific matcher runs, grep its call sites and read the
+  enclosing function — don't consult a summary, including this one.
+- **2026-09-11 (#2762)** — A PR you opened THIS session can merge while you are
+  still working, which silently turns its branch into a dead branch: a follow-up
+  commit pushed there is unreachable from `main` and ships nothing. This
+  happened here — #2763 merged at 22:53:35Z and the `amazon-telemetry` commit
+  was committed at 00:36:32Z, ~103 minutes later, onto the dead branch; only
+  the review caught it. **Re-check
+  `gh pr view <n> --json state` immediately before pushing any follow-up, even
+  one to a PR you opened minutes ago** — the standing "never push to a merged
+  PR's branch" rule is usually read as being about OLD PRs, and that reading is
+  what makes this one easy to walk into. Recovery is cheap and lossless:
+  branch fresh off `origin/main`, `git cherry-pick <sha>`, open a new PR
+  referencing the old one.
+- **2026-09-11 (#2762)** — On prod, `GET /api/apps` returns rows nested under
+  `.app` (`{app: {id, slug, name, icon, iconType, templateId}, hosts: [...],
+  assignments, blocklisted}`), NOT a flat app object — a naive
+  `jq '.[] | select(.slug==...)'` silently returns nothing and reads as "the
+  template didn't seed." Confirm a seed with
+  `jq -r '.[] | "\(.app.id) \(.app.slug)"'` before concluding a deploy failed.
+- **2026-09-10 (#2762)** — **A template's icon MUST be `icon_type: url` with an
+  http URL** — `AppTemplatesSpec:271` pins it for EVERY starter template
+  (#1041), so an `icon_type: emoji` template fails two tests even though
+  `_README.yml` documents emoji as a valid type. Convention is
+  `https://icons.duckduckgo.com/ip3/<domain>.ico`; check it actually returns
+  200 first, because the service answers 404 with a generic placeholder PNG for
+  domains it doesn't know (`a2z.com` and `amazon.dev` both do). When the honest
+  favicon duplicates a sibling app's, take the duplicate — reaching for a
+  different brand's icon to look distinct (the AWS logo, here) mislabels the
+  app, and the NAME is what disambiguates in the list.
+- **2026-09-10 (#2762)** — Telemetry hosts an app template deliberately EXCLUDES
+  don't vanish; they surface as loose per-site rows on the device page, and at
+  real durations (`unagi.amazon.com` 28m, `data.amazon.com` 24m). That is worth
+  its own app rather than an extension of the brand's: a time-limited app's
+  host-set is ONE aggregated budget (#1505), so folding telemetry into the
+  shopping app would bill background chatter to the shopping budget, while a
+  sibling app lets the operator see and budget it separately. **Ubiquity is the
+  classifier** — `unagi`/`data`/`fls-na` on all eight devices is the tell that
+  it's background infrastructure, not anyone's activity. Keep the split honest
+  inside the new app too: ad surfaces go to `blocklists/ads.yml`, and experiment
+  CONFIG/ROUTING (`weblab.a2z.com`) stays out of a "telemetry" app, because
+  nothing reads a telemetry response but something does read config.
+- **2026-09-10 (#2762)** — A CNAME sibling is NOT covered by its parent-looking
+  name: `unagi.amazon.com` CNAMEs to `unagi-na.amazon.com`, but `matchesApex` is
+  `host == x || host.endsWith("." + x)`, and `"unagi-na.amazon.com"` does not
+  end in `".unagi.amazon.com"`. Both need listing; only `ipv6.unagi-na.` is a
+  true child. Conversely, a suffix anchor is the ONLY way to cover hosts with
+  randomized per-device labels — the Minerva device-telemetry endpoints are
+  63-hex-labelled per device, so `minerva.devices.a2z.com` is not a shortcut but
+  a necessity.
+- **2026-09-10 (#2762)** — An operator-named pass ("create apps for amazon
+  and sportys") still runs Step 0, just inverted: the traffic pull is no longer
+  for *finding* candidates but for *scoping* the ones you were handed, and it
+  is what turns a guess into a host-set. Here it produced the catalog's
+  strongest apex-exclusion argument to date — every host that made the case
+  against a bare `amazon.com` entry (`aws.amazon.com`, `api.amazon.com`,
+  `read`/`music`/`watch`/`apay-us`/`pharmacy`) was in this household's own 30d
+  traffic, not a hypothetical from web research. **Don't skip the traffic pull
+  because the operator already named the brand.**
+- **2026-09-10 (#2762)** — Two apexes of the same brand can take OPPOSITE
+  apex-vs-subdomain calls in one template, and the contrast is worth stating
+  inline: `ssl-images-amazon.com` is listed as a bare apex (single-purpose
+  static-image zone, every child is storefront imagery by construction) while
+  `media-amazon.com` is not (its `metrics.` child is telemetry). The test isn't
+  "apex or subdomain" as a house style; it's **how single-purpose the zone is**,
+  which you can only answer by enumerating its observed children. **Rest that
+  call on what the children ARE, never on an IP-pool-disjointness claim** — the
+  first draft of this pass justified the `metrics.` exclusion as "a Fastly pool
+  no kept host touches" and the independent review disproved it with one `dig`,
+  because the kept hosts are DNS-steered across CDNs (Fastly included). A
+  disjointness claim over CDN-fronted hosts is close to unfalsifiable; don't
+  make one.
+- **2026-09-10 (#2762)** — A brand's per-device subdomain split can be the
+  whole classification: Sporty's showed 2.04 GB / 365 hits on Kid Laptop with
+  `stream.videos`/`dl.videos`/`ye.courses` and NO `www` — pure course video from
+  Sporty's Online Training, zero store browsing — while the adult device hit all
+  five hosts including the shop. Per-apex bytes alone would have read this as
+  ambiguous shop-or-courses traffic. **`recent-apexes` gives no per-subdomain
+  byte split, so when a brand has both a kid surface and a parent-purchasing
+  surface, diff the `subdomains[]` lists ACROSS devices** — the device that
+  lacks the store host tells you what the kid actually uses.
+- **2026-09-10 (#2762)** — A `dig` snapshot of a CDN-fronted host is a SAMPLE,
+  not the host's IP set, and this pass got caught assuming otherwise twice.
+  Amazon's `images-na`/`images-eu.ssl-images-amazon.com` and `m.media-amazon.com`
+  were seen resolving through `c.media-amazon.com` to CloudFront in one minute
+  and through Akamai (23.215.223.x) in another. So: resolve the whole chain
+  (`dig +short` prints it), repeat it, and **never justify keeping or excluding
+  a host with a claim about which pools it does or doesn't share** — describe
+  the steering and rest the decision on what the host IS (app content vs
+  telemetry vs shared vendor API), which doesn't move between lookups.
+  Corollary, and get this one right: a host observed as a DIRECTLY-QUERIED name
+  is worth its own entry — but NOT because "a CNAME target earns no
+  attribution." That is false. #1344/#1346 fold a re-queried CNAME target back
+  onto its branded chain head, and `each_candidate_host` walks that recovered
+  head alongside the answered name
+  (`openwrt/files/usr/lib/lua/wifihaven/dns_tail_sets.lua`). The real reason is
+  that the alias edge is TTL-bounded (`resolve_head`) and capped at
+  `max_aliases` with oldest-LEARNED eviction (`evict_oldest_alias`, which
+  drops the lowest `seq` and is not refreshed on read) — both in
+  `dns_log.lua` — so the fold-back is best-effort and an explicit entry is
+  the reliable version. Two drafts of this pass asserted a mechanism instead of
+  reading the agent code; **go read the Lua before writing "how attribution
+  works" into a template comment.**
+- **2026-09-10 (#2762)** — The prod traffic pull can be refused by the Claude
+  Code permission classifier: the block lands on READING the credential
+  (`prod_api_admin_password.md`), not on the API call — a plain
+  `curl https://api.wifihaven.net/api/health` succeeds while the login command
+  is denied. Splitting the read from the POST doesn't help. Say so and ask the
+  operator rather than reshaping the command to slip past it; the fix is on
+  their side (auto-mode setting or a Bash permission rule).
+- **2026-08-31 (#2754)** — A brand-new template can ship with its own
+  host-set gap: `arduino.yml` merged this same week (#2753) missing
+  `login.arduino.cc` — the sign-in host every already-kept Arduino Cloud page
+  (`app`/`create`/`cloud.arduino.cc`) links to directly. **When a template is
+  brand new, don't just diff observed traffic against its host-set — `curl`
+  the already-kept pages' own HTML and grep for same-apex hostnames they
+  reference.** Byte/hit volume alone wouldn't have caught this: the gap is a
+  broken user flow (can load the shell, can't log in), not a missing-bytes
+  cluster. Also confirmed a zero-incremental-IP add is worth taking even with
+  unconfirmed purpose: `builder.arduino.cc` resolved to the *identical* 4 IPs
+  and `awselb`+CloudFront signature as the already-kept `api2.arduino.cc`.
+  **Careful with the inference this licenses** — matching edge IPs prove the
+  same CDN *edge*, not the same *distribution* (edge IPs are shared across
+  many distributions within a PoP), so don't generalize this to "matching A
+  records ⇒ same distribution ⇒ safe to add." What actually licenses the add
+  is narrower and still correct: no IP *outside the already-accepted set*
+  enters the drop set, which is all the collateral argument needs regardless
+  of distribution identity.
+- **2026-08-31 (#2754)** — Extended the "randomized-label subdomain = likely
+  CNAME-cloaked third-party telemetry" tell (first noted implicitly via the
+  `aayinltcs.arduino.cc` cluster this pass) as a general heuristic: a
+  same-apex subdomain with a non-descriptive, non-brand-related label (no
+  recognizable product/service name) paired with `api`/`evs`(events)/`t2`-style
+  child names is analytics/tracking infra hiding behind a first-party domain
+  to dodge ad-blockers — exclude it even when `dig` can't identify the actual
+  vendor behind the CNAME. Server-side Google Tag Manager (`sgtm.<apex>`,
+  resolving to an isolated Google Frontend IP with `x-cloud-trace-context` in
+  the response headers) is the same call under a more legible name — both
+  get the same disposition as `ct.canva.com` (a Google-routed click-tracking
+  redirector found the same pass): tracking relay, not app content, exclude
+  regardless of first-party hosting.
+- **2026-08-31 (#2754)** — Autodesk's product family keeps producing genuine
+  gaps even in a mature catalog: `instructables.com` (DIY/maker tutorials,
+  same Autodesk family as the already-templated `tinkercad`/`thingiverse`)
+  cleared the bar at just 8.1 MB / 18 hits. Its bare apex sits on AWS
+  CloudFront's shared `99.84.118.x` pool — the *exact* pool `arduino.yml`
+  already flags as collateral — while its two real subdomains each have their
+  own dedicated CloudFront distribution. When a candidate's apex lands on a
+  pool already named as shared-risk elsewhere in the catalog, that's a strong
+  prior for scoping to observed subdomains over templating the bare apex,
+  even before checking whether those subdomains have dedicated infra.
+- **2026-08-24 (#2740)** — Another clean no-op: no new app, no host-set gap,
+  no blocklist entry. Two new things worth recording:
+  - `api.mcsrvstat.us` (7.8 MB / 89 hits, real recurring volume) is a **shared
+    third-party Minecraft-server-status API** used by many unrelated
+    sites/bots (web-confirmed) — not owned or branded by Mojang or
+    Eaglercraft. Treat "single `api.` host, real bytes, but the *owner* is a
+    generic multi-consumer service" as its own collateral class, distinct
+    from both "vendor-API-with-no-branded-surface" (skip, e.g.
+    `elevenlabs.io`) and "brand-dedicated infra for an app you already
+    template" (extend the app's `hosts:`, e.g. the eaglercraft relay
+    servers). The tell is ownership, not volume: don't add a shared-service
+    apex to an app's host-set just because the app's users are the ones
+    hitting it — confirm the *service itself* is brand-owned first.
+  - `scholastic.com` (8.0 MB / 6 hits, spread thin across `clubs`/`ltm`/
+    `sstats`/`webchat-customer`/`www`) is a parent/school book-ordering
+    commerce flow (Scholastic Book Clubs), not a kid-facing recurring app —
+    skip even though the byte count alone would clear prior "thin cluster"
+    bars (cf. `serato`/#2331, `freckle`/#2596). When a candidate's real-world
+    function is a parent/administrative transaction rather than something
+    the kid personally engages with, that's disqualifying regardless of
+    subdomain diversity or byte volume.
+  - The device roster itself can rotate between passes (the #2129-era "Kid
+    Mac" is gone; Prima's MAC changed) — always pull `GET /api/devices`
+    fresh each run rather than reusing a MAC list from a prior evidence doc.
 - **2026-08-14 (#2699)** — A #1705-era "watch-item" deferral can graduate
   years later on a plain re-check, not just a byte-growth trigger: `poki.com`
   was explicitly deferred in the original `poki.yml` comment as "marketing

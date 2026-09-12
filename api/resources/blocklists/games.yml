@@ -124,3 +124,38 @@ hosts:
   # web search as a dedicated Eaglercraft-unblocked portal. 30-day prod
   # recent-apexes sweep (27 devices, 2026-08-04).
   - eaglercraftgame.io
+  # traffic-driven additions (#2742): 30-day prod recent-apexes sweep (26
+  # devices, 2026-08-25). eaglercraft.dev is a fourth Eaglercraft TLD
+  # variant (35.8MB / 94 hits — the highest-traffic variant seen yet), same
+  # "unblocked games" evasion vein as the already-curated .com/.ru/-game.io
+  # apexes. poki-gdn.com is a sibling apex of the already-curated
+  # poki.com/poki-cdn.com cluster (same "gdn"-suffix CDN naming pattern,
+  # Amazon-registrar + Cloudflare infra consistent with poki-cdn.com).
+  # poki.io was HELD OUT unverified this run — several unrelated
+  # brand-squatting clone sites (poki.us.com, poki.us.org, poki.to,
+  # pokigames2.com) reuse the "Poki" name for copycat game portals, and the
+  # bare poki.io apex does not currently resolve, so its ownership could not
+  # be confirmed as the same company. See
+  # evidence/multi-category-classification-2742.md.
+  - eaglercraft.dev
+  - poki-gdn.com
+  # traffic-driven addition (#2756): 30-day prod recent-apexes sweep (28
+  # devices, 2026-09-01). wordplays.com is a dedicated browser word-game
+  # site (Scrabble/Boggle/Words-with-Friends helper + playable games),
+  # same "casual browser game portal" class as the already-curated
+  # coolmathgames.com/miniclip.com/y8.com.
+  - wordplays.com # Wordplays.com — browser word-game site (Scrabble, Boggle, etc.)
+  #
+  # traffic-driven addition (#2759): 30-day prod recent-apexes sweep across
+  # all 28 devices, 2026-09-08. wherewindsmeetgame.com is the marketing/
+  # companion domain for Where Winds Meet, a NetEase wuxia action-RPG
+  # released on PS5/Xbox/PC/mobile (Nov 2025 - Jun 2026). epicgameshubham.com
+  # (Epic Games sweep match) turned out to be a scam domain impersonating
+  # Epic Games, not a real game — moved to ads.yml as a malvertising add
+  # instead, see that file's dated comment. gameanalytics.com held out as
+  # dual-use: a first-party analytics SDK game developers embed in their own
+  # titles (same class as the already-skipped app-measurement.com/Firebase),
+  # not third-party ad infra riding on top. viddea.com/prodigygame.com/
+  # shulgfea.com re-confirmed as standing exclusions, no new signal. See
+  # evidence/multi-category-classification-2759.md.
+  - wherewindsmeetgame.com # Where Winds Meet — NetEase wuxia action-RPG

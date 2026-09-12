@@ -57,3 +57,17 @@ slugs:
   - connectivity-test
   # #2699: traffic-driven catalog pass (see evidence/classification-2699.md)
   - zoom
+  # operator request: GeoFS browser flight simulator + Arduino maker platform
+  - geofs
+  - arduino
+  # #2754: traffic-driven catalog pass (see evidence/classification-2754.md)
+  - canva
+  - instructables
+  # operator request: Amazon shopping + Sporty's pilot shop / online training
+  - amazon
+  - sportys
+  # #2762: Amazon's background telemetry, split out of `amazon` so it gets its
+  # own budget rather than billing background chatter to the shopping app
+  - amazon-telemetry
+  # #2774: orphan-driven catalog pass (see evidence/classification-2774.md)
+  - rebrickable

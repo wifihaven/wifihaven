@@ -160,6 +160,10 @@ object BundledBlocklistsSpec
         assertTrue(ads.contains(Hostname.unsafe("inspectlet.com"))) &&
         // traffic-driven addition pinned for presence (#2729)
         assertTrue(ads.contains(Hostname.unsafe("adnxs-simple.com"))) &&
+        // traffic-driven addition pinned for presence (#2756)
+        assertTrue(ads.contains(Hostname.unsafe("adpushup.com"))) &&
+        // traffic-driven addition pinned for presence (#2759)
+        assertTrue(ads.contains(Hostname.unsafe("adspostx.com"))) &&
         assertTrue(meta.isDefined) &&
         assertTrue(meta.exists(m => m.bundled && m.name == "Ads & Trackers"))
     },
@@ -396,7 +400,9 @@ object BundledBlocklistsSpec
         // traffic-driven unblocked-games addition pinned for presence (#2212)
         assertTrue(hosts.contains(Hostname.unsafe("eaglercraft.com"))) &&
         // traffic-driven addition pinned for presence (#2348)
-        assertTrue(hosts.contains(Hostname.unsafe("saygames.io")))
+        assertTrue(hosts.contains(Hostname.unsafe("saygames.io"))) &&
+        // traffic-driven addition pinned for presence (#2756)
+        assertTrue(hosts.contains(Hostname.unsafe("wordplays.com")))
     },
     test("gambling + social-media: traffic-driven additions are present (#2212)") {
       for {
@@ -424,7 +430,9 @@ object BundledBlocklistsSpec
         // traffic-driven addition pinned for presence (#2503)
         assertTrue(social.contains(Hostname.unsafe("redditmedia.com"))) &&
         // traffic-driven addition pinned for presence (#2729)
-        assertTrue(social.contains(Hostname.unsafe("tiktokv.us")))
+        assertTrue(social.contains(Hostname.unsafe("tiktokv.us"))) &&
+        // traffic-driven addition pinned for presence (#2756)
+        assertTrue(social.contains(Hostname.unsafe("truthsocial.com")))
     },
     test("ai: bundled list is loaded and includes the major AI services (#1890)") {
       for {
@@ -446,6 +454,38 @@ object BundledBlocklistsSpec
         assertTrue(hosts.contains(Hostname.unsafe("midjourney.com"))) &&
         // traffic-driven addition pinned for presence (#2348)
         assertTrue(hosts.contains(Hostname.unsafe("gemini.google"))) &&
+        // #2768 preemptive hardening, one pin per group so a bad merge that drops
+        // the block is caught. These are NOT traffic-driven — see the ai.yml
+        // rationale block and evidence/ai-classification-2768.md.
+        assertTrue(hosts.contains(Hostname.unsafe("duck.ai"))) &&
+        assertTrue(hosts.contains(Hostname.unsafe("quillbot.com"))) &&
+        assertTrue(hosts.contains(Hostname.unsafe("crushon.ai"))) &&
+        assertTrue(hosts.contains(Hostname.unsafe("perchance.org"))) &&
+        // #2768 hold-outs, three different reasons, all deliberate — a future
+        // pass re-adding any of them should have to change this line on purpose.
+        // speechify.com is a dyslexia/IEP ACCOMMODATION, grammarly.com is
+        // school-mandated, and flux.ai is PCB-design CAD rather than the Flux
+        // image model.
+        assertTrue(!hosts.contains(Hostname.unsafe("speechify.com"))) &&
+        assertTrue(!hosts.contains(Hostname.unsafe("grammarly.com"))) &&
+        assertTrue(!hosts.contains(Hostname.unsafe("flux.ai"))) &&
+        // #2768 review: these two front on Google's shared GFE pool, so putting
+        // them in `bl_ai` can drop Drive/Docs for a kid MAC (the #2601 class).
+        // Google's own AI surfaces are tracked in #2605, not added by a catalog
+        // pass. `SharedGfeHosts` guards 15 ad/shared-frontend apexes mechanically
+        // (#2601's eight plus #2369's seven); these are pinned here instead
+        // because they are AI hosts, not ad hosts. The pin is therefore
+        // CATEGORY-SCOPED on purpose: adding either host to a different inline
+        // blocklist or an app template's host-set reproduces the same IP-plane
+        // collateral with nothing to catch it. Widening `SharedGfeHosts` would
+        // also reach `AppTemplatesSpec`, so that call belongs to #2605.
+        assertTrue(!hosts.contains(Hostname.unsafe("notebooklm.google.com"))) &&
+        assertTrue(!hosts.contains(Hostname.unsafe("labs.google"))) &&
+        // #2768 review: dropped on re-check — no apex A/AAAA, and parked on
+        // 0.0.0.0 respectively. A dead apex can be re-registered onto shared
+        // hosting and silently become an IP-enforcement target.
+        assertTrue(!hosts.contains(Hostname.unsafe("play.ht"))) &&
+        assertTrue(!hosts.contains(Hostname.unsafe("figgs.ai"))) &&
         // Never list the bare shared vendor apex (#1890 host-scoping note).
         assertTrue(!hosts.contains(Hostname.unsafe("google.com"))) &&
         assertTrue(!hosts.contains(Hostname.unsafe("microsoft.com")))

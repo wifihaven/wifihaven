@@ -1,0 +1,113 @@
+slug: sportys
+name: "Sporty's"
+icon: "https://icons.duckduckgo.com/ip3/sportys.com.ico"
+icon_type: url
+# Operator request: Sporty's — the pilot shop and, far more importantly here,
+# Sporty's Online Training (the Learn to Fly / instrument course platform at
+# courses.sportys.com/training/portal/). Same aviation cluster as the already
+# templated `geofs` and `moc-pilot`.
+#
+# Heavy, sustained use: 2.04 GB / 365 hits over a 30d window on Kid Laptop
+# alone, plus 23.2 MB / 19 hits on Sameer Mac and 7.8 MB / 5 hits on Sameer
+# iPhone. Not the catalog's largest cluster: `amazon`'s `ssl-images-amazon.com`
+# alone is 3.09 GB / 422 hits on the same device. The Kid Laptop bytes are
+# course video and nothing else — its only observed subdomains are
+# `stream.videos`, `dl.videos` and `ye.courses`; it never touched the store.
+#
+# Host-set is three SUBDOMAINS, not the bare `sportys.com` apex — a deliberate
+# deviation from the "apex hostnames" default in _README.yml, for one reason:
+# `images.sportys.com` CNAMEs off Sporty's own infrastructure onto a
+# third-party image platform — `media.esp1.co` -> `media.espssl.com` ->
+# `media.espssl.com.cdn.cloudflare.net` -> 172.64.144.42 / 104.18.43.214,
+# Cloudflare's broadly-shared pool. render.lua emits `nftset=/<host>/`
+# verbatim per host and dnsmasq matches by pure suffix, so an apex entry would
+# necessarily sweep that shared Cloudflare pool into the `eb_` drop set — the
+# same apex-sweep mechanism `arduino.yml` and `canva.yml` document. It has
+# also never appeared in observed traffic, so "only template what you've seen
+# used" excludes it independently.
+#
+# The three kept entries suffix-match every one of the five observed hosts
+# (`HostMatch.matchesApex`, shared/src/types/HostMatch.scala). Where each one
+# resolved on 2026-09-10. A whois org name can't tell a CloudFront edge from
+# generic AWS compute — `AT-88-Z`/`AMAZO-4` covers both — so the split below is
+# taken from AWS's published https://ip-ranges.amazonaws.com/ip-ranges.json
+# (`service` field), not inferred. The split matters: _README.yml scopes Class 2
+# to a "third-party cloud-CDN edge", so only the three CLOUDFRONT/Fastly hosts
+# are Class 2. The three EC2 origins fall OUTSIDE it — a dedicated origin per
+# training surface is the good case, not a latent risk. See the Class-2 note
+# below, which is scoped to those three:
+#   www.sportys.com                pilot shop; CNAME sportys.com ->
+#                                   199.232.66.132 (whois: SKYCA-3 / Fastly).
+#                                   Fastly anycast addresses are shared across
+#                                   customers by design; nothing establishes
+#                                   this one as Sporty's alone.
+#   videos.sportys.com             covers the two course-video hosts, which
+#                                   carry essentially all of the bytes above:
+#     stream.videos.sportys.com     streaming; 99.84.105.x (CLOUDFRONT,
+#                                    99.84.0.0/16)
+#     dl.videos.sportys.com         download; 18.238.176.x (CLOUDFRONT,
+#                                    18.238.0.0/15)
+#   courses.sportys.com            training portal; 16.59.107.150 /
+#                                   3.151.66.199 (EC2 us-east-2), and covers:
+#     ye.courses.sportys.com        CNAME prod-ye-training.simplysporty.net ->
+#                                   16.59.159.202 / 3.23.25.151 (EC2 us-east-2)
+#     pspdfkit.courses.sportys.com  in-course PDF viewer; CNAME
+#                                   prod-pspdfkit.simplysporty.net ->
+#                                   77.112.172.80 / 77.112.39.76 — EC2
+#                                   us-east-2, NOT a CDN edge. (Note for a
+#                                   future author: the default whois client
+#                                   returns a misleading RIPE
+#                                   NON-RIPE-NCC-MANAGED placeholder for
+#                                   77.112.0.0/14; ARIN and ip-ranges.json both
+#                                   say Amazon.)
+#
+# `simplysporty.net` is Sporty's own brand-named domain, used here only as the
+# CNAME target for its training services, with a dedicated `prod-<service>`
+# origin per surface — so those two hosts are first-party infrastructure under
+# a second domain, the same shape as `projects.arduinocontent.cc`. It is not
+# listed directly: no traffic is attributed to it, only to the `*.sportys.com`
+# names clients actually resolve.
+#
+# The CloudFront and Fastly edges above — `www`, `stream.videos`, `dl.videos`,
+# and only those three — are the accepted Class-2 latent risk
+# from _README.yml — branded per-app hosts that happen to sit on a multi-tenant
+# CDN. That IS where this app's bytes live, so stripping them would defeat both
+# the block and the time budget.
+#
+# _README.yml says to revisit a Class-2 host "only if real traffic evidence
+# shows it actually shares IPs with collateral we care about", so that check was
+# run rather than assumed, and it is closer than it looks:
+# `stream.videos.sportys.com` answers 99.84.105.{16,38,60,119} and
+# `aws.amazon.com` answers 99.84.105.{36,65,73,118} — the SAME CloudFront /24,
+# and `amazon.yml` excludes the bare `amazon.com` apex specifically so that the
+# AWS console is never collaterally dropped. Distinct IPs today, so blocking
+# Sporty's drops no AWS-console address, and only resolved IPs enter an `eb_`
+# set — an adjacent address in the same /24 is not swept in. But the two hosts
+# were OBSERVED sharing a CloudFront PoP's address pool, so this is the one host
+# in this template to re-check first if #1663 ever revisits the Class-2 set: a
+# future steering change could land both on one address. Stated as "observed"
+# on purpose — the same host also answered 3.161.225.x in one lookup, so its
+# address set moves.
+#
+# Residual to record, same as `arduino.yml` and `canva.yml`: bytes to bare
+# `sportys.com` go unattributed against the app's budget, and over plain HTTP
+# the apex redirect to `www` completes before the drop lands on the follow-on
+# request, so the user sees a failed TLS handshake rather than the block page.
+#
+# Deliberately EXCLUDED beyond `images.sportys.com`: the sibling Sportsman's
+# Market brands the store links out to — sportysacademy.com,
+# flighttrainingcentral.com, ipadpilotnews.com, airfactsjournal.com,
+# sportystoolshop.com, aviationgifts.com, preferredliving.com. Each is a
+# separate site on separate infrastructure with no observed traffic; per
+# #2596 (`renaissance.com`), a topically adjacent sibling apex needs its own
+# evidence before it joins an app's host-set.
+# Note for a future author diffing observed subdomains against this host-set:
+# `videos.sportys.com` has no A record of its own and no traffic will ever be
+# attributed to that exact name. It is a pure suffix anchor for the two
+# `*.videos` hosts — both `nftset=/<host>/` and `HostMatch.matchesApex` match on
+# the suffix, not on the entry resolving — so it is doing its job, not a dead
+# entry.
+hosts:
+  - www.sportys.com
+  - videos.sportys.com
+  - courses.sportys.com
