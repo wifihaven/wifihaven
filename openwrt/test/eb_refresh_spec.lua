@@ -218,7 +218,7 @@ describe("refresh", function()
 end)
 
 -- ---------------------------------------------------------------------------
--- default_resolve — parses `dig @127.0.0.1 +short` output
+-- default_resolver — parses BusyBox `nslookup` output (#2782)
 -- ---------------------------------------------------------------------------
 
 -- #2782: `default_resolver` is the seam where the whole module went dark. It
@@ -311,24 +311,117 @@ describe("refresh with the real default_resolver (#2782)", function()
   end)
 end)
 
-describe("parse_dig_output", function()
-  it("yields a sorted list of v4 addresses", function()
-    local out = "142.251.46.142\n142.251.35.142\n"
-    assert.same({ "142.251.35.142", "142.251.46.142" }, eb_refresh.parse_dig_output(out, "v4"))
+
+-- ---------------------------------------------------------------------------
+-- Per-cycle budget (#2782)
+-- ---------------------------------------------------------------------------
+--
+-- The resolver being dead is what made the work look free. Prod's blocklist
+-- membership is 161,523 hosts, so the cycle was queueing ~328,000 resolves an
+-- hour and completing them in no time at all because `dig` did not exist. With
+-- a resolver that works, an unbounded cycle would run ~328k sequential
+-- shell-outs into dnsmasq every 30 minutes and starve it (#1864). So the cycle
+-- carries an explicit budget: extraBlocked hosts first — authored, few, and the
+-- #2782 case — then blocklist members round-robin from a persisted cursor.
+
+describe("refresh budget", function()
+  local function pairs_for(n)
+    local out = {}
+    for i = 1, n do out[i] = { host = "h" .. i .. ".example", id = "ads" } end
+    return out
+  end
+
+  local function always_resolves()
+    return function() return { v4 = { "1.2.3.4" }, v6 = {} } end
+  end
+
+  it("stops at max_hosts and reports the skipped remainder", function()
+    local cmds, exec = exec_recorder()
+    local stats = eb_refresh.refresh({
+      eb_hosts  = {},
+      bl_pairs  = pairs_for(10),
+      max_hosts = 4,
+      nft_table = "inet wifihaven",
+      resolver  = always_resolves(),
+      exec_fn   = exec,
+    })
+    assert.equal(4, stats.hosts)
+    assert.equal(4, stats.resolves_ok)
+    assert.equal(6, stats.skipped)
   end)
 
-  it("yields a sorted list of v6 addresses", function()
-    local out = "2607:f8b0::200e\n2607:f8b0::100a\n"
-    assert.same({ "2607:f8b0::100a", "2607:f8b0::200e" }, eb_refresh.parse_dig_output(out, "v6"))
+  -- LIVENESS ANCHOR for the budget tests: the same rig with a budget wide
+  -- enough for the work does all of it and skips nothing, so "stats.hosts == 4"
+  -- above means the budget bit, not that the rig resolves nothing.
+  it("does the whole cycle when the budget is not binding", function()
+    local cmds, exec = exec_recorder()
+    local stats = eb_refresh.refresh({
+      eb_hosts  = {},
+      bl_pairs  = pairs_for(10),
+      max_hosts = 100,
+      nft_table = "inet wifihaven",
+      resolver  = always_resolves(),
+      exec_fn   = exec,
+    })
+    assert.equal(10, stats.hosts)
+    assert.equal(10, stats.resolves_ok)
+    assert.equal(0, stats.skipped)
   end)
 
-  it("skips CNAME-shaped lines that dig +short prints first", function()
-    local out = "youtube-ui.l.google.com.\n142.251.46.142\n"
-    assert.same({ "142.251.46.142" }, eb_refresh.parse_dig_output(out, "v4"))
+  -- extraBlocked is what #2782 is about: an authored, per-profile host that
+  -- MUST be re-armed every cycle. A blocklist backlog can never crowd it out.
+  it("always spends the budget on extraBlocked hosts first", function()
+    local cmds, exec = exec_recorder()
+    local stats = eb_refresh.refresh({
+      eb_hosts  = { "www.amazon.com" },
+      bl_pairs  = pairs_for(10),
+      max_hosts = 3,
+      nft_table = "inet wifihaven",
+      resolver  = always_resolves(),
+      exec_fn   = exec,
+    })
+    assert.equal(3, stats.hosts)
+    assert.is_true(added(cmds, "eb_www_amazon_com", "1.2.3.4"))
   end)
 
-  it("returns an empty list when dig returned no answer", function()
-    assert.same({}, eb_refresh.parse_dig_output("", "v4"))
-    assert.same({}, eb_refresh.parse_dig_output(nil, "v4"))
+  it("round-robins blocklist hosts from the returned cursor", function()
+    local seen = {}
+    local function record_resolver(host)
+      seen[#seen + 1] = host
+      return { v4 = { "1.2.3.4" }, v6 = {} }
+    end
+    local _, exec = exec_recorder()
+    local base = {
+      eb_hosts  = {},
+      bl_pairs  = pairs_for(5),
+      max_hosts = 2,
+      nft_table = "inet wifihaven",
+      resolver  = record_resolver,
+      exec_fn   = exec,
+    }
+    local first = eb_refresh.refresh(base)
+    base.bl_cursor = first.bl_cursor
+    local second = eb_refresh.refresh(base)
+    base.bl_cursor = second.bl_cursor
+    eb_refresh.refresh(base)
+
+    assert.same({
+      "h1.example", "h2.example",
+      "h3.example", "h4.example",
+      "h5.example", "h1.example",
+    }, seen)
+  end)
+
+  it("treats an absent max_hosts as the module default, not as unbounded", function()
+    local _, exec = exec_recorder()
+    local stats = eb_refresh.refresh({
+      eb_hosts  = {},
+      bl_pairs  = pairs_for(eb_refresh.DEFAULT_MAX_HOSTS + 25),
+      nft_table = "inet wifihaven",
+      resolver  = always_resolves(),
+      exec_fn   = exec,
+    })
+    assert.equal(eb_refresh.DEFAULT_MAX_HOSTS, stats.hosts)
+    assert.equal(25, stats.skipped)
   end)
 end)
