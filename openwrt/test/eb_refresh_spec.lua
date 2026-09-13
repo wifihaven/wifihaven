@@ -250,9 +250,14 @@ local NSLOOKUP_AAAA = table.concat({
   "",
 }, "\n")
 
+-- Shaped like a real `io.popen` handle (read "*a", close) so the shipped
+-- resolver needs no test-only branch. A missing entry is nil — what popen
+-- returns when it cannot spawn at all.
 local function popen_stub(by_qtype)
   return function(cmd)
-    return by_qtype[cmd:match("%-type=(%u+)")]
+    local text = by_qtype[cmd:match("%-type=(%u+)")]
+    if text == nil then return nil end
+    return { read = function() return text end, close = function() end }
   end
 end
 

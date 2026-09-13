@@ -131,10 +131,13 @@ local blocklist_int = tonumber(uci_get("blocklist_refresh_interval", "3600"))
 -- the 1h kernel timeout, ~2 refreshes per window, ≈one `dig` per host every
 -- 30 min (negligible router load even at ~50 distinct hosts).
 local eb_refresh_int = tonumber(uci_get("eb_refresh_interval", "1800"))
--- #2782: per-cycle host budget for the eb_/bl_ re-resolve. Blocklist membership
--- runs to six figures (161,523 on the prod router), so an unbounded cycle would
--- fire that many sequential lookups into dnsmasq and starve it (#1864).
-local eb_refresh_max  = tonumber(uci_get("eb_refresh_max_hosts", tostring(eb_refresh.DEFAULT_MAX_HOSTS)))
+-- #2782: per-cycle caps for the eb_/bl_ re-resolve. Blocklist membership runs to
+-- six figures (161,523 on the prod router), and `eb_refresh.refresh` runs inline
+-- on this loop, so an uncapped cycle would put minutes of blocking DNS work on
+-- the main loop and starve dnsmasq (#1864). eb_refresh.lua's header carries the
+-- measurements these defaults come from.
+local eb_refresh_max  = uci_get("eb_refresh_max_hosts", tostring(eb_refresh.DEFAULT_MAX_HOSTS))
+local eb_refresh_secs = uci_get("eb_refresh_max_seconds", tostring(eb_refresh.DEFAULT_MAX_SECONDS))
 -- #1782: per-shard byte cap. With the streaming shard path each blocklist is
 -- rendered line-by-line from the on-disk cache file directly to a per-id conf
 -- shard, so the agent's Lua heap never holds the full member set. The cap
@@ -1643,8 +1646,9 @@ conntrack.watch({
         local stats = eb_refresh.refresh({
           eb_hosts  = inv.eb_hosts,
           bl_pairs  = inv.bl_pairs,
-          max_hosts = eb_refresh_max,
-          bl_cursor = ts.eb_refresh_bl_cursor,
+          max_hosts   = eb_refresh_max,
+          max_seconds = eb_refresh_secs,
+          bl_cursor   = ts.eb_refresh_bl_cursor,
           nft_table = "inet wifihaven",
           resolver  = eb_refresh.default_resolver,
           exec_fn   = os.execute,
@@ -1656,6 +1660,13 @@ conntrack.watch({
           metrics.inc_counter(mreg, "eb_refresh_total", { result = "ok" },
                               stats.resolves_ok)
         end
+        if stats.resolves_empty > 0 then
+          -- #2782 review: a resolver that RUNS but yields nothing is the same
+          -- silent no-op in a new costume (an output shape the parser does not
+          -- understand looks exactly like NXDOMAIN). Counted apart from `ok`.
+          metrics.inc_counter(mreg, "eb_refresh_total", { result = "empty_answer" },
+                              stats.resolves_empty)
+        end
         if stats.resolves_err > 0 then
           metrics.inc_counter(mreg, "eb_refresh_total", { result = "resolve_failed" },
                               stats.resolves_err)
@@ -1665,15 +1676,33 @@ conntrack.watch({
                    "going stale (blocked hosts stop being blocked)",
                    stats.resolves_err, stats.hosts)
         end
-        -- #2782: work the per-cycle budget left undone, so a backlog that can
+        -- #2782: `adds` is the quantity that read zero for months while
+        -- resolves_ok read 179M. It is the series that would have caught this,
+        -- so it is the one worth emitting.
+        if stats.adds > 0 then
+          metrics.inc_counter(mreg, "eb_refresh_adds_total", {}, stats.adds)
+        end
+        -- #2782: work the per-cycle caps left undone, so a backlog that can
         -- never catch up is visible rather than inferred.
         if stats.skipped > 0 then
           metrics.inc_counter(mreg, "eb_refresh_total", { result = "skipped_budget" },
                               stats.skipped)
         end
-        log.debug("eb_refresh timer: hosts=%d ok=%d err=%d adds=%d skipped=%d elapsed=%.2fs",
-                  stats.hosts, stats.resolves_ok, stats.resolves_err,
-                  stats.adds, stats.skipped, elapsed)
+        -- #2782 review: an AUTHORED host going unrefreshed is an incident, not
+        -- a rotating backlog. Its own label value, and loud.
+        if stats.skipped_extrablocked > 0 then
+          metrics.inc_counter(mreg, "eb_refresh_total",
+                              { result = "skipped_extrablocked" },
+                              stats.skipped_extrablocked)
+          log.warn("eb_refresh: %d extraBlocked host(s) exceeded eb_refresh_max_hosts " ..
+                   "(%s) and were NOT refreshed; raise it or their sets will age out",
+                   stats.skipped_extrablocked, tostring(eb_refresh_max))
+        end
+        log.debug("eb_refresh timer: hosts=%d ok=%d empty=%d err=%d adds=%d " ..
+                  "skipped=%d skipped_eb=%d deadline=%s elapsed=%.2fs",
+                  stats.hosts, stats.resolves_ok, stats.resolves_empty,
+                  stats.resolves_err, stats.adds, stats.skipped,
+                  stats.skipped_extrablocked, tostring(stats.deadline_hit), elapsed)
       end
     end
 

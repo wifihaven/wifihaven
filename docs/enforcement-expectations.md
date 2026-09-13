@@ -53,10 +53,20 @@ time**, so there is a built-in warm-up.
    shelled out to `dig`, which OpenWRT does not ship, so from #1658 until
    [#2782](https://github.com/wifihaven/wifihaven/issues/2782) it added nothing
    on any router and a blocked host stayed reachable for as long as a client
-   held its cached IP. It now uses BusyBox `nslookup`, and a cycle is bounded at
-   `eb_refresh_max_hosts` (default **500**) — `extraBlocked` hosts first, then
-   blocklist members round-robin. Full blocklist coverage at that cadence is not
-   claimed; see [#2783](https://github.com/wifihaven/wifihaven/issues/2783).
+   held its cached IP. It now uses BusyBox `nslookup`.
+
+   A cycle is capped two ways, because the risk is wall time on the agent's main
+   loop and a host count does not bound that. Measured on the prod router
+   (BusyBox nslookup, Lua 5.1, 100 hosts = 200 lookups): **1 s warm**, **11 s
+   cold**, and **5 s per query** against an unresponsive server — BusyBox
+   `nslookup` takes no timeout/retry flags and OpenWRT ships no `timeout` binary,
+   so there is no per-query bound to set. `eb_refresh_max_seconds` (default
+   **5 s**) is therefore the real cap, and `eb_refresh_max_hosts` (default
+   **500**) bounds the warm case where 5 s would otherwise buy ~500 hosts.
+   `extraBlocked` hosts run first and are exempt from the deadline; blocklist
+   members take what is left, round-robin. Full blocklist coverage at that
+   cadence is not claimed; see
+   [#2783](https://github.com/wifihaven/wifihaven/issues/2783).
 
 4. **Category blocklists warm up over time.** Curated-category lists (ads,
    adult, …) are fetched on a periodic cadence — `blocklist_refresh_interval`,
@@ -177,6 +187,8 @@ step in
 | `ws.apply_interval` | 2 s | [`etc/config/wifihaven`](../openwrt/files/etc/config/wifihaven) |
 | `blocklist_refresh_interval` | 3600 s | [`usr/sbin/wifihaven-agent`](../openwrt/files/usr/sbin/wifihaven-agent) |
 | `eb_refresh_interval` | 1800 s | [`usr/sbin/wifihaven-agent`](../openwrt/files/usr/sbin/wifihaven-agent) |
+| `eb_refresh_max_hosts` | 500 | [`eb_refresh.lua`](../openwrt/files/usr/lib/lua/wifihaven/eb_refresh.lua) (`M.DEFAULT_MAX_HOSTS`) |
+| `eb_refresh_max_seconds` | 5 s | [`eb_refresh.lua`](../openwrt/files/usr/lib/lua/wifihaven/eb_refresh.lua) (`M.DEFAULT_MAX_SECONDS`) |
 | `block_ip_only` | `false` | [`V17__profile_block_ip_only.sql`](../api/resources/db/migration/V17__profile_block_ip_only.sql) |
 
 ---

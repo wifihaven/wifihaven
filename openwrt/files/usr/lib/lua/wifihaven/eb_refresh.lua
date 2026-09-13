@@ -68,6 +68,7 @@
 local dns_tail_sets = require("wifihaven.dns_tail_sets")
 local render        = require("wifihaven.render")
 local resolver      = require("wifihaven.resolver")
+local clock         = require("wifihaven.clock")
 
 local M = {}
 
@@ -140,45 +141,117 @@ end
 -- refresh
 -- ---------------------------------------------------------------------------
 
--- Per-cycle host budget. #2782: until the resolver was fixed every resolve was
--- a no-op, so nobody noticed the cycle queueing one per blocklist member —
--- 161,523 of them on the prod router, 328,161 resolves an hour. Sequential
--- shell-outs at that volume would starve dnsmasq (#1864), so a cycle now
--- processes at most this many hosts. 500 hosts = 1000 local lookups, a few
--- seconds every `eb_refresh_interval`.
+-- Per-cycle caps. #2782: until the resolver was fixed every resolve was a
+-- no-op, so nobody noticed the cycle queueing one per blocklist member —
+-- 161,523 of them on the prod router, 328,161 resolves an hour.
 --
--- extraBlocked spends the budget first: it is operator-authored, it is tens of
--- entries, and it is the host class #2782 is about. Blocklist members take what
--- is left, round-robin from a cursor the caller carries across cycles, so a
--- 161k backlog rotates instead of always re-doing its first N. Full blocklist
--- coverage is NOT claimed at this cadence — the bl_ sets' primary population
--- path is dnsmasq's `--nftset=` callback at client-resolve time, and a
--- principled top-up scoped to hosts we have actually seen resolved is
--- TODO(#2783).
-M.DEFAULT_MAX_HOSTS = 500
+-- `refresh` runs INLINE on the agent's single main timer loop
+-- (`wifihaven-agent`, inside the conntrack watch callback), so a cycle's wall
+-- time is main-loop occupancy: time not spent on usage reporting, ws
+-- apply-on-push, or policy apply. Measured on the prod router (BusyBox
+-- nslookup, Lua 5.1, 100 hosts = 200 lookups):
+--
+--   warm (dnsmasq cache hit)      1s    → 0.01s/host
+--   cold (first resolve)         11s    → 0.11s/host
+--   unresponsive server           5s    per QUERY
+--
+-- The 5s is BusyBox's own bound, measured against a blackholed server
+-- (192.0.2.1). It is not configurable: `nslookup` takes no -timeout/-retry
+-- flags (BusyBox v1.37.0 usage string) and OpenWRT ships no `timeout` binary or
+-- applet, so the `+time=2 +tries=1` the old `dig` call carried has no direct
+-- replacement.
+--
+-- Hence two caps, because a host count bounds WORK and the risk here is TIME:
+--
+--   MAX_SECONDS — the real bound. The blocklist rotation is cold by
+--     construction (each cycle walks hosts the last one did not), so 500 hosts
+--     would be ~55s, and a wedged resolver ~83 minutes. 5s holds regardless of
+--     cache state or resolver health; worst case is 5s plus the one in-flight
+--     query, so ~10s. At the measured cold rate that is ~45 hosts a cycle.
+--   MAX_HOSTS — a second cap for the warm case, where 5s would otherwise buy
+--     ~500 hosts. Also what bounds a pathologically long authored list.
+--
+-- extraBlocked runs FIRST and before the deadline is consulted: those hosts are
+-- operator-authored and are the class #2782 was about, so a slow blocklist
+-- rotation must not crowd them out. They are still subject to MAX_HOSTS, and a
+-- skip there is reported on its own counter — an authored host going
+-- unrefreshed is an incident; a rotating backlog is routine.
+--
+-- Measured end-to-end on the prod router, three consecutive cycles over the real
+-- inventory (11 extraBlocked hosts, 161,523 blocklist members):
+--
+--   cycle1  6.31s  hosts=91  adds=285  skipped_eb=0  cursor 1 → 81
+--   cycle2  5.23s  hosts=60  adds=204  skipped_eb=0  cursor 81 → 130
+--   cycle3  5.09s  hosts=55  adds=196  skipped_eb=0  cursor 130 → 174
+--
+-- So: bounded at the deadline plus the one in-flight query, every authored host
+-- refreshed every cycle, and the backlog rotating. MAX_HOSTS never binds at this
+-- inventory size — it is there for the warm case and for a pathological authored
+-- list, not for steady state.
+--
+-- Blocklist members take what is left, round-robin from a cursor the caller
+-- carries across cycles, so the backlog rotates instead of always re-doing its
+-- first N. Full blocklist coverage is NOT claimed at this cadence — the bl_
+-- sets' primary population path is dnsmasq's `--nftset=` callback at
+-- client-resolve time, and a principled top-up scoped to hosts we have actually
+-- seen resolved is TODO(#2783).
+M.DEFAULT_MAX_HOSTS   = 500
+M.DEFAULT_MAX_SECONDS = 5
 
--- refresh(opts) → { hosts, resolves_ok, resolves_err, adds, skipped, bl_cursor }
+-- Both caps are floors, never off-switches: a configured 0 or negative falls
+-- back to the default rather than disabling the safety net this module exists
+-- to be (AGENTS.md §no-dark-by-default). Genuinely turning it off would need an
+-- explicit, logged, named flag — there isn't one, deliberately.
+local function positive_or(value, default)
+  local n = tonumber(value)
+  if not n or n <= 0 then return default end
+  return n
+end
+
+-- refresh(opts) → stats
 --
 -- opts:
---   eb_hosts  : list of apex hosts to refresh eb_/eb6_ for
---   bl_pairs  : list of {host=..., id=...} to refresh bl_/bl6_ for
---   max_hosts : per-cycle host budget (default M.DEFAULT_MAX_HOSTS). Absent is
---               the default, NOT unbounded.
---   bl_cursor : 1-based index into bl_pairs to resume from (default 1). Pass
---               back the `bl_cursor` from the previous cycle's result.
---   nft_table : nftables table name, e.g. "inet wifihaven"
---   resolver  : host → { v4, v6 } | nil (nil counts as resolves_err)
---   exec_fn   : os.execute-style shell executor (capture in tests)
---   log       : optional logger { debug=, info=, warn= } — debug/info only
+--   eb_hosts    : list of apex hosts to refresh eb_/eb6_ for
+--   bl_pairs    : list of {host=..., id=...} to refresh bl_/bl6_ for
+--   max_hosts   : per-cycle host cap (default M.DEFAULT_MAX_HOSTS)
+--   max_seconds : per-cycle wall-clock cap (default M.DEFAULT_MAX_SECONDS),
+--                 applied to the blocklist portion only
+--   now_fn      : monotonic seconds reader (default clock.monotonic_seconds);
+--                 injectable so a slow resolver is testable without waiting
+--   bl_cursor   : 1-based index into bl_pairs to resume from (default 1). Pass
+--                 back the `bl_cursor` from the previous cycle's result. If
+--                 bl_pairs has SHRUNK below it (a category was unassigned) the
+--                 cursor resets to 1, which re-walks from the top and skips the
+--                 old tail for one pass — acceptable for a best-effort rotation.
+--   nft_table   : nftables table name, e.g. "inet wifihaven"
+--   resolver    : host → { v4, v6 } | nil (nil counts as resolves_err)
+--   exec_fn     : os.execute-style shell executor (capture in tests)
+--   log         : optional logger { debug=, info=, warn= }
 --
--- `skipped` is the work the budget left undone this cycle. It is reported, not
--- swallowed: a cycle that can never catch up should be visible on the
--- dashboard, not inferred from a suspiciously round `hosts`.
+-- stats:
+--   hosts               hosts actually processed this cycle
+--   resolves_ok         resolves that returned at least one address
+--   resolves_empty      resolves that ran and returned NO address in either
+--                       family. Split out from resolves_ok because "ran but
+--                       yielded nothing" is #2782's failure mode wearing a new
+--                       costume — an output shape the parser does not
+--                       understand looks exactly like this.
+--   resolves_err        resolver could not run at all
+--   adds                nft elements added — the quantity that was zero for
+--                       months while resolves_ok read 179M
+--   skipped             blocklist hosts the caps left for a later cycle
+--   skipped_extrablocked  AUTHORED hosts the host cap dropped. Separate from
+--                       `skipped` on purpose: this one is an incident.
+--   deadline_hit        true when max_seconds ended the cycle
+--   bl_cursor           where the next cycle resumes
 function M.refresh(opts)
   local stats = {
-    hosts = 0, resolves_ok = 0, resolves_err = 0, adds = 0, skipped = 0,
+    hosts = 0, resolves_ok = 0, resolves_empty = 0, resolves_err = 0, adds = 0,
+    skipped = 0, skipped_extrablocked = 0, deadline_hit = false,
   }
-  local budget = tonumber(opts.max_hosts) or M.DEFAULT_MAX_HOSTS
+  local budget      = positive_or(opts.max_hosts, M.DEFAULT_MAX_HOSTS)
+  local max_seconds = positive_or(opts.max_seconds, M.DEFAULT_MAX_SECONDS)
+  local now_fn      = opts.now_fn or clock.monotonic_seconds
 
   local function refresh_one(host, v4_set, v6_set)
     stats.hosts = stats.hosts + 1
@@ -190,34 +263,45 @@ function M.refresh(opts)
       end
       return
     end
-    stats.resolves_ok = stats.resolves_ok + 1
-    for _, ip in ipairs(r.v4 or {}) do
+    local v4, v6 = r.v4 or {}, r.v6 or {}
+    if #v4 == 0 and #v6 == 0 then
+      stats.resolves_empty = stats.resolves_empty + 1
+    else
+      stats.resolves_ok = stats.resolves_ok + 1
+    end
+    for _, ip in ipairs(v4) do
       if dns_tail_sets.nft_add_element(opts.nft_table, v4_set, ip, opts.exec_fn) then
         stats.adds = stats.adds + 1
       end
     end
-    for _, ip in ipairs(r.v6 or {}) do
+    for _, ip in ipairs(v6) do
       if dns_tail_sets.nft_add_element(opts.nft_table, v6_set, ip, opts.exec_fn) then
         stats.adds = stats.adds + 1
       end
     end
   end
 
-  local eb_hosts = opts.eb_hosts or {}
-  for _, host in ipairs(eb_hosts) do
+  -- extraBlocked: host cap only, no deadline. See the header.
+  for _, host in ipairs(opts.eb_hosts or {}) do
     if stats.hosts >= budget then
-      stats.skipped = stats.skipped + 1
+      stats.skipped_extrablocked = stats.skipped_extrablocked + 1
     else
       refresh_one(host, render.eb_set_name(host), render.eb6_set_name(host))
     end
   end
 
+  -- Blocklist members: whatever the caps leave, round-robin from the cursor.
   local bl_pairs = opts.bl_pairs or {}
   local n        = #bl_pairs
   local cursor   = tonumber(opts.bl_cursor) or 1
   if cursor < 1 or cursor > n then cursor = 1 end
-  local taken = 0
+  local started = now_fn()
+  local taken   = 0
   while taken < n and stats.hosts < budget do
+    if (now_fn() - started) >= max_seconds then
+      stats.deadline_hit = true
+      break
+    end
     local pair = bl_pairs[cursor]
     local id   = tostring(pair.id)
     refresh_one(pair.host, render.bl_set_name(id), render.bl6_set_name(id))
@@ -225,9 +309,7 @@ function M.refresh(opts)
     cursor = cursor + 1
     if cursor > n then cursor = 1 end
   end
-  stats.skipped   = stats.skipped + (n - taken)
-  -- Where the next cycle picks up. Meaningless with no blocklist members, and
-  -- `refresh` is then a no-op for them anyway.
+  stats.skipped   = n - taken
   stats.bl_cursor = (n > 0) and cursor or 1
 
   return stats

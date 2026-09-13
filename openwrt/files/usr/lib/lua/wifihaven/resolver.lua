@@ -48,10 +48,15 @@ local M = {}
 
 -- Hostname allow-list: a-z, 0-9, dot, hyphen, underscore (some dnsmasq aliases
 -- contain underscores; see #1572). Anything else is rejected so the shell-out
--- stays hermetic — nothing reaches `io.popen` that we have not vetted.
+-- stays hermetic — nothing reaches `io.popen` that we have not vetted. This is
+-- the single vetting seam for both callers now, so it also rejects a LEADING
+-- hyphen: no shell metacharacter survives the allow-list, but `-foo` would
+-- reach `nslookup` as an OPTION rather than as a hostname. A real hostname
+-- cannot start with one anyway (RFC 1123 §2.1).
 function M.safe_host(host)
   if type(host) ~= "string" or host == "" then return nil end
   if host:find("[^%w%.%-_]") then return nil end
+  if host:sub(1, 1) == "-" then return nil end
   return host
 end
 
@@ -78,10 +83,12 @@ end
 --   Name:   e15316.dsca.akamaiedge.net
 --   Address: 23.47.202.67
 --
--- The server block carries an `Address:` line too, so everything before the
--- first blank line is skipped — crediting `127.0.0.1` to a blocked host's drop
--- set would put the ROUTER in it. CNAME lines are ignored; we want the
--- addresses the client will connect to, whatever chain leads there.
+-- The server block carries an `Address:` line too, so `Address:` alone is not a
+-- safe key — crediting `127.0.0.1` to a blocked host's drop set would put the
+-- ROUTER in it. Answers are only read once the answer section has started,
+-- latched on the first `Non-authoritative answer:` / `Name:` line. CNAME lines
+-- are ignored; we want the addresses the client will connect to, whatever chain
+-- leads there.
 --
 -- `answered` (below) is what separates "no records" from "no resolver", so this
 -- returning {} is never by itself a failure signal.
@@ -132,9 +139,6 @@ local function run(host, qtype, popen_fn)
   local popen = popen_fn or io.popen
   local f = popen(cmd, "r")
   if not f then return nil end
-  -- Injected stubs in tests return the captured stdout directly rather than a
-  -- file handle; accept both so the specs need no file-handle mock.
-  if type(f) == "string" then return f end
   local out = f:read("*a")
   f:close()
   return out

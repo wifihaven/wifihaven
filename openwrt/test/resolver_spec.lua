@@ -67,10 +67,17 @@ local NO_AAAA_RECORD = table.concat({
 -- the shell's "not found" goes to stderr, stdout is empty.
 local BINARY_MISSING = ""
 
+-- A minimal `io.popen` handle over a captured stdout string. The module reads
+-- `*a` then closes, so that is the whole surface; keeping the stub shaped like
+-- a real handle means the shipped code needs no test-only branch.
+local function handle_for(text)
+  if text == nil then return nil end
+  return { read = function() return text end, close = function() end }
+end
+
 local function fake_popen(by_qtype)
   return function(cmd)
-    local qtype = cmd:match("%-type=(%u+)")
-    return by_qtype[qtype]
+    return handle_for(by_qtype[cmd:match("%-type=(%u+)")])
   end
 end
 
@@ -146,7 +153,7 @@ describe("resolver.resolve", function()
     local called = false
     local r = resolver.resolve("evil.com; rm -rf /", function()
       called = true
-      return A_WWW_AMAZON
+      return handle_for(A_WWW_AMAZON)
     end)
     assert.is_nil(r)
     assert.is_false(called)
@@ -162,5 +169,26 @@ describe("resolver.first_address", function()
   it("returns nil for NXDOMAIN and for a missing binary alike", function()
     assert.is_nil(resolver.first_address("x.invalid", fake_popen({ A = NXDOMAIN })))
     assert.is_nil(resolver.first_address("x.invalid", fake_popen({ A = BINARY_MISSING })))
+  end)
+end)
+
+describe("resolver.safe_host", function()
+  it("accepts real hostnames, including dnsmasq aliases with underscores", function()
+    assert.are.equal("www.amazon.com", resolver.safe_host("www.amazon.com"))
+    assert.are.equal("_dmarc.example.com", resolver.safe_host("_dmarc.example.com"))
+  end)
+
+  -- This is the single vetting seam for both callers, so it also has to stop a
+  -- host that would arrive as an OPTION rather than as an argument.
+  it("rejects a leading hyphen, which nslookup would read as a flag", function()
+    assert.is_nil(resolver.safe_host("-type=any"))
+    assert.is_nil(resolver.safe_host("-foo.example"))
+  end)
+
+  it("rejects shell metacharacters, whitespace and the empty string", function()
+    for _, bad in ipairs({ "evil.com; id", "a b.com", "x`id`.com", "$(id).com", "" }) do
+      assert.is_nil(resolver.safe_host(bad))
+    end
+    assert.is_nil(resolver.safe_host(nil))
   end)
 end)

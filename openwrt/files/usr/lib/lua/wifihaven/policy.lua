@@ -129,7 +129,7 @@ local BLOCKED_RESULTS = {
 
 -- True when the DNS answer indicates the resolver is *blocking* at the
 -- DNS layer (sinkhole IP) or returning no answer at all (NXDOMAIN /
--- SERVFAIL / timeout → empty first line from `dig +short`). Both shapes
+-- SERVFAIL / timeout → no address parsed out of the resolver's answer). Both shapes
 -- mean we are NOT getting a real upstream answer, which post-#351 is a
 -- regression — dnsmasq should resolve every host normally and let nft
 -- handle blocking.
