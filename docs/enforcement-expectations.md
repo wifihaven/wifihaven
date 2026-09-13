@@ -49,7 +49,14 @@ time**, so there is a built-in warm-up.
    re-resolve of every blocked host (`eb_refresh_interval`, default **1800 s**)
    to keep the sets populated ahead of the kernel's 1 h set timeout
    ([`eb_refresh.lua`](../openwrt/files/usr/lib/lua/wifihaven/eb_refresh.lua),
-   [#1658](https://github.com/wifihaven/wifihaven/issues/1658)).
+   [#1658](https://github.com/wifihaven/wifihaven/issues/1658)). That re-resolve
+   shelled out to `dig`, which OpenWRT does not ship, so from #1658 until
+   [#2782](https://github.com/wifihaven/wifihaven/issues/2782) it added nothing
+   on any router and a blocked host stayed reachable for as long as a client
+   held its cached IP. It now uses BusyBox `nslookup`, and a cycle is bounded at
+   `eb_refresh_max_hosts` (default **500**) — `extraBlocked` hosts first, then
+   blocklist members round-robin. Full blocklist coverage at that cadence is not
+   claimed; see [#2783](https://github.com/wifihaven/wifihaven/issues/2783).
 
 4. **Category blocklists warm up over time.** Curated-category lists (ads,
    adult, …) are fetched on a periodic cadence — `blocklist_refresh_interval`,

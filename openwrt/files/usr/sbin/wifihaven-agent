@@ -131,6 +131,10 @@ local blocklist_int = tonumber(uci_get("blocklist_refresh_interval", "3600"))
 -- the 1h kernel timeout, ~2 refreshes per window, ≈one `dig` per host every
 -- 30 min (negligible router load even at ~50 distinct hosts).
 local eb_refresh_int = tonumber(uci_get("eb_refresh_interval", "1800"))
+-- #2782: per-cycle host budget for the eb_/bl_ re-resolve. Blocklist membership
+-- runs to six figures (161,523 on the prod router), so an unbounded cycle would
+-- fire that many sequential lookups into dnsmasq and starve it (#1864).
+local eb_refresh_max  = tonumber(uci_get("eb_refresh_max_hosts", tostring(eb_refresh.DEFAULT_MAX_HOSTS)))
 -- #1782: per-shard byte cap. With the streaming shard path each blocklist is
 -- rendered line-by-line from the on-disk cache file directly to a per-id conf
 -- shard, so the agent's Lua heap never holds the full member set. The cap
@@ -1045,6 +1049,7 @@ local ts = {
   last_metrics_run   = 0,
   last_blocklist_run  = 0,  -- #1412: category blocklist refresh cadence
   last_eb_refresh_run = 0,  -- #1658: eb_/bl_ ipset re-resolve cadence
+  eb_refresh_bl_cursor = 1, -- #2782: round-robin position in the blocklist backlog
   last_ws_apply_run   = 0,  -- #1945: ws apply-on-push poll-of-disk cadence
   last_activity_sample = 0,
   last_nflog_run      = 0,  -- #1126: nflog drop-spool drain cadence
@@ -1638,11 +1643,14 @@ conntrack.watch({
         local stats = eb_refresh.refresh({
           eb_hosts  = inv.eb_hosts,
           bl_pairs  = inv.bl_pairs,
+          max_hosts = eb_refresh_max,
+          bl_cursor = ts.eb_refresh_bl_cursor,
           nft_table = "inet wifihaven",
           resolver  = eb_refresh.default_resolver,
           exec_fn   = os.execute,
           log       = log,
         })
+        ts.eb_refresh_bl_cursor = stats.bl_cursor
         local elapsed = clock.monotonic_seconds() - rt0
         if stats.resolves_ok > 0 then
           metrics.inc_counter(mreg, "eb_refresh_total", { result = "ok" },
@@ -1651,10 +1659,21 @@ conntrack.watch({
         if stats.resolves_err > 0 then
           metrics.inc_counter(mreg, "eb_refresh_total", { result = "resolve_failed" },
                               stats.resolves_err)
+          -- #2782: a resolver that cannot run used to report itself as ok. Say
+          -- it out loud — this is the signal that the sets are going stale.
+          log.warn("eb_refresh: %d of %d resolves failed; eb_/bl_ sets may be " ..
+                   "going stale (blocked hosts stop being blocked)",
+                   stats.resolves_err, stats.hosts)
         end
-        log.debug("eb_refresh timer: hosts=%d ok=%d err=%d adds=%d elapsed=%.2fs",
+        -- #2782: work the per-cycle budget left undone, so a backlog that can
+        -- never catch up is visible rather than inferred.
+        if stats.skipped > 0 then
+          metrics.inc_counter(mreg, "eb_refresh_total", { result = "skipped_budget" },
+                              stats.skipped)
+        end
+        log.debug("eb_refresh timer: hosts=%d ok=%d err=%d adds=%d skipped=%d elapsed=%.2fs",
                   stats.hosts, stats.resolves_ok, stats.resolves_err,
-                  stats.adds, elapsed)
+                  stats.adds, stats.skipped, elapsed)
       end
     end
 

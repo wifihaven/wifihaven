@@ -27,6 +27,17 @@
 -- answered IP into the destination set. nft tolerates duplicate adds; idempotence
 -- is the kernel's job, not ours.
 --
+-- #2782 — the second half of the story. The resolve above shelled out to `dig`,
+-- which OpenWRT does not ship and openwrt/Makefile never depended on, and the
+-- empty stdout that came back read as a successful resolve with no records. So
+-- this module was a no-op on every router from the day it shipped, reporting
+-- 100% success while doing nothing: prod counted 179,349,241 `resolves_ok` and
+-- zero failures, with `eb_www_amazon_com` sitting empty while `www.amazon.com`
+-- was in a profile's extraBlocked. Resolution now goes through
+-- `wifihaven.resolver`, and a cycle carries an explicit host budget — with the
+-- resolver dead the volume never mattered, and prod's blocklist membership is
+-- 161,523 hosts.
+--
 -- The leak is independent of which client cached the IP — the eb_/bl_ sets
 -- are global, NOT per-MAC (see render.lua `eb_set_name`). So we walk by host,
 -- not by (mac, host) — one resolve per distinct host per cycle, regardless of
@@ -49,13 +60,14 @@
 -- evidence is apex-level `play.google.com`).
 --
 -- Pure logic with injected resolver + nft executor (same DI shape as
--- dns_tail_sets / policy / conntrack); the agent wires the real `dig` shell-out
+-- dns_tail_sets / policy / conntrack); the agent wires `wifihaven.resolver`
 -- and `os.execute`. Set-name construction is delegated to render.lua's
 -- `eb_set_name` / `eb6_set_name` / `bl_set_name` / `bl6_set_name` exports so
 -- the (host|id) → nft-set-name mapping has a single source of truth.
 
 local dns_tail_sets = require("wifihaven.dns_tail_sets")
 local render        = require("wifihaven.render")
+local resolver      = require("wifihaven.resolver")
 
 local M = {}
 
@@ -108,81 +120,65 @@ function M.collect_inventory(eb_hosts_by_mac, bl_hosts_by_mac)
 end
 
 -- ---------------------------------------------------------------------------
--- dig parsing (default resolver)
+-- Default resolver
 -- ---------------------------------------------------------------------------
 
--- parse_dig_output(stdout, family) → sorted list of valid IP literals.
+-- #2782: this used to shell out to `dig`, which OpenWRT does not ship, and read
+-- the resulting empty stdout as a successful resolve with no records — so the
+-- whole module ran as a no-op that reported 100% success. Resolution now goes
+-- through `wifihaven.resolver` (BusyBox `nslookup`, present on every image),
+-- which returns nil when the resolver could not run at all. `refresh_one` below
+-- already counts nil as `resolves_err`; it just never received one.
 --
--- `dig +short` prints answer values one per line. For an A/AAAA query the
--- terminal answer line is the IP; CNAME-shaped intermediate lines (e.g.
--- `youtube-ui.l.google.com.`) also appear and must be skipped. We filter via
--- dns_tail_sets.safe_addr (the same allow-list applied to dnsmasq-log-parsed
--- IPs in the dns-tail populator).
-function M.parse_dig_output(stdout, family)
-  if not stdout or stdout == "" then return {} end
-  local out = {}
-  local seen = {}
-  for line in stdout:gmatch("[^\r\n]+") do
-    local ip = line:match("^%s*(%S+)%s*$")
-    if ip then
-      local safe = dns_tail_sets.safe_addr(ip)
-      if safe then
-        -- safe_addr accepts both v4 and v6 shapes; family-check via dots/colons.
-        local is_v6 = safe:find(":", 1, true) ~= nil
-        if (family == "v6") == is_v6 and not seen[safe] then
-          seen[safe] = true
-          out[#out + 1] = safe
-        end
-      end
-    end
-  end
-  table.sort(out)
-  return out
-end
-
-local function default_dig(host, qtype)
-  -- Hostname allow-list: a-z, 0-9, dot, hyphen, underscore (some dnsmasq
-  -- aliases contain underscores; see #1572). Anything else is rejected to keep
-  -- shell-out hermetic.
-  if type(host) ~= "string" or host:find("[^%w%.%-_]") then return nil end
-  local cmd = string.format(
-    "dig %s @127.0.0.1 -p 53 %s +short +time=2 +tries=1 2>/dev/null",
-    qtype, host)
-  local f = io.popen(cmd, "r")
-  if not f then return nil end
-  local out = f:read("*a")
-  f:close()
-  return out
-end
-
--- default_resolver(host) → { v4 = {...}, v6 = {...} } | nil
--- nil means the resolver itself failed (dig couldn't run); empty lists mean
--- the resolver answered but no addresses were returned (NXDOMAIN / no record).
-function M.default_resolver(host)
-  local v4_out = default_dig(host, "A")
-  local v6_out = default_dig(host, "AAAA")
-  if not v4_out and not v6_out then return nil end
-  return {
-    v4 = M.parse_dig_output(v4_out, "v4"),
-    v6 = M.parse_dig_output(v6_out, "v6"),
-  }
+-- `popen_fn` is injectable for tests; production passes nothing and gets
+-- `io.popen`.
+function M.default_resolver(host, popen_fn)
+  return resolver.resolve(host, popen_fn)
 end
 
 -- ---------------------------------------------------------------------------
 -- refresh
 -- ---------------------------------------------------------------------------
 
--- refresh(opts) → { hosts, resolves_ok, resolves_err, adds }
+-- Per-cycle host budget. #2782: until the resolver was fixed every resolve was
+-- a no-op, so nobody noticed the cycle queueing one per blocklist member —
+-- 161,523 of them on the prod router, 328,161 resolves an hour. Sequential
+-- shell-outs at that volume would starve dnsmasq (#1864), so a cycle now
+-- processes at most this many hosts. 500 hosts = 1000 local lookups, a few
+-- seconds every `eb_refresh_interval`.
+--
+-- extraBlocked spends the budget first: it is operator-authored, it is tens of
+-- entries, and it is the host class #2782 is about. Blocklist members take what
+-- is left, round-robin from a cursor the caller carries across cycles, so a
+-- 161k backlog rotates instead of always re-doing its first N. Full blocklist
+-- coverage is NOT claimed at this cadence — the bl_ sets' primary population
+-- path is dnsmasq's `--nftset=` callback at client-resolve time, and a
+-- principled top-up scoped to hosts we have actually seen resolved is
+-- TODO(#2783).
+M.DEFAULT_MAX_HOSTS = 500
+
+-- refresh(opts) → { hosts, resolves_ok, resolves_err, adds, skipped, bl_cursor }
 --
 -- opts:
 --   eb_hosts  : list of apex hosts to refresh eb_/eb6_ for
 --   bl_pairs  : list of {host=..., id=...} to refresh bl_/bl6_ for
+--   max_hosts : per-cycle host budget (default M.DEFAULT_MAX_HOSTS). Absent is
+--               the default, NOT unbounded.
+--   bl_cursor : 1-based index into bl_pairs to resume from (default 1). Pass
+--               back the `bl_cursor` from the previous cycle's result.
 --   nft_table : nftables table name, e.g. "inet wifihaven"
 --   resolver  : host → { v4, v6 } | nil (nil counts as resolves_err)
 --   exec_fn   : os.execute-style shell executor (capture in tests)
 --   log       : optional logger { debug=, info=, warn= } — debug/info only
+--
+-- `skipped` is the work the budget left undone this cycle. It is reported, not
+-- swallowed: a cycle that can never catch up should be visible on the
+-- dashboard, not inferred from a suspiciously round `hosts`.
 function M.refresh(opts)
-  local stats = { hosts = 0, resolves_ok = 0, resolves_err = 0, adds = 0 }
+  local stats = {
+    hosts = 0, resolves_ok = 0, resolves_err = 0, adds = 0, skipped = 0,
+  }
+  local budget = tonumber(opts.max_hosts) or M.DEFAULT_MAX_HOSTS
 
   local function refresh_one(host, v4_set, v6_set)
     stats.hosts = stats.hosts + 1
@@ -207,13 +203,33 @@ function M.refresh(opts)
     end
   end
 
-  for _, host in ipairs(opts.eb_hosts or {}) do
-    refresh_one(host, render.eb_set_name(host), render.eb6_set_name(host))
+  local eb_hosts = opts.eb_hosts or {}
+  for _, host in ipairs(eb_hosts) do
+    if stats.hosts >= budget then
+      stats.skipped = stats.skipped + 1
+    else
+      refresh_one(host, render.eb_set_name(host), render.eb6_set_name(host))
+    end
   end
-  for _, pair in ipairs(opts.bl_pairs or {}) do
-    local id = tostring(pair.id)
+
+  local bl_pairs = opts.bl_pairs or {}
+  local n        = #bl_pairs
+  local cursor   = tonumber(opts.bl_cursor) or 1
+  if cursor < 1 or cursor > n then cursor = 1 end
+  local taken = 0
+  while taken < n and stats.hosts < budget do
+    local pair = bl_pairs[cursor]
+    local id   = tostring(pair.id)
     refresh_one(pair.host, render.bl_set_name(id), render.bl6_set_name(id))
+    taken  = taken + 1
+    cursor = cursor + 1
+    if cursor > n then cursor = 1 end
   end
+  stats.skipped   = stats.skipped + (n - taken)
+  -- Where the next cycle picks up. Meaningless with no blocklist members, and
+  -- `refresh` is then a no-op for them anyway.
+  stats.bl_cursor = (n > 0) and cursor or 1
+
   return stats
 end
 

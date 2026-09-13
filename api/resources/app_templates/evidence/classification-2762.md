@@ -313,6 +313,13 @@ every live entry sees at least one refresh per ageing window. A recycled address
 can therefore be wrongly dropped for at most the residual of one ageing window
 after the host stops resolving to it. Nothing here argues for dropping a host.
 
+> **Correction (#2782, 2026-09-13).** The paragraph above described what
+> `eb_refresh.lua` was written to do, not what it did. Its re-resolve shelled
+> out to `dig`, which OpenWRT does not ship and `openwrt/Makefile` never
+> depended on, so it had never added an element on any router — the bound
+> described here did not hold. Fixed in #2782 (BusyBox `nslookup`, plus a
+> per-cycle host budget); blocklist-member coverage at that cadence is #2783.
+
 ## Validation (Step 5)
 
 `mill api.test.testOnly 'wifihaven.api.feature.AppTemplatesSpec'` — 38 tests

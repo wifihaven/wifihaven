@@ -282,7 +282,7 @@
     {
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "title": "eb_/bl_ ipset refresh rate (#1658)",
-      "description": "sum by (result) (rate(eb_refresh_total[5m])) — hosts/sec the periodic re-resolve heartbeat processed. The eb_<host>/bl_<id> sets carry `flags dynamic,timeout 1h`; this timer (default cadence 1800s, strictly below the 1h timeout) re-resolves each extraBlocked / blocklist apex and adds answers back so the set stays populated under long-lived iOS app DNS caches. Steady non-zero `ok` is the healthy signal; a flat-zero in a household that has any extraBlocked / blocklist hosts means the timer isn't running. Sustained `resolve_failed` points at a dnsmasq problem.",
+      "description": "sum by (result) (rate(eb_refresh_total[5m])) — hosts/sec the periodic re-resolve heartbeat processed. The eb_<host>/bl_<id> sets carry `flags dynamic,timeout 1h`; this timer (default cadence 1800s, strictly below the 1h timeout) re-resolves each extraBlocked / blocklist apex and adds answers back so the set stays populated under long-lived iOS app DNS caches. Non-zero `ok` is NOT by itself a healthy signal — #2782: the resolver shelled out to a `dig` that OpenWRT does not ship, and the empty answer counted as a successful resolve, so prod logged 179,349,241 `ok` while adding nothing for months. It only means the cycle ran; whether it achieved anything is `nft list set inet wifihaven eb_<host>` coming back non-empty for a host nobody is actively resolving. Sustained `resolve_failed` points at a dnsmasq or resolver problem. `skipped_budget` is work the per-cycle `eb_refresh_max_hosts` budget left undone — expected while the blocklist backlog rotates (#2783), and never for extraBlocked hosts, which spend the budget first.",
       "type": "timeseries",
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 33 },
       "id": 9,
@@ -311,7 +311,7 @@
     {
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "title": "eb_/bl_ ipset refresh failure ratio (#1658)",
-      "description": "sum(rate(eb_refresh_total{result=\"resolve_failed\"})) / sum(rate(eb_refresh_total)) over 5m — fraction of re-resolves that failed (resolver unreachable / hermetic-allowlist reject). A spike above ~0.1 means the periodic heartbeat is no longer keeping the sets warm — the iOS-DNS-cache leak (#1649) returns when failures dominate.",
+      "description": "sum(rate(eb_refresh_total{result=\"resolve_failed\"})) / sum(rate(eb_refresh_total)) over 5m — fraction of ATTEMPTED re-resolves that failed (resolver unreachable / hermetic-allowlist reject). #2782: the denominator excludes `skipped_budget`, which is deferred work rather than a failed attempt and would otherwise dilute the ratio. A spike above ~0.1 means the periodic heartbeat is no longer keeping the sets warm — the iOS-DNS-cache leak (#1649) returns when failures dominate.",
       "type": "timeseries",
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 33 },
       "id": 10,
@@ -332,7 +332,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "sum(rate(eb_refresh_total{env=\"$env\", router_id=~\"$router\", result=\"resolve_failed\"}[5m])) / clamp_min(sum(rate(eb_refresh_total{env=\"$env\", router_id=~\"$router\"}[5m])), 1e-9)",
+          "expr": "sum(rate(eb_refresh_total{env=\"$env\", router_id=~\"$router\", result=\"resolve_failed\"}[5m])) / clamp_min(sum(rate(eb_refresh_total{env=\"$env\", router_id=~\"$router\", result=~\"ok|resolve_failed\"}[5m])), 1e-9)",
           "legendFormat": "resolve_failed fraction",
           "refId": "A"
         }

@@ -385,5 +385,78 @@ object AppUsageDisplayEnforcementParitySpec
         assertTrue(high.get.hosts.isEmpty)
       }
     },
+    test(
+      "a BLOCKED app whose own hosts saw no traffic reports NO usage; a sibling app's hosts stay on the sibling",
+    ) {
+      // #2782. Operator report: Amazon set to `blocked` on a profile, SPA still showing ~10 minutes
+      // for it. The reported hypothesis was that attribution had crossed an app boundary — that the
+      // `minerva.devices.a2z.com` telemetry host, split out into a separate Amazon Telemetry app by
+      // #2762 and assigned to no profile, was landing on Amazon. It was not: `www.amazon.com` had
+      // genuinely carried 7.28 MB in an 8.5-minute window while the block was not yet being
+      // enforced (the router-agent bug this change fixes), and the number was honest.
+      //
+      // The boundary itself was never pinned, so it is pinned here rather than left as a conclusion
+      // that happened to hold when someone last looked. Two properties:
+      //   1. A sibling app's distinctive host accrues to the SIBLING, even when the sibling has no
+      //      assignment on the profile and the neighbouring app does — the exact shape #2762
+      //      created and the one the report suspected.
+      //   2. A blocked app whose own host-set saw no traffic reports no usage at all. `blocked` is
+      //      an enforcement mode, not a usage filter, so this has to come from the host-set.
+      //
+      // LIVENESS ANCHOR: both assertions above are absences, and an absence passes for free on a
+      // rig that generates no traffic. The sibling app's non-zero minutes are the anchor — the same
+      // traffic that must NOT appear on the blocked app must appear, in full, on the sibling.
+      val today         = TestClock.schoolDayAfternoon.toLocalDate
+      val blockedHost   = "www.shop.example"
+      val telemetryHost = "minerva.telemetry.example"
+      for {
+        _           <- cleanDb
+        profileRepo <- ZIO.service[ProfileRepo]
+        tlRepo      <- ZIO.service[TimeLimitRepo]
+        deviceRepo  <- ZIO.service[DeviceRepo]
+        appRepo     <- ZIO.service[AppRepo]
+        kidsId      <- TestLayers.seedKidsProfile(profileRepo)
+        _           <- tlRepo.upsert(kidsId, 240)
+        _           <- TestLayers.seedDevice(deviceRepo, testMac, "Kid Laptop", kidsId)
+        routerId    <- seedRouter
+        shopId      <- appRepo.create("Shop", "shop", None, None)
+        _           <- appRepo.setHosts(shopId, List(Hostname.unsafe(blockedHost)))
+        _           <- appRepo.upsertAssignment(shopId, kidsId, AppMode.Blocked, None, true)
+        // The #2762 shape: hosts split into their own app, which is assigned to NO profile.
+        telemetryId <- appRepo.create("Shop Telemetry", "shop-telemetry", None, None)
+        _           <- appRepo.setHosts(telemetryId, List(Hostname.unsafe(telemetryHost)))
+        // Only the telemetry host carries traffic. The blocked app's host-set sees nothing.
+        _           <- seedTraffic(routerId, telemetryHost, today, 15, 0)
+
+        uRoutes <- usageRoutes
+        auth    <- makeAuth
+        token   <- auth.login("admin", "changeme").map(_.token.value)
+        resp    <- uRoutes.runZIO(
+          Request
+            .get(
+              URL
+                .decode(s"/api/profiles/${kidsId.value}/usage-by-app?from=$today&to=$today")
+                .toOption
+                .get,
+            )
+            .addHeader(Header.Authorization.Bearer(token)),
+        )
+        body    <- resp.body.asString
+        out     <- ZIO.fromEither(body.fromJson[ProfileUsageByApp])
+      } yield {
+        val shop      = out.apps.find(_.appName == "Shop")
+        val telemetry = out.apps.find(_.appName == "Shop Telemetry")
+        assertTrue(resp.status == Status.Ok) &&
+        // LIVENESS ANCHOR: the traffic was really seeded and really attributed — to the sibling,
+        // in full. Without this the two absences below hold on an empty fixture.
+        assertTrue(telemetry.isDefined) &&
+        assertTrue(telemetry.get.proportionalSeconds == 900L) &&
+        assertTrue(telemetry.get.hosts.map(_.host.value) == List(telemetryHost)) &&
+        // The blocked app is not credited with the sibling's host, on the headline...
+        assertTrue(shop.forall(_.proportionalSeconds == 0L)) &&
+        // ...nor on the drill-down, which is where a substring/brand matcher would show up.
+        assertTrue(shop.forall(_.hosts.isEmpty))
+      }
+    },
   ) @@ TestAspect.sequential // DB-backed: clones the migration template into a fixed-named scratch DB.
 }
