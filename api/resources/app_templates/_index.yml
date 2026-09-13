@@ -71,3 +71,6 @@ slugs:
   - amazon-telemetry
   # #2774: orphan-driven catalog pass (see evidence/classification-2774.md)
   - rebrickable
+  # #2778: Emoji Kitchen website (Gboard's own surface rides gstatic.com and
+  # is deliberately NOT covered — see emoji-kitchen.yml)
+  - emoji-kitchen

@@ -1,0 +1,128 @@
+slug: emoji-kitchen
+name: Emoji Kitchen
+# Emoji fallback: 🍳
+icon: "https://icons.duckduckgo.com/ip3/emojikitchen.dev.ico"
+icon_type: url
+#
+# ──────────────────────────────────────────────────────────────────────────
+# WHAT THIS APP COVERS — AND WHAT IT DOES NOT (#2778)
+# ──────────────────────────────────────────────────────────────────────────
+#
+# COVERS: the Emoji Kitchen *website* — emojikitchen.dev, the community
+# sticker-mashup browser (github.com/xsalazar/emoji-kitchen). That is the
+# surface this household's own traffic actually shows: 10.26 MB / 55 hits over
+# 30 days on Kid Laptop, and 35 proportional minutes over 14 days
+# (emojikitchen.dev 28m + backend.emojikitchen.dev 7m) sitting in `orphanHosts`
+# attributed to no app at all. The apex entry below suffix-matches both
+# (HostMatch.matchesApex), so page loads and mashup lookups land in ONE
+# aggregated budget (#1505).
+#
+# DOES NOT COVER: Google's own Emoji Kitchen — the feature built into the
+# Gboard keyboard and into Google Search. A kid combining emoji from inside the
+# phone or tablet keyboard will be neither seen nor controlled by this app.
+# There is no host-set that fixes that, and the next person should not try:
+#
+#   Gboard's Emoji Kitchen stickers are served from
+#   www.gstatic.com/android/keyboard/emojikitchen/… . Enforcement is IP-layer —
+#   a blocked host's resolved IPs go into a per-(MAC, host) `eb_` nftables drop
+#   set — so putting `gstatic.com` here would drop every other Google product
+#   sharing those addresses. That is the #1636 failure verbatim (blocking
+#   YouTube's `youtubei.googleapis.com` broke Google Drive sign-in on the kids'
+#   iPads). Prod traffic makes the breadth concrete: this household's
+#   `gstatic.com` apex is 781 MB / 5447 hits across `fonts.`, `ssl.`, `csi.`,
+#   `maps.`, `gemini.`, `connectivitycheck.`, `encrypted-tbn0-3.` and
+#   `*.metric.` — fonts, Search thumbnails, Maps, captive-portal detection.
+#   `gstatic.com` has been classified shared Google infra and skipped in five
+#   prior catalog passes (evidence/classification-2490.md, -2596.md, -2774.md,
+#   -2331.md, -2058.md). The same reasoning bars `googleapis.com`,
+#   `googleusercontent.com`, `ggpht.com` and `gvt1-3.com`.
+#
+# So: DO NOT "fix" the Gboard gap by adding a Google apex. The gap is real and
+# is the price of not breaking Search, Maps and Drive.
+#
+# ──────────────────────────────────────────────────────────────────────────
+# COLLATERAL THIS HOST-SET DOES CARRY — read before assigning it in Blocked
+# ──────────────────────────────────────────────────────────────────────────
+#
+# emojikitchen.dev has no dedicated-bytes host of its own. Both halves ride
+# multi-tenant platforms, and the operator should know which is which:
+#
+#   * FRONT-END — DEMONSTRATED sharing, not hypothetical. `www.emojikitchen.dev`
+#     CNAMEs to `xsalazar.github.io` and the apex answers on GitHub Pages'
+#     fixed global pool 185.199.108-111.153. That is the identical four-address
+#     answer returned for every other Pages site checked (`xsalazar.github.io`,
+#     `pages.github.com`, `jekyllrb.com`, `bootstrap-vue.github.io`), stable
+#     across repeated lookups. And it collides IN THIS HOUSEHOLD'S OWN SAMPLE:
+#     Kid Laptop hits `cics110.github.io` (a course site, 132 KB / 1 hit / 30d),
+#     which resolves to those same four addresses. Blocking this app on that
+#     device therefore drops GitHub Pages sites generally, the course site
+#     included. Small in bytes, but it is the #1636 shape.
+#
+#   * BACK-END — latent only (README Class 2). `backend.emojikitchen.dev`
+#     CNAMEs to `d-0bmbouithe.execute-api.us-west-2.amazonaws.com`, an AWS API
+#     Gateway custom-domain endpoint. The kid devices' other API Gateway traffic
+#     is all us-east-1 (`pgi7j6i5ab.`, `eydtptig4h.`, `mbdvgoj27h.`). API
+#     Gateway's regional edges are separate address pools per region, so a
+#     us-west-2 endpoint and a us-east-1 one do not collide. That argument is
+#     about the REGIONS, deliberately not about specific addresses: the
+#     addresses behind both rotated within a day of this file being written.
+#
+# The ALLOW direction is the half that is easy to miss, and it is the more
+# dangerous one. `extraAllowed` beats every drop it reaches at the router
+# (#421), and the `AppMode.Allowed` branch of
+# `ProfileAppDispositions.enforcement` carves this app's hosts straight into it.
+# So assigning this app in Allowed mode puts the resolved GitHub Pages pool into
+# that MAC's `ea_` set — carving EVERY GitHub Pages site out of the blocklist
+# categories and per-host drops on that device, and out of the paused / schedule
+# / daily-limit whole-MAC blocks too. Since `*.github.io` is a common home for
+# web proxies and unblocked-games mirrors, that is a real hole, and it is the
+# #2369 / #2601 shape in mirror image on a pool no Google ban list can catch.
+#
+# Two server-side gates narrow that, and neither closes the hole: a Hard pause
+# zeroes every per-profile carve (`PolicyService.computeBlockRules`, the
+# `isHardPause` branch, #1418), and #1679 suppresses it under a Schedule block
+# for an assignment with `allowedDuringScheduleBlock = false`.
+#
+# A TimeLimited assignment is a NARROWER carve, not the same one: it is gated on
+# the MAC not being whole-MAC blocked (`timeLimitedUnderCap`, guarded by
+# `!state.blocked`, #1980), so while under cap it carves `*.github.io` out of
+# the blocklist and per-host drops but NOT out of a pause / schedule /
+# daily-limit block. Still a hole against the category lists.
+#
+# Blocked mode over-drops; Allowed mode over-permits. Both come from the same
+# shared pool.
+#
+# An operator who wants ZERO demonstrated collateral IN EITHER DIRECTION can
+# narrow the host list on the seeded app to `backend.emojikitchen.dev` alone:
+# the mashups stop (or, in Allowed mode, only the mashup API is carved), the
+# page still loads, and the GitHub Pages pool never enters `eb_` or `ea_`. The
+# cost is attribution — the 28 of 35 proportional minutes that belong to the
+# page host stop being credited to this app. The default below takes the full
+# apex for complete coverage; operator host edits win over the seeder, and
+# "reset to template" restores this list.
+#
+# None of that is visible in the SPA today — it renders name, icon and hosts,
+# not these comments. #2780 tracks surfacing a template caveat where the
+# operator actually assigns the app.
+#
+# Every host argument above is a CNAME/answer argument, checkable with one
+# `dig`. None of it rests on which IP addresses a host shares with some other
+# host — those answers are DNS-steered and move between lookups, so a
+# pool-overlap claim would be unverifiable.
+#
+# ──────────────────────────────────────────────────────────────────────────
+# LOOK-ALIKE DOMAINS DELIBERATELY EXCLUDED
+# ──────────────────────────────────────────────────────────────────────────
+#
+# Several unrelated operators own emoji-kitchen-shaped domains. None appears in
+# 30 days of prod traffic, and the catalog only templates what is observed:
+#   emojikitchen.com    — an emoji-meanings content site, different operator.
+#   emojikitchen.net    — a separate mashup site, different operator.
+#   emoji-kitchen.com   — "Emoji Kitchen - The Game!", a different product.
+#   emojikitchen.io     — domain-squatted; currently serves "Socolive TV",
+#                         a Vietnamese football-streaming page. Never add it.
+#   emojikitchen.org    — did not answer HTTP at authoring time.
+#
+# #1983 overlap check: no host below appears on any curated blocklist.
+hosts:
+  - emojikitchen.dev

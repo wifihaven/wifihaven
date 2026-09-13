@@ -191,6 +191,66 @@ above is now wrong, fix the step too — don't just log around it.
 
 ## Learnings log (newest first)
 
+- **2026-09-13 (#2778)** — **A shared-pool host-set has TWO collateral
+  directions, and every pass so far has only reasoned about one.** The
+  `eb_`/over-drop argument is the reflex. The other one is worse: `extraAllowed`
+  beats every drop it reaches (#421) and the `AppMode.Allowed` branch of
+  `ProfileAppDispositions.enforcement` carves such an app's hosts into it — so
+  allowing an app whose host sits on a shared pool carves EVERY tenant of that
+  pool out of the category lists, the per-host drops AND the whole-MAC blocks on
+  that MAC. **Do not flatten the modes together**: a `TimeLimited` under-cap
+  carve is gated on `!state.blocked` (#1980), so it beats the category and
+  per-host drops but stays subordinate to pause / schedule / daily-limit; and a
+  Hard pause zeroes every per-profile carve (#1418). For GitHub Pages that
+  means `*.github.io`, which is a common home for web proxies and
+  unblocked-games mirrors. The #2369 / #2601 shape in mirror image, on a
+  platform no Google-oriented ban list catches. **When you write a collateral
+  paragraph, write both directions — Blocked over-drops, Allowed over-permits —
+  and say which narrowing fixes both.** Two drafts of this entry got it wrong
+  and the independent review caught both: the first omitted the allow direction
+  entirely, the second said TimeLimited "does the same" as Allowed.
+
+- **2026-09-13 (#2778)** — **GitHub Pages is a demonstrated-sharing origin, and
+  it is the static-hosting analogue of `shops.myshopify.com`.** Every Pages site
+  — custom domain or `*.github.io` — answers on the SAME fixed global four
+  addresses `185.199.108-111.153`, stable across repeated lookups
+  (`emojikitchen.dev`, `xsalazar.github.io`, `pages.github.com`, `jekyllrb.com`,
+  `bootstrap-vue.github.io` all returned the identical set). Note the CNAME test
+  alone does NOT catch this: `www.emojikitchen.dev` CNAMEs to
+  `xsalazar.github.io`, an ACCOUNT-scoped name that looks like the accepted
+  `eaglercraft-99f.workers.dev` precedent. The addresses are what give it away,
+  so **run both tests** — platform-wide CNAME target, and identical A records
+  across unrelated sites. Same shape to check for: `*.netlify.app`,
+  `*.pages.dev`, `*.vercel.app`, `*.surge.sh`.
+- **2026-09-13 (#2778)** — **AWS API Gateway collateral is REGIONAL, so check
+  the region before calling it shared.** `backend.emojikitchen.dev` CNAMEs to
+  `d-….execute-api.us-west-2.amazonaws.com`; the kid devices' three other
+  `execute-api` endpoints are all us-east-1, a different regional edge with a
+  different address pool. Record the REGION, not the addresses — the ones
+  observed here rotated within a day. A blanket
+  "API Gateway is a shared vendor pool, skip" would have been wrong here — the
+  regions don't overlap, so it stays README Class 2 (latent), not Class 1.
+- **2026-09-13 (#2778)** — **"Demonstrated collateral" is not automatically
+  "skip" — that conclusion only follows when a collateral-free host exists to
+  fall back to.** `emojikitchen.dev` has no dedicated-bytes host at all: the
+  front-end is GitHub Pages, the back-end is API Gateway. Skipping would have
+  shipped nothing while the kid kept using it unseen. What actually resolved it
+  is that **attribution is hostname-based and carries zero collateral**, so the
+  visibility half of a template is always safe even when the block half is
+  compromised. Ship, document the collateral at the same volume as the headline
+  exclusion, and name the narrower host-set an operator can edit to if they want
+  zero collateral (here `backend.` alone: mashups stop, page loads, Pages pool
+  never enters the drop set, at the cost of 28 of 35 attributed minutes).
+  Operator host edits win over the seeder, so that guidance is actionable.
+- **2026-09-13 (#2778)** — **Look-alike domains around a brand are mostly other
+  people's businesses — check what each one SERVES before listing it.** Of six
+  emoji-kitchen-shaped domains, one was the real site, three were unrelated
+  operators' own emoji products, one did not answer, and `emojikitchen.io` was
+  squatted and serving a Vietnamese football-streaming page. Padding a host-set
+  with untrafficked look-alikes to "cover the brand" would have put a stranger's
+  streaming site into a kid's app budget. `curl` the `<title>` of every
+  candidate; it takes one command and it is the whole check.
+
 - **2026-09-11 (#2774)** — **First pass driven by `orphanHosts`, and the method
   works: it put the single highest-value finding at the top of the list instead
   of buried in a byte table.** `www.youtube-nocookie.com` — YouTube's
