@@ -618,3 +618,86 @@ describe("refresh empty-answer accounting (#2782 review)", function()
     assert.equal(0, stats.resolves_err)
   end)
 end)
+
+describe("refresh extraBlocked deadline (#2782 review, self-caught)", function()
+  local function ticking_clock(per_call)
+    local t = 0
+    return function() local now = t; t = t + per_call; return now end
+  end
+  local function always_resolves()
+    return function() return { v4 = { "1.2.3.4" }, v6 = {} } end
+  end
+  local function hosts_for(n)
+    local out = {}
+    for i = 1, n do out[i] = "h" .. i .. ".example" end
+    return out
+  end
+
+  -- Exempting extraBlocked from the blocklist deadline gave it priority but left
+  -- it bounded only by max_hosts — 500 hosts x 5s worst-case per query is ~83
+  -- minutes on the main loop, the very number the deadline exists to prevent.
+  -- extraBlocked therefore gets its OWN deadline: generous enough that a real
+  -- authored list always completes, and separate so a slow blocklist rotation
+  -- can never consume it. Whole-cycle bound is the two deadlines plus the one
+  -- in-flight query.
+  it("stops the extraBlocked pass at its own deadline", function()
+    local _, exec = exec_recorder()
+    local stats = eb_refresh.refresh({
+      eb_hosts    = hosts_for(500),
+      bl_pairs    = {},
+      max_hosts   = 500,
+      max_seconds = 5,
+      now_fn      = ticking_clock(1),
+      nft_table   = "inet wifihaven",
+      resolver    = always_resolves(),
+      exec_fn     = exec,
+    })
+    assert.is_true(stats.hosts < 500)
+    assert.is_true(stats.hosts > 0)
+    assert.is_true(stats.deadline_hit)
+    -- A dropped AUTHORED host is reported as such, never as blocklist backlog.
+    assert.equal(500 - stats.hosts, stats.skipped_extrablocked)
+    assert.equal(0, stats.skipped)
+  end)
+
+  -- LIVENESS ANCHOR: a realistically-sized authored list (prod has 11) finishes
+  -- in full under the same rig, so the truncation above is the deadline biting
+  -- rather than the pass being inert.
+  it("completes a real-sized extraBlocked list well inside its deadline", function()
+    local _, exec = exec_recorder()
+    local stats = eb_refresh.refresh({
+      eb_hosts    = hosts_for(11),
+      bl_pairs    = {},
+      max_hosts   = 500,
+      max_seconds = 5,
+      now_fn      = ticking_clock(0.01),
+      nft_table   = "inet wifihaven",
+      resolver    = always_resolves(),
+      exec_fn     = exec,
+    })
+    assert.equal(11, stats.hosts)
+    assert.equal(0, stats.skipped_extrablocked)
+    assert.is_false(stats.deadline_hit)
+  end)
+
+  -- The two deadlines are separate: a blocklist rotation that has already blown
+  -- its own budget must not shorten the extraBlocked pass, which runs first.
+  it("gives extraBlocked a budget the blocklist rotation cannot consume", function()
+    local cmds, exec = exec_recorder()
+    local stats = eb_refresh.refresh({
+      eb_hosts    = { "www.amazon.com", "youtube.com" },
+      bl_pairs    = { { host = "ads.example", id = "ads" } },
+      max_hosts   = 500,
+      max_seconds = 5,
+      -- 4 simulated seconds per host: both authored hosts fit in their own
+      -- 5s window, and the blocklist pass then gets its own fresh one.
+      now_fn      = ticking_clock(4),
+      nft_table   = "inet wifihaven",
+      resolver    = always_resolves(),
+      exec_fn     = exec,
+    })
+    assert.equal(0, stats.skipped_extrablocked)
+    assert.is_true(added(cmds, "eb_www_amazon_com", "1.2.3.4"))
+    assert.is_true(added(cmds, "eb_youtube_com", "1.2.3.4"))
+  end)
+end)
