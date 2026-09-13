@@ -138,6 +138,18 @@ local blocklist_int = tonumber(uci_get("blocklist_refresh_interval", "3600"))
 -- the 1h kernel timeout, ~2 refreshes per window, ≈one `dig` per host every
 -- 30 min (negligible router load even at ~50 distinct hosts).
 local eb_refresh_int = tonumber(uci_get("eb_refresh_interval", "1800"))
+-- #2785: how long ONE slice of that sweep may hold the cooperative loop. The
+-- sweep itself was the 2026-09-13 stall: it walked the whole inventory in a
+-- single pass with two `dig` forks per host, and on the prod family router —
+-- where the inventory is every member host of ten subscribed blocklists — that
+-- pass took 558 s, during which no pushed policy was applied and nothing was
+-- reported. The pass is now sliced: at most this many seconds per tick, then it
+-- yields and resumes at its cursor on the NEXT tick (not the next 1800 s
+-- cadence), so total coverage per ageing window is preserved while the loop
+-- stays live. 2 s keeps the worst-case added apply latency below the "within
+-- seconds" bar and well under tick_step_budget, so a slow-step attribution on
+-- eb_refresh now means one individual resolve blew the slice, not the sweep.
+local eb_refresh_slice = tonumber(uci_get("eb_refresh_slice_seconds", "2")) or 2
 -- #1782: per-shard byte cap. With the streaming shard path each blocklist is
 -- rendered line-by-line from the on-disk cache file directly to a per-id conf
 -- shard, so the agent's Lua heap never holds the full member set. The cap
@@ -1158,6 +1170,13 @@ local ts = {
   last_metrics_run   = 0,
   last_blocklist_run  = 0,  -- #1412: category blocklist refresh cadence
   last_eb_refresh_run = 0,  -- #1658: eb_/bl_ ipset re-resolve cadence
+  -- #2785: the eb_/bl_ sweep is time-boxed and resumable. `eb_cursor` is where
+  -- the last slice stopped (0 = no sweep in progress); `eb_inventory` is the
+  -- flattened host list, built ONCE per sweep. Rebuilding it per slice would
+  -- reinstate the cost we are removing — collect_inventory walks and sorts
+  -- every subscribed blocklist member, ~160k entries on the prod family router.
+  eb_cursor           = 0,
+  eb_inventory        = nil,
   last_ws_apply_run   = 0,  -- #1945: ws apply-on-push poll-of-disk cadence
   last_activity_sample = 0,
   last_nflog_run      = 0,  -- #1126: nflog drop-spool drain cadence
@@ -1769,10 +1788,20 @@ conntrack.watch({
     -- last-applied snapshot so a stable (304-only) household still gets
     -- refreshed. Skipped while we're in failover render: the failover chain
     -- closes the world for those profiles already.
+    --
+    -- #2785: SLICED. A sweep is due either because the cadence elapsed, or
+    -- because one is already in progress — and an in-progress sweep continues
+    -- on the very next tick rather than waiting out another eb_refresh_int, so
+    -- slicing costs coverage nothing. The inventory is flattened once per
+    -- sweep and reused across its slices: collect_inventory walks and sorts
+    -- every subscribed blocklist member, and doing that per slice would put
+    -- back the cost we are taking out.
     if ts.last_snapshot and not ts.in_failover_render and not defer_network
-       and (mono - ts.last_eb_refresh_run) >= eb_refresh_int then
-      ts.last_eb_refresh_run = mono
-      local inv = eb_refresh.collect_inventory(eb_hosts_by_mac, bl_hosts_by_mac)
+       and (ts.eb_cursor > 0 or (mono - ts.last_eb_refresh_run) >= eb_refresh_int) then
+      if ts.eb_cursor == 0 or not ts.eb_inventory then
+        ts.eb_inventory = eb_refresh.collect_inventory(eb_hosts_by_mac, bl_hosts_by_mac)
+      end
+      local inv = ts.eb_inventory
       if #inv.eb_hosts > 0 or #inv.bl_pairs > 0 then
         local rt0 = clock.monotonic_seconds()
         local stats = wh_timed_step("eb_refresh", eb_refresh.refresh, {
@@ -1781,9 +1810,24 @@ conntrack.watch({
           nft_table = "inet wifihaven",
           resolver  = eb_refresh.default_resolver,
           exec_fn   = os.execute,
+          -- The bound. now_fn is the monotonic clock (#336) so an NTP step
+          -- cannot end a slice early or stretch one out.
+          deadline_seconds = eb_refresh_slice,
+          now_fn           = clock.monotonic_seconds,
+          start_index      = ts.eb_cursor,
           log       = log,
         })
         local elapsed = clock.monotonic_seconds() - rt0
+        ts.eb_cursor = stats.next_index or 0
+        if stats.done then
+          -- Only a COMPLETED sweep re-arms the cadence; an interrupted one is
+          -- resumed next tick.
+          ts.last_eb_refresh_run = mono
+          ts.eb_inventory        = nil
+        end
+        -- #2785: the capacity signal. This is the number that made the sweep
+        -- expensive enough to stop the agent, and nothing reported it before.
+        metrics.set_gauge(mreg, "eb_refresh_inventory_hosts", {}, stats.inventory or 0)
         if stats.resolves_ok > 0 then
           metrics.inc_counter(mreg, "eb_refresh_total", { result = "ok" },
                               stats.resolves_ok)
@@ -1792,9 +1836,14 @@ conntrack.watch({
           metrics.inc_counter(mreg, "eb_refresh_total", { result = "resolve_failed" },
                               stats.resolves_err)
         end
-        log.debug("eb_refresh timer: hosts=%d ok=%d err=%d adds=%d elapsed=%.2fs",
+        log.debug("eb_refresh slice: hosts=%d ok=%d err=%d adds=%d elapsed=%.2fs cursor=%d/%d done=%s",
                   stats.hosts, stats.resolves_ok, stats.resolves_err,
-                  stats.adds, elapsed)
+                  stats.adds, elapsed, ts.eb_cursor, stats.inventory or 0,
+                  tostring(stats.done))
+      else
+        ts.eb_cursor           = 0
+        ts.eb_inventory        = nil
+        ts.last_eb_refresh_run = mono
       end
     end
 

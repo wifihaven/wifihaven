@@ -191,5 +191,37 @@ else
     "markers missing (ws_apply=$WS_APPLY_LINE token=$TOKEN_LINE metrics=$METRICS_LINE) — the ordering check below cannot run"
 fi
 
+# (5) The eb_/bl_ re-resolve sweep (#1658) is the measured root cause: an
+#     unsliced pass over every subscribed blocklist member host, two dig forks
+#     each, inside the cooperative loop, every 1800s. It must be time-boxed and
+#     resumed from a cursor, and an in-progress sweep must continue on the next
+#     TICK rather than waiting out another full cadence.
+if grep -q 'deadline_seconds = eb_refresh_slice' "$SCRIPT"; then
+  check "eb_refresh sweep is time-boxed per tick (#2785)" ok
+else
+  check "eb_refresh sweep is time-boxed per tick (#2785)" \
+    "no deadline_seconds on the eb_refresh call — one pass walks the whole inventory and stalls the loop"
+fi
+
+if grep -q 'start_index      = ts\.eb_cursor' "$SCRIPT" && grep -q 'ts\.eb_cursor = stats\.next_index' "$SCRIPT"; then
+  check "eb_refresh sweep resumes from a cursor (#2785)" ok
+else
+  check "eb_refresh sweep resumes from a cursor (#2785)" \
+    "no cursor round-trip — a time-boxed sweep without one would only ever refresh the first slice"
+fi
+
+if grep -q 'ts\.eb_cursor > 0 or (mono - ts\.last_eb_refresh_run) >= eb_refresh_int' "$SCRIPT"; then
+  check "an in-progress eb_refresh sweep continues on the next tick (#2785)" ok
+else
+  check "an in-progress eb_refresh sweep continues on the next tick (#2785)" \
+    "sweep continuation is gated on the 1800s cadence — slicing would then cost coverage"
+fi
+
+if grep -q 'eb_refresh_inventory_hosts' "$SCRIPT"; then
+  check "agent reports the sweep inventory size (#2785)" ok
+else
+  check "agent reports the sweep inventory size (#2785)" "no capacity signal for the sweep"
+fi
+
 printf "\n%d passed, %d failed\n" "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
