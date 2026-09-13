@@ -52,6 +52,13 @@ local sni          = require("wifihaven.sni")
 local ws_outbound  = require("wifihaven.ws_outbound")
 local ws_spool     = require("wifihaven.ws_spool")
 local ws_metrics   = require("wifihaven.ws_metrics")
+-- #2785: on_tick liveness. http_bounds owns the curl timeout flags (an
+-- unbounded curl in the cooperative loop stalled prod for 4m11s); tick_guard
+-- owns the gap/step accounting that makes such a stall visible fleet-wide and
+-- the apply-priority deferral that keeps a pushed snapshot from queuing behind
+-- discretionary network work.
+local http_bounds  = require("wifihaven.http_bounds")
+local tick_guard   = require("wifihaven.tick_guard")
 
 -- ── UCI config ───────────────────────────────────────────────────────────────
 
@@ -158,6 +165,39 @@ local activity_sample_int = tonumber(uci_get("activity_sample_int", "10"))
 -- cadence gate to "always". One sanitize here covers every consumer.
 local tick_int      = conntrack.sanitize_tick_interval(
                         uci_get("conntrack_tick_interval", "1"))
+-- #2785: curl timeout bounds. Every HTTP call the agent makes runs
+-- SYNCHRONOUSLY inside on_tick, so an unbounded one does not slow the loop, it
+-- stops it — pushed policy goes unapplied and usage/events go unreported for as
+-- long as the request hangs. curl's own defaults are a 300 s connect timeout
+-- and no total-transfer cap at all, which is how a WAN blip produced a 4m11s
+-- apply delay on prod on 2026-09-13. Bounds live in http_bounds so they are
+-- defined (and unit-tested) once instead of per call site.
+local http_connect_to  = http_bounds.sanitize_seconds(
+                           uci_get("http_connect_timeout", nil),
+                           http_bounds.DEFAULT_CONNECT_SECONDS)
+local http_max_to      = http_bounds.sanitize_seconds(
+                           uci_get("http_max_time", nil),
+                           http_bounds.DEFAULT_MAX_SECONDS)
+local http_bulk_max_to = http_bounds.sanitize_seconds(
+                           uci_get("http_bulk_max_time", nil),
+                           http_bounds.DEFAULT_BULK_MAX_SECONDS)
+local CURL_TIMEOUTS      = http_bounds.curl_args(http_connect_to, http_max_to)
+local CURL_TIMEOUTS_BULK = http_bounds.curl_args(http_connect_to, http_bulk_max_to)
+-- #2785: tick-liveness knobs. `tick_stall_threshold` is the gap between two
+-- on_tick entries past which the loop counts as stalled; `tick_step_budget` is
+-- the per-step budget that attributes a slow tick to a named step; and
+-- `tick_defer_max` caps how long discretionary network work may be held back
+-- for a pending apply (uncapped, a permanently failing apply would silence the
+-- metrics push, which is the incident's own second symptom).
+local tick_stall_sec  = tonumber(uci_get("tick_stall_threshold",
+                          tostring(tick_guard.DEFAULT_STALL_SECONDS)))
+                        or tick_guard.DEFAULT_STALL_SECONDS
+local tick_step_budget = tonumber(uci_get("tick_step_budget",
+                          tostring(tick_guard.DEFAULT_STEP_BUDGET_SECONDS)))
+                        or tick_guard.DEFAULT_STEP_BUDGET_SECONDS
+local tick_defer_max  = tonumber(uci_get("tick_defer_max",
+                          tostring(tick_guard.DEFAULT_DEFER_SECONDS)))
+                        or tick_guard.DEFAULT_DEFER_SECONDS
 local debug_opt     = uci_get("debug",                            "0")
 -- #1848/#2736: ws transport config (named `config ws 'ws'` section). There is no
 -- `enabled` flag any more: with the HTTP poll gone (#2736) an opt-out would
@@ -500,8 +540,8 @@ local function http_post(url, body, headers)
   bf:close()
 
   local cmd = string.format(
-    "curl -sS -o %q -w '%%{http_code}' -X POST%s --data-binary @%q %q 2>%q",
-    resp_tmp, hdr_args, body_tmp, url, err_tmp)
+    "curl -sS%s -o %q -w '%%{http_code}' -X POST%s --data-binary @%q %q 2>%q",
+    CURL_TIMEOUTS, resp_tmp, hdr_args, body_tmp, url, err_tmp)
   local pipe = io.popen(cmd, "r")
   if not pipe then
     os.remove(body_tmp); os.remove(resp_tmp); os.remove(err_tmp)
@@ -660,7 +700,75 @@ function wh_ws_health_age()
   }) or -1
 end
 
-local function http_get(url, headers)
+-- ── #2785: on_tick liveness ──────────────────────────────────────────────────
+--
+-- The cooperative loop is single-fibered. When a step inside it blocks, the
+-- agent does not slow down, it stops: pushed policy stays unapplied and
+-- usage/events stay unreported, with both processes alive and the syslog quiet.
+-- That is the 2026-09-13 prod incident, and until now the only trace it left on
+-- the device was one `usage timer: window=…` warning — nothing fleet-wide.
+--
+-- `usage_window_stall_total` (#2024) is kept: it is the outcome signal, and it
+-- is what proves a stall corrupted a usage bucket. These two are the DIRECT
+-- ones, and they are what the operator needed and did not have:
+--
+--   agent_tick_stall_total       the loop's own pulse missed a beat. Unlabelled;
+--                                one increment per stalled tick.
+--   agent_slow_step_total{step}  which step burned the time. `step` is the
+--                                bounded enum in tick_guard.STEPS — code
+--                                constants, never a per-mac/host/url value.
+--
+-- Both are GLOBALS so on_tick reaches them without capturing mreg/tick_guard as
+-- extra upvalues (Lua 5.1 60-upvalue load limit, #1930).
+wh_tick_state = tick_guard.new_state()
+
+-- wh_tick_observe(mono) -> nothing. Records the gap since the previous tick and
+-- counts a stall when it runs past tick_stall_sec.
+function wh_tick_observe(mono)
+  local gap, stalled = tick_guard.observe(wh_tick_state, mono, tick_stall_sec)
+  if stalled then
+    metrics.inc_counter(mreg, "agent_tick_stall_total", {})
+    log.warn("on_tick: %.0fs since the previous tick (threshold %ds) — the cooperative " ..
+             "loop was blocked; pushed policy and reporting were both stalled for that " ..
+             "window (#2785)", gap, tick_stall_sec)
+  end
+end
+
+-- wh_timed_step(step, fn, ...) -> fn's return values. Times one in-tick step and
+-- attributes it when it runs past the budget, so the NEXT stall names its cause
+-- in Grafana instead of needing an SSH into the router.
+function wh_timed_step(step, fn, ...)
+  local t0 = clock.monotonic_seconds()
+  local a, b = fn(...)
+  local elapsed = clock.monotonic_seconds() - t0
+  if tick_guard.step_over_budget(elapsed, tick_step_budget) then
+    metrics.inc_counter(mreg, "agent_slow_step_total", { step = step })
+    log.warn("on_tick: step %q took %.1fs (budget %ds) — it blocked the cooperative loop " ..
+             "for that long (#2785)", step, elapsed, tick_step_budget)
+  end
+  return a, b
+end
+
+-- wh_defer_network(pending, mono) -> boolean. True while a snapshot the sidecar
+-- persisted is still unapplied, so the tick skips its discretionary network
+-- steps and retries the apply immediately instead of queuing it behind them.
+-- Bounded by tick_defer_max: a permanently failing apply must not silence the
+-- metrics push, which is exactly how a stalled router became invisible.
+-- wh_apply_pending(trigger_etag, current_etag) -> boolean. Same predicate the
+-- ws-apply block gates on, exposed as a global so on_tick can re-ask it after
+-- the attempt without capturing tick_guard as an upvalue (#1930).
+function wh_apply_pending(trigger_etag, current_etag)
+  return tick_guard.apply_pending(trigger_etag, current_etag)
+end
+
+function wh_defer_network(pending, mono)
+  return tick_guard.should_defer(wh_tick_state, pending, mono, tick_defer_max)
+end
+
+-- `timeout_args` (optional, #2785): a http_bounds.curl_args string. Defaults to
+-- the interactive bound; the blocklist fetch passes the longer bulk bound
+-- because a list body can run to megabytes. There is no "no timeout" option.
+local function http_get(url, headers, timeout_args)
   local hdr_args = ""
   for k, v in pairs(headers or {}) do
     hdr_args = hdr_args .. string.format(" -H %q", k .. ": " .. v)
@@ -670,7 +778,8 @@ local function http_get(url, headers)
   -- code trailer.
   local hdr_tmp = os.tmpname()
   local cmd = string.format(
-    "curl -s -w '\\n%%{http_code}' -D %q %s %q", hdr_tmp, hdr_args, url)
+    "curl -s%s -w '\\n%%{http_code}' -D %q %s %q",
+    timeout_args or CURL_TIMEOUTS, hdr_tmp, hdr_args, url)
   local pipe = io.popen(cmd, "r")
   if not pipe then os.remove(hdr_tmp); return nil, "", {} end
   local body = pipe:read("*a") or ""
@@ -739,8 +848,12 @@ local BLOCKLIST_CACHE_DIR = "/etc/wifihaven/blocklists"
 local BLOCKLIST_SHARD_DIR = render.SHARD_DIR
 local function refresh_blocklists(snap)
   -- Step 1: fetch new list versions + cache them to disk.
+  -- #2785: blocklist bodies are the one bulk fetch here (up to
+  -- blocklist_max_list_bytes), so they get the longer bound — still finite.
   local res = blocklists.refresh(
-    snap, http_get, nil, BLOCKLIST_CACHE_DIR, api_url, router_token)
+    snap,
+    function(url, headers) return http_get(url, headers, CURL_TIMEOUTS_BULK) end,
+    nil, BLOCKLIST_CACHE_DIR, api_url, router_token)
   record_blocklist_failures(res)
   for _, e in ipairs(res.errors or {}) do
     log.warn("blocklist fetch: %s", tostring(e))
@@ -1378,6 +1491,123 @@ conntrack.watch({
     -- interval anchor — see drop_int below.
     local ws_live = ws_link_healthy()
 
+    -- #2785: the loop's own pulse. A stall here is invisible to the #2024
+    -- heartbeat — the sentinel keeps arriving, the loop just never gets back to
+    -- read it — so measure the gap between consecutive entries directly.
+    wh_tick_observe(mono)
+
+    -- ws apply-on-push timer (#1945). When the ws sidecar is enabled it writes
+    -- server-pushed snapshots to /etc/wifihaven/policy.json (the IN channel,
+    -- #1849); the running agent must APPLY them live, not just at startup. The
+    -- HTTP poll above stays the sole transport when ws is OFF, so this block is a
+    -- pure no-op then. When ON, re-read the on-disk snapshot on a short cadence
+    -- and, if its etag differs from the applied one, run it through the SAME
+    -- apply pipeline the poll uses (refresh_blocklists → apply_and_publish).
+    --
+    -- The etag is the single dedup key shared by both appliers: a snapshot the
+    -- poll just applied carries the etag we already hold, so this skips it (and
+    -- vice-versa) — so even with the poll still running there is no double-apply,
+    -- and the agent remains the SINGLE enforcement owner (the sidecar only
+    -- delivers + persists the file; it never touches nft/dnsmasq). We do NOT
+    -- save_snapshot here — the sidecar already wrote the file we just read. A
+    -- torn/missing read returns nil and is retried next tick; the atomic
+    -- tmp→rename the sidecar uses means a reader sees either the old or the new
+    -- complete file, never a partial one. Skipped while in failover (the
+    -- failover chain owns the plane until the ws link recovers).
+    --
+    -- #2229 event-driven wake. Waiting for the ws_apply_int poll-of-disk gate
+    -- added up to that interval of latency before a pushed pause even started
+    -- applying (measured ~1-2s on the bench; worse on an idle device). The
+    -- sidecar now drops a tiny "<etag>\t<uptime>" TRIGGER (paths.ws_pending) the
+    -- moment it persists a push, and we read it EVERY tick (cheap — a few bytes,
+    -- no snapshot parse) so a push applies within one heartbeat (~1s) rather
+    -- than waiting for the gate. The gate is KEPT as a backstop so a missed/torn
+    -- trigger (write failed, tmpfs cleared) can never strand a pushed snapshot.
+    -- Both entrypoints run the SAME etag-deduped apply, so there is no
+    -- double-apply.
+    --
+    -- #2736: no longer gated on a ws-enabled flag, AND no longer skipped while
+    -- in failover. Both gates had to go, and the second one is the subtle half.
+    --
+    -- It used to read `not ts.in_failover_render` — "the failover chain owns the
+    -- plane until the poll recovers" — which was safe only because the POLL was
+    -- the thing that recovered: `in_failover_render` went true on a failed HTTP
+    -- fetch, and the very next successful fetch lifted it and applied. With the
+    -- poll gone, failover trips on a stale ws sentinel instead, and this tick is
+    -- the ONLY remaining way policy reaches enforcement — so the old gate made
+    -- failover suppress the sole apply path. Caught by Gate 2: a ws blip past
+    -- the staleness bound stalled a pushed snapshot for ~5 minutes (log:
+    -- "failover render: ws link down" 20:53:38 → "failover lifted" 20:54:03 →
+    -- apply 20:54:11), which is long enough to blow a scenario's timeout and, on
+    -- a real router, to leave an admin's edit unapplied for as long as the socket
+    -- flaps.
+    --
+    -- Applying a pushed snapshot is also PROOF the link is live — the sidecar
+    -- could not have received and persisted it otherwise — so a successful apply
+    -- clears the failover flag here rather than waiting for the next policy tick
+    -- to notice. That also removes a double-apply: without it, recovery rendered
+    -- the OLD cached snapshot to lift failover and then immediately rendered the
+    -- new one.
+    --
+    -- #2785: this block now runs FIRST in the tick, ahead of every step that
+    -- can touch the network. It used to sit after the policy timer, which
+    -- fetches the block-page token over HTTP — so on 2026-09-13 a pushed
+    -- snapshot queued behind an unbounded curl and landed 4m11s after the
+    -- sidecar persisted it. Ordering alone is not the whole fix (http_bounds
+    -- caps how long any one step can block), but it is the half that holds even
+    -- when a step does run long: the apply is already done by then.
+    local trig_etag, persist_up = ws_pending_read()
+    local due_trigger = wh_apply_pending(trig_etag, ts.current_etag)
+    local due_gate    = (mono - ts.last_ws_apply_run) >= ws_apply_int
+    if due_trigger or due_gate then
+      wh_timed_step("ws_apply", function()
+        ts.last_ws_apply_run = mono
+        local pushed = policy.load_snapshot(read_file, log)
+        if pushed and pushed.etag and pushed.etag ~= ts.current_etag then
+          -- Populate category/extraBlocked shards before the apply, exactly as
+          -- the boot path does, so the rendered conf-file= directives resolve.
+          refresh_blocklists(pushed)
+          ts.last_blocklist_run = mono
+          if apply_and_publish(pushed, "policy_change") then
+            ts.current_etag  = pushed.etag
+            ts.last_snapshot = pushed
+            policy.mark_poll_success(wall)
+            -- #2229 push→apply latency: persist→apply, from the trigger's
+            -- /proc/uptime stamp (same clock source read_uptime_seconds uses).
+            -- Only when the trigger drove this apply and carried a valid stamp.
+            if due_trigger and persist_up then
+              local now_up = read_uptime_seconds()
+              if now_up then
+                local lat = now_up - persist_up
+                if lat >= 0 then
+                  metrics.observe(mreg, "ws_push_apply_latency_seconds", {}, lat)
+                end
+              end
+            end
+            -- A push we received and applied proves the link is up, so lift any
+            -- failover render in the same breath. `apply_and_publish` renders
+            -- with no failover opts, so the chain is already gone from the
+            -- ruleset; this just stops the flag from re-rendering it.
+            if ts.in_failover_render then
+              ts.in_failover_render = false
+              log.info("failover lifted: a pushed snapshot applied, so the ws link is live")
+            end
+            log.info("ws apply: applied pushed snapshot etag=%s (poll-independent)",
+                     tostring(pushed.etag))
+          end
+        end
+      end)
+    end
+
+    -- #2785: re-ask AFTER the attempt. Still pending means the apply failed (a
+    -- torn read, an nft load error) and will be retried on the next tick, so
+    -- hold back this tick's discretionary network work and let the retry go
+    -- first. Bounded by tick_defer_max — a permanently failing apply must not
+    -- silence the metrics push, which is how a stalled router became invisible
+    -- in the first place.
+    local defer_network = wh_defer_network(
+      wh_apply_pending(trig_etag, ts.current_etag), mono)
+
     -- #2381 escape-hatch reconciler. Runs every tick (a cheap local UCI read via
     -- ts.enforcement_read — no fork, no network) so a live toggle of
     -- wifihaven.settings.enforcement_disabled takes effect within one heartbeat
@@ -1417,7 +1647,12 @@ conntrack.watch({
       -- jwt.secret rotation self-heals without a restart. Cheap on every other
       -- tick: one integer compare. Called through the global so on_tick does not
       -- gain an upvalue (#1930).
-      wh_refresh_block_page_token()
+      -- #2785: an HTTP GET, so it is deferrable and timed. Skipping it while a
+      -- pushed snapshot is still unapplied costs nothing (the token is
+      -- re-fetched on the next tick) and keeps the apply retry at the front.
+      if not defer_network then
+        wh_timed_step("block_page_token", wh_refresh_block_page_token)
+      end
       -- #331/#422/#2736: the failover edge. Pre-#2736 it keyed on whether this
       -- tick's HTTP snapshot poll succeeded; there is no poll to fail any more,
       -- so it keys on the ws link instead — the same fact ("are we in contact
@@ -1474,101 +1709,6 @@ conntrack.watch({
       end
     end
 
-    -- ws apply-on-push timer (#1945). When the ws sidecar is enabled it writes
-    -- server-pushed snapshots to /etc/wifihaven/policy.json (the IN channel,
-    -- #1849); the running agent must APPLY them live, not just at startup. The
-    -- HTTP poll above stays the sole transport when ws is OFF, so this block is a
-    -- pure no-op then. When ON, re-read the on-disk snapshot on a short cadence
-    -- and, if its etag differs from the applied one, run it through the SAME
-    -- apply pipeline the poll uses (refresh_blocklists → apply_and_publish).
-    --
-    -- The etag is the single dedup key shared by both appliers: a snapshot the
-    -- poll just applied carries the etag we already hold, so this skips it (and
-    -- vice-versa) — so even with the poll still running there is no double-apply,
-    -- and the agent remains the SINGLE enforcement owner (the sidecar only
-    -- delivers + persists the file; it never touches nft/dnsmasq). We do NOT
-    -- save_snapshot here — the sidecar already wrote the file we just read. A
-    -- torn/missing read returns nil and is retried next tick; the atomic
-    -- tmp→rename the sidecar uses means a reader sees either the old or the new
-    -- complete file, never a partial one. Skipped while in failover (the
-    -- failover chain owns the plane until the ws link recovers).
-    --
-    -- #2229 event-driven wake. Waiting for the ws_apply_int poll-of-disk gate
-    -- added up to that interval of latency before a pushed pause even started
-    -- applying (measured ~1-2s on the bench; worse on an idle device). The
-    -- sidecar now drops a tiny "<etag>\t<uptime>" TRIGGER (paths.ws_pending) the
-    -- moment it persists a push, and we read it EVERY tick (cheap — a few bytes,
-    -- no snapshot parse) so a push applies within one heartbeat (~1s) rather
-    -- than waiting for the gate. The gate is KEPT as a backstop so a missed/torn
-    -- trigger (write failed, tmpfs cleared) can never strand a pushed snapshot.
-    -- Both entrypoints run the SAME etag-deduped apply, so there is no
-    -- double-apply.
-    --
-    -- #2736: no longer gated on a ws-enabled flag, AND no longer skipped while
-    -- in failover. Both gates had to go, and the second one is the subtle half.
-    --
-    -- It used to read `not ts.in_failover_render` — "the failover chain owns the
-    -- plane until the poll recovers" — which was safe only because the POLL was
-    -- the thing that recovered: `in_failover_render` went true on a failed HTTP
-    -- fetch, and the very next successful fetch lifted it and applied. With the
-    -- poll gone, failover trips on a stale ws sentinel instead, and this tick is
-    -- the ONLY remaining way policy reaches enforcement — so the old gate made
-    -- failover suppress the sole apply path. Caught by Gate 2: a ws blip past
-    -- the staleness bound stalled a pushed snapshot for ~5 minutes (log:
-    -- "failover render: ws link down" 20:53:38 → "failover lifted" 20:54:03 →
-    -- apply 20:54:11), which is long enough to blow a scenario's timeout and, on
-    -- a real router, to leave an admin's edit unapplied for as long as the socket
-    -- flaps.
-    --
-    -- Applying a pushed snapshot is also PROOF the link is live — the sidecar
-    -- could not have received and persisted it otherwise — so a successful apply
-    -- clears the failover flag here rather than waiting for the next policy tick
-    -- to notice. That also removes a double-apply: without it, recovery rendered
-    -- the OLD cached snapshot to lift failover and then immediately rendered the
-    -- new one.
-    do
-      local trig_etag, persist_up = ws_pending_read()
-      local due_trigger = trig_etag ~= nil and trig_etag ~= ts.current_etag
-      local due_gate    = (mono - ts.last_ws_apply_run) >= ws_apply_int
-      if due_trigger or due_gate then
-        ts.last_ws_apply_run = mono
-        local pushed = policy.load_snapshot(read_file, log)
-        if pushed and pushed.etag and pushed.etag ~= ts.current_etag then
-          -- Populate category/extraBlocked shards before the apply, exactly as
-          -- the boot path does, so the rendered conf-file= directives resolve.
-          refresh_blocklists(pushed)
-          ts.last_blocklist_run = mono
-          if apply_and_publish(pushed, "policy_change") then
-            ts.current_etag  = pushed.etag
-            ts.last_snapshot = pushed
-            policy.mark_poll_success(wall)
-            -- #2229 push→apply latency: persist→apply, from the trigger's
-            -- /proc/uptime stamp (same clock source read_uptime_seconds uses).
-            -- Only when the trigger drove this apply and carried a valid stamp.
-            if due_trigger and persist_up then
-              local now_up = read_uptime_seconds()
-              if now_up then
-                local lat = now_up - persist_up
-                if lat >= 0 then
-                  metrics.observe(mreg, "ws_push_apply_latency_seconds", {}, lat)
-                end
-              end
-            end
-            -- A push we received and applied proves the link is up, so lift any
-            -- failover render in the same breath. `apply_and_publish` renders
-            -- with no failover opts, so the chain is already gone from the
-            -- ruleset; this just stops the flag from re-rendering it.
-            if ts.in_failover_render then
-              ts.in_failover_render = false
-              log.info("failover lifted: a pushed snapshot applied, so the ws link is live")
-            end
-            log.info("ws apply: applied pushed snapshot etag=%s (poll-independent)",
-                     tostring(pushed.etag))
-          end
-        end
-      end
-    end
-
     -- Blocklist refresh timer (#1412). Category ipset population must NOT be
     -- coupled to a snapshot change: the policy poll returns 304 in steady state,
     -- so the only way the old code (re)fetched a blocklist was an admin policy
@@ -1586,7 +1726,7 @@ conntrack.watch({
     -- map; post-#1782 we detect change via (id, version) pairs — a content change
     -- always implies a new version, so a stable pair set ↔ stable host set.
     -- Rendering shards is idempotent, so a no-op tick is cheap.
-    if ts.last_snapshot and not ts.in_failover_render
+    if ts.last_snapshot and not ts.in_failover_render and not defer_network
        and (mono - ts.last_blocklist_run) >= blocklist_int then
       ts.last_blocklist_run = mono
       -- Capture (id, version) pairs before refresh to detect changes.
@@ -1594,7 +1734,7 @@ conntrack.watch({
       for id, bl in pairs(ts.last_snapshot.blocklists or {}) do
         bls_before[id] = bl.version
       end
-      refresh_blocklists(ts.last_snapshot)
+      wh_timed_step("blocklist_refresh", refresh_blocklists, ts.last_snapshot)
       -- Re-apply only if the (id, version) set changed (new content version for
       -- any list, or a list added/removed). Stable pairs → stable shard content;
       -- no dnsmasq reload needed.
@@ -1629,13 +1769,13 @@ conntrack.watch({
     -- last-applied snapshot so a stable (304-only) household still gets
     -- refreshed. Skipped while we're in failover render: the failover chain
     -- closes the world for those profiles already.
-    if ts.last_snapshot and not ts.in_failover_render
+    if ts.last_snapshot and not ts.in_failover_render and not defer_network
        and (mono - ts.last_eb_refresh_run) >= eb_refresh_int then
       ts.last_eb_refresh_run = mono
       local inv = eb_refresh.collect_inventory(eb_hosts_by_mac, bl_hosts_by_mac)
       if #inv.eb_hosts > 0 or #inv.bl_pairs > 0 then
         local rt0 = clock.monotonic_seconds()
-        local stats = eb_refresh.refresh({
+        local stats = wh_timed_step("eb_refresh", eb_refresh.refresh, {
           eb_hosts  = inv.eb_hosts,
           bl_pairs  = inv.bl_pairs,
           nft_table = "inet wifihaven",
@@ -1792,7 +1932,7 @@ conntrack.watch({
         -- successful "post"
         -- to the retry queue (at-least-once; the sidecar owns delivery + the
         -- server dedups), so the queue/reset semantics below are unchanged.
-        local posted = usage.post_with_retry(
+        local posted = wh_timed_step("usage_report", usage.post_with_retry,
           api_url, router_token, report, usage_events_post, usage_queue, mono, nil, log)
         -- #1033: classify the immediate-post outcome so operators can see whether
         -- usage reports are flowing (`ok`) or stacking up in the retry queue
@@ -1823,7 +1963,7 @@ conntrack.watch({
     -- (default 60). Best-effort — on a failed POST the counters are RETAINED
     -- (metrics.post never resets the registry), so the next success carries the
     -- full total and the server re-bases off agentStartedAt. No retry queue.
-    if (mono - ts.last_metrics_run) >= metrics_int then
+    if (mono - ts.last_metrics_run) >= metrics_int and not defer_network then
       ts.last_metrics_run = mono
       -- Refresh instantaneous gauges just before the snapshot. uptime is
       -- derived from the monotonic clock so a wall-clock jump can't make it
@@ -1863,7 +2003,8 @@ conntrack.watch({
       fold_ws_metrics()   -- #1848
       sample_host_metrics() -- #1718
       local sampled_at = os.date("!%Y-%m-%dT%H:%M:%SZ", wall)
-      metrics.post(api_url, router_token, mreg, sampled_at, http_post, log)
+      wh_timed_step("metrics_push", metrics.post,
+                    api_url, router_token, mreg, sampled_at, http_post, log)
     end
 
     -- Drain any retry-queued buckets whose backoff has elapsed (monotonic now).

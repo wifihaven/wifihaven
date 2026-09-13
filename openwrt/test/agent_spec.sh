@@ -68,7 +68,7 @@ else
   check "metrics registry created at agent startup (#1206)" "module required but metrics.new() never called"
 fi
 
-if grep -q 'metrics\.post(' "$SCRIPT"; then
+if grep -q 'metrics\.post\b' "$SCRIPT"; then
   check "metrics push wired into the agent loop (#1206)" ok
 else
   check "metrics push wired into the agent loop (#1206)" "registry built but metrics.post() never called — push won't happen"
@@ -117,7 +117,11 @@ OLDIFS="$IFS"; IFS="
 "
 for l in $CURL_LINES; do
   [ -n "$l" ] || continue
-  case "$l" in
+  n=${l%%:*}
+  # The flags are spliced through a %s whose argument sits on the continuation
+  # line, so look at the builder plus the two lines that follow it.
+  win=$(sed -n "${n},$((n + 2))p" "$SCRIPT")
+  case "$win" in
     *CURL_TIMEOUTS*|*--connect-timeout*) ;;
     *) UNBOUNDED="$UNBOUNDED
 $l" ;;
@@ -172,8 +176,8 @@ fi
 #     so a pushed policy change queued behind a hung curl. Compare line numbers
 #     of the two markers inside the agent's single on_tick closure.
 WS_APPLY_LINE=$(grep -n 'ws apply: applied pushed snapshot' "$SCRIPT" | head -1 | cut -d: -f1)
-TOKEN_LINE=$(grep -n 'wh_refresh_block_page_token()' "$SCRIPT" | tail -1 | cut -d: -f1)
-METRICS_LINE=$(grep -n 'metrics\.post(' "$SCRIPT" | tail -1 | cut -d: -f1)
+TOKEN_LINE=$(grep -n '"block_page_token"' "$SCRIPT" | tail -1 | cut -d: -f1)
+METRICS_LINE=$(grep -n '"metrics_push"' "$SCRIPT" | tail -1 | cut -d: -f1)
 if [ -n "$WS_APPLY_LINE" ] && [ -n "$TOKEN_LINE" ] && [ -n "$METRICS_LINE" ]; then
   check "found the ws-apply / token-fetch / metrics-push markers (liveness anchor)" ok
   if [ "$WS_APPLY_LINE" -lt "$TOKEN_LINE" ] && [ "$WS_APPLY_LINE" -lt "$METRICS_LINE" ]; then
