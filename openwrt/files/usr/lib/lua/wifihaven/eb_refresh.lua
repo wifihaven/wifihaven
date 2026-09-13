@@ -166,23 +166,27 @@ end
 --   MAX_SECONDS — the real bound. The blocklist rotation is cold by
 --     construction (each cycle walks hosts the last one did not), so 500 hosts
 --     would be ~55s, and a wedged resolver ~83 minutes. 5s holds regardless of
---     cache state or resolver health; worst case is 5s plus the one in-flight
---     query, so ~10s. At the measured cold rate that is ~45 hosts a cycle.
+--     cache state or resolver health. It is applied TWICE — once to the
+--     extraBlocked pass, once to the blocklist pass — so the whole-cycle bound
+--     is 2 x 5s plus the one in-flight query, ~15s. At the measured cold rate
+--     the blocklist window is ~45 hosts a cycle.
 --   MAX_HOSTS — a second cap for the warm case, where 5s would otherwise buy
 --     ~500 hosts. Also what bounds a pathologically long authored list.
 --
--- extraBlocked runs FIRST and before the deadline is consulted: those hosts are
--- operator-authored and are the class #2782 was about, so a slow blocklist
--- rotation must not crowd them out. They are still subject to MAX_HOSTS, and a
--- skip there is reported on its own counter — an authored host going
+-- extraBlocked runs FIRST, under its OWN MAX_SECONDS window rather than sharing
+-- the blocklist one: those hosts are operator-authored and are the class #2782
+-- was about, so a slow rotation must not crowd them out. A separate window is
+-- what gives them priority WITHOUT leaving them unbounded — exempting them
+-- entirely would allow MAX_HOSTS x 5s, the ~83 minutes this cap exists to
+-- prevent. A skip there is reported on its own counter: an authored host going
 -- unrefreshed is an incident; a rotating backlog is routine.
 --
 -- Measured end-to-end on the prod router, three consecutive cycles over the real
 -- inventory (11 extraBlocked hosts, 161,523 blocklist members):
 --
---   cycle1  6.31s  hosts=91  adds=285  skipped_eb=0  cursor 1 → 81
---   cycle2  5.23s  hosts=60  adds=204  skipped_eb=0  cursor 81 → 130
---   cycle3  5.09s  hosts=55  adds=196  skipped_eb=0  cursor 130 → 174
+--   cycle1  6.48s  hosts=57  adds=215  skipped_eb=0  cursor 1 → 47
+--   cycle2  5.30s  hosts=59  adds=185  skipped_eb=0  cursor 47 → 95
+--   cycle3  5.25s  hosts=60  adds=187  skipped_eb=0  cursor 95 → 144
 --
 -- So: bounded at the deadline plus the one in-flight query, every authored host
 -- refreshed every cycle, and the backlog rotating. MAX_HOSTS never binds at this
@@ -281,9 +285,19 @@ function M.refresh(opts)
     end
   end
 
-  -- extraBlocked: host cap only, no deadline. See the header.
+  -- extraBlocked: its OWN deadline, not an exemption from the blocklist one.
+  -- Priority is the point — a slow rotation must not crowd out an authored host
+  -- — but "no deadline" is not bounded: 500 hosts at the measured 5s worst-case
+  -- per query is ~83 minutes, which is what the deadline exists to prevent. A
+  -- separate window gives it both. See the header.
+  local eb_started = now_fn()
+  local eb_over    = false
   for _, host in ipairs(opts.eb_hosts or {}) do
-    if stats.hosts >= budget then
+    if not eb_over and (now_fn() - eb_started) >= max_seconds then
+      eb_over            = true
+      stats.deadline_hit = true
+    end
+    if eb_over or stats.hosts >= budget then
       stats.skipped_extrablocked = stats.skipped_extrablocked + 1
     else
       refresh_one(host, render.eb_set_name(host), render.eb6_set_name(host))

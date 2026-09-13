@@ -512,25 +512,31 @@ describe("refresh deadline", function()
     assert.is_false(stats.deadline_hit)
   end)
 
-  -- extraBlocked is the #2782 class. It must not be the thing a slow blocklist
-  -- rotation crowds out, so it runs before the deadline is consulted at all.
-  it("always completes extraBlocked hosts even past the deadline", function()
+  -- extraBlocked is the #2782 class. A slow blocklist rotation must not be what
+  -- crowds it out, so it runs FIRST and inside its own deadline window — see
+  -- "refresh extraBlocked deadline" below for why a window and not an
+  -- exemption. Here: a rotation big enough to blow the deadline many times over
+  -- still leaves every authored host refreshed.
+  it("refreshes every extraBlocked host despite a rotation that blows the deadline", function()
     local cmds, exec = exec_recorder()
     local stats = eb_refresh.refresh({
       eb_hosts    = { "www.amazon.com", "youtube.com", "prodigygame.com" },
       bl_pairs    = pairs_for(100),
       max_hosts   = 200,
-      max_seconds = 1,
-      now_fn      = ticking_clock(10), -- every host blows the deadline
+      max_seconds = 5,
+      now_fn      = ticking_clock(1),
       nft_table   = "inet wifihaven",
       resolver    = always_resolves(),
       exec_fn     = exec,
     })
-    assert.equal(3, stats.hosts)
     assert.is_true(added(cmds, "eb_www_amazon_com", "1.2.3.4"))
     assert.is_true(added(cmds, "eb_youtube_com", "1.2.3.4"))
     assert.is_true(added(cmds, "eb_prodigygame_com", "1.2.3.4"))
     assert.equal(0, stats.skipped_extrablocked)
+    -- LIVENESS ANCHOR: the rotation really did run and really did get cut off,
+    -- so "authored hosts all refreshed" is not just an empty cycle.
+    assert.is_true(stats.deadline_hit)
+    assert.is_true(stats.skipped > 0)
   end)
 
   -- ...but extraBlocked is not unbounded either: a pathological authored list
@@ -689,9 +695,10 @@ describe("refresh extraBlocked deadline (#2782 review, self-caught)", function()
       bl_pairs    = { { host = "ads.example", id = "ads" } },
       max_hosts   = 500,
       max_seconds = 5,
-      -- 4 simulated seconds per host: both authored hosts fit in their own
-      -- 5s window, and the blocklist pass then gets its own fresh one.
-      now_fn      = ticking_clock(4),
+      -- 2 simulated seconds per clock read: both authored hosts fit inside
+      -- their own 5s window, and the blocklist pass then opens a fresh one —
+      -- which it would not if the two shared a single elapsed measurement.
+      now_fn      = ticking_clock(2),
       nft_table   = "inet wifihaven",
       resolver    = always_resolves(),
       exec_fn     = exec,

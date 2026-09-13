@@ -63,7 +63,7 @@ time**, so there is a built-in warm-up.
    so there is no per-query bound to set. `eb_refresh_max_seconds` (default
    **5 s**) is therefore the real cap, and `eb_refresh_max_hosts` (default
    **500**) bounds the warm case where 5 s would otherwise buy ~500 hosts.
-   `extraBlocked` hosts run first and are exempt from the deadline; blocklist
+   `extraBlocked` hosts run first, inside their own copy of that window rather than exempt from it (an exemption would allow 500 hosts x 5 s); blocklist
    members take what is left, round-robin. Full blocklist coverage at that
    cadence is not claimed; see
    [#2783](https://github.com/wifihaven/wifihaven/issues/2783).
