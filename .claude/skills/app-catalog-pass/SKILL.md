@@ -201,14 +201,14 @@ above is now wrong, fix the step too — don't just log around it.
   that MAC. **Do not flatten the modes together**: a `TimeLimited` under-cap
   carve is gated on `!state.blocked` (#1980), so it beats the category and
   per-host drops but stays subordinate to pause / schedule / daily-limit; and a
-  Hard pause zeroes every per-profile carve (#1418). The first draft of this
-  entry said TimeLimited "does the same" and the review caught it. For GitHub Pages that
+  Hard pause zeroes every per-profile carve (#1418). For GitHub Pages that
   means `*.github.io`, which is a common home for web proxies and
   unblocked-games mirrors. The #2369 / #2601 shape in mirror image, on a
   platform no Google-oriented ban list catches. **When you write a collateral
   paragraph, write both directions — Blocked over-drops, Allowed over-permits —
-  and say which narrowing fixes both.** This one was caught by the independent
-  review, not by the author.
+  and say which narrowing fixes both.** Two drafts of this entry got it wrong
+  and the independent review caught both: the first omitted the allow direction
+  entirely, the second said TimeLimited "does the same" as Allowed.
 
 - **2026-09-13 (#2778)** — **GitHub Pages is a demonstrated-sharing origin, and
   it is the static-hosting analogue of `shops.myshopify.com`.** Every Pages site
