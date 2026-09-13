@@ -425,3 +425,191 @@ describe("refresh budget", function()
     assert.equal(25, stats.skipped)
   end)
 end)
+
+-- ---------------------------------------------------------------------------
+-- Per-cycle wall-clock deadline (#2782 review)
+-- ---------------------------------------------------------------------------
+--
+-- The host budget bounds WORK, not TIME, and the two come apart badly. Measured
+-- on the prod router (BusyBox nslookup, Lua 5.1, 100 hosts = 200 lookups):
+--
+--   warm (dnsmasq cache hit)          1s   → 0.01s/host
+--   cold (first resolve)             11s   → 0.11s/host
+--   unresponsive server               5s   per QUERY (BusyBox's own bound;
+--                                           there are no -timeout/-retry flags
+--                                           and no `timeout` binary on OpenWRT)
+--
+-- The blocklist rotation is cold BY CONSTRUCTION — every cycle walks hosts the
+-- last one did not — so 500 hosts is ~55s, and a wedged dnsmasq is ~83 minutes.
+-- `eb_refresh.refresh` runs inline on the agent's single main timer loop, so
+-- that is main-loop occupancy, not background work. A wall-clock deadline is
+-- the bound that holds regardless of cache state or resolver health; the host
+-- budget stays as a second cap for the warm case.
+
+describe("refresh deadline", function()
+  -- A fake monotonic clock that advances by `per_call` on every reading, so a
+  -- "slow resolver" is expressible without a real wall-clock wait (#2042).
+  local function ticking_clock(per_call)
+    local t = 0
+    return function()
+      local now = t
+      t = t + per_call
+      return now
+    end
+  end
+
+  local function pairs_for(n)
+    local out = {}
+    for i = 1, n do out[i] = { host = "h" .. i .. ".example", id = "ads" } end
+    return out
+  end
+
+  local function always_resolves()
+    return function() return { v4 = { "1.2.3.4" }, v6 = {} } end
+  end
+
+  it("stops the cycle once max_seconds has elapsed", function()
+    local _, exec = exec_recorder()
+    local stats = eb_refresh.refresh({
+      eb_hosts    = {},
+      bl_pairs    = pairs_for(100),
+      max_hosts   = 100,
+      max_seconds = 5,
+      -- 1 simulated second per host: the deadline, not the budget, must bite.
+      now_fn      = ticking_clock(1),
+      nft_table   = "inet wifihaven",
+      resolver    = always_resolves(),
+      exec_fn     = exec,
+    })
+    assert.is_true(stats.hosts < 100)
+    assert.is_true(stats.hosts > 0)
+    assert.is_true(stats.deadline_hit)
+    assert.equal(100 - stats.hosts, stats.skipped)
+  end)
+
+  -- LIVENESS ANCHOR: the same rig with a clock that never advances completes
+  -- the whole cycle, so "stats.hosts < 100" above means the deadline bit rather
+  -- than the rig resolving nothing.
+  it("does the whole cycle when the deadline is not reached", function()
+    local _, exec = exec_recorder()
+    local stats = eb_refresh.refresh({
+      eb_hosts    = {},
+      bl_pairs    = pairs_for(100),
+      max_hosts   = 100,
+      max_seconds = 5,
+      now_fn      = ticking_clock(0),
+      nft_table   = "inet wifihaven",
+      resolver    = always_resolves(),
+      exec_fn     = exec,
+    })
+    assert.equal(100, stats.hosts)
+    assert.equal(0, stats.skipped)
+    assert.is_false(stats.deadline_hit)
+  end)
+
+  -- extraBlocked is the #2782 class. It must not be the thing a slow blocklist
+  -- rotation crowds out, so it runs before the deadline is consulted at all.
+  it("always completes extraBlocked hosts even past the deadline", function()
+    local cmds, exec = exec_recorder()
+    local stats = eb_refresh.refresh({
+      eb_hosts    = { "www.amazon.com", "youtube.com", "prodigygame.com" },
+      bl_pairs    = pairs_for(100),
+      max_hosts   = 200,
+      max_seconds = 1,
+      now_fn      = ticking_clock(10), -- every host blows the deadline
+      nft_table   = "inet wifihaven",
+      resolver    = always_resolves(),
+      exec_fn     = exec,
+    })
+    assert.equal(3, stats.hosts)
+    assert.is_true(added(cmds, "eb_www_amazon_com", "1.2.3.4"))
+    assert.is_true(added(cmds, "eb_youtube_com", "1.2.3.4"))
+    assert.is_true(added(cmds, "eb_prodigygame_com", "1.2.3.4"))
+    assert.equal(0, stats.skipped_extrablocked)
+  end)
+
+  -- ...but extraBlocked is not unbounded either: a pathological authored list
+  -- still gets capped, and when it does the skip is reported on its OWN counter
+  -- rather than blending into the blocklist backlog, because an authored host
+  -- going unrefreshed is an incident and a rotating backlog is routine.
+  it("reports a capped extraBlocked host on its own counter, not as budget skip", function()
+    local _, exec = exec_recorder()
+    local stats = eb_refresh.refresh({
+      eb_hosts    = { "a.example", "b.example", "c.example" },
+      bl_pairs    = {},
+      max_hosts   = 2,
+      max_seconds = 60,
+      now_fn      = ticking_clock(0),
+      nft_table   = "inet wifihaven",
+      resolver    = always_resolves(),
+      exec_fn     = exec,
+    })
+    assert.equal(2, stats.hosts)
+    assert.equal(1, stats.skipped_extrablocked)
+    assert.equal(0, stats.skipped)
+  end)
+
+  it("treats a non-positive max_hosts as the default, never as 'disabled'", function()
+    local _, exec = exec_recorder()
+    for _, bad in ipairs({ 0, -1, "nonsense" }) do
+      local stats = eb_refresh.refresh({
+        eb_hosts    = {},
+        bl_pairs    = pairs_for(3),
+        max_hosts   = bad,
+        max_seconds = 60,
+        now_fn      = ticking_clock(0),
+        nft_table   = "inet wifihaven",
+        resolver    = always_resolves(),
+        exec_fn     = exec,
+      })
+      assert.equal(3, stats.hosts)
+      assert.equal(0, stats.skipped)
+    end
+  end)
+
+  it("treats a non-positive max_seconds as the default, never as 'disabled'", function()
+    local _, exec = exec_recorder()
+    local stats = eb_refresh.refresh({
+      eb_hosts    = {},
+      bl_pairs    = pairs_for(3),
+      max_hosts   = 100,
+      max_seconds = 0,
+      now_fn      = ticking_clock(0),
+      nft_table   = "inet wifihaven",
+      resolver    = always_resolves(),
+      exec_fn     = exec,
+    })
+    assert.equal(3, stats.hosts)
+    assert.equal(0, stats.skipped)
+  end)
+end)
+
+describe("refresh empty-answer accounting (#2782 review)", function()
+  -- Separating "could not run" from "no records" is the core of #2782. The
+  -- remaining gap: a resolver that RUNS but whose output the parser does not
+  -- understand also yields zero records, which is the same silent no-op in a
+  -- new costume. An extraBlocked host resolving to nothing in BOTH families is
+  -- therefore its own outcome, not an `ok`.
+  it("counts an extraBlocked host with no addresses as empty, not ok", function()
+    local _, exec = exec_recorder()
+    local stats = eb_refresh.refresh({
+      eb_hosts    = { "gone.example", "live.example" },
+      bl_pairs    = {},
+      max_hosts   = 10,
+      max_seconds = 60,
+      now_fn      = function() return 0 end,
+      nft_table   = "inet wifihaven",
+      resolver    = function(h)
+        if h == "gone.example" then return { v4 = {}, v6 = {} } end
+        return { v4 = { "1.2.3.4" }, v6 = {} }
+      end,
+      exec_fn     = exec,
+    })
+    -- LIVENESS ANCHOR: the host that DOES resolve still counts ok and adds,
+    -- so `empty == 1` is a real classification rather than a dead resolver.
+    assert.equal(1, stats.resolves_ok)
+    assert.equal(1, stats.adds)
+    assert.equal(1, stats.resolves_empty)
+    assert.equal(0, stats.resolves_err)
+  end)
+end)
