@@ -63,9 +63,12 @@ time**, so there is a built-in warm-up.
    so there is no per-query bound to set. `eb_refresh_max_seconds` (default
    **5 s**) is therefore the real cap, and `eb_refresh_max_hosts` (default
    **500**) bounds the warm case where 5 s would otherwise buy ~500 hosts.
-   `extraBlocked` hosts run first, inside their own copy of that window rather than exempt from it (an exemption would allow 500 hosts x 5 s); blocklist
-   members take what is left, round-robin. Full blocklist coverage at that
-   cadence is not claimed; see
+   `extraBlocked` hosts run first, inside their own copy of that window rather
+   than exempt from it — an exemption would allow 500 hosts x 5 s. Each window
+   is tested between hosts and a host is two queries, so the pathological
+   whole-cycle ceiling is 2 x (5 s + 10 s) = **~30 s**; observed cycles on the
+   prod router run 5-6.5 s. Blocklist members take what is left, round-robin.
+   Full blocklist coverage at that cadence is not claimed; see
    [#2783](https://github.com/wifihaven/wifihaven/issues/2783).
 
 4. **Category blocklists warm up over time.** Curated-category lists (ads,

@@ -167,9 +167,15 @@ end
 --     construction (each cycle walks hosts the last one did not), so 500 hosts
 --     would be ~55s, and a wedged resolver ~83 minutes. 5s holds regardless of
 --     cache state or resolver health. It is applied TWICE — once to the
---     extraBlocked pass, once to the blocklist pass — so the whole-cycle bound
---     is 2 x 5s plus the one in-flight query, ~15s. At the measured cold rate
---     the blocklist window is ~45 hosts a cycle.
+--     extraBlocked pass, once to the blocklist pass.
+--
+--     Whole-cycle bound, derived: each phase tests the deadline BETWEEN hosts,
+--     and a host is two queries (A + AAAA) at 5s worst case, so the in-flight
+--     unit a phase can overrun by is a HOST (~10s), not a query. That is
+--     2 x (MAX_SECONDS + 10s) = ~30s at the defaults. Observed cycles on prod
+--     run 5-6.5s (below), so the 30s is the pathological ceiling, not the
+--     expectation. At the measured cold rate the blocklist window is ~45 hosts
+--     a cycle.
 --   MAX_HOSTS — a second cap for the warm case, where 5s would otherwise buy
 --     ~500 hosts. Also what bounds a pathologically long authored list.
 --
@@ -246,7 +252,10 @@ end
 --   skipped             blocklist hosts the caps left for a later cycle
 --   skipped_extrablocked  AUTHORED hosts the host cap dropped. Separate from
 --                       `skipped` on purpose: this one is an incident.
---   deadline_hit        true when max_seconds ended the cycle
+--   deadline_hit        true when a max_seconds window ended a pass. Set by
+--                       EITHER phase, so on its own it does not say which one;
+--                       `skipped_extrablocked > 0` means it was the authored
+--                       pass, and the agent's debug line carries both.
 --   bl_cursor           where the next cycle resumes
 function M.refresh(opts)
   local stats = {

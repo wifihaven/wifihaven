@@ -1644,15 +1644,15 @@ conntrack.watch({
       if #inv.eb_hosts > 0 or #inv.bl_pairs > 0 then
         local rt0 = clock.monotonic_seconds()
         local stats = eb_refresh.refresh({
-          eb_hosts  = inv.eb_hosts,
-          bl_pairs  = inv.bl_pairs,
+          eb_hosts    = inv.eb_hosts,
+          bl_pairs    = inv.bl_pairs,
           max_hosts   = eb_refresh_max,
           max_seconds = eb_refresh_secs,
           bl_cursor   = ts.eb_refresh_bl_cursor,
-          nft_table = "inet wifihaven",
-          resolver  = eb_refresh.default_resolver,
-          exec_fn   = os.execute,
-          log       = log,
+          nft_table   = "inet wifihaven",
+          resolver    = eb_refresh.default_resolver,
+          exec_fn     = os.execute,
+          log         = log,
         })
         ts.eb_refresh_bl_cursor = stats.bl_cursor
         local elapsed = clock.monotonic_seconds() - rt0
