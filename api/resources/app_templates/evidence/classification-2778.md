@@ -84,16 +84,30 @@ DNS-steered and move between lookups.
 ## The allow direction — the half that punches a hole rather than over-dropping
 
 The block reasoning above is only half the picture. `extraAllowed` beats every
-block path at the router (#421), and `ProfileAppDispositions.scala:153-154`
-carves an `AppMode.Allowed` app's hosts into it unconditionally (modulo the
-#1679 schedule toggle); a `TimeLimited` app gets the same carve while under cap.
+drop it reaches at the router (#421), and the `AppMode.Allowed` branch of
+`ProfileAppDispositions.enforcement` carves such an app's hosts into it.
 
 So assigning this app in **Allowed** mode puts the resolved GitHub Pages pool
-into that MAC's `ea_` set, which carves **every** GitHub Pages site out of
-**every** block on that device — curated blocklist categories included. Since
-`*.github.io` is a common home for web proxies and unblocked-games mirrors,
-that is a real hole, and it is the #2369 / #2601 shape in mirror image: a shared
-pool reaching the allow side, on a platform no Google-oriented ban list catches.
+into that MAC's `ea_` set, which carves **every** GitHub Pages site out of the
+curated blocklist categories, the per-host drops, and the paused / schedule /
+daily-limit whole-MAC blocks on that device. Since `*.github.io` is a common
+home for web proxies and unblocked-games mirrors, that is a real hole, and it is
+the #2369 / #2601 shape in mirror image: a shared pool reaching the allow side,
+on a platform no Google-oriented ban list catches.
+
+Two gates narrow it without closing it. A **Hard pause** zeroes every
+per-profile carve (`PolicyService.computeBlockRules`, the `isHardPause` branch,
+#1418), and **#1679** suppresses the carve under a Schedule block when the
+assignment sets `allowedDuringScheduleBlock = false`.
+
+A **TimeLimited** assignment is a narrower carve, not the same one — worth
+stating precisely, because the obvious reading is wrong. `timeLimitedUnderCap`
+is guarded by `!state.blocked` (#1980), and the scaladoc on
+`timeLimitedUnderCapHosts` draws the line: unlike the exempt carve it "beats the
+per-host blocklist drop but stays subordinate to paused / schedule /
+profile-daily-limit blocks." So a TimeLimited assignment under cap carves
+`*.github.io` out of the category lists and per-host drops, but not out of a
+whole-MAC block. Narrower than Allowed mode; still a hole against the categories.
 
 Blocked mode over-drops; Allowed mode over-permits. Both follow from the same
 shared pool, and the `backend.emojikitchen.dev`-only narrowing fixes both.

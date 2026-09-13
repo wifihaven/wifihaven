@@ -194,11 +194,15 @@ above is now wrong, fix the step too — don't just log around it.
 - **2026-09-13 (#2778)** — **A shared-pool host-set has TWO collateral
   directions, and every pass so far has only reasoned about one.** The
   `eb_`/over-drop argument is the reflex. The other one is worse: `extraAllowed`
-  beats every block path (#421) and `ProfileAppDispositions.scala:153-154`
-  carves an `AppMode.Allowed` app's hosts into it unconditionally (modulo the
-  #1679 schedule toggle), a `TimeLimited` one while under cap — so allowing an
-  app whose host sits on a shared pool carves EVERY tenant of that pool out of
-  EVERY block on that MAC, blocklist categories included. For GitHub Pages that
+  beats every drop it reaches (#421) and the `AppMode.Allowed` branch of
+  `ProfileAppDispositions.enforcement` carves such an app's hosts into it — so
+  allowing an app whose host sits on a shared pool carves EVERY tenant of that
+  pool out of the category lists, the per-host drops AND the whole-MAC blocks on
+  that MAC. **Do not flatten the modes together**: a `TimeLimited` under-cap
+  carve is gated on `!state.blocked` (#1980), so it beats the category and
+  per-host drops but stays subordinate to pause / schedule / daily-limit; and a
+  Hard pause zeroes every per-profile carve (#1418). The first draft of this
+  entry said TimeLimited "does the same" and the review caught it. For GitHub Pages that
   means `*.github.io`, which is a common home for web proxies and
   unblocked-games mirrors. The #2369 / #2601 shape in mirror image, on a
   platform no Google-oriented ban list catches. **When you write a collateral
