@@ -191,6 +191,21 @@ above is now wrong, fix the step too — don't just log around it.
 
 ## Learnings log (newest first)
 
+- **2026-09-13 (#2778)** — **A shared-pool host-set has TWO collateral
+  directions, and every pass so far has only reasoned about one.** The
+  `eb_`/over-drop argument is the reflex. The other one is worse: `extraAllowed`
+  beats every block path (#421) and `ProfileAppDispositions.scala:153-154`
+  carves an `AppMode.Allowed` app's hosts into it unconditionally (modulo the
+  #1679 schedule toggle), a `TimeLimited` one while under cap — so allowing an
+  app whose host sits on a shared pool carves EVERY tenant of that pool out of
+  EVERY block on that MAC, blocklist categories included. For GitHub Pages that
+  means `*.github.io`, which is a common home for web proxies and
+  unblocked-games mirrors. The #2369 / #2601 shape in mirror image, on a
+  platform no Google-oriented ban list catches. **When you write a collateral
+  paragraph, write both directions — Blocked over-drops, Allowed over-permits —
+  and say which narrowing fixes both.** This one was caught by the independent
+  review, not by the author.
+
 - **2026-09-13 (#2778)** — **GitHub Pages is a demonstrated-sharing origin, and
   it is the static-hosting analogue of `shops.myshopify.com`.** Every Pages site
   — custom domain or `*.github.io` — answers on the SAME fixed global four
@@ -205,9 +220,10 @@ above is now wrong, fix the step too — don't just log around it.
   `*.pages.dev`, `*.vercel.app`, `*.surge.sh`.
 - **2026-09-13 (#2778)** — **AWS API Gateway collateral is REGIONAL, so check
   the region before calling it shared.** `backend.emojikitchen.dev` CNAMEs to
-  `d-….execute-api.us-west-2.amazonaws.com` (`52.35.189.200`,
-  `32.184.233.146`); the kid devices' three other `execute-api` endpoints are
-  all us-east-1 and answer on a disjoint `18.238.176.x` pool. A blanket
+  `d-….execute-api.us-west-2.amazonaws.com`; the kid devices' three other
+  `execute-api` endpoints are all us-east-1, a different regional edge with a
+  different address pool. Record the REGION, not the addresses — the ones
+  observed here rotated within a day. A blanket
   "API Gateway is a shared vendor pool, skip" would have been wrong here — the
   regions don't overlap, so it stays README Class 2 (latent), not Class 1.
 - **2026-09-13 (#2778)** — **"Demonstrated collateral" is not automatically

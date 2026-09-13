@@ -60,18 +60,37 @@ icon_type: url
 #
 #   * BACK-END — latent only (README Class 2). `backend.emojikitchen.dev`
 #     CNAMEs to `d-0bmbouithe.execute-api.us-west-2.amazonaws.com`, an AWS API
-#     Gateway custom-domain endpoint on the us-west-2 regional pool. The kid
-#     devices' other API Gateway traffic is all us-east-1 (`pgi7j6i5ab.`,
-#     `eydtptig4h.`, `mbdvgoj27h.`), which answers on a disjoint 18.238.176.x
-#     pool — so no same-address collision is demonstrated here.
+#     Gateway custom-domain endpoint. The kid devices' other API Gateway traffic
+#     is all us-east-1 (`pgi7j6i5ab.`, `eydtptig4h.`, `mbdvgoj27h.`). API
+#     Gateway's regional edges are separate address pools per region, so a
+#     us-west-2 endpoint and a us-east-1 one do not collide. That argument is
+#     about the REGIONS, deliberately not about specific addresses: the
+#     addresses behind both rotated within a day of this file being written.
 #
-# An operator who wants the mashups stopped with ZERO demonstrated collateral
-# can narrow the host list on the seeded app to `backend.emojikitchen.dev`
-# alone: the page still loads, but no mashup image renders, and the GitHub
-# Pages pool never enters the drop set. The cost is attribution — the 28 of 35
-# proportional minutes that belong to the page host stop being credited to this
-# app. The default below takes the full apex for complete coverage; operator
-# host edits win over the seeder, and "reset to template" restores this list.
+# The ALLOW direction is the half that is easy to miss, and it is the more
+# dangerous one. `extraAllowed` beats every block path at the router (#421), and
+# an `AppMode.Allowed` assignment carves this app's hosts straight into it
+# (`ProfileAppDispositions.scala:153-154`); a TimeLimited assignment does the
+# same while under cap. So assigning this app in Allowed mode puts the resolved
+# GitHub Pages pool into that MAC's `ea_` set — which carves EVERY GitHub Pages
+# site out of EVERY block on that device, blocklist categories included. Since
+# `*.github.io` is a common home for web proxies and unblocked-games mirrors,
+# that is a real hole, and it is the #2369 / #2601 shape in mirror image on a
+# pool no Google ban list can catch. Blocked mode over-drops; Allowed mode
+# over-permits. Both come from the same shared pool.
+#
+# An operator who wants ZERO demonstrated collateral IN EITHER DIRECTION can
+# narrow the host list on the seeded app to `backend.emojikitchen.dev` alone:
+# the mashups stop (or, in Allowed mode, only the mashup API is carved), the
+# page still loads, and the GitHub Pages pool never enters `eb_` or `ea_`. The
+# cost is attribution — the 28 of 35 proportional minutes that belong to the
+# page host stop being credited to this app. The default below takes the full
+# apex for complete coverage; operator host edits win over the seeder, and
+# "reset to template" restores this list.
+#
+# None of that is visible in the SPA today — it renders name, icon and hosts,
+# not these comments. #2780 tracks surfacing a template caveat where the
+# operator actually assigns the app.
 #
 # Every host argument above is a CNAME/answer argument, checkable with one
 # `dig`. None of it rests on which IP addresses a host shares with some other

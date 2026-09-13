@@ -19,10 +19,15 @@ Quintus iPad.
 
 ## Observed Emoji Kitchen traffic
 
-| host | bytes / 30d | hits | prop-min / 14d | device |
-| --- | ---: | ---: | ---: | --- |
-| `emojikitchen.dev` | 10,263,281 | 55 | 28 | Kid Laptop |
-| `backend.emojikitchen.dev` | (in apex total) | | 7 | Kid Laptop |
+| host | prop-min / 14d | device |
+| --- | ---: | --- |
+| `emojikitchen.dev` | 28 | Kid Laptop |
+| `backend.emojikitchen.dev` | 7 | Kid Laptop |
+
+`recent-apexes` reports bytes per APEX, not per subdomain, so the 30-day figure
+— **10,263,281 B (10.26 MB) / 55 hits** — covers the apex and `backend.`
+together and cannot be split between them. The 14-day proportional minutes come
+from `orphanHosts`, which is per-host, hence the split above.
 
 Both were `orphanHosts` rows — real engagement credited to no app. That is the
 gap this template closes. No Emoji Kitchen traffic on any of the three iPads.
@@ -47,10 +52,17 @@ bar excludes `googleapis.com`, `googleusercontent.com`, `ggpht.com`,
 It is what the kid actually uses, and blocking it genuinely stops the site. It
 is not collateral-free, though, and the two halves differ:
 
-| half | CNAME target | addresses | collision |
-| --- | --- | --- | --- |
-| `emojikitchen.dev`, `www.` | `xsalazar.github.io` | `185.199.108-111.153` | **demonstrated** |
-| `backend.emojikitchen.dev` | `d-0bmbouithe.execute-api.us-west-2.amazonaws.com` | `52.35.189.200`, `32.184.233.146` | none in sample |
+| half | how it resolves | collision |
+| --- | --- | --- |
+| `emojikitchen.dev` | A records direct to `185.199.108-111.153` (GitHub Pages) | **demonstrated** |
+| `www.emojikitchen.dev` | CNAME `xsalazar.github.io` → the same four addresses | **demonstrated** |
+| `backend.emojikitchen.dev` | CNAME `d-0bmbouithe.execute-api.us-west-2.amazonaws.com` (AWS API Gateway, us-west-2) | none in sample |
+
+Only `www.` carries a CNAME; the apex answers with A records directly. The
+back-end row deliberately records no addresses — the ones observed while
+writing this rotated within a day. What the row rests on is the REGION: API
+Gateway's regional edges are separate address pools, and the kid devices' other
+API Gateway endpoints are all us-east-1.
 
 *Front-end.* GitHub Pages answers on one fixed global four-address pool. Every
 Pages site checked returns the identical set — `xsalazar.github.io`,
@@ -60,14 +72,31 @@ hits `cics110.github.io` (a course site, 132 KB / 1 hit / 30d) on those same
 four addresses. Blocking this app on that device drops GitHub Pages generally.
 Small in bytes; the #1636 shape exactly.
 
-*Back-end.* AWS API Gateway custom domain on the us-west-2 regional pool. The
-kid devices' other API Gateway endpoints (`pgi7j6i5ab.`, `eydtptig4h.`,
-`mbdvgoj27h.`, all us-east-1) answer on a disjoint `18.238.176.x` pool, so no
+*Back-end.* AWS API Gateway custom domain in us-west-2. The kid devices' other
+API Gateway endpoints (`pgi7j6i5ab.`, `eydtptig4h.`, `mbdvgoj27h.`) are all
+us-east-1, a different regional edge with a different address pool, so no
 same-address collision is demonstrated. README Class 2, latent only.
 
 Every claim above is a CNAME/answer argument, reproducible with one `dig`. No
 IP-pool-overlap reasoning is used to justify an inclusion — those answers are
 DNS-steered and move between lookups.
+
+## The allow direction — the half that punches a hole rather than over-dropping
+
+The block reasoning above is only half the picture. `extraAllowed` beats every
+block path at the router (#421), and `ProfileAppDispositions.scala:153-154`
+carves an `AppMode.Allowed` app's hosts into it unconditionally (modulo the
+#1679 schedule toggle); a `TimeLimited` app gets the same carve while under cap.
+
+So assigning this app in **Allowed** mode puts the resolved GitHub Pages pool
+into that MAC's `ea_` set, which carves **every** GitHub Pages site out of
+**every** block on that device — curated blocklist categories included. Since
+`*.github.io` is a common home for web proxies and unblocked-games mirrors,
+that is a real hole, and it is the #2369 / #2601 shape in mirror image: a shared
+pool reaching the allow side, on a platform no Google-oriented ban list catches.
+
+Blocked mode over-drops; Allowed mode over-permits. Both follow from the same
+shared pool, and the `backend.emojikitchen.dev`-only narrowing fixes both.
 
 ## Disposition
 
@@ -81,6 +110,11 @@ cost of 28 of the 35 attributed minutes).
 
 Attribution is hostname-based and carries no collateral at all, so the
 visibility half of the template is unconditionally safe.
+
+None of this is visible in the SPA, which renders name, icon and hosts rather
+than these comments — so the "operator sees the tradeoff and can narrow" premise
+is currently only true of someone reading the repo. #2780 tracks surfacing a
+template caveat where the operator actually assigns the app.
 
 ## Look-alike domains checked and excluded
 
