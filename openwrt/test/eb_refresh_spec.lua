@@ -242,3 +242,147 @@ describe("parse_dig_output", function()
     assert.same({}, eb_refresh.parse_dig_output(nil, "v4"))
   end)
 end)
+
+-- ---------------------------------------------------------------------------
+-- #2785 — the sweep must be time-boxed and resumable
+-- ---------------------------------------------------------------------------
+--
+-- ROOT CAUSE of the 2026-09-13 prod stall, measured rather than reasoned:
+-- usage_window_stall_total on the family router incremented at 17:13, 17:43,
+-- 18:13, 18:44, 19:14 — every 30 minutes, 48/day, dead flat for the full 14
+-- days of retention. Nothing else in on_tick runs on a 30-minute cadence;
+-- eb_refresh_interval defaults to 1800 s. The 19:14 increment is the incident.
+--
+-- The sweep walks the WHOLE inventory in one pass with two `dig` forks per
+-- host, serially, inside the agent's single-fibered on_tick. On that router the
+-- inventory is every member host of ten subscribed blocklists (~160k distinct
+-- hosts in /etc/wifihaven/blocklists), and the pass took 558 s — the exact
+-- window the agent reported. For those 558 s the loop applied no pushed policy
+-- and reported no usage or events, which is both halves of the incident.
+--
+-- The fix keeps the coverage #1658 needs (every entry re-resolved ahead of the
+-- 1h nft set timeout) and gives up only the "one pass, one tick" property: a
+-- pass spends at most its budget, returns where it got to, and the next tick
+-- resumes there.
+
+describe("refresh — time-boxed, resumable sweep (#2785)", function()
+  local function fake_clock(step)
+    local t = 0
+    return function()
+      t = t + (step or 0)
+      return t
+    end
+  end
+
+  local function hosts(n)
+    local out = {}
+    for i = 1, n do out[i] = string.format("h%03d.example", i) end
+    return out
+  end
+
+  local function ok_resolver(_) return { v4 = {}, v6 = {} } end
+
+  it("still does the whole inventory in one pass when no budget is given", function()
+    -- Back-compat: existing callers (and the boot path) pass no deadline.
+    local stats = eb_refresh.refresh({
+      eb_hosts = hosts(25), nft_table = "inet wifihaven",
+      resolver = ok_resolver, exec_fn = function() end,
+    })
+    assert.are.equal(25, stats.hosts)
+    assert.is_true(stats.done)
+    assert.are.equal(0, stats.next_index)
+  end)
+
+  it("stops at the budget and reports where it got to", function()
+    -- 1 simulated second per resolve, 5 s of budget.
+    local stats = eb_refresh.refresh({
+      eb_hosts = hosts(100), nft_table = "inet wifihaven",
+      resolver = ok_resolver, exec_fn = function() end,
+      deadline_seconds = 5, now_fn = fake_clock(1),
+    })
+    assert.is_false(stats.done)
+    assert.is_true(stats.hosts > 0)
+    assert.is_true(stats.hosts < 100)
+    assert.are.equal(stats.hosts + 1, stats.next_index)
+  end)
+
+  it("resumes from the cursor rather than restarting at the top", function()
+    local seen = {}
+    local resolver = function(h) seen[#seen + 1] = h; return { v4 = {}, v6 = {} } end
+    local first = eb_refresh.refresh({
+      eb_hosts = hosts(20), nft_table = "inet wifihaven",
+      resolver = resolver, exec_fn = function() end,
+      deadline_seconds = 3, now_fn = fake_clock(1),
+    })
+    assert.is_false(first.done)
+    local n1 = #seen
+    eb_refresh.refresh({
+      eb_hosts = hosts(20), nft_table = "inet wifihaven",
+      resolver = resolver, exec_fn = function() end,
+      deadline_seconds = 3, now_fn = fake_clock(1),
+      start_index = first.next_index,
+    })
+    -- No host is revisited: the second slice picks up where the first stopped.
+    assert.are.equal(hosts(20)[n1 + 1], seen[n1 + 1])
+  end)
+
+  it("completes the sweep across successive slices and then reports done", function()
+    -- LIVENESS ANCHOR for the "stops early" assertions above: a rig that
+    -- resolves nothing would satisfy every one of them for free. Drive the
+    -- sweep to completion and prove every host was visited exactly once.
+    local seen, idx = {}, 0
+    local resolver = function(h) idx = idx + 1; seen[h] = (seen[h] or 0) + 1; return { v4 = {}, v6 = {} } end
+    local all, cursor, slices = hosts(30), nil, 0
+    repeat
+      local st = eb_refresh.refresh({
+        eb_hosts = all, nft_table = "inet wifihaven",
+        resolver = resolver, exec_fn = function() end,
+        deadline_seconds = 4, now_fn = fake_clock(1),
+        start_index = cursor,
+      })
+      cursor = st.next_index
+      slices = slices + 1
+      assert.is_true(slices < 30, "sweep made no forward progress")
+    until cursor == 0
+    assert.are.equal(30, idx)
+    for _, h in ipairs(all) do assert.are.equal(1, seen[h]) end
+    assert.is_true(slices > 1, "the budget never actually forced a split")
+  end)
+
+  it("spans eb_hosts and bl_pairs as ONE cursor space", function()
+    -- The blocklist half is the big half — it is where the 160k hosts live —
+    -- so a cursor that only covered eb_hosts would leave the actual problem
+    -- unbounded.
+    local seen = {}
+    local resolver = function(h) seen[#seen + 1] = h; return { v4 = {}, v6 = {} } end
+    local st = eb_refresh.refresh({
+      eb_hosts = { "a.example", "b.example" },
+      bl_pairs = { { host = "c.example", id = "ads" }, { host = "d.example", id = "ads" } },
+      nft_table = "inet wifihaven",
+      resolver = resolver, exec_fn = function() end,
+      deadline_seconds = 3, now_fn = fake_clock(1),
+    })
+    assert.is_false(st.done)
+    assert.is_true(st.next_index >= 2 and st.next_index <= 4)
+    local rest = eb_refresh.refresh({
+      eb_hosts = { "a.example", "b.example" },
+      bl_pairs = { { host = "c.example", id = "ads" }, { host = "d.example", id = "ads" } },
+      nft_table = "inet wifihaven",
+      resolver = resolver, exec_fn = function() end,
+      start_index = st.next_index,
+    })
+    assert.is_true(rest.done)
+    assert.are.equal(4, #seen)
+    assert.are.equal("d.example", seen[4])
+  end)
+
+  it("counts the inventory size so the capacity problem is visible", function()
+    local st = eb_refresh.refresh({
+      eb_hosts = hosts(3),
+      bl_pairs = { { host = "x.example", id = "ads" } },
+      nft_table = "inet wifihaven",
+      resolver = ok_resolver, exec_fn = function() end,
+    })
+    assert.are.equal(4, st.inventory)
+  end)
+end)

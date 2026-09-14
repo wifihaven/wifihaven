@@ -73,6 +73,15 @@ object MetricGuard {
       // stays specific — `id` would be a generic catch-all that future series
       // might mistakenly co-opt for unbounded entities.
       "blocklist_id",
+      // #2785 — which step of the agent's cooperative on_tick loop blew its
+      // budget, for `agent_slow_step_total`. A fixed six-value enum defined as
+      // code constants in the agent's tick_guard.STEPS (ws_apply /
+      // block_page_token / blocklist_refresh / eb_refresh / usage_report /
+      // metrics_push), so it cannot grow with devices, hosts or flows. This is
+      // the attribution half of the stall signal: without it a stalled router
+      // says "something blocked me" and nothing more, which is exactly the
+      // position the 2026-09-13 incident left the operator in.
+      "step",
       // #1846 — websocket frame direction for `router_ws_frames_total`. A fixed
       // 2-value enum (`in` agent→server / `out` server→agent); bounded, so it
       // satisfies the §4 cardinality firewall.
@@ -325,6 +334,34 @@ object MetricGuard {
     // over-count condition. A healthy fleet holds this flat at 0; a climbing
     // rate is the leading signal of the over-count regressing.
     "usage_window_stall_total"                  -> Set("router_id", "installation_id"),
+    // #2785 — the DIRECT on_tick liveness pair, and the reason the 2026-09-13
+    // stall was found by a child not being able to open an app rather than by
+    // us. `usage_window_stall_total` above is the OUTCOME signal: it speaks
+    // once per usage bucket, only when there were counters to fold, and it says
+    // nothing about what blocked. These two are the pulse and the attribution.
+    //
+    // `agent_tick_stall_total` increments once per on_tick entry whose gap from
+    // the previous entry ran past the router's tick_stall_threshold (30 s by
+    // default, against a 1 s heartbeat). A stalled loop applies no pushed
+    // policy AND reports no usage/events, so a non-zero rate means that router
+    // is both unenforced-as-of-the-last-push and silent. Steady state MUST be 0.
+    //
+    // `agent_slow_step_total{step}` names WHICH step burned the time. `step` is
+    // the fixed six-value enum in the agent's tick_guard.STEPS (ws_apply /
+    // block_page_token / blocklist_refresh / eb_refresh / usage_report /
+    // metrics_push) — code constants, never a per-mac/host/url value.
+    "agent_tick_stall_total"                    -> Set("router_id", "installation_id"),
+    "agent_slow_step_total"                     -> Set("step", "router_id", "installation_id"),
+    // #2785 — how many entries the eb_/bl_ re-resolve sweep (#1658) has to walk
+    // on this router: distinct extraBlocked hosts plus every member host of
+    // every subscribed category blocklist. This is the number that turned a
+    // periodic maintenance pass into a 558 s freeze of the agent's whole
+    // cooperative loop, and nothing reported it before. The sweep is sliced
+    // now, so a large value is no longer an outage — but it is still the
+    // capacity signal: at ~160k on the prod family router the sweep cannot
+    // complete inside the 1h nftables set ageing window it exists to beat,
+    // which is a design question rather than a bug in the slicing.
+    "eb_refresh_inventory_hosts"                -> Set("router_id", "installation_id"),
     // #2719 — the agent's conntrack DNS-attribution-miss path hit its per-flow
     // ceiling and stopped probing nftables set membership before it had checked
     // every candidate. Each of those probes is a fork+exec inside the watcher's

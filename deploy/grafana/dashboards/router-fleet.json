@@ -960,6 +960,132 @@
           "refId": "A"
         }
       ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "on_tick stalls per router (#2785)",
+      "description": "sum by (router_id) (rate(agent_tick_stall_total[5m])) \u2014 the agent's cooperative on_tick loop went longer than its tick_stall_threshold (30s by default) between consecutive entries, against a 1s idle heartbeat. That loop is single-fibered and drives BOTH the ws pushed-policy apply and the usage/event reporting path, so a stalled router is simultaneously enforcing stale policy and reporting nothing \u2014 while looking healthy from outside: the process is alive, the websocket is up, and before #2785 the only trace was one syslog line on the device. That is how the 2026-09-13 incident came to us as \"a child cannot open an app\" rather than as an alert. Steady state MUST be 0. This panel is the pulse; the companion 'Which step blocked the tick' panel names the cause. Distinct from the #2024 usage-window panel above, which observes the same failure one hop later and only on buckets that had counters to fold.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 112 },
+      "id": 30,
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "unit": "short",
+          "min": 0,
+          "custom": { "drawStyle": "line", "fillOpacity": 30, "showPoints": "always", "lineWidth": 2, "thresholdsStyle": { "mode": "line" } },
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "red", "value": 1e-07 } ] }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (router_id) (rate(agent_tick_stall_total{env=\"$env\"}[5m]))",
+          "legendFormat": "{{router_id}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "Which step blocked the tick (#2785)",
+      "description": "sum by (router_id, step) (rate(agent_slow_step_total[5m])) \u2014 one step inside on_tick ran past its budget (tick_step_budget, 15s by default). `step` is the agent's fixed six-value enum from tick_guard.STEPS: ws_apply / block_page_token / blocklist_refresh / eb_refresh / usage_report / metrics_push. The three that shell out to curl (block_page_token, blocklist_refresh, metrics_push) are what produced the 2026-09-13 stall, when they ran with no timeout flag and inherited curl's 300s connect default. They are bounded now, so a series here means either a genuinely slow upstream sitting at the bound or a new blocking step that needs one. Read it with the stall panel: a stall with no step attributed means the time went somewhere this instrumentation does not yet cover.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 120 },
+      "id": 31,
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "unit": "short",
+          "min": 0,
+          "custom": { "drawStyle": "line", "fillOpacity": 30, "showPoints": "always", "lineWidth": 2, "thresholdsStyle": { "mode": "line" } },
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "red", "value": 1e-07 } ] }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (router_id, step) (rate(agent_slow_step_total{env=\"$env\"}[5m]))",
+          "legendFormat": "{{router_id}} {{step}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "eb_/bl_ re-resolve sweep size (#2785)",
+      "description": "max by (router_id) (eb_refresh_inventory_hosts) \u2014 how many entries the #1658 eb_/bl_ re-resolve sweep has to walk on this router: distinct extraBlocked hosts plus every member host of every subscribed category blocklist. Two `dig` forks each. This is the number that turned a maintenance pass into a 558s freeze of the agent's entire cooperative loop on 2026-09-13 \u2014 no pushed policy applied, nothing reported, both processes alive. The sweep is sliced now (eb_refresh_slice_seconds, 2s per tick, resumed at a cursor) so a large value is no longer an outage. It is still the capacity signal: at ~160k the sweep cannot finish inside the 1h nftables set ageing window it exists to beat, which is a design question about re-resolving blocklist membership at all, not a bug in the slicing.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 128 },
+      "id": 33,
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "unit": "short",
+          "min": 0,
+          "custom": { "drawStyle": "line", "fillOpacity": 30, "showPoints": "always", "lineWidth": 2, "thresholdsStyle": { "mode": "line" } },
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "red", "value": 20000 } ] }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "max by (router_id) (eb_refresh_inventory_hosts{env=\"$env\"})",
+          "legendFormat": "{{router_id}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "ws push \u2192 apply latency (p95 / mean) (#2785)",
+      "description": "histogram_quantile(0.95, \u2026 ws_push_apply_latency_seconds_bucket) and the mean \u2014 wall time from the ws sidecar persisting a server-pushed snapshot to the agent applying it, measured off /proc/uptime on both sides. This is the number the operator feels: the gap between granting a child extra screen time and the device working. Healthy is ~1s, one idle-heartbeat tick. On 2026-09-13 it was 251s, because the apply sat behind an unbounded curl in the same loop. Post-#2785 the apply runs first in the tick and every curl is bounded, so a sustained p95 past a few seconds means the ordering or the bounds regressed.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 120 },
+      "id": 32,
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "unit": "s",
+          "min": 0,
+          "custom": { "drawStyle": "line", "fillOpacity": 30, "showPoints": "always", "lineWidth": 2, "thresholdsStyle": { "mode": "line" } },
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "red", "value": 10 } ] }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "histogram_quantile(0.95, sum by (le, router_id) (rate(ws_push_apply_latency_seconds_bucket{env=\"$env\"}[10m])))",
+          "legendFormat": "p95 {{router_id}}",
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (router_id) (rate(ws_push_apply_latency_seconds_sum{env=\"$env\"}[10m])) / sum by (router_id) (rate(ws_push_apply_latency_seconds_count{env=\"$env\"}[10m]))",
+          "legendFormat": "mean {{router_id}}",
+          "refId": "B"
+        }
+      ]
     }
   ],
   "refresh": "30s",

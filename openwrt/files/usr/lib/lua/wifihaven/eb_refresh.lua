@@ -181,6 +181,19 @@ end
 --   resolver  : host → { v4, v6 } | nil (nil counts as resolves_err)
 --   exec_fn   : os.execute-style shell executor (capture in tests)
 --   log       : optional logger { debug=, info=, warn= } — debug/info only
+-- #2785 additions to opts:
+--   deadline_seconds : wall-clock budget for THIS pass. nil = no budget (the
+--                      pre-#2785 behaviour, kept for the boot path and tests).
+--   now_fn           : monotonic clock, defaults to os.clock-free os.time via
+--                      the caller; injected so the budget is testable.
+--   start_index      : 1-based cursor into the flat (eb_hosts .. bl_pairs)
+--                      sequence. nil/0 starts a new sweep.
+--
+-- Returns stats with three extra fields:
+--   done       : true when the sweep reached the end of the inventory.
+--   next_index : where to resume (0 when done).
+--   inventory  : total entries in the sweep, so the caller can report the
+--                capacity that made this expensive in the first place.
 function M.refresh(opts)
   local stats = { hosts = 0, resolves_ok = 0, resolves_err = 0, adds = 0 }
 
@@ -207,13 +220,44 @@ function M.refresh(opts)
     end
   end
 
-  for _, host in ipairs(opts.eb_hosts or {}) do
-    refresh_one(host, render.eb_set_name(host), render.eb6_set_name(host))
+  -- eb_hosts and bl_pairs form ONE cursor space. Splitting them would leave the
+  -- big half unbounded: bl_pairs holds every member host of every subscribed
+  -- blocklist, which on the prod family router is ~160k entries, and that is
+  -- the half that produced the 558 s stall.
+  local eb  = opts.eb_hosts or {}
+  local bl  = opts.bl_pairs or {}
+  local n   = #eb + #bl
+  stats.inventory = n
+
+  local deadline = tonumber(opts.deadline_seconds)
+  local now_fn   = opts.now_fn
+  local started  = (deadline and now_fn) and now_fn() or nil
+
+  local i = tonumber(opts.start_index) or 1
+  if i < 1 then i = 1 end
+
+  while i <= n do
+    -- Budget check BEFORE the work, not after: the point is to bound how long
+    -- the caller's loop is held, and one more resolve past the line is one more
+    -- fork+exec pair the cooperative tick waits on.
+    if started and (now_fn() - started) >= deadline then
+      stats.done       = false
+      stats.next_index = i
+      return stats
+    end
+    if i <= #eb then
+      local host = eb[i]
+      refresh_one(host, render.eb_set_name(host), render.eb6_set_name(host))
+    else
+      local pair = bl[i - #eb]
+      local id   = tostring(pair.id)
+      refresh_one(pair.host, render.bl_set_name(id), render.bl6_set_name(id))
+    end
+    i = i + 1
   end
-  for _, pair in ipairs(opts.bl_pairs or {}) do
-    local id = tostring(pair.id)
-    refresh_one(pair.host, render.bl_set_name(id), render.bl6_set_name(id))
-  end
+
+  stats.done       = true
+  stats.next_index = 0
   return stats
 end
 
