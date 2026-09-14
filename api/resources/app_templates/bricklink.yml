@@ -8,8 +8,8 @@ icon_type: url
 # as a "sibling LEGO property on a distinct apex" when `lego.yml` was written
 # (#1815) — that exclusion was correct at the time (no observed traffic), but
 # this pass's 30d window shows real, recurring use across all four kid
-# profiles: 12,930 proportional seconds (~3.6h) / 2,145 presence seconds
-# (~36min) aggregated across 11 `orphanHosts` rows on
+# profiles: 16,152 proportional seconds (~4.5h) / 2,770 presence seconds
+# (~46min) aggregated across 12 `orphanHosts` rows on
 # `GET /api/profiles/{1,5,6,7}/usage-by-app`, led by
 # `api.prod.studio.bricklink.info` (Studio's build backend, 7,997s
 # proportional / 1,090s presence) — i.e. mostly the Studio CAD tool, not
