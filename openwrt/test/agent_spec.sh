@@ -238,12 +238,16 @@ fi
 #     so instead every apply path that rebuilds eb_hosts_by_mac /
 #     bl_hosts_by_mac marks a re-sweep, and a completed sweep re-arms for NOW
 #     rather than for another eb_refresh_interval.
+#     The mark is made in ONE place — the shared apply_and_publish seam, right
+#     after render.update_shared rebuilds the tables the sweep flattens — not
+#     copied to each caller. Three identical copies at three call sites was the
+#     drift-by-omission shape: the next apply path added would quietly not mark.
 RESWEEP_MARKS=$(grep -c 'ts\.eb_resweep = ts\.eb_resweep or ts\.eb_cursor > 0' "$SCRIPT" || true)
-if [ "${RESWEEP_MARKS:-0}" -ge 3 ]; then
-  check "every apply path marks a mid-sweep inventory change (#2785)" ok
+if [ "${RESWEEP_MARKS:-0}" -eq 1 ] && grep -q 'note_inventory_change()' "$SCRIPT"; then
+  check "a mid-sweep inventory change is marked once, in the shared apply seam (#2785)" ok
 else
-  check "every apply path marks a mid-sweep inventory change (#2785)" \
-    "found ${RESWEEP_MARKS:-0} of the 3 apply paths (ws push / enforcement toggle / blocklist version) marking a re-sweep"
+  check "a mid-sweep inventory change is marked once, in the shared apply seam (#2785)" \
+    "found ${RESWEEP_MARKS:-0} copies of the mark (want exactly 1, called via note_inventory_change from apply_and_publish)"
 fi
 
 if grep -q 'ts\.last_eb_refresh_run = ts\.eb_resweep and (mono - eb_refresh_int) or mono' "$SCRIPT"; then

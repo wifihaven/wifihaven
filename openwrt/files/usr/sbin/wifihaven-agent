@@ -1138,6 +1138,18 @@ end
 -- the file the sidecar already wrote), so each caller owns them. `reason` flows
 -- to record_apply for dnsmasq_restarts_total{reason}; the ws path reuses
 -- "policy_change" (it IS a policy change — no new bounded label is minted).
+-- #2785 (review): ONE place notices that an apply changed the eb_/bl_ sweep
+-- inventory. Forward-declared because the scheduler state table `ts` is
+-- declared below this function; it is reassigned to the real body as soon as
+-- `ts` exists, and every apply_and_publish caller is inside on_tick, which runs
+-- long after that. The stub keeps the boot path safe if that ever changes.
+--
+-- It lives here rather than at the call sites because it was three identical
+-- copies at three of them, which is the drift-by-omission shape: the next
+-- apply path added would quietly not mark, and the sweep would walk a stale
+-- inventory with nothing to say so.
+local note_inventory_change = function() end
+
 local function apply_and_publish(snap, reason)
   -- #1325: capture the about-to-reset enforcement-drop counters before apply
   -- rebuilds the ruleset and zeroes them.
@@ -1164,6 +1176,9 @@ local function apply_and_publish(snap, reason)
     render.update_shared(shared_snap, nft_sets, blocked_macs, blocked_reason,
                          eb_hosts_by_mac, ea_hosts_by_mac, bl_hosts_by_mac,
                          make_bl_member_iterator(shared_snap), bl_ids_by_mac)
+    -- update_shared just rebuilt the tables the eb_/bl_ sweep flattens, so a
+    -- sweep in flight is now walking a stale snapshot of them (#2785).
+    note_inventory_change()
   end
   return applied
 end
@@ -1232,6 +1247,15 @@ local ts = {
   enforcement_read   = enforcement_disabled,
   empty_snapshot     = { devices = {}, profiles = {} },
 }
+
+-- #2785 (review): the real body of the forward-declared seam above, installed
+-- now that `ts` exists. A sweep only exists to be marked when one is in
+-- progress (eb_cursor > 0); outside a sweep the next one will build a fresh
+-- inventory anyway, so there is nothing to remember.
+note_inventory_change = function()
+  ts.eb_resweep = ts.eb_resweep or ts.eb_cursor > 0
+end
+
 -- Seed the applied-state to what enforcement is ACTUALLY running under after
 -- the startup applies below, so on_tick doesn't spuriously re-apply on its
 -- first pass. Set just before the scheduler loop starts (after startup apply).
@@ -1638,14 +1662,6 @@ conntrack.watch({
               ts.in_failover_render = false
               log.info("failover lifted: a pushed snapshot applied, so the ws link is live")
             end
-            -- #2785 (review): this apply rebuilt eb_hosts_by_mac /
-            -- bl_hosts_by_mac. A sweep in flight is iterating a flattened
-            -- snapshot of the OLD inventory; mutating its cursor space now
-            -- would shift indices and make it skip or revisit hosts. Let it
-            -- finish and re-arm immediately instead, so a newly-blocked host is
-            -- re-resolved within one sweep rather than up to an
-            -- eb_refresh_interval later.
-            ts.eb_resweep = ts.eb_resweep or ts.eb_cursor > 0
             log.info("ws apply: applied pushed snapshot etag=%s (poll-independent)",
                      tostring(pushed.etag))
           end
@@ -1680,8 +1696,6 @@ conntrack.watch({
         local snap_to_apply = ts.last_snapshot or ts.empty_snapshot
         if apply_and_publish(snap_to_apply, "policy_change") then
           ts.enforcement_disabled_applied = enf_now
-          -- #2785 (review): same stale-inventory case as the ws-apply path.
-          ts.eb_resweep = ts.eb_resweep or ts.eb_cursor > 0
           if enf_now then
             log.warn("enforcement DISABLED (#2381 escape hatch): tore down all blocking + block-page DNAT; all forwarded traffic now passes. Re-enable with `wifihaven-enable`.")
           else
@@ -1807,9 +1821,6 @@ conntrack.watch({
       if changed then
         -- #1945: shared apply+publish block (see apply_and_publish).
         if apply_and_publish(ts.last_snapshot, "policy_change") then
-          -- #2785 (review): a list version change is exactly a change to the
-          -- sweep inventory, so the same re-arm applies.
-          ts.eb_resweep = ts.eb_resweep or ts.eb_cursor > 0
           log.info("blocklist timer: list version(s) changed, re-applied ruleset")
         end
       end
@@ -1885,8 +1896,14 @@ conntrack.watch({
                   stats.adds, elapsed, ts.eb_cursor, stats.inventory or 0,
                   tostring(stats.done))
       else
+        -- Nothing to sweep (no extraBlocked hosts, no blocklist subscriptions).
+        -- Clear eb_resweep as well: a mark set by an apply that emptied the
+        -- inventory has nothing left to re-sweep, and leaving it set would make
+        -- the FIRST sweep after the inventory refills re-arm immediately for no
+        -- reason (review of #2786).
         ts.eb_cursor           = 0
         ts.eb_inventory        = nil
+        ts.eb_resweep          = false
         ts.last_eb_refresh_run = mono
       end
     end
