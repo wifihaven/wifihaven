@@ -255,7 +255,9 @@ fi
 # until the inventory refilled — making that first sweep re-arm immediately for
 # no reason. Three sites touch eb_resweep and every one of them is pinned:
 # the single mark above, the completion re-arm below, and this clear.
-RESWEEP_CLEARS=$(grep -c 'ts\.eb_resweep          = false' "$SCRIPT" || true)
+# Whitespace-tolerant on purpose: keying on the exact column alignment would
+# fail on a cosmetic realignment and blame it on a missing clear.
+RESWEEP_CLEARS=$(grep -cE 'ts\.eb_resweep[[:space:]]*= false' "$SCRIPT" || true)
 if [ "${RESWEEP_CLEARS:-0}" -ge 2 ]; then
   check "both sweep exits clear the re-sweep mark (#2785)" ok
 else
