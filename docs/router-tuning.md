@@ -151,15 +151,16 @@ completed sweep re-arms the cadence.
   design question about re-resolving blocklist membership at all, tracked
   separately.
 
-### `tick_stall_threshold` (default `15`) and `tick_step_budget` (default `10`) ([#2785](https://github.com/wifihaven/wifihaven/issues/2785))
+### `tick_stall_threshold` (default `30`) and `tick_step_budget` (default `15`) ([#2785](https://github.com/wifihaven/wifihaven/issues/2785))
 
 The direct on_tick liveness signals, and the reason the 2026-09-13 stall
 reached us as "my child cannot open an app" rather than as an alert.
 
 - `tick_stall_threshold` — a gap between consecutive `on_tick` entries past
   this many seconds increments `agent_tick_stall_total` and logs a warning.
-  Measured against a 1 s idle heartbeat, so 15 s clears a legitimately slow
-  apply by a wide margin. **This is not the same signal as
+  Measured against a 1 s idle heartbeat, and above `tick_step_budget` so a
+  slow step is attributed as a slow step before the whole tick is called
+  stalled. **This is not the same signal as
   `usage_window_stall_total`**: that one observes the same failure one hop
   later, once per usage bucket, and only when there were counters to fold.
 - `tick_step_budget` — an individual step inside the tick that runs past this
@@ -168,9 +169,25 @@ reached us as "my child cannot open an app" rather than as an alert.
   `eb_refresh` / `usage_report` / `metrics_push`. This is the attribution: a
   stall without it says only "something blocked me".
 
+These four knobs form **one ordering**, and it is load-bearing:
+
+```
+eb_refresh_slice_seconds (2) < http_max_time (10) < tick_step_budget (15) < tick_stall_threshold (30)
+```
+
+Each rung says *the inner thing is allowed to finish before the outer thing
+complains about it*. Invert one and enforcement is unaffected but the **signal**
+breaks: a curl running to its own configured timeout gets counted as a step that
+blocked the loop, or a slow step gets counted as a stalled tick, and an operator
+learns to ignore both. The agent validates the ordering at startup
+(`tick_guard.check_bounds`) and logs a warning rather than mis-reporting
+quietly. The one deliberate exception is `http_bulk_max_time` (120s): a
+two-minute blocklist download really did hold the loop, and it only happens when
+a list version changed, so it is worth the attribution.
+
 Alert **W16** fires on a sustained non-zero `agent_tick_stall_total` rate.
 
-### `http_connect_timeout` (default `5`), `http_max_time` (default `20`), `http_bulk_max_time` (default `120`) ([#2785](https://github.com/wifihaven/wifihaven/issues/2785))
+### `http_connect_timeout` (default `5`), `http_max_time` (default `10`), `http_bulk_max_time` (default `120`) ([#2785](https://github.com/wifihaven/wifihaven/issues/2785))
 
 Bounds on every `curl` the agent runs. All of them execute **synchronously
 inside `on_tick`**, so an unbounded one does not slow the agent down, it stops
@@ -274,10 +291,10 @@ knob is exactly this UCI option (the init script's own log message says
 | `activity_sample_int` | 10 | 5–30 | `usage_report_interval`, `conntrack_tick_interval` |
 | `conntrack_tick_interval` | 1 | 1–5 | `activity_sample_int` (must stay well below) |
 | `eb_refresh_slice_seconds` | 2 | 1–10 | `eb_refresh_interval`, `tick_step_budget` (stay well below) |
-| `tick_stall_threshold` | 15 | 10–60 | `conntrack_tick_interval` |
-| `tick_step_budget` | 10 | 5–30 | `eb_refresh_slice_seconds`, `http_max_time` |
+| `tick_stall_threshold` | 30 | 20–90 | `tick_step_budget` (must stay above it) |
+| `tick_step_budget` | 15 | 10–45 | `http_max_time` (must stay above it), `tick_stall_threshold` |
 | `http_connect_timeout` | 5 | 2–10 | `http_max_time` (max is clamped up to connect) |
-| `http_max_time` | 20 | 5–60 | `tick_step_budget` |
+| `http_max_time` | 10 | 5–30 | `tick_step_budget` (must stay below it) |
 | `http_bulk_max_time` | 120 | 30–300 | `blocklist_max_list_bytes` |
 | `event_batch_size` | 50 | 10–200 | `event_flush_interval` |
 | `event_flush_interval` | 10 | 5–60 | `event_batch_size` |

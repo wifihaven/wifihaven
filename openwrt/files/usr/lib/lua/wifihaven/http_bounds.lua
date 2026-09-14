@@ -26,8 +26,19 @@ local M = {}
 -- under a second. The bound has to stay small because #2785's acceptance bar is
 -- "a pushed snapshot applies within seconds": the worst case is one hung
 -- network step sitting ahead of the apply in the same tick.
+-- These four defaults form ONE ordering, and it is load-bearing:
+--
+--   eb_refresh_slice (2) < DEFAULT_MAX_SECONDS (10)
+--                        < tick_guard.DEFAULT_STEP_BUDGET_SECONDS (15)
+--                        < tick_guard.DEFAULT_STALL_SECONDS (30)
+--
+-- A step is allowed to run to its own timeout without being reported as slow,
+-- and a slow step is reported before the whole tick is called stalled. Get the
+-- order wrong and the new instrumentation cries wolf on a call that is behaving
+-- exactly as configured. tick_guard.check_bounds() asserts it, and
+-- tick_guard_spec pins it.
 M.DEFAULT_CONNECT_SECONDS = 5
-M.DEFAULT_MAX_SECONDS     = 20
+M.DEFAULT_MAX_SECONDS     = 10
 
 -- Bulk path: blocklist bodies, which are fetched only when a list's (id,
 -- version) is not already cached and can run to several MB (the cap is

@@ -130,10 +130,49 @@ describe("tick_guard.should_defer — pending apply jumps the queue, but not for
   end)
 end)
 
+describe("tick_guard.check_bounds — the four knobs form one ordering (#2785 review)", function()
+  -- Review of PR #2786 caught the shipped defaults inverting a rung: an
+  -- http_max_time of 20s above a tick_step_budget of 10s meant a curl call that
+  -- ran to its own configured timeout — behaving exactly as told — would be
+  -- reported as having blocked the loop. Instrumentation that cries wolf gets
+  -- ignored, which costs more than not having it.
+  local http_bounds = require("wifihaven.http_bounds")
+
+  it("accepts the shipped defaults", function()
+    local ok, why = tick_guard.check_bounds(
+      2, http_bounds.DEFAULT_MAX_SECONDS,
+      tick_guard.DEFAULT_STEP_BUDGET_SECONDS, tick_guard.DEFAULT_STALL_SECONDS)
+    assert.is_true(ok, tostring(why))
+  end)
+
+  it("rejects a step budget below the http timeout it has to contain", function()
+    local ok, why = tick_guard.check_bounds(2, 20, 10, 30)
+    assert.is_false(ok)
+    assert.is_truthy(why:find("tick_step_budget", 1, true))
+  end)
+
+  it("rejects a stall threshold below the step budget", function()
+    local ok = tick_guard.check_bounds(2, 10, 30, 15)
+    assert.is_false(ok)
+  end)
+
+  it("rejects a slice budget that is not below the http timeout", function()
+    local ok = tick_guard.check_bounds(30, 10, 60, 90)
+    assert.is_false(ok)
+  end)
+
+  it("tolerates a non-numeric knob rather than erroring at startup", function()
+    assert.is_true(tick_guard.check_bounds(nil, "banana", 15, 30))
+  end)
+end)
+
 describe("tick_guard defaults", function()
   it("sets a stall threshold well above a normal apply but far below the 251s incident", function()
     assert.is_true(tick_guard.DEFAULT_STALL_SECONDS >= 10)
     assert.is_true(tick_guard.DEFAULT_STALL_SECONDS <= 60)
+    -- and above the step budget, so a slow step is attributed as a slow step
+    -- before the whole tick is called stalled.
+    assert.is_true(tick_guard.DEFAULT_STALL_SECONDS > tick_guard.DEFAULT_STEP_BUDGET_SECONDS)
   end)
 
   it("bounds the deferral so a wedged apply cannot silence reporting", function()

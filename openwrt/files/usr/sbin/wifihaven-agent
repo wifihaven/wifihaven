@@ -210,6 +210,22 @@ local tick_step_budget = tonumber(uci_get("tick_step_budget",
 local tick_defer_max  = tonumber(uci_get("tick_defer_max",
                           tostring(tick_guard.DEFAULT_DEFER_SECONDS)))
                         or tick_guard.DEFAULT_DEFER_SECONDS
+-- #2785: the four knobs above form one ordering (slice < http_max <
+-- step_budget < stall). An operator override that breaks a rung does not break
+-- enforcement, it breaks the SIGNAL — a curl running to its own configured
+-- timeout gets counted as a slow step, or a slow step gets counted as a stalled
+-- loop — and instrumentation that cries wolf is instrumentation nobody reads.
+-- Warn loudly at startup rather than mis-reporting quietly (AGENTS.md
+-- #no-dark-by-default: this is a diagnostic, not a feature gate, so it warns
+-- and continues rather than refusing to boot).
+do
+  local bounds_ok, bounds_why = tick_guard.check_bounds(
+    eb_refresh_slice, http_max_to, tick_step_budget, tick_stall_sec)
+  if not bounds_ok then
+    log.warn("tick-liveness knobs are out of order (#2785): %s — the stall/slow-step " ..
+             "signals will report false positives until this is corrected", tostring(bounds_why))
+  end
+end
 local debug_opt     = uci_get("debug",                            "0")
 -- #1848/#2736: ws transport config (named `config ws 'ws'` section). There is no
 -- `enabled` flag any more: with the HTTP poll gone (#2736) an opt-out would
@@ -749,16 +765,23 @@ end
 -- wh_timed_step(step, fn, ...) -> fn's return values. Times one in-tick step and
 -- attributes it when it runs past the budget, so the NEXT stall names its cause
 -- in Grafana instead of needing an SSH into the router.
+-- Lua 5.1 has no table.pack; this is the idiom, and it keeps nil holes.
+local function wh_pack(...) return { n = select("#", ...), ... } end
+
 function wh_timed_step(step, fn, ...)
   local t0 = clock.monotonic_seconds()
-  local a, b = fn(...)
+  -- Capture the wrapped function's FULL arity. No call site needs a third
+  -- return value today, but a fixed two-value capture is a silent trap for the
+  -- next one (http_get returns three), and getting it right once costs less
+  -- than remembering to.
+  local r = wh_pack(fn(...))
   local elapsed = clock.monotonic_seconds() - t0
   if tick_guard.step_over_budget(elapsed, tick_step_budget) then
     metrics.inc_counter(mreg, "agent_slow_step_total", { step = step })
     log.warn("on_tick: step %q took %.1fs (budget %ds) — it blocked the cooperative loop " ..
              "for that long (#2785)", step, elapsed, tick_step_budget)
   end
-  return a, b
+  return unpack(r, 1, r.n)
 end
 
 -- wh_defer_network(pending, mono) -> boolean. True while a snapshot the sidecar
@@ -1177,6 +1200,10 @@ local ts = {
   -- every subscribed blocklist member, ~160k entries on the prod family router.
   eb_cursor           = 0,
   eb_inventory        = nil,
+  -- #2785 (review): set when a policy apply lands MID-sweep, so the sweep that
+  -- is iterating the now-stale flattened inventory re-runs immediately on
+  -- completion instead of waiting out another eb_refresh_interval.
+  eb_resweep          = false,
   last_ws_apply_run   = 0,  -- #1945: ws apply-on-push poll-of-disk cadence
   last_activity_sample = 0,
   last_nflog_run      = 0,  -- #1126: nflog drop-spool drain cadence
@@ -1611,6 +1638,14 @@ conntrack.watch({
               ts.in_failover_render = false
               log.info("failover lifted: a pushed snapshot applied, so the ws link is live")
             end
+            -- #2785 (review): this apply rebuilt eb_hosts_by_mac /
+            -- bl_hosts_by_mac. A sweep in flight is iterating a flattened
+            -- snapshot of the OLD inventory; mutating its cursor space now
+            -- would shift indices and make it skip or revisit hosts. Let it
+            -- finish and re-arm immediately instead, so a newly-blocked host is
+            -- re-resolved within one sweep rather than up to an
+            -- eb_refresh_interval later.
+            ts.eb_resweep = ts.eb_resweep or ts.eb_cursor > 0
             log.info("ws apply: applied pushed snapshot etag=%s (poll-independent)",
                      tostring(pushed.etag))
           end
@@ -1645,6 +1680,8 @@ conntrack.watch({
         local snap_to_apply = ts.last_snapshot or ts.empty_snapshot
         if apply_and_publish(snap_to_apply, "policy_change") then
           ts.enforcement_disabled_applied = enf_now
+          -- #2785 (review): same stale-inventory case as the ws-apply path.
+          ts.eb_resweep = ts.eb_resweep or ts.eb_cursor > 0
           if enf_now then
             log.warn("enforcement DISABLED (#2381 escape hatch): tore down all blocking + block-page DNAT; all forwarded traffic now passes. Re-enable with `wifihaven-enable`.")
           else
@@ -1770,6 +1807,9 @@ conntrack.watch({
       if changed then
         -- #1945: shared apply+publish block (see apply_and_publish).
         if apply_and_publish(ts.last_snapshot, "policy_change") then
+          -- #2785 (review): a list version change is exactly a change to the
+          -- sweep inventory, so the same re-arm applies.
+          ts.eb_resweep = ts.eb_resweep or ts.eb_cursor > 0
           log.info("blocklist timer: list version(s) changed, re-applied ruleset")
         end
       end
@@ -1821,8 +1861,12 @@ conntrack.watch({
         ts.eb_cursor = stats.next_index or 0
         if stats.done then
           -- Only a COMPLETED sweep re-arms the cadence; an interrupted one is
-          -- resumed next tick.
-          ts.last_eb_refresh_run = mono
+          -- resumed next tick. #2785 (review): if a policy apply landed while
+          -- this sweep was running, the inventory it walked is stale — re-arm
+          -- for NOW rather than for mono + eb_refresh_int, so the next tick
+          -- starts a fresh sweep over the current inventory.
+          ts.last_eb_refresh_run = ts.eb_resweep and (mono - eb_refresh_int) or mono
+          ts.eb_resweep          = false
           ts.eb_inventory        = nil
         end
         -- #2785: the capacity signal. This is the number that made the sweep

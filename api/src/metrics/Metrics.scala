@@ -341,7 +341,7 @@ object MetricGuard {
     // nothing about what blocked. These two are the pulse and the attribution.
     //
     // `agent_tick_stall_total` increments once per on_tick entry whose gap from
-    // the previous entry ran past the router's tick_stall_threshold (15 s by
+    // the previous entry ran past the router's tick_stall_threshold (30 s by
     // default, against a 1 s heartbeat). A stalled loop applies no pushed
     // policy AND reports no usage/events, so a non-zero rate means that router
     // is both unenforced-as-of-the-last-push and silent. Steady state MUST be 0.

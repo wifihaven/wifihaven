@@ -68,10 +68,16 @@ else
   check "metrics registry created at agent startup (#1206)" "module required but metrics.new() never called"
 fi
 
-if grep -q 'metrics\.post\b' "$SCRIPT"; then
+# #2785 widened the match from `metrics.post(` because the call site is now
+# `wh_timed_step("metrics_push", metrics.post, …)` — a bare function value, no
+# paren. Filter LIVE lines only, the same idiom the `stat -c` guard above uses:
+# the agent carries an explanatory comment naming `metrics.post`, and a bare
+# `metrics\.post` match would let this #1206 guard pass off that comment after a
+# refactor deleted the real call site.
+if grep -n 'metrics\.post' "$SCRIPT" | grep -v '^[0-9]*:[[:space:]]*--' >/dev/null; then
   check "metrics push wired into the agent loop (#1206)" ok
 else
-  check "metrics push wired into the agent loop (#1206)" "registry built but metrics.post() never called — push won't happen"
+  check "metrics push wired into the agent loop (#1206)" "registry built but metrics.post never called — push won't happen"
 fi
 
 # The push MUST run on its own timer, decoupled from the ~5 s policy poll
@@ -117,12 +123,15 @@ OLDIFS="$IFS"; IFS="
 "
 for l in $CURL_LINES; do
   [ -n "$l" ] || continue
-  n=${l%%:*}
-  # The flags are spliced through a %s whose argument sits on the continuation
-  # line, so look at the builder plus the two lines that follow it.
-  win=$(sed -n "${n},$((n + 2))p" "$SCRIPT")
-  case "$win" in
-    *CURL_TIMEOUTS*|*--connect-timeout*) ;;
+  # Window-free on purpose. An earlier version inspected the builder plus the
+  # next two lines, looking for the CURL_TIMEOUTS argument — but the window size
+  # was arbitrary, so a call whose argument landed a line lower would have
+  # reported "ok" and quietly restored the unbounded curl this guard exists to
+  # prevent. Pin the splice point in the FORMAT STRING instead: a bounded curl
+  # is either `curl -s%s` / `curl -sS%s` (the %s carrying http_bounds.curl_args)
+  # or carries the flags literally. Both are on the one line we matched.
+  case "$l" in
+    *'"curl -s%s'*|*'"curl -sS%s'*|*--connect-timeout*) ;;
     *) UNBOUNDED="$UNBOUNDED
 $l" ;;
   esac
@@ -221,6 +230,39 @@ if grep -q 'eb_refresh_inventory_hosts' "$SCRIPT"; then
   check "agent reports the sweep inventory size (#2785)" ok
 else
   check "agent reports the sweep inventory size (#2785)" "no capacity signal for the sweep"
+fi
+
+# (6) A policy apply that lands MID-sweep leaves the sweep walking a stale
+#     flattened inventory (review of PR #2786). The sweep must not be mutated
+#     under its own cursor — indices would shift and hosts would be skipped —
+#     so instead every apply path that rebuilds eb_hosts_by_mac /
+#     bl_hosts_by_mac marks a re-sweep, and a completed sweep re-arms for NOW
+#     rather than for another eb_refresh_interval.
+RESWEEP_MARKS=$(grep -c 'ts\.eb_resweep = ts\.eb_resweep or ts\.eb_cursor > 0' "$SCRIPT" || true)
+if [ "${RESWEEP_MARKS:-0}" -ge 3 ]; then
+  check "every apply path marks a mid-sweep inventory change (#2785)" ok
+else
+  check "every apply path marks a mid-sweep inventory change (#2785)" \
+    "found ${RESWEEP_MARKS:-0} of the 3 apply paths (ws push / enforcement toggle / blocklist version) marking a re-sweep"
+fi
+
+if grep -q 'ts\.last_eb_refresh_run = ts\.eb_resweep and (mono - eb_refresh_int) or mono' "$SCRIPT"; then
+  check "a stale-inventory sweep re-arms immediately on completion (#2785)" ok
+else
+  check "a stale-inventory sweep re-arms immediately on completion (#2785)" \
+    "the re-sweep mark is never consumed — a host blocked mid-sweep waits out another eb_refresh_interval"
+fi
+
+# (7) The four tick-liveness knobs form one ordering
+#     (slice < http_max < step_budget < stall). Breaking a rung does not break
+#     enforcement, it makes the new signals cry wolf — a curl running to its own
+#     configured timeout counted as a slow step. Assert the agent checks it at
+#     startup rather than mis-reporting silently.
+if grep -q 'tick_guard\.check_bounds(' "$SCRIPT"; then
+  check "agent validates the tick-liveness knob ordering at startup (#2785)" ok
+else
+  check "agent validates the tick-liveness knob ordering at startup (#2785)" \
+    "no check_bounds call — an operator override can silently invert the budgets"
 fi
 
 printf "\n%d passed, %d failed\n" "$PASS" "$FAIL"

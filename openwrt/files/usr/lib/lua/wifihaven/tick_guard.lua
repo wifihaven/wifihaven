@@ -28,13 +28,19 @@ local M = {}
 -- A tick gap past this counts as a stall. A normal heartbeat gap is
 -- conntrack_tick_interval (1 s); a legitimate slow tick is an apply that
 -- restarts dnsmasq, which the policy_apply_duration_seconds histogram puts at a
--- few seconds. 15 s clears that comfortably and is an order of magnitude below
--- the 251 s the incident produced.
-M.DEFAULT_STALL_SECONDS = 15
+-- few seconds. It also has to clear the step budget below, or a step behaving
+-- exactly as configured would be reported as a stalled loop. 30 s does both,
+-- and is still an order of magnitude below the 251 s the incident produced.
+M.DEFAULT_STALL_SECONDS = 30
 
 -- A single in-tick step past this budget gets attributed. Above the normal
--- whole-apply cost so a routine apply does not flag.
-M.DEFAULT_STEP_BUDGET_SECONDS = 10
+-- whole-apply cost so a routine apply does not flag, and above
+-- http_bounds.DEFAULT_MAX_SECONDS (10) so a curl call that runs to its own
+-- configured timeout is not reported as slow — it is doing what it was told.
+-- The bulk blocklist fetch (http_bulk_max_time, 120 s) deliberately CAN exceed
+-- this: a two-minute list download really did hold the loop, and it happens
+-- only when a list version changed, so it is worth an attribution.
+M.DEFAULT_STEP_BUDGET_SECONDS = 15
 
 -- How long discretionary network work may be held back for a pending apply.
 M.DEFAULT_DEFER_SECONDS = 60
@@ -50,6 +56,29 @@ M.STEPS = {
   "usage_report",
   "metrics_push",
 }
+
+-- check_bounds(slice, http_max, step_budget, stall) -> ok, why
+--   The ordering the four knobs must keep:
+--     slice < http_max < step_budget < stall
+--   Each rung says "the inner thing is allowed to finish before the outer thing
+--   complains about it". Violating it does not break enforcement, it breaks the
+--   SIGNAL: a step at its own timeout gets counted as slow, or a slow step gets
+--   counted as a stalled loop, and the operator learns to ignore both. The agent
+--   calls this at startup and warns loudly rather than silently mis-reporting.
+function M.check_bounds(slice, http_max, step_budget, stall)
+  local rungs = {
+    { "eb_refresh_slice_seconds", slice,        "http_max_time",        http_max },
+    { "http_max_time",            http_max,     "tick_step_budget",     step_budget },
+    { "tick_step_budget",         step_budget,  "tick_stall_threshold", stall },
+  }
+  for _, r in ipairs(rungs) do
+    local lo, hi = tonumber(r[2]), tonumber(r[4])
+    if lo and hi and lo >= hi then
+      return false, string.format("%s (%s) must be below %s (%s)", r[1], tostring(lo), r[3], tostring(hi))
+    end
+  end
+  return true, nil
+end
 
 function M.new_state()
   return { last_tick = nil, defer_since = nil }

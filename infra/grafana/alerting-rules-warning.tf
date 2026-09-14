@@ -675,14 +675,14 @@ locals {
     #
     # WHY A RATE AND NOT A GAUGE. `agent_tick_stall_total` is a counter the
     # agent increments once per on_tick entry whose gap from the previous entry
-    # exceeded the router's tick_stall_threshold (15 s by default, against a 1 s
+    # exceeded the router's tick_stall_threshold (30 s by default, against a 1 s
     # idle heartbeat). There is no "currently stalled" gauge to read, and there
     # could not be: a blocked loop is by definition not updating anything. The
     # counter is the after-the-fact trace, pushed on the next metrics cycle.
     #
     # THRESHOLD 0 (any stall at all), for = 15m. Steady state MUST be zero: a
     # healthy agent's ticks are one second apart and nothing in the loop is
-    # allowed to hold it for fifteen. The calibration is honest about its
+    # allowed to hold it for thirty — the step budget above it is 15 s. The calibration is honest about its
     # window: this series does not exist yet, it ships with #2785, so there is
     # no history to fit against. What we DO have is its predecessor.
     # `usage_window_stall_total` — the #2024 detector, which observes the same
@@ -711,7 +711,7 @@ locals {
       gt       = 0
       for      = "15m"
       paused   = false
-      summary  = "Router {{ $labels.router_id }} keeps stalling its agent tick loop: on_tick has gone more than 15s between entries against a 1s heartbeat, repeatedly, for at least the last 15 minutes. That loop is single-fibered and runs BOTH the websocket pushed-policy apply and the usage/event reporting path, so for the length of each stall this router is enforcing the snapshot it applied BEFORE the operator's last change, and is reporting no usage and no connection events. It will look healthy everywhere else: the process is up, the websocket is live, and W15 will not fire. This is the 2026-09-13 shape, where a granted time extension took 4m11s to reach the device. FIRST: the 'Which step blocked the tick' panel on the router-fleet dashboard — agent_slow_step_total{step} names the offender out of ws_apply / block_page_token / blocklist_refresh / eb_refresh / usage_report / metrics_push. If it is eb_refresh, check the sweep-size panel: that sweep re-resolves every member host of every subscribed blocklist and is sliced (eb_refresh_slice_seconds) rather than cheap. If it is one of the three curl steps, an upstream is sitting at its timeout bound — check http_connect_timeout / http_max_time on the box and whether that router's WAN is flapping (logread | grep udhcpc). If NO step is attributed, the time went somewhere this instrumentation does not cover yet, and that is worth an issue of its own. Corroborate against usage_window_stall_total on the same router: it observes the same failure one hop later, so the two should move together."
+      summary  = "Router {{ $labels.router_id }} keeps stalling its agent tick loop: on_tick has gone more than 30s between entries against a 1s heartbeat, repeatedly, for at least the last 15 minutes. That loop is single-fibered and runs BOTH the websocket pushed-policy apply and the usage/event reporting path, so for the length of each stall this router is enforcing the snapshot it applied BEFORE the operator's last change, and is reporting no usage and no connection events. It will look healthy everywhere else: the process is up, the websocket is live, and W15 will not fire. This is the 2026-09-13 shape, where a granted time extension took 4m11s to reach the device. FIRST: the 'Which step blocked the tick' panel on the router-fleet dashboard — agent_slow_step_total{step} names the offender out of ws_apply / block_page_token / blocklist_refresh / eb_refresh / usage_report / metrics_push. If it is eb_refresh, check the sweep-size panel: that sweep re-resolves every member host of every subscribed blocklist and is sliced (eb_refresh_slice_seconds) rather than cheap. If it is one of the three curl steps, an upstream is sitting at its timeout bound — check http_connect_timeout / http_max_time on the box and whether that router's WAN is flapping (logread | grep udhcpc). If NO step is attributed, the time went somewhere this instrumentation does not cover yet, and that is worth an issue of its own. Corroborate against usage_window_stall_total on the same router: it observes the same failure one hop later, so the two should move together."
     }
   }
 }
