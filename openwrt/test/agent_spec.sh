@@ -250,6 +250,19 @@ else
     "found ${RESWEEP_MARKS:-0} copies of the mark (want exactly 1, called via note_inventory_change from apply_and_publish)"
 fi
 
+# The empty-inventory branch has to clear the mark too. An apply that EMPTIED
+# the inventory sets it, and with nothing left to sweep the mark would survive
+# until the inventory refilled — making that first sweep re-arm immediately for
+# no reason. Three sites touch eb_resweep and every one of them is pinned:
+# the single mark above, the completion re-arm below, and this clear.
+RESWEEP_CLEARS=$(grep -c 'ts\.eb_resweep          = false' "$SCRIPT" || true)
+if [ "${RESWEEP_CLEARS:-0}" -ge 2 ]; then
+  check "both sweep exits clear the re-sweep mark (#2785)" ok
+else
+  check "both sweep exits clear the re-sweep mark (#2785)" \
+    "found ${RESWEEP_CLEARS:-0} of the 2 clears (sweep completion, and the empty-inventory branch) — a stale mark makes the next sweep re-arm for no reason"
+fi
+
 if grep -q 'ts\.last_eb_refresh_run = ts\.eb_resweep and (mono - eb_refresh_int) or mono' "$SCRIPT"; then
   check "a stale-inventory sweep re-arms immediately on completion (#2785)" ok
 else
