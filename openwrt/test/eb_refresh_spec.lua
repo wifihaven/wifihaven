@@ -317,284 +317,6 @@ describe("refresh with the real default_resolver (#2782)", function()
 end)
 
 
--- ---------------------------------------------------------------------------
--- Per-cycle budget (#2782)
--- ---------------------------------------------------------------------------
---
--- The resolver being dead is what made the work look free. Prod's blocklist
--- membership is 161,523 hosts, so the cycle was queueing ~328,000 resolves an
--- hour and completing them in no time at all because `dig` did not exist. With
--- a resolver that works, an unbounded cycle would run ~328k sequential
--- shell-outs into dnsmasq every 30 minutes and starve it (#1864). So the cycle
--- carries an explicit budget: extraBlocked hosts first — authored, few, and the
--- #2782 case — then blocklist members round-robin from a persisted cursor.
-
-describe("refresh budget", function()
-  local function pairs_for(n)
-    local out = {}
-    for i = 1, n do out[i] = { host = "h" .. i .. ".example", id = "ads" } end
-    return out
-  end
-
-  local function always_resolves()
-    return function() return { v4 = { "1.2.3.4" }, v6 = {} } end
-  end
-
-  it("stops at max_hosts and reports the skipped remainder", function()
-    local cmds, exec = exec_recorder()
-    local stats = eb_refresh.refresh({
-      eb_hosts  = {},
-      bl_pairs  = pairs_for(10),
-      max_hosts = 4,
-      nft_table = "inet wifihaven",
-      resolver  = always_resolves(),
-      exec_fn   = exec,
-    })
-    assert.equal(4, stats.hosts)
-    assert.equal(4, stats.resolves_ok)
-    assert.equal(6, stats.skipped)
-  end)
-
-  -- LIVENESS ANCHOR for the budget tests: the same rig with a budget wide
-  -- enough for the work does all of it and skips nothing, so "stats.hosts == 4"
-  -- above means the budget bit, not that the rig resolves nothing.
-  it("does the whole cycle when the budget is not binding", function()
-    local cmds, exec = exec_recorder()
-    local stats = eb_refresh.refresh({
-      eb_hosts  = {},
-      bl_pairs  = pairs_for(10),
-      max_hosts = 100,
-      nft_table = "inet wifihaven",
-      resolver  = always_resolves(),
-      exec_fn   = exec,
-    })
-    assert.equal(10, stats.hosts)
-    assert.equal(10, stats.resolves_ok)
-    assert.equal(0, stats.skipped)
-  end)
-
-  -- extraBlocked is what #2782 is about: an authored, per-profile host that
-  -- MUST be re-armed every cycle. A blocklist backlog can never crowd it out.
-  it("always spends the budget on extraBlocked hosts first", function()
-    local cmds, exec = exec_recorder()
-    local stats = eb_refresh.refresh({
-      eb_hosts  = { "www.amazon.com" },
-      bl_pairs  = pairs_for(10),
-      max_hosts = 3,
-      nft_table = "inet wifihaven",
-      resolver  = always_resolves(),
-      exec_fn   = exec,
-    })
-    assert.equal(3, stats.hosts)
-    assert.is_true(added(cmds, "eb_www_amazon_com", "1.2.3.4"))
-  end)
-
-  it("round-robins blocklist hosts from the returned cursor", function()
-    local seen = {}
-    local function record_resolver(host)
-      seen[#seen + 1] = host
-      return { v4 = { "1.2.3.4" }, v6 = {} }
-    end
-    local _, exec = exec_recorder()
-    local base = {
-      eb_hosts  = {},
-      bl_pairs  = pairs_for(5),
-      max_hosts = 2,
-      nft_table = "inet wifihaven",
-      resolver  = record_resolver,
-      exec_fn   = exec,
-    }
-    local first = eb_refresh.refresh(base)
-    base.bl_cursor = first.bl_cursor
-    local second = eb_refresh.refresh(base)
-    base.bl_cursor = second.bl_cursor
-    eb_refresh.refresh(base)
-
-    assert.same({
-      "h1.example", "h2.example",
-      "h3.example", "h4.example",
-      "h5.example", "h1.example",
-    }, seen)
-  end)
-
-  it("treats an absent max_hosts as the module default, not as unbounded", function()
-    local _, exec = exec_recorder()
-    local stats = eb_refresh.refresh({
-      eb_hosts  = {},
-      bl_pairs  = pairs_for(eb_refresh.DEFAULT_MAX_HOSTS + 25),
-      nft_table = "inet wifihaven",
-      resolver  = always_resolves(),
-      exec_fn   = exec,
-    })
-    assert.equal(eb_refresh.DEFAULT_MAX_HOSTS, stats.hosts)
-    assert.equal(25, stats.skipped)
-  end)
-end)
-
--- ---------------------------------------------------------------------------
--- Per-cycle wall-clock deadline (#2782 review)
--- ---------------------------------------------------------------------------
---
--- The host budget bounds WORK, not TIME, and the two come apart badly. Measured
--- on the prod router (BusyBox nslookup, Lua 5.1, 100 hosts = 200 lookups):
---
---   warm (dnsmasq cache hit)          1s   → 0.01s/host
---   cold (first resolve)             11s   → 0.11s/host
---   unresponsive server               5s   per QUERY (BusyBox's own bound;
---                                           there are no -timeout/-retry flags
---                                           and no `timeout` binary on OpenWRT)
---
--- The blocklist rotation is cold BY CONSTRUCTION — every cycle walks hosts the
--- last one did not — so 500 hosts is ~55s, and a wedged dnsmasq is ~83 minutes.
--- `eb_refresh.refresh` runs inline on the agent's single main timer loop, so
--- that is main-loop occupancy, not background work. A wall-clock deadline is
--- the bound that holds regardless of cache state or resolver health; the host
--- budget stays as a second cap for the warm case.
-
-describe("refresh deadline", function()
-  -- A fake monotonic clock that advances by `per_call` on every reading, so a
-  -- "slow resolver" is expressible without a real wall-clock wait (#2042).
-  local function ticking_clock(per_call)
-    local t = 0
-    return function()
-      local now = t
-      t = t + per_call
-      return now
-    end
-  end
-
-  local function pairs_for(n)
-    local out = {}
-    for i = 1, n do out[i] = { host = "h" .. i .. ".example", id = "ads" } end
-    return out
-  end
-
-  local function always_resolves()
-    return function() return { v4 = { "1.2.3.4" }, v6 = {} } end
-  end
-
-  it("stops the cycle once max_seconds has elapsed", function()
-    local _, exec = exec_recorder()
-    local stats = eb_refresh.refresh({
-      eb_hosts    = {},
-      bl_pairs    = pairs_for(100),
-      max_hosts   = 100,
-      max_seconds = 5,
-      -- 1 simulated second per host: the deadline, not the budget, must bite.
-      now_fn      = ticking_clock(1),
-      nft_table   = "inet wifihaven",
-      resolver    = always_resolves(),
-      exec_fn     = exec,
-    })
-    assert.is_true(stats.hosts < 100)
-    assert.is_true(stats.hosts > 0)
-    assert.is_true(stats.deadline_hit)
-    assert.equal(100 - stats.hosts, stats.skipped)
-  end)
-
-  -- LIVENESS ANCHOR: the same rig with a clock that never advances completes
-  -- the whole cycle, so "stats.hosts < 100" above means the deadline bit rather
-  -- than the rig resolving nothing.
-  it("does the whole cycle when the deadline is not reached", function()
-    local _, exec = exec_recorder()
-    local stats = eb_refresh.refresh({
-      eb_hosts    = {},
-      bl_pairs    = pairs_for(100),
-      max_hosts   = 100,
-      max_seconds = 5,
-      now_fn      = ticking_clock(0),
-      nft_table   = "inet wifihaven",
-      resolver    = always_resolves(),
-      exec_fn     = exec,
-    })
-    assert.equal(100, stats.hosts)
-    assert.equal(0, stats.skipped)
-    assert.is_false(stats.deadline_hit)
-  end)
-
-  -- extraBlocked is the #2782 class. A slow blocklist rotation must not be what
-  -- crowds it out, so it runs FIRST and inside its own deadline window — see
-  -- "refresh extraBlocked deadline" below for why a window and not an
-  -- exemption. Here: a rotation big enough to blow the deadline many times over
-  -- still leaves every authored host refreshed.
-  it("refreshes every extraBlocked host despite a rotation that blows the deadline", function()
-    local cmds, exec = exec_recorder()
-    local stats = eb_refresh.refresh({
-      eb_hosts    = { "www.amazon.com", "youtube.com", "prodigygame.com" },
-      bl_pairs    = pairs_for(100),
-      max_hosts   = 200,
-      max_seconds = 5,
-      now_fn      = ticking_clock(1),
-      nft_table   = "inet wifihaven",
-      resolver    = always_resolves(),
-      exec_fn     = exec,
-    })
-    assert.is_true(added(cmds, "eb_www_amazon_com", "1.2.3.4"))
-    assert.is_true(added(cmds, "eb_youtube_com", "1.2.3.4"))
-    assert.is_true(added(cmds, "eb_prodigygame_com", "1.2.3.4"))
-    assert.equal(0, stats.skipped_extrablocked)
-    -- LIVENESS ANCHOR: the rotation really did run and really did get cut off,
-    -- so "authored hosts all refreshed" is not just an empty cycle.
-    assert.is_true(stats.deadline_hit)
-    assert.is_true(stats.skipped > 0)
-  end)
-
-  -- ...but extraBlocked is not unbounded either: a pathological authored list
-  -- still gets capped, and when it does the skip is reported on its OWN counter
-  -- rather than blending into the blocklist backlog, because an authored host
-  -- going unrefreshed is an incident and a rotating backlog is routine.
-  it("reports a capped extraBlocked host on its own counter, not as budget skip", function()
-    local _, exec = exec_recorder()
-    local stats = eb_refresh.refresh({
-      eb_hosts    = { "a.example", "b.example", "c.example" },
-      bl_pairs    = {},
-      max_hosts   = 2,
-      max_seconds = 60,
-      now_fn      = ticking_clock(0),
-      nft_table   = "inet wifihaven",
-      resolver    = always_resolves(),
-      exec_fn     = exec,
-    })
-    assert.equal(2, stats.hosts)
-    assert.equal(1, stats.skipped_extrablocked)
-    assert.equal(0, stats.skipped)
-  end)
-
-  it("treats a non-positive max_hosts as the default, never as 'disabled'", function()
-    local _, exec = exec_recorder()
-    for _, bad in ipairs({ 0, -1, "nonsense" }) do
-      local stats = eb_refresh.refresh({
-        eb_hosts    = {},
-        bl_pairs    = pairs_for(3),
-        max_hosts   = bad,
-        max_seconds = 60,
-        now_fn      = ticking_clock(0),
-        nft_table   = "inet wifihaven",
-        resolver    = always_resolves(),
-        exec_fn     = exec,
-      })
-      assert.equal(3, stats.hosts)
-      assert.equal(0, stats.skipped)
-    end
-  end)
-
-  it("treats a non-positive max_seconds as the default, never as 'disabled'", function()
-    local _, exec = exec_recorder()
-    local stats = eb_refresh.refresh({
-      eb_hosts    = {},
-      bl_pairs    = pairs_for(3),
-      max_hosts   = 100,
-      max_seconds = 0,
-      now_fn      = ticking_clock(0),
-      nft_table   = "inet wifihaven",
-      resolver    = always_resolves(),
-      exec_fn     = exec,
-    })
-    assert.equal(3, stats.hosts)
-    assert.equal(0, stats.skipped)
-  end)
-end)
-
 describe("refresh empty-answer accounting (#2782 review)", function()
   -- Separating "could not run" from "no records" is the core of #2782. The
   -- remaining gap: a resolver that RUNS but whose output the parser does not
@@ -606,9 +328,6 @@ describe("refresh empty-answer accounting (#2782 review)", function()
     local stats = eb_refresh.refresh({
       eb_hosts    = { "gone.example", "live.example" },
       bl_pairs    = {},
-      max_hosts   = 10,
-      max_seconds = 60,
-      now_fn      = function() return 0 end,
       nft_table   = "inet wifihaven",
       resolver    = function(h)
         if h == "gone.example" then return { v4 = {}, v6 = {} } end
@@ -625,86 +344,124 @@ describe("refresh empty-answer accounting (#2782 review)", function()
   end)
 end)
 
-describe("refresh extraBlocked deadline (#2782 review, self-caught)", function()
-  local function ticking_clock(per_call)
+describe("refresh — time-boxed, resumable sweep (#2785)", function()
+  local function fake_clock(step)
     local t = 0
-    return function() local now = t; t = t + per_call; return now end
+    return function()
+      t = t + (step or 0)
+      return t
+    end
   end
-  local function always_resolves()
-    return function() return { v4 = { "1.2.3.4" }, v6 = {} } end
-  end
-  local function hosts_for(n)
+
+  local function hosts(n)
     local out = {}
-    for i = 1, n do out[i] = "h" .. i .. ".example" end
+    for i = 1, n do out[i] = string.format("h%03d.example", i) end
     return out
   end
 
-  -- Exempting extraBlocked from the blocklist deadline gave it priority but left
-  -- it bounded only by max_hosts — 500 hosts x 5s worst-case per query is ~83
-  -- minutes on the main loop, the very number the deadline exists to prevent.
-  -- extraBlocked therefore gets its OWN deadline: generous enough that a real
-  -- authored list always completes, and separate so a slow blocklist rotation
-  -- can never consume it. Whole-cycle bound is the two deadlines plus the one
-  -- in-flight query.
-  it("stops the extraBlocked pass at its own deadline", function()
-    local _, exec = exec_recorder()
+  local function ok_resolver(_) return { v4 = {}, v6 = {} } end
+
+  it("still does the whole inventory in one pass when no budget is given", function()
+    -- Back-compat: existing callers (and the boot path) pass no deadline.
     local stats = eb_refresh.refresh({
-      eb_hosts    = hosts_for(500),
-      bl_pairs    = {},
-      max_hosts   = 500,
-      max_seconds = 5,
-      now_fn      = ticking_clock(1),
-      nft_table   = "inet wifihaven",
-      resolver    = always_resolves(),
-      exec_fn     = exec,
+      eb_hosts = hosts(25), nft_table = "inet wifihaven",
+      resolver = ok_resolver, exec_fn = function() end,
     })
-    assert.is_true(stats.hosts < 500)
+    assert.are.equal(25, stats.hosts)
+    assert.is_true(stats.done)
+    assert.are.equal(0, stats.next_index)
+  end)
+
+  it("stops at the budget and reports where it got to", function()
+    -- 1 simulated second per resolve, 5 s of budget.
+    local stats = eb_refresh.refresh({
+      eb_hosts = hosts(100), nft_table = "inet wifihaven",
+      resolver = ok_resolver, exec_fn = function() end,
+      deadline_seconds = 5, now_fn = fake_clock(1),
+    })
+    assert.is_false(stats.done)
     assert.is_true(stats.hosts > 0)
-    assert.is_true(stats.deadline_hit)
-    -- A dropped AUTHORED host is reported as such, never as blocklist backlog.
-    assert.equal(500 - stats.hosts, stats.skipped_extrablocked)
-    assert.equal(0, stats.skipped)
+    assert.is_true(stats.hosts < 100)
+    assert.are.equal(stats.hosts + 1, stats.next_index)
   end)
 
-  -- LIVENESS ANCHOR: a realistically-sized authored list (prod has 11) finishes
-  -- in full under the same rig, so the truncation above is the deadline biting
-  -- rather than the pass being inert.
-  it("completes a real-sized extraBlocked list well inside its deadline", function()
-    local _, exec = exec_recorder()
-    local stats = eb_refresh.refresh({
-      eb_hosts    = hosts_for(11),
-      bl_pairs    = {},
-      max_hosts   = 500,
-      max_seconds = 5,
-      now_fn      = ticking_clock(0.01),
-      nft_table   = "inet wifihaven",
-      resolver    = always_resolves(),
-      exec_fn     = exec,
+  it("resumes from the cursor rather than restarting at the top", function()
+    local seen = {}
+    local resolver = function(h) seen[#seen + 1] = h; return { v4 = {}, v6 = {} } end
+    local first = eb_refresh.refresh({
+      eb_hosts = hosts(20), nft_table = "inet wifihaven",
+      resolver = resolver, exec_fn = function() end,
+      deadline_seconds = 3, now_fn = fake_clock(1),
     })
-    assert.equal(11, stats.hosts)
-    assert.equal(0, stats.skipped_extrablocked)
-    assert.is_false(stats.deadline_hit)
+    assert.is_false(first.done)
+    local n1 = #seen
+    eb_refresh.refresh({
+      eb_hosts = hosts(20), nft_table = "inet wifihaven",
+      resolver = resolver, exec_fn = function() end,
+      deadline_seconds = 3, now_fn = fake_clock(1),
+      start_index = first.next_index,
+    })
+    -- No host is revisited: the second slice picks up where the first stopped.
+    assert.are.equal(hosts(20)[n1 + 1], seen[n1 + 1])
   end)
 
-  -- The two deadlines are separate: a blocklist rotation that has already blown
-  -- its own budget must not shorten the extraBlocked pass, which runs first.
-  it("gives extraBlocked a budget the blocklist rotation cannot consume", function()
-    local cmds, exec = exec_recorder()
-    local stats = eb_refresh.refresh({
-      eb_hosts    = { "www.amazon.com", "youtube.com" },
-      bl_pairs    = { { host = "ads.example", id = "ads" } },
-      max_hosts   = 500,
-      max_seconds = 5,
-      -- 2 simulated seconds per clock read: both authored hosts fit inside
-      -- their own 5s window, and the blocklist pass then opens a fresh one —
-      -- which it would not if the two shared a single elapsed measurement.
-      now_fn      = ticking_clock(2),
-      nft_table   = "inet wifihaven",
-      resolver    = always_resolves(),
-      exec_fn     = exec,
+  it("completes the sweep across successive slices and then reports done", function()
+    -- LIVENESS ANCHOR for the "stops early" assertions above: a rig that
+    -- resolves nothing would satisfy every one of them for free. Drive the
+    -- sweep to completion and prove every host was visited exactly once.
+    local seen, idx = {}, 0
+    local resolver = function(h) idx = idx + 1; seen[h] = (seen[h] or 0) + 1; return { v4 = {}, v6 = {} } end
+    local all, cursor, slices = hosts(30), nil, 0
+    repeat
+      local st = eb_refresh.refresh({
+        eb_hosts = all, nft_table = "inet wifihaven",
+        resolver = resolver, exec_fn = function() end,
+        deadline_seconds = 4, now_fn = fake_clock(1),
+        start_index = cursor,
+      })
+      cursor = st.next_index
+      slices = slices + 1
+      assert.is_true(slices < 30, "sweep made no forward progress")
+    until cursor == 0
+    assert.are.equal(30, idx)
+    for _, h in ipairs(all) do assert.are.equal(1, seen[h]) end
+    assert.is_true(slices > 1, "the budget never actually forced a split")
+  end)
+
+  it("spans eb_hosts and bl_pairs as ONE cursor space", function()
+    -- The blocklist half is the big half — it is where the 160k hosts live —
+    -- so a cursor that only covered eb_hosts would leave the actual problem
+    -- unbounded.
+    local seen = {}
+    local resolver = function(h) seen[#seen + 1] = h; return { v4 = {}, v6 = {} } end
+    local st = eb_refresh.refresh({
+      eb_hosts = { "a.example", "b.example" },
+      bl_pairs = { { host = "c.example", id = "ads" }, { host = "d.example", id = "ads" } },
+      nft_table = "inet wifihaven",
+      resolver = resolver, exec_fn = function() end,
+      deadline_seconds = 3, now_fn = fake_clock(1),
     })
-    assert.equal(0, stats.skipped_extrablocked)
-    assert.is_true(added(cmds, "eb_www_amazon_com", "1.2.3.4"))
-    assert.is_true(added(cmds, "eb_youtube_com", "1.2.3.4"))
+    assert.is_false(st.done)
+    assert.is_true(st.next_index >= 2 and st.next_index <= 4)
+    local rest = eb_refresh.refresh({
+      eb_hosts = { "a.example", "b.example" },
+      bl_pairs = { { host = "c.example", id = "ads" }, { host = "d.example", id = "ads" } },
+      nft_table = "inet wifihaven",
+      resolver = resolver, exec_fn = function() end,
+      start_index = st.next_index,
+    })
+    assert.is_true(rest.done)
+    assert.are.equal(4, #seen)
+    assert.are.equal("d.example", seen[4])
+  end)
+
+  it("counts the inventory size so the capacity problem is visible", function()
+    local st = eb_refresh.refresh({
+      eb_hosts = hosts(3),
+      bl_pairs = { { host = "x.example", id = "ads" } },
+      nft_table = "inet wifihaven",
+      resolver = ok_resolver, exec_fn = function() end,
+    })
+    assert.are.equal(4, st.inventory)
   end)
 end)

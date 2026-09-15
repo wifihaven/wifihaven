@@ -42,3 +42,6 @@ hosts:
   # ads.yml), betrad.com (ambiguous gambling-adjacent tracking, held out
   # unverified).
   - acebet.cc # Acebet.cc US sweepstakes social casino (Trey Mark Services)
+  # traffic-driven additions (#2792): 30-day prod recent-apexes sweep (28
+  # devices, 2026-09-15).
+  - stake.us # Stake's US sweepstakes-casino variant (Gold Coins / Stake Cash dual currency)

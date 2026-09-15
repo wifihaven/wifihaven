@@ -1,0 +1,55 @@
+slug: bricklink
+name: BrickLink
+icon: "https://icons.duckduckgo.com/ip3/bricklink.com.ico"
+icon_type: url
+# Orphan-driven catalog pass (#2790). BrickLink — the LEGO-Group-owned parts/
+# sets/minifigures marketplace, plus BrickLink Studio, its free LEGO CAD tool
+# for designing and rendering digital builds. Explicitly named and excluded
+# as a "sibling LEGO property on a distinct apex" when `lego.yml` was written
+# (#1815) — that exclusion was correct at the time (no observed traffic), but
+# this pass's 30d window shows real, recurring use across all four kid
+# profiles: 16,152 proportional seconds (~4.5h) / 2,770 presence seconds
+# (~46min) aggregated across 12 `orphanHosts` rows on
+# `GET /api/profiles/{1,5,6,7}/usage-by-app`, led by
+# `api.prod.studio.bricklink.info` (Studio's build backend, 7,997s
+# proportional / 1,090s presence) — i.e. mostly the Studio CAD tool, not
+# marketplace browsing.
+#
+# Two apexes plus one companion domain, each single-purpose by construction:
+#
+#   bricklink.com  — the marketplace + community site. `www`, `img`, `forum`,
+#     `v2` (and `www.v2`) all serve BrickLink's own marketplace/forum content;
+#     `cms-api.bricklink.com` CNAMEs to a dedicated AWS API Gateway custom
+#     domain (`d-jii7k5trh6.execute-api.us-east-1.amazonaws.com`) — this
+#     app's own endpoint, not a shared default execute-api domain. `www`,
+#     `img` and `forum` all CNAME to the same dedicated ALB
+#     (`alb-nginx-prod-2108465416.us-east-1.elb.amazonaws.com`, a
+#     BrickLink-specific load balancer, not a shared multi-tenant hostname
+#     pattern like `shops.myshopify.com`). One observed child,
+#     `collector.prod.scout.bricklink.com`, is BrickLink's own first-party
+#     analytics collector — left riding along under the bare apex rather than
+#     split out `lego.yml`-style, because unlike the Amazon-telemetry case
+#     (#2762) it's a trivial 561s/30d, not worth its own budget.
+#
+#   bricklink.info — BrickLink Studio's build/download backend:
+#     `api.prod.studio.`, `file.`, `studio.download.`, `cache2.`. Every
+#     observed child is Studio-app content; `file.bricklink.info` CNAMEs to a
+#     dedicated CloudFront distribution (`dkdonnqq45453.cloudfront.net`,
+#     99.84.105.x) — the standard accepted Class-2 CDN-edge-sharing latent
+#     risk from `_README.yml`, same trade every CloudFront-fronted app in
+#     this catalog makes.
+#
+#   bricksafe.com — a companion LEGO-file-sharing site ("100% LEGO... share
+#     your LEGO creations", free storage for Studio/MOC files) that showed up
+#     alongside the Studio hosts (1,235s proportional / 470s presence). Not
+#     confirmed under the same corporate ownership as BrickLink, but
+#     functionally part of the same building-community workflow this
+#     household is actually using it for (uploading/downloading Studio
+#     files). Resolves on Cloudflare's shared 104.21/172.67 pool — the same
+#     accepted Class-2 trade as `rebrickable.yml`'s 104.26/172.67 range.
+#
+# #1983 overlap check: no host below appears on any curated blocklist.
+hosts:
+  - bricklink.com
+  - bricklink.info
+  - bricksafe.com

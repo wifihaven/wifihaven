@@ -180,6 +180,8 @@ object AppTemplatesSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
           "rebrickable",
           // #2778: Emoji Kitchen website (not Gboard's gstatic-hosted surface)
           "emoji-kitchen",
+          // #2790: orphan-driven catalog pass — BrickLink marketplace + Studio
+          "bricklink",
         )
         val slugs    = templates.map(_.slug.value).toSet
         assertTrue(slugs == expected) &&

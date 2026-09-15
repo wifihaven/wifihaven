@@ -74,3 +74,7 @@ slugs:
   # #2778: Emoji Kitchen website (Gboard's own surface rides gstatic.com and
   # is deliberately NOT covered — see emoji-kitchen.yml)
   - emoji-kitchen
+  # #2790: orphan-driven catalog pass (see evidence/classification-2790.md) —
+  # BrickLink marketplace + Studio, a sibling LEGO property excluded from
+  # lego.yml at #1815 for lack of traffic; now shows real recurring use
+  - bricklink

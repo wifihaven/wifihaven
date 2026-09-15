@@ -29,8 +29,30 @@ OUT_APK="$SCRIPT_DIR/wifihaven_${PKG_VERSION}-${PKG_RELEASE}_all.apk"
 # via the shared helper (single-source-of-truth, #1717). See build-ipk.sh.
 DEPENDS_LIST=$("$SCRIPT_DIR/depends-list.sh" apk)
 
-APK_TOOLS_REPO="${APK_TOOLS_REPO:-https://gitlab.alpinelinux.org/alpine/apk-tools.git}"
+# apk-tools source. The UPSTREAM home is gitlab.alpinelinux.org; we clone the
+# official Alpine GitHub mirror instead because gitlab.alpinelinux.org answers
+# GitHub Actions runner IPs with HTTP 418 (an anti-bot response), which broke
+# every cold-cache CI build:
+#
+#   fatal: unable to access 'https://gitlab.alpinelinux.org/alpine/apk-tools.git/':
+#   The requested URL returned error: 418
+#
+# Not transient — reproduced on two runs six minutes apart, while the same git
+# endpoint answers 200 off-runner. It only surfaced now because the runner cache
+# (APK_TOOLS_PREFIX) had expired, exposing the clone path that had been warm for
+# weeks; the same cold cache will hit it on main and on every other branch.
+#
+# The mirror is verified identical at the pinned ref: both hosts report tag
+# object 7b47c96d56833cbff9406826bbf36a0c5a9a4bf7 peeling to commit
+# 7e92634afe99db29e00037e6a134104ad9720b68 for v3.0.6. APK_TOOLS_COMMIT below
+# re-checks that after the clone, so changing WHERE we fetch our packaging tool
+# from cannot silently change WHAT we build. Override APK_TOOLS_REPO to go back
+# to gitlab (or to a local clone) if the block ever lifts.
+APK_TOOLS_REPO="${APK_TOOLS_REPO:-https://github.com/alpinelinux/apk-tools.git}"
 APK_TOOLS_REF="${APK_TOOLS_REF:-v3.0.6}"
+# Expected commit for APK_TOOLS_REF. Empty disables the check (for an override
+# that deliberately builds a different ref).
+APK_TOOLS_COMMIT="${APK_TOOLS_COMMIT:-7e92634afe99db29e00037e6a134104ad9720b68}"
 APK_TOOLS_PREFIX="${APK_TOOLS_PREFIX:-$HOME/.cache/wifihaven-apk-tools}"
 APK_BIN="$APK_TOOLS_PREFIX/build/src/apk"
 
@@ -43,6 +65,18 @@ ensure_apk() {
     if [ ! -d "$APK_TOOLS_PREFIX/src/.git" ]; then
         rm -rf "$APK_TOOLS_PREFIX/src"
         git clone --depth 1 --branch "$APK_TOOLS_REF" "$APK_TOOLS_REPO" "$APK_TOOLS_PREFIX/src"
+        # Pin the content, not just the ref: a tag can be moved, and we now
+        # fetch from a mirror rather than upstream. Fail loudly rather than
+        # building something we did not intend.
+        if [ -n "$APK_TOOLS_COMMIT" ]; then
+            got=$(git -C "$APK_TOOLS_PREFIX/src" rev-parse HEAD)
+            if [ "$got" != "$APK_TOOLS_COMMIT" ]; then
+                echo "apk-tools $APK_TOOLS_REF from $APK_TOOLS_REPO is $got," >&2
+                echo "expected $APK_TOOLS_COMMIT — refusing to build." >&2
+                rm -rf "$APK_TOOLS_PREFIX/src"
+                exit 1
+            fi
+        fi
     fi
     (
         cd "$APK_TOOLS_PREFIX/src"

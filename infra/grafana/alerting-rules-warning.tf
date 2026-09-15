@@ -66,7 +66,7 @@
 # and the rate/increase window come straight from §7.2.
 
 locals {
-  # Keyed w1..w15 (stable resource addressing). `window_s` bounds the data fetch
+  # Keyed w1..w16 (stable resource addressing). `window_s` bounds the data fetch
   # and must cover the rate/increase window in `expr` (for W10, its
   # `last_over_time` lookback; W14 and W15 have no range selector at all and take
   # the file minimum). `paused` ships W5 off.
@@ -661,6 +661,57 @@ locals {
       for     = "30m"
       paused  = false
       summary = "Router {{ $labels.router_id }} has had no live websocket to the API for ~35 minutes (its ws-health sentinel is stale past 300s, or absent entirely). Since #2736 the websocket is the ONLY policy and telemetry transport: this router is still ENFORCING its last on-disk snapshot, so blocking has not stopped, but it is receiving no policy updates and reporting no usage or connection events, and it will stay that way until the socket comes back. This alert exists because #2736 deleted the HTTP snapshot-poll fallback that used to absorb exactly this state. WHY IT CAN BE TRUSTED: the value rides the agent's metrics push, which deliberately stayed on HTTP, so it is still arriving while the socket is down. FIRST: check router_ws_connections_active and the 'ws health sentinel age' panel on the router-ws-transport dashboard to see whether the server ever had the channel. THEN on the box: logread | grep wifihaven-ws (TLS failure, connect timeout, a NAT/CGNAT rebind that killed the socket without a close handshake) and /etc/init.d/wifihaven status to confirm the sidecar is actually running. A -1 age means the sidecar cleared the sentinel on a clean disconnect; a large positive age means it holds the socket but the heartbeat pong is not landing (the #2731 shape). If instead EVERY router fires at once, suspect the API's /api/router/ws endpoint or the ingress, not the fleet."
+    }
+
+    # W16 (#2785) — the agent's cooperative loop STALLED. This is the state the
+    # 2026-09-13 incident was in for 4m11s, and the reason it reached us as "my
+    # child cannot open LEGO Builder" instead of as an alert: nothing about it
+    # was visible off the device. The agent's on_tick loop is single-fibered and
+    # drives BOTH the ws pushed-policy apply and the usage/event reporting path,
+    # so while it is blocked the router enforces stale policy AND goes silent —
+    # with the process alive, the websocket up, and W15 perfectly happy. That is
+    # precisely the gap W15 cannot see, which is why this is its own rule rather
+    # than a widened one.
+    #
+    # WHY A RATE AND NOT A GAUGE. `agent_tick_stall_total` is a counter the
+    # agent increments once per on_tick entry whose gap from the previous entry
+    # exceeded the router's tick_stall_threshold (30 s by default, against a 1 s
+    # idle heartbeat). There is no "currently stalled" gauge to read, and there
+    # could not be: a blocked loop is by definition not updating anything. The
+    # counter is the after-the-fact trace, pushed on the next metrics cycle.
+    #
+    # THRESHOLD 0 (any stall at all), for = 15m. Steady state MUST be zero: a
+    # healthy agent's ticks are one second apart and nothing in the loop is
+    # allowed to hold it for thirty — the step budget above it is 15 s. The calibration is honest about its
+    # window: this series does not exist yet, it ships with #2785, so there is
+    # no history to fit against. What we DO have is its predecessor.
+    # `usage_window_stall_total` — the #2024 detector, which observes the same
+    # failure one hop later — ran at 48/day on the prod family router, dead flat
+    # across all 14 days of retention, one increment every 30 minutes: the
+    # unsliced eb_refresh sweep #2785 bounds. So the pre-fix rate of the thing
+    # this rule watches was ~2/hour on the affected router and 0 on every other,
+    # and post-fix it should be 0 everywhere. `for = 15m` at a 60 s evaluation
+    # interval means a single isolated stall (an unusually slow apply, a router
+    # under memory pressure) resolves before it notifies, while anything
+    # recurring holds the condition true and fires.
+    #
+    # WHAT IT DOES NOT COVER, so absence is not read as health: a stall long
+    # enough to swallow the metrics push itself delays the counter reaching us
+    # rather than losing it (the registry is cumulative and never reset on
+    # failure), but an agent that dies outright stops pushing and lands in
+    # no_data → OK. That residual is the same one W14/W15 record and is not
+    # closed here.
+    #
+    # QUERY COST: one 15 m rate over a low-cardinality counter, so `window_s`
+    # covers the range selector.
+    w16 = {
+      title    = "W16 A router agent's tick loop is stalling"
+      expr     = "sum by (router_id) (rate(agent_tick_stall_total{env=\"prod\"}[15m]))"
+      window_s = 900
+      gt       = 0
+      for      = "15m"
+      paused   = false
+      summary  = "Router {{ $labels.router_id }} keeps stalling its agent tick loop: on_tick has gone more than 30s between entries against a 1s heartbeat, repeatedly, for at least the last 15 minutes. That loop is single-fibered and runs BOTH the websocket pushed-policy apply and the usage/event reporting path, so for the length of each stall this router is enforcing the snapshot it applied BEFORE the operator's last change, and is reporting no usage and no connection events. It will look healthy everywhere else: the process is up, the websocket is live, and W15 will not fire. This is the 2026-09-13 shape, where a granted time extension took 4m11s to reach the device. FIRST: the 'Which step blocked the tick' panel on the router-fleet dashboard — agent_slow_step_total{step} names the offender out of ws_apply / block_page_token / blocklist_refresh / eb_refresh / usage_report / metrics_push. If it is eb_refresh, check the sweep-size panel: that sweep re-resolves every member host of every subscribed blocklist and is sliced (eb_refresh_slice_seconds) rather than cheap. If it is one of the three curl steps, an upstream is sitting at its timeout bound — check http_connect_timeout / http_max_time on the box and whether that router's WAN is flapping (logread | grep udhcpc). If NO step is attributed, the time went somewhere this instrumentation does not cover yet, and that is worth an issue of its own. Corroborate against usage_window_stall_total on the same router: it observes the same failure one hop later, so the two should move together."
     }
   }
 }
