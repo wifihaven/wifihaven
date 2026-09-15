@@ -680,3 +680,16 @@ hosts:
   - mediayo.ai
   - paa-reporting-advertising.amazon
   - epicgameshubham.com
+  # traffic-driven additions (#2792): 30-day prod recent-apexes sweep (28
+  # devices, 2026-09-15). rtbedge.com/bidgust.com have no public company
+  # page but their observed subdomain shape (go-us. redirect + img./static.
+  # creative-serving) matches the RTB-bidder infra pattern — the name is the
+  # function, same reasoning as gamaibids.com/progrtblive.com (#2122/#2759).
+  # impression.link is corroborated by presence in the StevenBlack
+  # ads-extended feed. desync.com was investigated (matched the "track"
+  # keyword sweep) and turned out to be a public BitTorrent tracker
+  # (exodus.desync.com, port 6969) — same decoy class as opentrackr.org/
+  # popcorn-tracker.org, not added.
+  - rtbedge.com
+  - bidgust.com
+  - impression.link
