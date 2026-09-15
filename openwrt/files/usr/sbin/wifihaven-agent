@@ -1885,7 +1885,7 @@ conntrack.watch({
         -- #2782: `bl_hosts_by_mac` only when eb_refresh_blocklists is on — see
         -- the knob's comment. With it off this sweep is the AUTHORED
         -- extraBlocked hosts, which is the set #2782 is about and which fits
-        -- inside one slice (11 hosts / 0.95 s measured on prod).
+        -- inside one slice (11 hosts, 1.21 s cold / 0.11 s warm, measured on prod).
         ts.eb_inventory = eb_refresh.collect_inventory(
           eb_hosts_by_mac, eb_refresh_bl and bl_hosts_by_mac or {})
       end

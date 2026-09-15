@@ -121,14 +121,19 @@ regardless of traffic.
 
 How long ONE slice of the `eb_`/`bl_` ipset re-resolve sweep ([#1658](https://github.com/wifihaven/wifihaven/issues/1658))
 may hold the cooperative loop. The sweep runs every `eb_refresh_interval`
-(default `1800`) and re-resolves the whole inventory — every distinct
-`extraBlocked` host, plus **every member host of every subscribed category
-blocklist** — with two `dig` forks each, so its cost scales with blocklist
-size, not with household size.
+(default `1800`) and re-resolves its inventory with two resolver forks per
+host.
 
-Before #2785 it ran as one pass. On the prod family router the inventory is
-~160k hosts across ten subscribed lists, and a measured pass takes **~500
-seconds** (2000 real hosts in 6.2 s on the box, extrapolated; the agent
+**As of [#2782](https://github.com/wifihaven/wifihaven/issues/2782) that
+inventory is the distinct `extraBlocked` hosts only** — tens of entries, which
+complete in a single slice (11 hosts, 1.21 s cold / 0.11 s warm, measured on the
+prod family router). Category blocklist members are excluded by default: see
+`eb_refresh_blocklists` below. So in the shipped configuration this knob is
+nearly inert, and it matters only if that flag is turned on.
+
+Before #2785 it ran as one pass, and before #2782 the inventory included the
+blocklist catalog. On the prod family router that is ~161,500 hosts across ten
+subscribed lists, and a measured pass took **~500 seconds** (2000 real hosts in 6.2 s on the box, extrapolated; the agent
 reported a 558 s window during the 2026-09-13 incident). The loop is
 single-fibered, so for that whole time the agent applied no pushed policy and
 reported no usage or events — with both processes alive and nothing in the
@@ -139,6 +144,31 @@ The sweep is now sliced: each tick spends at most this many seconds, then
 yields and resumes at its cursor on the **next tick** — not the next
 `eb_refresh_interval` — so coverage per ageing window is unchanged and only a
 completed sweep re-arms the cadence.
+
+### `eb_refresh_blocklists` (default `0` — off) ([#2782](https://github.com/wifihaven/wifihaven/issues/2782))
+
+Whether the sweep above also walks **category blocklist members**. Off by
+default, and logged at startup so `logread` shows which mode a router is in.
+
+Slicing (#2785) stops the sweep holding the loop for one long pass; it does not
+make the catalog affordable. With a working resolver — #2782 fixed a `dig`
+shell-out that had never run — a cold resolve measures **0.3145 s/host** on the
+prod family router (600 hosts sampled evenly across the blocklist), so its
+161,523 members are a **14.1 h** full sweep. An in-progress sweep is due on
+every tick and spends its whole slice, and `conntrack_tick_interval` is `1`
+against a `2`-second slice, so turning this on parks the cooperative loop inside
+the sweep essentially permanently — plus ~8 sustained DNS qps into dnsmasq
+([#1864](https://github.com/wifihaven/wifihaven/issues/1864)) and continuous
+injection of the catalog into `bl_` sets that carry no `size` cap.
+
+It buys nothing in exchange: 14.1 h is far outside the 1 h kernel timeout the
+sweep exists to stay ahead of. The `bl_` sets are populated by dnsmasq's
+`--nftset=` callback at client-resolve time, which covers every host a client
+actually asks for.
+
+**Leave it off.** A top-up scoped to hosts actually observed resolved —
+bounded, and worth enabling — is
+[#2783](https://github.com/wifihaven/wifihaven/issues/2783).
 
 - **Lower** → tighter worst-case latency on every other timer (including a
   pushed policy apply) while a sweep is running; the sweep takes more ticks.
@@ -291,6 +321,7 @@ knob is exactly this UCI option (the init script's own log message says
 | `activity_sample_int` | 10 | 5–30 | `usage_report_interval`, `conntrack_tick_interval` |
 | `conntrack_tick_interval` | 1 | 1–5 | `activity_sample_int` (must stay well below) |
 | `eb_refresh_slice_seconds` | 2 | 1–10 | `eb_refresh_interval`, `tick_step_budget` (stay well below) |
+| `eb_refresh_blocklists` | 0 | 0 / 1 | `eb_refresh_slice_seconds` (only meaningful when this is `1`) |
 | `tick_stall_threshold` | 30 | 20–90 | `tick_step_budget` (must stay above it) |
 | `tick_step_budget` | 15 | 10–45 | `http_max_time` (must stay above it), `tick_stall_threshold` |
 | `http_connect_timeout` | 5 | 2–10 | `http_max_time` (max is clamped up to connect) |

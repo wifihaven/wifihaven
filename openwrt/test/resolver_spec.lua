@@ -109,6 +109,55 @@ describe("resolver.parse_nslookup", function()
   end)
 end)
 
+-- Older BusyBox numbers its answer lines, and may append the resolved name
+-- after the address. An image printing either form must not land the whole
+-- fleet in `empty_answer` (#2782 review).
+local A_OLD_BUSYBOX = table.concat({
+  "Server:\t\t127.0.0.1",
+  "Address:\t127.0.0.1:53",
+  "",
+  "Name:      example.test",
+  "Address 1: 93.184.216.34",
+  "Address 2: 93.184.216.35 alias.example.test",
+  "",
+}, "\n")
+
+describe("resolver.parse_nslookup — older BusyBox output forms", function()
+  it("accepts numbered Address lines, with or without a trailing name", function()
+    assert.are.same({ "93.184.216.34", "93.184.216.35" },
+      resolver.parse_nslookup(A_OLD_BUSYBOX, "v4"))
+  end)
+
+  it("still excludes the server block on the numbered form", function()
+    for _, ip in ipairs(resolver.parse_nslookup(A_OLD_BUSYBOX, "v4")) do
+      assert.are_not.equal("127.0.0.1", ip)
+    end
+  end)
+end)
+
+describe("resolver.parse_nslookup — ordering", function()
+  -- Parity with the `parse_dig_output` this replaces, whose "yields a sorted
+  -- list" test went out with it. nft does not care about add order; the specs
+  -- and the debug log do.
+  it("returns addresses sorted", function()
+    local out = table.concat({
+      "Server:\t\t127.0.0.1",
+      "Address:\t127.0.0.1:53",
+      "",
+      "Non-authoritative answer:",
+      "Name:\tx.example",
+      "Address: 10.0.0.9",
+      "Name:\tx.example",
+      "Address: 10.0.0.10",
+      "Name:\tx.example",
+      "Address: 10.0.0.1",
+      "",
+    }, "\n")
+    assert.are.same({ "10.0.0.1", "10.0.0.10", "10.0.0.9" },
+      resolver.parse_nslookup(out, "v4"))
+  end)
+end)
+
 describe("resolver.answered", function()
   it("is true whenever the resolver ran, records or not", function()
     assert.is_true(resolver.answered(A_WWW_AMAZON))

@@ -202,7 +202,8 @@ fi
 
 # (5) The eb_/bl_ re-resolve sweep (#1658) is the measured root cause: an
 #     unsliced pass over every subscribed blocklist member host, two dig forks
-#     each, inside the cooperative loop, every 1800s. It must be time-boxed and
+#     each (forks that could never exec — see #2782), inside the cooperative
+#     loop, every 1800s. Historical: #2782 gates the blocklist half off. It must be time-boxed and
 #     resumed from a cursor, and an in-progress sweep must continue on the next
 #     TICK rather than waiting out another full cadence.
 if grep -q 'deadline_seconds = eb_refresh_slice' "$SCRIPT"; then

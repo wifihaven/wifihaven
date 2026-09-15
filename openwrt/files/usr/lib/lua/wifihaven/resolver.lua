@@ -30,11 +30,22 @@
 -- again on a router that failed to pull one extra package, and `bind-dig` drags
 -- the bind libraries onto a flash-constrained device for one lookup.
 --
--- No per-query timeout is set, and none is available: BusyBox `nslookup` takes
--- no timeout/retry flags (v1.37.0 usage string) and OpenWRT ships no `timeout`
--- binary or applet, so the `+time=2 +tries=1` the old `dig` call carried has no
--- direct replacement. BusyBox's own bound is 5s per query, measured against a
--- blackholed server (192.0.2.1). That is why the tick-guard ordering still
+-- No per-query timeout is set, and none is available. Checked on the prod
+-- router (OpenWrt 25.12.3, mediatek/filogic), not inferred:
+--
+--   nslookup --help          -> no timeout/retry flags (BusyBox v1.37.0)
+--   which timeout            -> nothing
+--   busybox --list | grep -x timeout -> nothing
+--
+-- so the `+time=2 +tries=1` the old `dig` call carried has no direct
+-- replacement. BusyBox's own bound is 5s per query, measured against a
+-- blackholed server (192.0.2.1).
+--
+-- NB the agent has a `timeout 5 iw dev …` call (wifihaven-agent, station dump)
+-- which looks like a counter-example. It is not — it is the same bug in
+-- another subsystem: `timeout` is not there, so that command fails at exec and
+-- returns an empty station list. Tracked as #2794. Do not cite it as evidence
+-- that the applet is available. That is why the tick-guard ordering still
 -- holds: `eb_refresh.refresh` checks its deadline BETWEEN hosts, so one
 -- pathological host can overrun a slice by one host — two queries, ~10s — and
 -- 2s (eb_refresh_slice) + 10s = 12s stays under tick_step_budget (15s). It
@@ -119,7 +130,7 @@ function M.parse_nslookup(stdout, family)
     if in_answer then
       -- `Address 1:` / `Address 2:` is the older BusyBox form; accepting both
       -- costs nothing and keeps an older image off the empty_answer path.
-      local ip = line:match("^Address%s*%d*:%s+(%S+)$")
+      local ip = line:match("^Address%s*%d*:%s+(%S+)")
       local safe = ip and dns_tail_sets.safe_addr(ip)
       if safe then
         local is_v6 = safe:find(":", 1, true) ~= nil
