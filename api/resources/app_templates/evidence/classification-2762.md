@@ -313,6 +313,17 @@ every live entry sees at least one refresh per ageing window. A recycled address
 can therefore be wrongly dropped for at most the residual of one ageing window
 after the host stops resolving to it. Nothing here argues for dropping a host.
 
+> **Correction (#2782, 2026-09-13).** The paragraph above described what
+> `eb_refresh.lua` was written to do, not what it did. Its re-resolve shelled
+> out to `dig`, which OpenWRT does not ship and `openwrt/Makefile` never
+> depended on, so it had never added an element on any router — the bound
+> described here did not hold. Fixed in #2782 (BusyBox `nslookup`). The bound
+> still does not hold for blocklist MEMBERS: #2785 sliced the sweep so it cannot
+> stall the agent, and #2782 gates the blocklist half off by default because a
+> working resolver makes a full catalog sweep 14.1 h. Authored `extraBlocked`
+> hosts — which is what this file is about — are swept every cadence and do hold
+> the bound. Blocklist coverage is #2783.
+
 ## Validation (Step 5)
 
 `mill api.test.testOnly 'wifihaven.api.feature.AppTemplatesSpec'` — 38 tests

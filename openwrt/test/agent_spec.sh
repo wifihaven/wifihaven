@@ -202,7 +202,8 @@ fi
 
 # (5) The eb_/bl_ re-resolve sweep (#1658) is the measured root cause: an
 #     unsliced pass over every subscribed blocklist member host, two dig forks
-#     each, inside the cooperative loop, every 1800s. It must be time-boxed and
+#     each (forks that could never exec — see #2782), inside the cooperative
+#     loop, every 1800s. Historical: #2782 gates the blocklist half off. It must be time-boxed and
 #     resumed from a cursor, and an in-progress sweep must continue on the next
 #     TICK rather than waiting out another full cadence.
 if grep -q 'deadline_seconds = eb_refresh_slice' "$SCRIPT"; then
@@ -230,6 +231,37 @@ if grep -q 'eb_refresh_inventory_hosts' "$SCRIPT"; then
   check "agent reports the sweep inventory size (#2785)" ok
 else
   check "agent reports the sweep inventory size (#2785)" "no capacity signal for the sweep"
+fi
+
+# (5b) #2782: the sweep's blocklist half is the whole subscribed catalog —
+#      161,523 hosts on the prod family router. It cost nothing while `dig` was
+#      missing (every resolve failed at exec). With a working resolver it is
+#      0.3145 s/host measured on that router, i.e. a 14.1 h full sweep; and
+#      since an in-progress sweep is due on EVERY tick and spends its whole
+#      slice, enabling it would hold the cooperative loop essentially
+#      permanently — the loop that produced #2785 — plus sustained dnsmasq load
+#      (#1864) and continuous injection of the catalog into bl_ sets that carry
+#      no `size` cap. It is therefore behind an explicit named flag, OFF by
+#      default, until #2783 scopes the top-up to hosts actually seen resolved.
+if grep -q 'eb_refresh_bl and bl_hosts_by_mac or {}' "$SCRIPT"; then
+  check "blocklist members are gated out of the re-resolve sweep (#2782/#2783)" ok
+else
+  check "blocklist members are gated out of the re-resolve sweep (#2782/#2783)" \
+    "the sweep walks the whole blocklist catalog — at 0.3145s/host that is a 14.1h sweep holding the loop permanently"
+fi
+
+if grep -q 'uci_get("eb_refresh_blocklists", "0")' "$SCRIPT"; then
+  check "the blocklist-sweep flag defaults OFF and is named (#2782)" ok
+else
+  check "the blocklist-sweep flag defaults OFF and is named (#2782)" \
+    "no explicit eb_refresh_blocklists flag — a silent branch, not a named off-switch"
+fi
+
+if grep -q 'log.info("eb_refresh: blocklist members' "$SCRIPT"; then
+  check "the blocklist-sweep flag is logged at startup (#2782)" ok
+else
+  check "the blocklist-sweep flag is logged at startup (#2782)" \
+    "flag state is not logged — an operator cannot tell which mode the sweep is in (AGENTS.md no-dark-by-default)"
 fi
 
 # (6) A policy apply that lands MID-sweep leaves the sweep walking a stale

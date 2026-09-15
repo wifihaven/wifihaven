@@ -302,12 +302,30 @@ object MetricGuard {
     // hosts against the local dnsmasq and adds answered IPs back into the
     // per-host eb_<host> / per-blocklist bl_<id> nftables sets ahead of their
     // 1h `flags dynamic,timeout` aging out — closing the iOS-DNS-cache leak
-    // confirmed in prod for play.google.com (#1649). `result` is a small fixed
-    // enum: `ok` (resolver answered, IPs were added back to the set; counts
-    // resolved hosts not adds, so the rate is meaningful regardless of CDN
-    // fan-out) and `resolve_failed` (dig couldn't reach the local resolver, or
-    // the host failed the hermetic allow-list).
+    // confirmed in prod for play.google.com (#1649). Post-#2785 the sweep is
+    // sliced across ticks, so these count hosts per SLICE, not per sweep.
+    // `result` is a small fixed enum, all three values counting HOSTS (not
+    // adds, so the rate is meaningful regardless of CDN fan-out):
+    //   ok              resolver answered with at least one address
+    //   empty_answer    resolver ran and returned no address in either family.
+    //                   Split out from `ok` by #2782 because "ran but yielded
+    //                   nothing" is how that bug looked from here for months —
+    //                   an output shape the parser stops understanding is
+    //                   indistinguishable from NXDOMAIN otherwise. A steady
+    //                   background level is normal: ~20% of the prod router's
+    //                   blocklist members no longer resolve at all.
+    //   resolve_failed  the resolver could not run at all, or the host failed
+    //                   the hermetic allow-list
     "eb_refresh_total"                          -> Set("result", "router_id", "installation_id"),
+    // #2782 — nftables elements the re-resolve above actually added. This is
+    // the series that would have caught #2782: `eb_refresh_total{result="ok"}`
+    // read 179,349,241 on the prod family router while this quantity was zero,
+    // because the resolver shelled out to a `dig` OpenWRT does not ship and an
+    // empty answer counted as a success. A router with any extraBlocked or
+    // blocklist hosts shows a steady non-zero rate; `ok` climbing while this
+    // stays flat zero means the sweep is running and achieving nothing, which
+    // is the alarm condition. Unlabeled total — no per-host cardinality.
+    "eb_refresh_adds_total"                     -> Set("router_id", "installation_id"),
     // #2095 — extraAllowed carve re-seed heartbeat. policy.apply's `nft -f`
     // delete+recreates `table inet wifihaven`, emptying every per-(mac,host)
     // ea_/ea6_ carve set; the agent immediately backfills them from the

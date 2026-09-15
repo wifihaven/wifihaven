@@ -45,6 +45,7 @@ local render   = require("wifihaven.render")
 local paths    = require("wifihaven.paths")
 local dns_log  = require("wifihaven.dns_log")       -- #2095: dns_cache parse
 local dns_sets = require("wifihaven.dns_tail_sets") -- #2095: ea_/ea6_ backfill
+local resolver = require("wifihaven.resolver")   -- #2782: single DNS lookup path
 
 -- #2095: the apply-time ea_/ea6_ backfill consumes paths.dns_cache verbatim.
 -- The dns-tail sidecar is the SINGLE authority on cache freshness — it drops
@@ -106,16 +107,14 @@ local function default_read(path)
   return content
 end
 
--- Default smoke probe: `dig @127.0.0.1` and return the first line of stdout.
+-- Default smoke probe: resolve against the local dnsmasq and return the first A
+-- record. #2782: this shelled out to `dig`, which OpenWRT does not ship, so it
+-- always returned nil and `is_blocked_at_connection` always fired — prod logged
+-- 123 smoke_warn applies against 27 clean ones, all of them false. It now uses
+-- the same `wifihaven.resolver` (BusyBox `nslookup`) as eb_refresh, so the two
+-- resolution paths cannot drift again.
 local function default_dns_check(domain)
-  local cmd = string.format(
-    "dig @127.0.0.1 -p 53 %s +short +time=2 +tries=1 2>/dev/null",
-    domain)
-  local f = io.popen(cmd, "r")
-  if not f then return nil end
-  local out = f:read("*l")
-  f:close()
-  return out
+  return resolver.first_address(domain)
 end
 
 -- Sinkhole-shaped DNS answers. Post-#351 these are *failures* (DNS must
@@ -130,7 +129,7 @@ local BLOCKED_RESULTS = {
 
 -- True when the DNS answer indicates the resolver is *blocking* at the
 -- DNS layer (sinkhole IP) or returning no answer at all (NXDOMAIN /
--- SERVFAIL / timeout → empty first line from `dig +short`). Both shapes
+-- SERVFAIL / timeout → no address parsed out of the resolver's answer). Both shapes
 -- mean we are NOT getting a real upstream answer, which post-#351 is a
 -- regression — dnsmasq should resolve every host normally and let nft
 -- handle blocking.
