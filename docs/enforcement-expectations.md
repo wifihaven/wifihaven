@@ -61,8 +61,9 @@ time**, so there is a built-in warm-up.
    figure is not biased by where in the alphabet a run starts):
    **0.3145 s per cold host**.
 
-   - **Authored `extraBlocked` hosts** are tens of entries (11 on that router,
-     1.21 s cold / 0.11 s warm for the whole list). They are swept every `eb_refresh_interval`, so
+   - **Authored `extraBlocked` hosts** are tens of entries (11 on that router;
+     1.21 s cold, 0.11 s warm for the whole list). They are swept every
+     `eb_refresh_interval`, so
      they get their ≥1 refresh per 1 h ageing window and a blocked host stays
      blocked. This is the case
      [#2782](https://github.com/wifihaven/wifihaven/issues/2782) is about.

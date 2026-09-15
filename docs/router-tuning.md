@@ -126,15 +126,16 @@ host.
 
 **As of [#2782](https://github.com/wifihaven/wifihaven/issues/2782) that
 inventory is the distinct `extraBlocked` hosts only** — tens of entries, which
-complete in a single slice (11 hosts, 1.21 s cold / 0.11 s warm, measured on the
-prod family router). Category blocklist members are excluded by default: see
+complete in a single slice (11 hosts, 1.21 s cold / 0.11 s warm, measured on
+the prod family router). Category blocklist members are excluded by default: see
 `eb_refresh_blocklists` below. So in the shipped configuration this knob is
 nearly inert, and it matters only if that flag is turned on.
 
 Before #2785 it ran as one pass, and before #2782 the inventory included the
-blocklist catalog. On the prod family router that is ~161,500 hosts across ten
-subscribed lists, and a measured pass took **~500 seconds** (2000 real hosts in 6.2 s on the box, extrapolated; the agent
-reported a 558 s window during the 2026-09-13 incident). The loop is
+blocklist catalog. On the prod family router that is ten subscribed lists
+(161,523 members), and a measured pass took **~500 seconds** (2000 real hosts
+in 6.2 s on the box, extrapolated; the agent reported a 558 s window during the
+2026-09-13 incident). The loop is
 single-fibered, so for that whole time the agent applied no pushed policy and
 reported no usage or events — with both processes alive and nothing in the
 syslog but one warning. That is the failure `usage_window_stall_total` had been
@@ -144,6 +145,18 @@ The sweep is now sliced: each tick spends at most this many seconds, then
 yields and resumes at its cursor on the **next tick** — not the next
 `eb_refresh_interval` — so coverage per ageing window is unchanged and only a
 completed sweep re-arms the cadence.
+
+- **Lower** → tighter worst-case latency on every other timer (including a
+  pushed policy apply) while a sweep is running; the sweep takes more ticks.
+- **Raise** → the sweep finishes in fewer ticks; a pushed policy change can
+  wait up to this long behind it. Keep it **well below** `tick_step_budget`,
+  or a normal slice will start attributing itself as a slow step.
+- **Watch**: `eb_refresh_inventory_hosts` (the "eb_/bl_ re-resolve sweep size"
+  panel). With `eb_refresh_blocklists=0` — the default — that reads the
+  authored host count, tens of entries, and the sweep completes in one slice.
+  Turn the flag on and it reads the blocklist catalog, where slicing makes the
+  sweep safe but not cheap: at 161,523 hosts it still cannot complete inside
+  the 1 h nftables set timeout it exists to beat. See the next knob.
 
 ### `eb_refresh_blocklists` (default `0` — off) ([#2782](https://github.com/wifihaven/wifihaven/issues/2782))
 
@@ -170,16 +183,6 @@ actually asks for.
 bounded, and worth enabling — is
 [#2783](https://github.com/wifihaven/wifihaven/issues/2783).
 
-- **Lower** → tighter worst-case latency on every other timer (including a
-  pushed policy apply) while a sweep is running; the sweep takes more ticks.
-- **Raise** → the sweep finishes in fewer ticks; a pushed policy change can
-  wait up to this long behind it. Keep it **well below** `tick_step_budget`,
-  or a normal slice will start attributing itself as a slow step.
-- **Watch**: `eb_refresh_inventory_hosts` (the "eb_/bl_ re-resolve sweep size"
-  panel). Slicing makes the sweep safe, not cheap — at ~160k it still cannot
-  complete inside the 1 h nftables set timeout it exists to beat. That is a
-  design question about re-resolving blocklist membership at all, tracked
-  separately.
 
 ### `tick_stall_threshold` (default `30`) and `tick_step_budget` (default `15`) ([#2785](https://github.com/wifihaven/wifihaven/issues/2785))
 

@@ -130,7 +130,13 @@ function M.parse_nslookup(stdout, family)
     if in_answer then
       -- `Address 1:` / `Address 2:` is the older BusyBox form; accepting both
       -- costs nothing and keeps an older image off the empty_answer path.
-      local ip = line:match("^Address%s*%d*:%s+(%S+)")
+      -- `[%x%.:]+` not `%S+`: dropping the end anchor (older BusyBox appends
+      -- the resolved name after the address) would otherwise let a
+      -- `127.0.0.1:53`-shaped token through, and `dns_tail_sets.safe_addr`
+      -- accepts that character set unchanged. The answer-section gate above
+      -- makes it unreachable; this keeps the narrow match as the second line of
+      -- defence, which is what the anchor used to be.
+      local ip = line:match("^Address%s*%d*:%s+([%x%.:]+)")
       local safe = ip and dns_tail_sets.safe_addr(ip)
       if safe then
         local is_v6 = safe:find(":", 1, true) ~= nil
