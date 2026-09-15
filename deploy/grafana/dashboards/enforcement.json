@@ -311,7 +311,7 @@
     {
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "title": "eb_/bl_ ipset refresh failure ratio (#1658)",
-      "description": "sum(rate(eb_refresh_total{result=\"resolve_failed\"})) / sum(rate(eb_refresh_total{result=~\"ok|empty_answer|resolve_failed\"})) over 5m — fraction of ATTEMPTED re-resolves that failed (resolver unreachable / hermetic-allowlist reject). #2782: the denominator counts only attempts, excluding the `skipped_*` values, which are deferred or capped work rather than failed attempts and would otherwise dilute the ratio. A spike above ~0.1 means the periodic heartbeat is no longer keeping the sets warm — the iOS-DNS-cache leak (#1649) returns when failures dominate.",
+      "description": "sum(rate(eb_refresh_total{result=\"resolve_failed\"})) / sum(rate(eb_refresh_total{result=~\"ok|empty_answer|resolve_failed\"})) over 5m — fraction of ATTEMPTED re-resolves that failed (resolver unreachable / hermetic-allowlist reject). #2782: the denominator names the attempt outcomes explicitly (`ok|empty_answer|resolve_failed`) rather than summing the whole series, so a future non-attempt outcome cannot silently dilute the ratio. A spike above ~0.1 means the periodic heartbeat is no longer keeping the sets warm — the iOS-DNS-cache leak (#1649) returns when failures dominate.",
       "type": "timeseries",
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 33 },
       "id": 10,
