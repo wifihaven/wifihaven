@@ -203,6 +203,52 @@ that edit in the same PR.** If a step above is now wrong, fix the step too.
 
 ## Learnings log (newest first)
 
+- **2026-09-15** (#2792) — **A "track"-substring apex whose subdomains
+  are marketing-site-shaped (`info.`/`www.`) rather than redirect/pixel-shaped
+  (`go-us.`/`sync.`/`bid.`) is a strong signal of a false-positive consumer
+  brand, not ad infra — check subdomain shape as well as company identity.**
+  `insidetracker.com` (a legitimate MIT-spinout health/biomarker-testing
+  brand) matched the ads `track` keyword sweep on name alone; its only
+  subdomains were `info.` and `www.`, consistent with an ordinary marketing
+  site rather than a tracker. Contrast with the same run's `rtbedge.com` /
+  `bidgust.com`, whose `go-us.` (redirect) + `img.`/`static.` (creative)
+  subdomain shape corroborated the RTB-bidder-name-is-the-function call even
+  with zero public company page.
+- **2026-09-15** (#2792) — **New BitTorrent-tracker decoy: `desync.com`**
+  (17,708 hits, matched the ads `track` substring sweep) — its only observed
+  subdomain `exodus.desync.com` is confirmed by two independent sources
+  (similarweb + justdailytrackers.com) to be a public BT tracker on port
+  6969. Add to the running BT-tracker-decoy list alongside `opentrackr.org` /
+  `popcorn-tracker.org` / `demonii.com` / `coppersurfer.tk` /
+  `internetwarriors.net` — a high hit-count with a tiny bytes/hit ratio on a
+  `track`-shaped apex is as likely to be a torrent tracker as ad infra;
+  always check the specific subdomain's identity, never the apex name alone.
+- **2026-09-15** (#2792) — **A `.ai`-TLD company whose actual product is
+  B2B (IT consulting, docs-search widgets, OTT/CTV app tooling) is
+  out-of-scope for `ai.yml` even with zero ad-tech signal — the category is
+  consumer chatbot/assistant/companion/generator products a household would
+  block, not enterprise SaaS.** Three more instances this pass: `dxtech.ai`
+  (AI-driven IT-consulting/digital-transformation for SMEs), `kapa.ai` (a
+  RAG docs-Q&A widget OTHER companies embed on their own docs sites — same
+  content-collateral-widget class as `trinitymedia.ai`/`gpteng.co`, #2729),
+  `castify.ai` (OTT/CTV app-builder SaaS for content owners). None read as
+  ad-tech either — they're just outside `ai.yml`'s consumer-product scope
+  entirely. Widens the #2729 "developer tools are out of scope" learning to
+  B2B SaaS generally: the test is "would a household profile plausibly want
+  this blocked as a consumer AI product," not "is this AI-branded."
+- **2026-09-15** (#2792) — **When two candidates share a name root but only
+  one has been previously investigated and curated (e.g. `higgsfield.ai`
+  already in `ai.yml`, a bare `higgs.ai` newly surfacing), do not assume the
+  new one is the same company — a generic short-name apex is exactly the
+  shape that collides across unrelated products.** `higgs.ai` (single
+  `images.` subdomain, 4 hits) and `flux.ai` (real SaaS shape: `app.`/
+  `events-api.`/`payments.`/`shortcircuit-cdn.` subdomains, 22 hits) were
+  both held out unverified this pass — search could not confirm either
+  belongs to a specific company (Higgsfield's own apex is `higgsfield.ai`,
+  already curated; "Flux" is also a no-code app-builder brand unrelated to
+  Black Forest Labs' image model). A plausible-sounding name plus in-scope
+  product category is not enough without a source naming the actual owner —
+  carry both forward for a future pass rather than guessing.
 - **2026-09-08** (#2759) — **A `.ai`-TLD company whose actual product is AI-
   driven programmatic ad delivery (Dynamic Creative Optimization) is a third
   confirmed instance of the `axon.ai`/`programmaticx.ai`/`trygravity.ai`/
