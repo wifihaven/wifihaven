@@ -183,7 +183,6 @@ actually asks for.
 bounded, and worth enabling — is
 [#2783](https://github.com/wifihaven/wifihaven/issues/2783).
 
-
 ### `tick_stall_threshold` (default `30`) and `tick_step_budget` (default `15`) ([#2785](https://github.com/wifihaven/wifihaven/issues/2785))
 
 The direct on_tick liveness signals, and the reason the 2026-09-13 stall

@@ -130,13 +130,24 @@ function M.parse_nslookup(stdout, family)
     if in_answer then
       -- `Address 1:` / `Address 2:` is the older BusyBox form; accepting both
       -- costs nothing and keeps an older image off the empty_answer path.
-      -- `[%x%.:]+` not `%S+`: dropping the end anchor (older BusyBox appends
-      -- the resolved name after the address) would otherwise let a
-      -- `127.0.0.1:53`-shaped token through, and `dns_tail_sets.safe_addr`
-      -- accepts that character set unchanged. The answer-section gate above
-      -- makes it unreachable; this keeps the narrow match as the second line of
-      -- defence, which is what the anchor used to be.
-      local ip = line:match("^Address%s*%d*:%s+([%x%.:]+)")
+      -- Capture the WHOLE token, then screen it — do not narrow the capture
+      -- class itself. Verified on the router's Lua 5.1:
+      --
+      --   "Address 1: bad.host.name"
+      --     (%S+)      -> "bad.host.name"  safe_addr rejects it
+      --     ([%x%.:]+) -> "bad."           safe_addr ACCEPTS it
+      --
+      -- i.e. a narrowed class truncates at the first non-hex letter and hands
+      -- the screen a prefix that passes, which is worse than no narrowing. The
+      -- trailing `$` that used to do this job had to go so older BusyBox's
+      -- "Address 1: <ip> <name>" form parses at all.
+      --
+      -- This is a SHAPE screen, not the thing that keeps the server block out:
+      -- `127.0.0.1:53` passes it (as it passed `%S+` and `[%x%.:]+` alike).
+      -- The answer-section gate above is what excludes the server block, and
+      -- it is what a spec pins.
+      local tok = line:match("^Address%s*%d*:%s+(%S+)")
+      local ip  = tok and tok:match("^[%x%.:]+$") and tok
       local safe = ip and dns_tail_sets.safe_addr(ip)
       if safe then
         local is_v6 = safe:find(":", 1, true) ~= nil

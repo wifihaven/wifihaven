@@ -135,6 +135,27 @@ describe("resolver.parse_nslookup — older BusyBox output forms", function()
   end)
 end)
 
+describe("resolver.parse_nslookup — malformed answer tokens", function()
+  -- The capture takes the whole token and screens it, rather than narrowing
+  -- the capture class. A narrowed class truncates `bad.host.name` to `bad.`,
+  -- which `dns_tail_sets.safe_addr` then accepts — so narrowing would ADD a
+  -- junk element instead of rejecting one (#2782 review, verified on Lua 5.1).
+  it("drops a non-address token instead of truncating it to a passing prefix", function()
+    local out = table.concat({
+      "Server:\t\t127.0.0.1",
+      "Address:\t127.0.0.1:53",
+      "",
+      "Name:\tx.example",
+      "Address 1: bad.host.name",
+      "Address 2: 10.0.0.7",
+      "",
+    }, "\n")
+    -- LIVENESS ANCHOR: the well-formed sibling on the very next line still
+    -- parses, so "bad.host.name is absent" is a rejection and not a dead parser.
+    assert.are.same({ "10.0.0.7" }, resolver.parse_nslookup(out, "v4"))
+  end)
+end)
+
 describe("resolver.parse_nslookup — ordering", function()
   -- Parity with the `parse_dig_output` this replaces, whose "yields a sorted
   -- list" test went out with it. nft does not care about add order; the specs
