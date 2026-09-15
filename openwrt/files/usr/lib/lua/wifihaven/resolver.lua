@@ -30,6 +30,18 @@
 -- again on a router that failed to pull one extra package, and `bind-dig` drags
 -- the bind libraries onto a flash-constrained device for one lookup.
 --
+-- No per-query timeout is set, and none is available: BusyBox `nslookup` takes
+-- no timeout/retry flags (v1.37.0 usage string) and OpenWRT ships no `timeout`
+-- binary or applet, so the `+time=2 +tries=1` the old `dig` call carried has no
+-- direct replacement. BusyBox's own bound is 5s per query, measured against a
+-- blackholed server (192.0.2.1). That is why the tick-guard ordering still
+-- holds: `eb_refresh.refresh` checks its deadline BETWEEN hosts, so one
+-- pathological host can overrun a slice by one host — two queries, ~10s — and
+-- 2s (eb_refresh_slice) + 10s = 12s stays under tick_step_budget (15s). It
+-- holds because the sweep walks the AUTHORED hosts only; the blocklist catalog
+-- is gated off (`eb_refresh_blocklists`, see the agent), and a second pass in
+-- the same tick would have doubled that overrun past the budget.
+--
 -- Queries go to 127.0.0.1:53 — the local dnsmasq — deliberately: that is the
 -- same resolution path that drives the `--nftset=` callback, so a lookup here
 -- populates the kernel set as a side effect as well as returning the addresses
@@ -105,7 +117,9 @@ function M.parse_nslookup(stdout, family)
       end
     end
     if in_answer then
-      local ip = line:match("^Address:%s+(%S+)$")
+      -- `Address 1:` / `Address 2:` is the older BusyBox form; accepting both
+      -- costs nothing and keeps an older image off the empty_answer path.
+      local ip = line:match("^Address%s*%d*:%s+(%S+)$")
       local safe = ip and dns_tail_sets.safe_addr(ip)
       if safe then
         local is_v6 = safe:find(":", 1, true) ~= nil
@@ -116,6 +130,9 @@ function M.parse_nslookup(stdout, family)
       end
     end
   end
+  -- Sorted, matching the `parse_dig_output` this replaces. nft does not care
+  -- about add order; determinism keeps specs and logs stable.
+  table.sort(out)
   return out
 end
 

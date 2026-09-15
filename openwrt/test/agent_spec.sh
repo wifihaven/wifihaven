@@ -232,32 +232,35 @@ else
   check "agent reports the sweep inventory size (#2785)" "no capacity signal for the sweep"
 fi
 
-# (5b) #2782: the sweep walks eb_hosts and bl_pairs as ONE cursor space, so an
-#      authored extraBlocked host is visited once per SWEEP. That was free while
-#      the resolver was broken. With a working resolver a full sweep on the prod
-#      family router measures ~11.5 h (161,534 hosts x 0.2555 s/host, measured on
-#      the device), against a 1 h kernel timeout on the eb_ sets — so the
-#      authored hosts, which are the #2782 case, would sit unrefreshed for most
-#      of every sweep and a blocked host would come back to life.
-#
-#      The authored hosts are tiny (11 hosts / 0.95 s measured) and must
-#      therefore get their OWN cadence pass, independent of where the blocklist
-#      cursor happens to be. It uses the same primitive and the same slice
-#      deadline, so it cannot become an unbounded pass of its own.
-if grep -q 'start_index      = ts\.eb_auth_cursor' "$SCRIPT" \
-   && grep -q 'ts\.eb_auth_cursor = ' "$SCRIPT"; then
-  check "authored extraBlocked hosts refresh on their own cadence (#2782)" ok
+# (5b) #2782: the sweep's blocklist half is the whole subscribed catalog —
+#      161,523 hosts on the prod family router. It cost nothing while `dig` was
+#      missing (every resolve failed at exec). With a working resolver it is
+#      0.3145 s/host measured on that router, i.e. a 14.1 h full sweep; and
+#      since an in-progress sweep is due on EVERY tick and spends its whole
+#      slice, enabling it would hold the cooperative loop essentially
+#      permanently — the loop that produced #2785 — plus sustained dnsmasq load
+#      (#1864) and continuous injection of the catalog into bl_ sets that carry
+#      no `size` cap. It is therefore behind an explicit named flag, OFF by
+#      default, until #2783 scopes the top-up to hosts actually seen resolved.
+if grep -q 'eb_refresh_bl and bl_hosts_by_mac or {}' "$SCRIPT"; then
+  check "blocklist members are gated out of the re-resolve sweep (#2782/#2783)" ok
 else
-  check "authored extraBlocked hosts refresh on their own cadence (#2782)" \
-    "no authored-hosts pass — extraBlocked hosts are refreshed once per ~11.5h sweep, but their nft sets age out after 1h"
+  check "blocklist members are gated out of the re-resolve sweep (#2782/#2783)" \
+    "the sweep walks the whole blocklist catalog — at 0.3145s/host that is a 14.1h sweep holding the loop permanently"
 fi
 
-if grep -q 'deadline_seconds = eb_refresh_slice,' "$SCRIPT" \
-   && [ "$(grep -c 'deadline_seconds = eb_refresh_slice,' "$SCRIPT")" -ge 2 ]; then
-  check "the authored-hosts pass is time-boxed too (#2782)" ok
+if grep -q 'uci_get("eb_refresh_blocklists", "0")' "$SCRIPT"; then
+  check "the blocklist-sweep flag defaults OFF and is named (#2782)" ok
 else
-  check "the authored-hosts pass is time-boxed too (#2782)" \
-    "the authored-hosts pass has no slice deadline — a long authored list would hold the loop, reintroducing #2785"
+  check "the blocklist-sweep flag defaults OFF and is named (#2782)" \
+    "no explicit eb_refresh_blocklists flag — a silent branch, not a named off-switch"
+fi
+
+if grep -q 'log.info("eb_refresh: blocklist members' "$SCRIPT"; then
+  check "the blocklist-sweep flag is logged at startup (#2782)" ok
+else
+  check "the blocklist-sweep flag is logged at startup (#2782)" \
+    "flag state is not logged — an operator cannot tell which mode the sweep is in (AGENTS.md no-dark-by-default)"
 fi
 
 # (6) A policy apply that lands MID-sweep leaves the sweep walking a stale

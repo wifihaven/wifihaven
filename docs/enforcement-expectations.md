@@ -55,25 +55,33 @@ time**, so there is a built-in warm-up.
    on any router and a blocked host stayed reachable for as long as a client
    held its cached IP. It now uses BusyBox `nslookup`.
 
-   A working resolver is not free, and that changes what the sweep costs.
-   Measured on the prod router (BusyBox `nslookup`, Lua 5.1, 100 hosts = 200
-   lookups): **1 s warm**, **11 s cold** — so ~0.11 s per cold host. The sweep's
-   inventory is every `extraBlocked` host **plus every member of every
-   subscribed blocklist**, which on the prod family router is ~161,500 entries,
-   and the blocklist portion is cold by construction.
+   A working resolver is not free, and that is why the sweep's two halves are
+   now treated differently. Measured on the prod family router (BusyBox
+   `nslookup`, Lua 5.1, 600 hosts sampled evenly across the blocklist so the
+   figure is not biased by where in the alphabet a run starts):
+   **0.3145 s per cold host**.
 
-   [#2785](https://github.com/wifihaven/wifihaven/issues/2785) already bounds
-   what that can do to the agent: the sweep is sliced at
-   `eb_refresh_slice_seconds` per tick and resumes at its cursor on the next
-   tick, so it can no longer hold `on_tick`. What it does **not** do is make a
-   full sweep fit inside one ageing window — at the measured cold rate a
-   161,500-host inventory is hours of slices against a 1800 s cadence. So:
-   `extraBlocked` (tens of authored hosts) is refreshed well within the 1 h
-   kernel timeout, and **blocklist members are not** — they continue to rely on
-   dnsmasq's `--nftset=` callback at client-resolve time, which covers every
-   host a client actually asks for. Scoping the blocklist top-up to hosts we
-   have observed resolved, rather than to the whole catalog, is
-   [#2783](https://github.com/wifihaven/wifihaven/issues/2783).
+   - **Authored `extraBlocked` hosts** are tens of entries (11 on that router,
+     0.95 s for the whole list). They are swept every `eb_refresh_interval`, so
+     they get their ≥1 refresh per 1 h ageing window and a blocked host stays
+     blocked. This is the case
+     [#2782](https://github.com/wifihaven/wifihaven/issues/2782) is about.
+   - **Category blocklist members** are the whole subscribed catalog — 161,523
+     entries on that router, so a full sweep is **14.1 h**. Since an in-progress
+     sweep is due on every tick and spends its whole
+     `eb_refresh_slice_seconds`, sweeping them would hold the agent's
+     cooperative loop essentially permanently — the loop whose stall was the
+     [#2785](https://github.com/wifihaven/wifihaven/issues/2785) incident — for
+     no coverage benefit, since 14.1 h is far outside the 1 h window anyway.
+     They are therefore **off by default**, behind the named
+     `eb_refresh_blocklists` flag, and continue to rely on dnsmasq's
+     `--nftset=` callback at client-resolve time, which covers every host a
+     client actually asks for.
+
+   Scoping that top-up to hosts we have observed resolved — bounded and
+   targeted rather than the whole catalog — is
+   [#2783](https://github.com/wifihaven/wifihaven/issues/2783), and that flag is
+   what it turns on.
 
 4. **Category blocklists warm up over time.** Curated-category lists (ads,
    adult, …) are fetched on a periodic cadence — `blocklist_refresh_interval`,
@@ -194,6 +202,7 @@ step in
 | `ws.apply_interval` | 2 s | [`etc/config/wifihaven`](../openwrt/files/etc/config/wifihaven) |
 | `blocklist_refresh_interval` | 3600 s | [`usr/sbin/wifihaven-agent`](../openwrt/files/usr/sbin/wifihaven-agent) |
 | `eb_refresh_interval` | 1800 s | [`usr/sbin/wifihaven-agent`](../openwrt/files/usr/sbin/wifihaven-agent) |
+| `eb_refresh_blocklists` | `0` (off) | [`usr/sbin/wifihaven-agent`](../openwrt/files/usr/sbin/wifihaven-agent) |
 | `block_ip_only` | `false` | [`V17__profile_block_ip_only.sql`](../api/resources/db/migration/V17__profile_block_ip_only.sql) |
 
 ---

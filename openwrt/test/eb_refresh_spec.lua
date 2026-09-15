@@ -344,6 +344,28 @@ describe("refresh empty-answer accounting (#2782 review)", function()
   end)
 end)
 
+-- ---------------------------------------------------------------------------
+-- #2785 — the sweep must be time-boxed and resumable
+-- ---------------------------------------------------------------------------
+--
+-- ROOT CAUSE of the 2026-09-13 prod stall, measured rather than reasoned:
+-- usage_window_stall_total on the family router incremented at 17:13, 17:43,
+-- 18:13, 18:44, 19:14 — every 30 minutes, 48/day, dead flat for the full 14
+-- days of retention. Nothing else in on_tick runs on a 30-minute cadence;
+-- eb_refresh_interval defaults to 1800 s. The 19:14 increment is the incident.
+--
+-- The sweep walks the WHOLE inventory in one pass with two `dig` forks per
+-- host, serially, inside the agent's single-fibered on_tick. On that router the
+-- inventory is every member host of ten subscribed blocklists (~160k distinct
+-- hosts in /etc/wifihaven/blocklists), and the pass took 558 s — the exact
+-- window the agent reported. For those 558 s the loop applied no pushed policy
+-- and reported no usage or events, which is both halves of the incident.
+--
+-- The fix keeps the coverage #1658 needs (every entry re-resolved ahead of the
+-- 1h nft set timeout) and gives up only the "one pass, one tick" property: a
+-- pass spends at most its budget, returns where it got to, and the next tick
+-- resumes there.
+
 describe("refresh — time-boxed, resumable sweep (#2785)", function()
   local function fake_clock(step)
     local t = 0

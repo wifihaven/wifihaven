@@ -135,12 +135,16 @@ local blocklist_int = tonumber(uci_get("blocklist_refresh_interval", "3600"))
 -- agent periodically re-resolves the inventory of (extraBlocked, blocklist)
 -- hosts (collapsed across MACs — the sets are global) so each entry sees
 -- ≥1 refresh per ageing window. Default 1800 s = 30 min — strictly below
--- the 1h kernel timeout, ~2 refreshes per window, ≈one `dig` per host every
--- 30 min (negligible router load even at ~50 distinct hosts).
+-- the 1h kernel timeout, ~2 refreshes per window. #2782: that is one
+-- `nslookup` PAIR (A + AAAA) per host per 30 min at a measured 0.3145 s/host,
+-- so it is negligible for the authored extraBlocked hosts (tens) and emphatically
+-- NOT negligible for blocklist members (161,523 on prod) — which is why the
+-- blocklist half is behind `eb_refresh_blocklists`, off by default.
 local eb_refresh_int = tonumber(uci_get("eb_refresh_interval", "1800"))
 -- #2785: how long ONE slice of that sweep may hold the cooperative loop. The
 -- sweep itself was the 2026-09-13 stall: it walked the whole inventory in a
--- single pass with two `dig` forks per host, and on the prod family router —
+-- single pass with two resolver forks per host — `dig` forks that could never
+-- exec, which cost a fork+exec pair each all the same — and on the prod router —
 -- where the inventory is every member host of ten subscribed blocklists — that
 -- pass took 558 s, during which no pushed policy was applied and nothing was
 -- reported. The pass is now sliced: at most this many seconds per tick, then it
@@ -150,6 +154,34 @@ local eb_refresh_int = tonumber(uci_get("eb_refresh_interval", "1800"))
 -- seconds" bar and well under tick_step_budget, so a slow-step attribution on
 -- eb_refresh now means one individual resolve blew the slice, not the sweep.
 local eb_refresh_slice = tonumber(uci_get("eb_refresh_slice_seconds", "2")) or 2
+-- #2782: whether the re-resolve sweep also walks CATEGORY BLOCKLIST members.
+--
+-- Off by default, and that is a deliberate named flag rather than a silent
+-- branch (AGENTS.md §no-dark-by-default) — it is logged at startup below.
+--
+-- Why off: the sweep's blocklist half is the whole subscribed catalog —
+-- 161,523 hosts on the prod family router. It cost nothing while the resolver
+-- was broken, because `dig` does not exist and every resolve failed at exec.
+-- With a working resolver it costs 0.3145 s/host (measured on that router over
+-- an evenly-sampled 600-host run), i.e. a 14.1 h full sweep. Since an
+-- in-progress sweep is due on EVERY tick and each tick spends its whole
+-- `eb_refresh_slice`, turning it on would put the cooperative loop inside the
+-- sweep essentially permanently — the same loop that produced #2785 — plus
+-- ~8 sustained DNS qps into dnsmasq (#1864) and continuous injection of the
+-- catalog into `bl_` sets that carry no `size` cap.
+--
+-- The blocklist sets do not need it: their primary population path is
+-- dnsmasq's `--nftset=` callback at client-resolve time, which covers every
+-- host a client actually asks for. A top-up scoped to hosts we have OBSERVED
+-- resolved — bounded and targeted, instead of the whole catalog — is #2783,
+-- and this flag is what #2783 turns on.
+local eb_refresh_bl    = uci_get("eb_refresh_blocklists", "0") == "1"
+-- Named flags are logged at startup, not inferred from behaviour (AGENTS.md
+-- §no-dark-by-default): an operator reading logread can tell which mode the
+-- sweep is in without reading the source.
+log.info("eb_refresh: blocklist members %s (eb_refresh_blocklists=%s); " ..
+         "authored extraBlocked hosts are always swept",
+         eb_refresh_bl and "INCLUDED" or "excluded", eb_refresh_bl and "1" or "0")
 -- #1782: per-shard byte cap. With the streaming shard path each blocklist is
 -- rendered line-by-line from the on-disk cache file directly to a per-id conf
 -- shard, so the agent's Lua heap never holds the full member set. The cap
@@ -1208,8 +1240,6 @@ local ts = {
   last_metrics_run   = 0,
   last_blocklist_run  = 0,  -- #1412: category blocklist refresh cadence
   last_eb_refresh_run = 0,  -- #1658: eb_/bl_ ipset re-resolve cadence
-  last_eb_auth_run    = 0,  -- #2782: authored-extraBlocked re-resolve cadence
-  eb_auth_cursor      = 0,  -- #2782: cursor for the authored-hosts pass
   -- #2785: the eb_/bl_ sweep is time-boxed and resumable. `eb_cursor` is where
   -- the last slice stopped (0 = no sweep in progress); `eb_inventory` is the
   -- flattened host list, built ONCE per sweep. Rebuilding it per slice would
@@ -1505,38 +1535,6 @@ local nflog_state  = { offset = 0 }
 local nflog_dedup  = nflog.new_dedup({ window_seconds = nflog_window })
 -- The shared conntrack event batcher (used by the nflog drain) lives on ts so
 -- on_tick captures it as one upvalue with the rest of the per-tick state (#1930).
-
--- #2782: one reporter for every eb_refresh pass. Both the authored-hosts pass
--- and the sliced blocklist sweep call the same primitive, so they must report
--- the same outcomes the same way — a second copy of this would be exactly the
--- drift the single-source-of-truth rule exists to stop.
-local function wh_report_eb_refresh(stats)
-  if stats.resolves_ok > 0 then
-    metrics.inc_counter(mreg, "eb_refresh_total", { result = "ok" },
-                        stats.resolves_ok)
-  end
-  -- A resolve that RAN and returned nothing is not a success. An output shape
-  -- the parser stops understanding is otherwise indistinguishable from
-  -- NXDOMAIN, which is how this module read as healthy for months.
-  if stats.resolves_empty > 0 then
-    metrics.inc_counter(mreg, "eb_refresh_total", { result = "empty_answer" },
-                        stats.resolves_empty)
-  end
-  if stats.resolves_err > 0 then
-    metrics.inc_counter(mreg, "eb_refresh_total", { result = "resolve_failed" },
-                        stats.resolves_err)
-    -- A resolver that cannot run used to report itself as ok. Say it out loud —
-    -- this is the signal that the sets are going stale.
-    log.warn("eb_refresh: %d of %d resolves failed; eb_/bl_ sets may be " ..
-             "going stale (blocked hosts stop being blocked)",
-             stats.resolves_err, stats.hosts)
-  end
-  -- `adds` is the quantity that read zero for months while resolves_ok read
-  -- 179,349,241. It is the series that would have caught #2782.
-  if stats.adds > 0 then
-    metrics.inc_counter(mreg, "eb_refresh_adds_total", {}, stats.adds)
-  end
-end
 
 conntrack.watch({
   router_id       = router_id,
@@ -1868,7 +1866,7 @@ conntrack.watch({
     -- explicitly-blocked host (the prod leak diagnosed in #1649). Walk the
     -- per-MAC inventory `render.update_shared` rebuilt after the last apply,
     -- collapse to distinct hosts (sets are global, not per-MAC), and re-resolve
-    -- each one via dig→dnsmasq, adding answers back into the destination
+    -- each one via the local dnsmasq, adding answers back into the destination
     -- sets. Independent of the policy/blocklist timers — runs against the
     -- last-applied snapshot so a stable (304-only) household still gets
     -- refreshed. Skipped while we're in failover render: the failover chain
@@ -1881,61 +1879,15 @@ conntrack.watch({
     -- sweep and reused across its slices: collect_inventory walks and sorts
     -- every subscribed blocklist member, and doing that per slice would put
     -- back the cost we are taking out.
-    -- #2782: the AUTHORED extraBlocked hosts, on their own cadence.
-    --
-    -- The sweep below walks eb_hosts and bl_pairs as one cursor space, so an
-    -- authored host is visited once per SWEEP. That cost nothing while the
-    -- resolver was broken (every resolve returned instantly and added nothing).
-    -- With a working resolver a full sweep on the prod family router measures
-    -- ~11.5h — 161,534 hosts at 0.2555s/host, measured on the device — against
-    -- the 1h `flags dynamic,timeout` on the eb_ sets. An authored host would
-    -- therefore be unrefreshed for most of every sweep and would quietly stop
-    -- being blocked, which is the whole of #2782.
-    --
-    -- The authored list is small by construction (operator-authored policy; 11
-    -- hosts / 0.95s measured on prod), so it gets its own cadence pass rather
-    -- than waiting for the cursor to come round. Deliberately ADDITIVE: the
-    -- sweep below is #2786's incident fix and is left exactly as it is, so the
-    -- authored hosts are resolved twice per cadence. That is ~1s per 1800s, and
-    -- it is worth it to not re-cut the cursor arithmetic of a fix that shipped
-    -- for a live incident one day ago.
-    --
-    -- Same primitive and the SAME slice deadline, so this cannot become an
-    -- unbounded pass of its own if an operator authors thousands of hosts: it
-    -- carries its own cursor and resumes on the next tick, exactly like #2785.
-    if ts.last_snapshot and not ts.in_failover_render and not defer_network
-       and (ts.eb_auth_cursor > 0 or (mono - ts.last_eb_auth_run) >= eb_refresh_int) then
-      local auth = eb_refresh.collect_inventory(eb_hosts_by_mac, {})
-      if #auth.eb_hosts > 0 then
-        local stats = wh_timed_step("eb_refresh", eb_refresh.refresh, {
-          eb_hosts  = auth.eb_hosts,
-          bl_pairs  = {},
-          nft_table = "inet wifihaven",
-          resolver  = eb_refresh.default_resolver,
-          exec_fn   = os.execute,
-          deadline_seconds = eb_refresh_slice,
-          now_fn           = clock.monotonic_seconds,
-          start_index      = ts.eb_auth_cursor,
-          log       = log,
-        })
-        ts.eb_auth_cursor = stats.next_index or 0
-        if stats.done then ts.last_eb_auth_run = mono end
-        wh_report_eb_refresh(stats)
-        log.debug("eb_refresh authored: hosts=%d ok=%d empty=%d err=%d adds=%d " ..
-                  "cursor=%d done=%s",
-                  stats.hosts, stats.resolves_ok, stats.resolves_empty,
-                  stats.resolves_err, stats.adds, ts.eb_auth_cursor,
-                  tostring(stats.done))
-      else
-        ts.eb_auth_cursor   = 0
-        ts.last_eb_auth_run = mono
-      end
-    end
-
     if ts.last_snapshot and not ts.in_failover_render and not defer_network
        and (ts.eb_cursor > 0 or (mono - ts.last_eb_refresh_run) >= eb_refresh_int) then
       if ts.eb_cursor == 0 or not ts.eb_inventory then
-        ts.eb_inventory = eb_refresh.collect_inventory(eb_hosts_by_mac, bl_hosts_by_mac)
+        -- #2782: `bl_hosts_by_mac` only when eb_refresh_blocklists is on — see
+        -- the knob's comment. With it off this sweep is the AUTHORED
+        -- extraBlocked hosts, which is the set #2782 is about and which fits
+        -- inside one slice (11 hosts / 0.95 s measured on prod).
+        ts.eb_inventory = eb_refresh.collect_inventory(
+          eb_hosts_by_mac, eb_refresh_bl and bl_hosts_by_mac or {})
       end
       local inv = ts.eb_inventory
       if #inv.eb_hosts > 0 or #inv.bl_pairs > 0 then
@@ -1968,7 +1920,33 @@ conntrack.watch({
         -- #2785: the capacity signal. This is the number that made the sweep
         -- expensive enough to stop the agent, and nothing reported it before.
         metrics.set_gauge(mreg, "eb_refresh_inventory_hosts", {}, stats.inventory or 0)
-        wh_report_eb_refresh(stats)
+        if stats.resolves_ok > 0 then
+          metrics.inc_counter(mreg, "eb_refresh_total", { result = "ok" },
+                              stats.resolves_ok)
+        end
+        -- #2782: a resolve that RAN and returned nothing is not a success. An
+        -- output shape the parser stops understanding is otherwise
+        -- indistinguishable from NXDOMAIN, which is how this module read as
+        -- healthy for months.
+        if stats.resolves_empty > 0 then
+          metrics.inc_counter(mreg, "eb_refresh_total", { result = "empty_answer" },
+                              stats.resolves_empty)
+        end
+        if stats.resolves_err > 0 then
+          metrics.inc_counter(mreg, "eb_refresh_total", { result = "resolve_failed" },
+                              stats.resolves_err)
+          -- #2782: a resolver that cannot run used to report itself as ok. Say
+          -- it out loud — this is the signal that the sets are going stale.
+          log.warn("eb_refresh: %d of %d resolves failed; eb_/bl_ sets may be " ..
+                   "going stale (blocked hosts stop being blocked)",
+                   stats.resolves_err, stats.hosts)
+        end
+        -- #2782: `adds` is the quantity that read zero for months while
+        -- resolves_ok read 179,349,241. It is the series that would have caught
+        -- this, so it is the one worth emitting.
+        if stats.adds > 0 then
+          metrics.inc_counter(mreg, "eb_refresh_adds_total", {}, stats.adds)
+        end
         log.debug("eb_refresh slice: hosts=%d ok=%d empty=%d err=%d adds=%d " ..
                   "elapsed=%.2fs cursor=%d/%d done=%s",
                   stats.hosts, stats.resolves_ok, stats.resolves_empty,
