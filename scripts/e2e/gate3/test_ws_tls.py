@@ -149,6 +149,22 @@ def _ws_metric(name: str, label: str) -> int:
     return 0
 
 
+def _ws_router_diag() -> str:
+    """Router-side state for a ws assertion message (#2788): when the sentinel
+    was written vs now, which sidecar processes are running, the tally, and the
+    sidecar's recent log lines. Without it a red run can't tell a stale
+    sentinel from a genuinely completed handshake."""
+    res = router_ssh(
+        "echo now=$(date +%s); "
+        f"echo sentinel=$(cat {WS_HEALTH_PATH} 2>/dev/null || echo absent); "
+        "echo '--- ps'; ps w | grep '[w]ifihaven-ws'; "
+        f"echo '--- tally'; cat {WS_METRICS_PATH} 2>/dev/null; "
+        "echo '--- logread'; logread 2>/dev/null | grep -E 'ws:|wifihaven-ws|procd' | tail -n 40",
+        check=False, timeout=15,
+    )
+    return (res.stdout or "") + (res.stderr or "")
+
+
 def _poll_until_or_timeout(pred, *, timeout_s: float, interval_s: float) -> bool:
     """Like lib.wait.wait_until but returns False on timeout instead of raising —
     for asserting something does NOT happen within the window (the negative
@@ -237,7 +253,8 @@ def test_ws_sidecar_rejects_wrong_hostname_cert(enrolled_router):
         )
         assert not wrongly_connected, (
             f"ws sidecar reported a healthy connection to {WRONG_HOST_TARGET} "
-            "— hostname verification regressed to chain-only (#2153)"
+            "— hostname verification regressed to chain-only (#2153)\n"
+            f"router state:\n{_ws_router_diag()}"
         )
         assert _ws_metric("ws_connect_total", "upgrade_fail") >= 1, (
             "expected at least one failed connect attempt "
