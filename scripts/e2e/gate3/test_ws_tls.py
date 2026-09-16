@@ -29,6 +29,7 @@ from __future__ import annotations
 import logging
 import os
 import time
+import uuid
 
 from lib.vm import router_ssh
 
@@ -163,12 +164,40 @@ def _ws_router_diag() -> str:
     res = router_ssh(
         "echo now=$(date +%s); "
         f"echo sentinel=$(cat {WS_HEALTH_PATH} 2>/dev/null || echo absent); "
-        "echo '--- ps'; ps w | grep '[w]ifihaven-ws'; "
+        "echo '--- ps'; ps w | grep '[/]usr/sbin/wifihaven-ws'; "
         f"echo '--- tally'; cat {WS_METRICS_PATH} 2>/dev/null; "
         "echo '--- logread'; logread 2>/dev/null | grep -E 'ws:|wifihaven-ws|procd' | tail -n 40",
         check=False, timeout=15,
     )
     return (res.stdout or "") + (res.stderr or "")
+
+
+# How a failed connect is logged (ws_loop.run: "ws: connect failed (attempt N):
+# <err>", with <err> from ws_client.connect). A TLS-stage rejection is prefixed
+# "starttls:" (chain/verify-param failure) or "hostname verify:" (the #2182
+# Lua re-check). An error from AFTER the TLS stage means the handshake to the
+# wrong host was accepted: wrong.host.badssl.com is not a ws endpoint, so an
+# accepted cert shows up as a rejected upgrade, never as a healthy connection.
+TLS_REJECT_PREFIXES = ("starttls:", "hostname verify:")
+POST_TLS_ERRORS = ("upgrade rejected", "bad Sec-WebSocket-Accept")
+
+
+def _mark_router_log() -> str:
+    marker = f"gate3-ws-wronghost-{uuid.uuid4().hex}"
+    router_ssh(f"logger -t wifihaven-gate3 {marker}", timeout=10)
+    return marker
+
+
+def _ws_connect_failures_since(marker: str) -> list[str] | None:
+    """The sidecar's `ws: connect failed` log lines written after `marker`, or
+    None if the marker is not in logread (so the caller can't mistake a lost
+    log for "no failures")."""
+    res = router_ssh("logread 2>/dev/null", check=False, timeout=15)
+    lines = (res.stdout or "").splitlines()
+    idx = next((i for i, l in enumerate(lines) if marker in l), None)
+    if idx is None:
+        return None
+    return [l for l in lines[idx + 1:] if "ws: connect failed" in l]
 
 
 def _ws_sidecar_pids() -> set[str]:
@@ -188,6 +217,8 @@ def _wait_for_sidecar_replaced(old_pids: set[str]) -> None:
         now = _ws_sidecar_pids()
         return bool(now) and not (now & old_pids)
 
+    # 30s: a generous ceiling for procd's stop (SIGTERM, then SIGKILL after its
+    # term timeout) plus the respawned start. Not a tuned value.
     if not _poll_until_or_timeout(replaced, timeout_s=30, interval_s=1):
         raise AssertionError(
             f"ws sidecar was not replaced by the restart (old pids {sorted(old_pids)})\n"
@@ -268,12 +299,18 @@ def test_ws_sidecar_rejects_wrong_hostname_cert(enrolled_router):
     # Snapshot the sidecar that is running NOW (connected to staging by the
     # positive test) so the restart below can be proven to have replaced it.
     old_pids = _ws_sidecar_pids()
+    # An empty snapshot (ssh hiccup, or no sidecar running) would make the
+    # replacement wait below accept the old sidecar and bring the race back.
+    assert old_pids, (
+        "no running ws sidecar found before the restart; can't prove it gets "
+        f"replaced\nrouter state:\n{_ws_router_diag()}"
+    )
     _uci_ws(f"uci set wifihaven.wifihaven.api_url=https://{WRONG_HOST_TARGET}")
     try:
         # #2788: clearing the sentinel BEFORE the restart is not enough. The old
         # sidecar is still connected to staging until procd kills it, and it
-        # re-touches the sentinel on every frame it sends or pong it receives
-        # (#2731); SIGTERM does not clear it. So the restart can leave a fresh
+        # re-touches the sentinel on every frame it sends or receives, pongs
+        # included (#2731); SIGTERM does not clear it. So the restart can leave a fresh
         # sentinel that no connection to the wrong host ever wrote, and it stays
         # until the new sidecar's first failed connect clears it. Wait until
         # every pre-restart sidecar pid is gone and a new one is running, THEN
@@ -284,11 +321,16 @@ def test_ws_sidecar_rejects_wrong_hostname_cert(enrolled_router):
         _wait_for_sidecar_replaced(old_pids)
         _reset_ws_health()
         _reset_ws_metrics()
+        marker = _mark_router_log()
 
         # The handshake must NOT complete against the mismatched-name target.
-        # Watch the whole window: a sentinel or a `ws_connect_total{ok}` at any
-        # poll fails immediately.
-        saw_failed_attempt = False
+        # Watch the whole window; any of these at any poll fails immediately:
+        #  - a sentinel or a `ws_connect_total{ok}` (a full ws connection), or
+        #  - a connect failure from AFTER the TLS stage. The tally can't tell
+        #    those apart from a TLS rejection (both count as `upgrade_fail`,
+        #    ws_loop.classify_connect_error), and a regressed verify would land
+        #    exactly there, so the reason in the log is what's asserted on.
+        tls_rejections: list[str] = []
         deadline = time.monotonic() + 45
         while time.monotonic() < deadline:
             assert not _ws_health_present(), (
@@ -302,18 +344,36 @@ def test_ws_sidecar_rejects_wrong_hostname_cert(enrolled_router):
                 "chain-only (#2153)\n"
                 f"router state:\n{_ws_router_diag()}"
             )
-            if _ws_metric("ws_connect_total", "upgrade_fail") >= 1:
-                saw_failed_attempt = True
+            failures = _ws_connect_failures_since(marker) or []
+            post_tls = [l for l in failures if any(e in l for e in POST_TLS_ERRORS)]
+            assert not post_tls, (
+                f"the TLS handshake to {WRONG_HOST_TARGET} was ACCEPTED (the connect "
+                "failed only after TLS) — hostname verification regressed to "
+                f"chain-only (#2153):\n{post_tls[0]}\n"
+                f"router state:\n{_ws_router_diag()}"
+            )
+            tls_rejections = [
+                l for l in failures if any(f"): {p}" in l for p in TLS_REJECT_PREFIXES)
+            ]
             time.sleep(3)
 
         # Liveness anchor: the clean window above only means something if the
-        # new sidecar actually tried the wrong host during it. A sidecar that
-        # never started (or never got as far as connecting) writes neither the
-        # sentinel nor a tally, and would otherwise pass for free.
-        assert saw_failed_attempt, (
-            "expected at least one failed connect attempt "
-            f"(ws_connect_total{{result=upgrade_fail}}) against the "
-            f"wrong-hostname target {WRONG_HOST_TARGET} after the restart\n"
+        # new sidecar actually tried the wrong host during it and was turned
+        # away at the TLS stage. A sidecar that never started, never reached
+        # the host, or whose log was lost writes no such line and fails here.
+        assert _ws_connect_failures_since(marker) is not None, (
+            f"log marker {marker} is no longer in logread, so the connect "
+            f"failures can't be attributed\nrouter state:\n{_ws_router_diag()}"
+        )
+        assert tls_rejections, (
+            "expected at least one connect attempt rejected at the TLS stage "
+            f"({' / '.join(TLS_REJECT_PREFIXES)}) against the wrong-hostname "
+            f"target {WRONG_HOST_TARGET} after the restart\n"
+            f"router state:\n{_ws_router_diag()}"
+        )
+        assert _ws_metric("ws_connect_total", "upgrade_fail") >= 1, (
+            "expected ws_connect_total{result=upgrade_fail} to count the failed "
+            f"connect attempts against {WRONG_HOST_TARGET}\n"
             f"router state:\n{_ws_router_diag()}"
         )
     finally:
