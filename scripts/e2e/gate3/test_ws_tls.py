@@ -176,8 +176,9 @@ def _ws_router_diag() -> str:
 # <err>", with <err> from ws_client.connect). A TLS-stage rejection is prefixed
 # "starttls:" (any starttls failure, a stalled handshake included) or
 # "hostname verify:" (the #2182 Lua re-check). A starttls timeout proves nothing
-# about verification, so it doesn't count as a rejection (TLS_TIMEOUT_MARKERS). An error from AFTER the TLS stage means the handshake to the
-# wrong host was accepted: wrong.host.badssl.com is not a ws endpoint, so an
+# about verification, so it doesn't count as a rejection (TLS_TIMEOUT_MARKERS).
+# An error from AFTER the TLS stage means the handshake to the wrong host was
+# accepted: wrong.host.badssl.com is not a ws endpoint, so an
 # accepted cert shows up as a rejected upgrade, never as a healthy connection.
 TLS_REJECT_PREFIXES = ("starttls:", "hostname verify:")
 POST_TLS_ERRORS = ("upgrade rejected", "bad Sec-WebSocket-Accept")
@@ -372,7 +373,8 @@ def test_ws_sidecar_rejects_wrong_hostname_cert(enrolled_router):
         assert tls_rejections, (
             "expected at least one connect attempt rejected at the TLS stage "
             f"({' / '.join(TLS_REJECT_PREFIXES)}) against the wrong-hostname "
-            f"target {WRONG_HOST_TARGET} after the restart\n"
+            f"target {WRONG_HOST_TARGET} after the restart (starttls timeouts don't "
+            "count; if every attempt timed out, the router couldn't reach the host)\n"
             f"router state:\n{_ws_router_diag()}"
         )
         assert _ws_metric("ws_connect_total", "upgrade_fail") >= 1, (
