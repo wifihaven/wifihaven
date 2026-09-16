@@ -282,7 +282,7 @@
     {
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "title": "eb_/bl_ ipset refresh rate (#1658)",
-      "description": "sum by (result) (rate(eb_refresh_total[5m])) — hosts/sec the periodic re-resolve heartbeat processed. The eb_<host>/bl_<id> sets carry `flags dynamic,timeout 1h`; this timer (default cadence 1800s, strictly below the 1h timeout) re-resolves each extraBlocked / blocklist apex and adds answers back so the set stays populated under long-lived iOS app DNS caches. Steady non-zero `ok` is the healthy signal; a flat-zero in a household that has any extraBlocked / blocklist hosts means the timer isn't running. Sustained `resolve_failed` points at a dnsmasq problem.",
+      "description": "sum by (result) (rate(eb_refresh_total[5m])) — hosts/sec the periodic re-resolve heartbeat processed. The eb_<host>/bl_<id> sets carry `flags dynamic,timeout 1h`; this timer (default cadence 1800s, strictly below the 1h timeout) re-resolves each apex and adds answers back so the set stays populated under long-lived iOS app DNS caches. #2782: the sweep walks the AUTHORED extraBlocked hosts only — tens of entries, completing in one slice. Category blocklist members are excluded by default (`eb_refresh_blocklists=0`; a full catalog sweep is 14.1h and would hold the agent's loop, see #2783), so expect host counts in the tens, not the thousands. Non-zero `ok` is NOT by itself a healthy signal — #2782: the resolver shelled out to a `dig` that OpenWRT does not ship, and the empty answer counted as a successful resolve, so prod logged 179,349,241 `ok` while adding nothing for months. Read this panel next to 'eb_/bl_ ipset elements added', which is the series that actually moves when the sets are being kept warm. `empty_answer` is a resolve that ran and returned no address in either family — a small steady level is normal (2 of the prod router's 11 authored hosts), a jump means an output shape the parser stopped understanding. Sustained `resolve_failed` points at a dnsmasq or resolver problem. Post-#2785 the sweep is sliced across ticks, so this counts hosts per slice rather than per sweep. `eb_refresh_inventory_hosts` is the sweep's size — with `eb_refresh_blocklists=0` that is the authored host count (~11 on the prod router), NOT the blocklist catalog; #2787's capacity question is keyed to that gauge, so read it with the flag's state in mind.",
       "type": "timeseries",
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 33 },
       "id": 9,
@@ -311,7 +311,7 @@
     {
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "title": "eb_/bl_ ipset refresh failure ratio (#1658)",
-      "description": "sum(rate(eb_refresh_total{result=\"resolve_failed\"})) / sum(rate(eb_refresh_total)) over 5m — fraction of re-resolves that failed (resolver unreachable / hermetic-allowlist reject). A spike above ~0.1 means the periodic heartbeat is no longer keeping the sets warm — the iOS-DNS-cache leak (#1649) returns when failures dominate.",
+      "description": "sum(rate(eb_refresh_total{result=\"resolve_failed\"})) / sum(rate(eb_refresh_total{result=~\"ok|empty_answer|resolve_failed\"})) over 5m — fraction of ATTEMPTED re-resolves that failed (resolver unreachable / hermetic-allowlist reject). #2782: the denominator names the attempt outcomes explicitly (`ok|empty_answer|resolve_failed`) rather than summing the whole series, so a future non-attempt outcome cannot silently dilute the ratio. A spike above ~0.1 means the periodic heartbeat is no longer keeping the sets warm — the iOS-DNS-cache leak (#1649) returns when failures dominate.",
       "type": "timeseries",
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 33 },
       "id": 10,
@@ -332,8 +332,37 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "sum(rate(eb_refresh_total{env=\"$env\", router_id=~\"$router\", result=\"resolve_failed\"}[5m])) / clamp_min(sum(rate(eb_refresh_total{env=\"$env\", router_id=~\"$router\"}[5m])), 1e-9)",
+          "expr": "sum(rate(eb_refresh_total{env=\"$env\", router_id=~\"$router\", result=\"resolve_failed\"}[5m])) / clamp_min(sum(rate(eb_refresh_total{env=\"$env\", router_id=~\"$router\", result=~\"ok|empty_answer|resolve_failed\"}[5m])), 1e-9)",
           "legendFormat": "resolve_failed fraction",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "eb_/bl_ ipset elements added (#2782)",
+      "description": "sum(rate(eb_refresh_adds_total[5m])) — nftables elements/sec the re-resolve heartbeat actually added to the eb_<host> / bl_<id> sets. This is the series that would have caught #2782: `eb_refresh_total{result=\"ok\"}` read 179,349,241 on the prod router while this one was flat zero, because the resolver shelled out to a `dig` OpenWRT does not ship and an empty answer counted as a success. A router with any extraBlocked or blocklist hosts should show a steady non-zero rate. FLAT ZERO while the refresh-rate panel shows `ok` is the alarm: the heartbeat is running and achieving nothing, so the sets are aging out and blocked hosts are becoming reachable.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 41 },
+      "id": 13,
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "unit": "ops",
+          "min": 0,
+          "custom": { "drawStyle": "line", "fillOpacity": 15, "showPoints": "never", "lineWidth": 1 }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "calcs": ["lastNotNull", "max"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum(rate(eb_refresh_adds_total{env=\"$env\", router_id=~\"$router\"}[5m]))",
+          "legendFormat": "elements added/sec",
           "refId": "A"
         }
       ]
@@ -343,7 +372,7 @@
       "title": "extraAllowed carve re-seed rate (#2095)",
       "description": "sum(rate(ea_carve_backfill_total[5m])) — ea_/ea6_ carve ELEMENTS/sec the apply-time backfill re-seeds. policy.apply's `nft -f` delete+recreates `table inet wifihaven`, emptying every per-(mac,host) extraAllowed carve set; the agent immediately re-populates them from the persisted dns ip->host cache so a long-cached carved host (e.g. cdn.jsdelivr.net over IPv6) stays reachable under a whole-MAC block instead of transiently dropping (the #2094 residual / #1929-class v6 drop). A steady rate tracking policy applies is healthy; a flatline while blocks-with-extraAllowed are active means the backfill isn't firing and the transient v6 drop can recur.",
       "type": "timeseries",
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 41 },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 41 },
       "id": 11,
       "fieldConfig": {
         "defaults": {
@@ -371,7 +400,7 @@
       "title": "Permissive snapshots by reason (#2382 / #2137)",
       "description": "sum by (reason) (rate(policy_permissive_snapshot_total[5m])) — how often PolicyService serves a fully PERMISSIVE (allow-all) snapshot instead of a household's real policy, so ALL blocking is off for that household. reason=enforcement_disabled is the server-level #2382 escape-hatch toggle (an admin turned enforcement off from the dashboard); reason=lapsed is the beta→paid flip stop-enforcement path (#2137). A sustained non-zero rate on enforcement_disabled means at least one household is running with blocking OFF — expected briefly while someone uses the escape hatch, worth noticing if it stays on. API-side series (no router_id label), so this is not filtered by the Router variable.",
       "type": "timeseries",
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 41 },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 49 },
       "id": 12,
       "fieldConfig": {
         "defaults": {

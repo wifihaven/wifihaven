@@ -218,28 +218,129 @@ describe("refresh", function()
 end)
 
 -- ---------------------------------------------------------------------------
--- default_resolve — parses `dig @127.0.0.1 +short` output
+-- default_resolver — parses BusyBox `nslookup` output (#2782)
 -- ---------------------------------------------------------------------------
 
-describe("parse_dig_output", function()
-  it("yields a sorted list of v4 addresses", function()
-    local out = "142.251.46.142\n142.251.35.142\n"
-    assert.same({ "142.251.35.142", "142.251.46.142" }, eb_refresh.parse_dig_output(out, "v4"))
+-- #2782: `default_resolver` is the seam where the whole module went dark. It
+-- shelled out to `dig`, which OpenWRT does not ship, and the empty stdout that
+-- came back read as a successful resolve with no records — so prod counted
+-- 179,349,241 resolves_ok, zero resolves_err, and added nothing for months.
+-- These tests run the REAL default_resolver over captured BusyBox `nslookup`
+-- output with the popen injected, and end-to-end through `refresh` so the
+-- stats and the nft adds are pinned together.
+
+local NSLOOKUP_A = table.concat({
+  "Server:\t\t127.0.0.1",
+  "Address:\t127.0.0.1:53",
+  "",
+  "Non-authoritative answer:",
+  "www.amazon.com\tcanonical name = e15316.dsca.akamaiedge.net",
+  "Name:\te15316.dsca.akamaiedge.net",
+  "Address: 23.47.202.67",
+  "",
+}, "\n")
+
+local NSLOOKUP_AAAA = table.concat({
+  "Server:\t\t127.0.0.1",
+  "Address:\t127.0.0.1:53",
+  "",
+  "Non-authoritative answer:",
+  "Name:\tcf.47cf2c8c9-frontier.amazon.com",
+  "Address: 2600:9000:2162:1c00:7:49a5:5fd6:da1",
+  "",
+}, "\n")
+
+-- Shaped like a real `io.popen` handle (read "*a", close) so the shipped
+-- resolver needs no test-only branch. A missing entry is nil — what popen
+-- returns when it cannot spawn at all.
+local function popen_stub(by_qtype)
+  return function(cmd)
+    local text = by_qtype[cmd:match("%-type=(%u+)")]
+    if text == nil then return nil end
+    return { read = function() return text end, close = function() end }
+  end
+end
+
+describe("default_resolver", function()
+  it("parses BusyBox nslookup output into both families", function()
+    local r = eb_refresh.default_resolver("www.amazon.com", popen_stub({
+      A = NSLOOKUP_A, AAAA = NSLOOKUP_AAAA,
+    }))
+    assert.same({ "23.47.202.67" }, r.v4)
+    assert.same({ "2600:9000:2162:1c00:7:49a5:5fd6:da1" }, r.v6)
   end)
 
-  it("yields a sorted list of v6 addresses", function()
-    local out = "2607:f8b0::200e\n2607:f8b0::100a\n"
-    assert.same({ "2607:f8b0::100a", "2607:f8b0::200e" }, eb_refresh.parse_dig_output(out, "v6"))
+  it("returns nil — not an empty answer — when the resolver cannot run", function()
+    assert.is_nil(eb_refresh.default_resolver("www.amazon.com", popen_stub({})))
+  end)
+end)
+
+describe("refresh with the real default_resolver (#2782)", function()
+  -- LIVENESS ANCHOR. The failure test below asserts an ABSENCE (no nft adds),
+  -- and an absence passes for free on a rig that resolves nothing. This case
+  -- proves the same rig DOES add elements when the resolver works, so the
+  -- absence below means "the resolver failed", not "the rig is inert".
+  it("adds elements when the resolver works", function()
+    local cmds, exec = exec_recorder()
+    local stats = eb_refresh.refresh({
+      eb_hosts  = { "www.amazon.com" },
+      bl_pairs  = {},
+      nft_table = "inet wifihaven",
+      resolver  = function(h)
+        return eb_refresh.default_resolver(h, popen_stub({
+          A = NSLOOKUP_A, AAAA = NSLOOKUP_AAAA,
+        }))
+      end,
+      exec_fn   = exec,
+    })
+    assert.equal(1, stats.resolves_ok)
+    assert.equal(0, stats.resolves_err)
+    assert.equal(2, stats.adds)
+    assert.is_true(added(cmds, "eb_www_amazon_com",  "23.47.202.67"))
+    assert.is_true(added(cmds, "eb6_www_amazon_com", "2600:9000:2162:1c00:7:49a5:5fd6:da1"))
   end)
 
-  it("skips CNAME-shaped lines that dig +short prints first", function()
-    local out = "youtube-ui.l.google.com.\n142.251.46.142\n"
-    assert.same({ "142.251.46.142" }, eb_refresh.parse_dig_output(out, "v4"))
+  it("counts a missing resolver binary as resolves_err instead of success", function()
+    local cmds, exec = exec_recorder()
+    local stats = eb_refresh.refresh({
+      eb_hosts  = { "www.amazon.com" },
+      bl_pairs  = {},
+      nft_table = "inet wifihaven",
+      resolver  = function(h) return eb_refresh.default_resolver(h, popen_stub({})) end,
+      exec_fn   = exec,
+    })
+    assert.equal(0, stats.resolves_ok)
+    assert.equal(1, stats.resolves_err)
+    assert.equal(0, stats.adds)
+    assert.equal(0, #cmds)
   end)
+end)
 
-  it("returns an empty list when dig returned no answer", function()
-    assert.same({}, eb_refresh.parse_dig_output("", "v4"))
-    assert.same({}, eb_refresh.parse_dig_output(nil, "v4"))
+
+describe("refresh empty-answer accounting (#2782 review)", function()
+  -- Separating "could not run" from "no records" is the core of #2782. The
+  -- remaining gap: a resolver that RUNS but whose output the parser does not
+  -- understand also yields zero records, which is the same silent no-op in a
+  -- new costume. An extraBlocked host resolving to nothing in BOTH families is
+  -- therefore its own outcome, not an `ok`.
+  it("counts an extraBlocked host with no addresses as empty, not ok", function()
+    local _, exec = exec_recorder()
+    local stats = eb_refresh.refresh({
+      eb_hosts    = { "gone.example", "live.example" },
+      bl_pairs    = {},
+      nft_table   = "inet wifihaven",
+      resolver    = function(h)
+        if h == "gone.example" then return { v4 = {}, v6 = {} } end
+        return { v4 = { "1.2.3.4" }, v6 = {} }
+      end,
+      exec_fn     = exec,
+    })
+    -- LIVENESS ANCHOR: the host that DOES resolve still counts ok and adds,
+    -- so `empty == 1` is a real classification rather than a dead resolver.
+    assert.equal(1, stats.resolves_ok)
+    assert.equal(1, stats.adds)
+    assert.equal(1, stats.resolves_empty)
+    assert.equal(0, stats.resolves_err)
   end)
 end)
 

@@ -49,13 +49,14 @@
 -- evidence is apex-level `play.google.com`).
 --
 -- Pure logic with injected resolver + nft executor (same DI shape as
--- dns_tail_sets / policy / conntrack); the agent wires the real `dig` shell-out
+-- dns_tail_sets / policy / conntrack); the agent wires `wifihaven.resolver`
 -- and `os.execute`. Set-name construction is delegated to render.lua's
 -- `eb_set_name` / `eb6_set_name` / `bl_set_name` / `bl6_set_name` exports so
 -- the (host|id) → nft-set-name mapping has a single source of truth.
 
 local dns_tail_sets = require("wifihaven.dns_tail_sets")
 local render        = require("wifihaven.render")
+local resolver      = require("wifihaven.resolver")
 
 local M = {}
 
@@ -108,71 +109,37 @@ function M.collect_inventory(eb_hosts_by_mac, bl_hosts_by_mac)
 end
 
 -- ---------------------------------------------------------------------------
--- dig parsing (default resolver)
+-- Default resolver
 -- ---------------------------------------------------------------------------
 
--- parse_dig_output(stdout, family) → sorted list of valid IP literals.
+-- #2782: this shelled out to `dig`, which OpenWRT does not ship and
+-- openwrt/Makefile never depended on. `default_dig` sent stderr to /dev/null
+-- and returned "", and the old `if not v4_out and not v6_out` guard let that
+-- through because an empty Lua string is truthy — so a resolver that could not
+-- run reported a successful resolve with no records. The sweep therefore added
+-- nothing on any router from the day #1658 shipped, while counting every host
+-- `resolves_ok`: 179,349,241 of them on the prod family router, with zero
+-- failures ever recorded and `eb_www_amazon_com` sitting empty while
+-- www.amazon.com was in a profile's extraBlocked.
 --
--- `dig +short` prints answer values one per line. For an A/AAAA query the
--- terminal answer line is the IP; CNAME-shaped intermediate lines (e.g.
--- `youtube-ui.l.google.com.`) also appear and must be skipped. We filter via
--- dns_tail_sets.safe_addr (the same allow-list applied to dnsmasq-log-parsed
--- IPs in the dns-tail populator).
-function M.parse_dig_output(stdout, family)
-  if not stdout or stdout == "" then return {} end
-  local out = {}
-  local seen = {}
-  for line in stdout:gmatch("[^\r\n]+") do
-    local ip = line:match("^%s*(%S+)%s*$")
-    if ip then
-      local safe = dns_tail_sets.safe_addr(ip)
-      if safe then
-        -- safe_addr accepts both v4 and v6 shapes; family-check via dots/colons.
-        local is_v6 = safe:find(":", 1, true) ~= nil
-        if (family == "v6") == is_v6 and not seen[safe] then
-          seen[safe] = true
-          out[#out + 1] = safe
-        end
-      end
-    end
-  end
-  table.sort(out)
-  return out
-end
-
-local function default_dig(host, qtype)
-  -- Hostname allow-list: a-z, 0-9, dot, hyphen, underscore (some dnsmasq
-  -- aliases contain underscores; see #1572). Anything else is rejected to keep
-  -- shell-out hermetic.
-  if type(host) ~= "string" or host:find("[^%w%.%-_]") then return nil end
-  local cmd = string.format(
-    "dig %s @127.0.0.1 -p 53 %s +short +time=2 +tries=1 2>/dev/null",
-    qtype, host)
-  local f = io.popen(cmd, "r")
-  if not f then return nil end
-  local out = f:read("*a")
-  f:close()
-  return out
-end
-
--- default_resolver(host) → { v4 = {...}, v6 = {...} } | nil
--- nil means the resolver itself failed (dig couldn't run); empty lists mean
--- the resolver answered but no addresses were returned (NXDOMAIN / no record).
-function M.default_resolver(host)
-  local v4_out = default_dig(host, "A")
-  local v6_out = default_dig(host, "AAAA")
-  if not v4_out and not v6_out then return nil end
-  return {
-    v4 = M.parse_dig_output(v4_out, "v4"),
-    v6 = M.parse_dig_output(v6_out, "v6"),
-  }
+-- Those forks were not free, which is #2785: two `io.popen` per host across a
+-- ~160k inventory is ~320k fork+exec pairs per sweep, and that is the 558s
+-- `on_tick` stall. #2786 sliced the sweep so it can no longer hold the loop;
+-- this restores what the sweep is supposed to achieve while it runs.
+--
+-- Resolution goes through `wifihaven.resolver` (BusyBox `nslookup`, present on
+-- every OpenWRT image), which returns nil when the resolver could not run at
+-- all. `refresh_one` already counts nil as `resolves_err`; it never received
+-- one. `popen_fn` is injectable for tests; production passes nothing.
+function M.default_resolver(host, popen_fn)
+  return resolver.resolve(host, popen_fn)
 end
 
 -- ---------------------------------------------------------------------------
 -- refresh
 -- ---------------------------------------------------------------------------
 
--- refresh(opts) → { hosts, resolves_ok, resolves_err, adds }
+-- refresh(opts) → { hosts, resolves_ok, resolves_empty, resolves_err, adds }
 --
 -- opts:
 --   eb_hosts  : list of apex hosts to refresh eb_/eb6_ for
@@ -195,7 +162,8 @@ end
 --   inventory  : total entries in the sweep, so the caller can report the
 --                capacity that made this expensive in the first place.
 function M.refresh(opts)
-  local stats = { hosts = 0, resolves_ok = 0, resolves_err = 0, adds = 0 }
+  local stats =
+    { hosts = 0, resolves_ok = 0, resolves_empty = 0, resolves_err = 0, adds = 0 }
 
   local function refresh_one(host, v4_set, v6_set)
     stats.hosts = stats.hosts + 1
@@ -207,13 +175,22 @@ function M.refresh(opts)
       end
       return
     end
-    stats.resolves_ok = stats.resolves_ok + 1
-    for _, ip in ipairs(r.v4 or {}) do
+    -- #2782: split "ran and returned nothing" out of `ok`. An output shape the
+    -- parser stops understanding yields zero records and is otherwise
+    -- indistinguishable from NXDOMAIN — which is exactly how this module read
+    -- as healthy for months.
+    local v4, v6 = r.v4 or {}, r.v6 or {}
+    if #v4 == 0 and #v6 == 0 then
+      stats.resolves_empty = stats.resolves_empty + 1
+    else
+      stats.resolves_ok = stats.resolves_ok + 1
+    end
+    for _, ip in ipairs(v4) do
       if dns_tail_sets.nft_add_element(opts.nft_table, v4_set, ip, opts.exec_fn) then
         stats.adds = stats.adds + 1
       end
     end
-    for _, ip in ipairs(r.v6 or {}) do
+    for _, ip in ipairs(v6) do
       if dns_tail_sets.nft_add_element(opts.nft_table, v6_set, ip, opts.exec_fn) then
         stats.adds = stats.adds + 1
       end
