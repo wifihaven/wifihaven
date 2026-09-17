@@ -349,7 +349,6 @@ function M.build_report(counters, nft_sets, period_start, period_end, router_id,
   local records = {}
 
   for _, c in ipairs(counters or {}) do
-    local host    = host_for_ip(c.dst_ip, nft_sets, lookup_hostname)
     local key     = tracker_key(c.mac, c.dst_ip)
     local samples = tracker.active_samples[key] or 0
     local active_seconds
@@ -366,9 +365,12 @@ function M.build_report(counters, nft_sets, period_start, period_end, router_id,
     -- that inflated bucket bodies past the zio-http cap in #1017. The
     -- bytes>0/no-sample branch above still emits because active_seconds > 0.
     if active_seconds > 0 or (c.bytes or 0) > 0 or (c.bytes_out or 0) > 0 then
+      -- #2796: resolve only for counters that become records. Most of a
+      -- flush's counters are idle (4,062 of 4,602 on the prod family router)
+      -- and a lookup is the expensive part of the flush.
       local rec = {
         mac           = c.mac,
-        host          = host,
+        host          = host_for_ip(c.dst_ip, nft_sets, lookup_hostname),
         activeSeconds = active_seconds,
         -- Wire semantics (#905): bytesIn is from the device's POV — traffic
         -- arriving from the internet (rx counter). bytesOut is traffic leaving
