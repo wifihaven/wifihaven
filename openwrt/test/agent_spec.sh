@@ -173,7 +173,7 @@ else
   check "agent emits agent_tick_stall_total (#2785)" "no counted, alertable stall signal"
 fi
 
-if grep -q 'agent_slow_step_total' "$SCRIPT"; then
+if grep -q 'tick_guard\.run_step(' "$SCRIPT" && grep -q 'agent_slow_step_total' "$ROOT/files/usr/lib/lua/wifihaven/tick_guard.lua"; then
   check "agent emits agent_slow_step_total{step} (#2785)" ok
 else
   check "agent emits agent_slow_step_total{step} (#2785)" "no per-step attribution — the next stall is undiagnosable again"
@@ -302,6 +302,53 @@ if grep -q 'ts\.last_eb_refresh_run = ts\.eb_resweep and (mono - eb_refresh_int)
 else
   check "a stale-inventory sweep re-arms immediately on completion (#2785)" \
     "the re-sweep mark is never consumed — a host blocked mid-sweep waits out another eb_refresh_interval"
+fi
+
+# (6b) #2796: a slow step can only be attributed if the slow work is INSIDE
+#      the timer. The usage flush's counter read + report build (27.5 s on the
+#      prod family router) ran just before `wh_timed_step("usage_report", …)`,
+#      which wrapped only the post, and eb_refresh.collect_inventory (6.2 s)
+#      ran just before the eb_refresh step. agent_slow_step_total therefore
+#      never emitted while agent_tick_stall_total counted ~12 stalls a day.
+#      Extract each timed call's body (from the wh_timed_step line to the first
+#      line holding only `end)` at a shallower-or-equal indent) and require the
+#      heavy work inside it.
+timed_body() {
+  awk -v step="$1" '
+    index($0, "wh_timed_step(\"" step "\"") { on = 1; match($0, /^ */); ind = RLENGTH; print; next }
+    on { print; if ($0 ~ /^ *end\)/) { match($0, /^ */); if (RLENGTH <= ind) exit } }
+  ' "$SCRIPT"
+}
+USAGE_BODY=$(timed_body usage_report)
+if [ -n "$USAGE_BODY" ]; then
+  check "found the usage_report timed step (liveness anchor)" ok
+  if printf '%s\n' "$USAGE_BODY" | grep -q 'read_nft_counters()' \
+     && printf '%s\n' "$USAGE_BODY" | grep -q 'usage\.build_report('; then
+    check "usage_report step times the counter read and report build, not just the post (#2796)" ok
+  else
+    check "usage_report step times the counter read and report build, not just the post (#2796)" \
+      "read_nft_counters/build_report run outside the timer — a 27 s flush stalls the loop unattributed"
+  fi
+else
+  check "found the usage_report timed step (liveness anchor)" "no wh_timed_step(\"usage_report\" …) block"
+fi
+EB_BODY=$(timed_body eb_refresh)
+if [ -n "$EB_BODY" ]; then
+  check "found the eb_refresh timed step (liveness anchor)" ok
+  if printf '%s\n' "$EB_BODY" | grep -q 'collect_inventory('; then
+    check "eb_refresh step times the inventory build (#2796)" ok
+  else
+    check "eb_refresh step times the inventory build (#2796)" \
+      "collect_inventory runs outside the timer — a 6 s whole-catalog sort is invisible"
+  fi
+else
+  check "found the eb_refresh timed step (liveness anchor)" "no wh_timed_step(\"eb_refresh\" …) block"
+fi
+if printf '%s\n' "$USAGE_BODY" | grep -q 'dns_log\.frozen_resolver\|wh_frozen_lookup('; then
+  check "usage flush resolves against one frozen parse of the dns cache (#2796)" ok
+else
+  check "usage flush resolves against one frozen parse of the dns cache (#2796)" \
+    "build_report uses the live per-flow resolver — every dns-tail rewrite mid-flush re-parses the cache"
 fi
 
 # (7) The four tick-liveness knobs form one ordering
