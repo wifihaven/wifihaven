@@ -1036,3 +1036,36 @@ describe("usage retry queue", function()
   end)
 
 end)
+
+-- #2796: build_report resolved a hostname for EVERY counter before deciding
+-- whether the counter becomes a record. On the prod family router 4,602 of a
+-- flush's counters produced 540 records, so ~88% of the lookups were thrown
+-- away, and each lookup was the expensive part of a 27.5 s on_tick stall.
+describe("usage.build_report hostname lookups (#2796)", function()
+  it("resolves a hostname only for counters that become records", function()
+    local MAC = "aa:bb:cc:11:22:33"
+    local t = usage.new_tracker()
+    local live = { mac = MAC, dst_ip = "1.2.3.4", bytes = 500, packets = 1 }
+    usage.tracker_sample(t, { live })
+
+    local counters = { live }
+    for i = 1, 50 do
+      counters[#counters + 1] = { mac = MAC, dst_ip = "10.9.0." .. i, bytes = 0, packets = 0 }
+    end
+
+    local looked_up = {}
+    local lookup = function(ip)
+      looked_up[#looked_up + 1] = ip
+      return ip == "1.2.3.4" and "youtube.com" or nil
+    end
+
+    local r = usage.build_report(counters, {}, "2026-09-17T00:00:00Z",
+      "2026-09-17T00:01:00Z", "router", nil, lookup, t, 10, 60)
+
+    -- liveness: the one real counter was resolved and reported
+    assert.are.equal(1, #r.records)
+    assert.are.same({ type = "fqdn", value = "youtube.com" }, r.records[1].host)
+    -- and none of the 50 idle counters paid for a lookup
+    assert.are.same({ "1.2.3.4" }, looked_up)
+  end)
+end)

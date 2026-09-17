@@ -193,3 +193,82 @@ describe("tick_guard defaults", function()
     assert.is_true(n <= 12)
   end)
 end)
+
+-- #2796: agent_slow_step_total had never emitted on prod while
+-- agent_tick_stall_total counted ~12 stalls/day on the family router. The emit
+-- path lived inline in the agent script, where no spec could drive it, so
+-- "an induced slow step names itself" was never pinned. run_step is that path,
+-- and the agent's wh_timed_step delegates to it.
+describe("tick_guard.run_step — slow-step attribution (#2796)", function()
+  local metrics = require("wifihaven.metrics")
+
+  -- A clock that returns the given readings in order (start, end).
+  local function clock_of(...)
+    local readings, i = { ... }, 0
+    return function() i = i + 1; return readings[i] end
+  end
+
+  local function slow_step_count(reg, step)
+    for _, c in pairs(reg.counters) do
+      if c.name == "agent_slow_step_total" and c.labels and c.labels.step == step then
+        return c.value
+      end
+    end
+    return 0
+  end
+
+  local function opts(reg, now_fn, warned)
+    return {
+      budget  = 15,
+      now_fn  = now_fn,
+      reg     = reg,
+      metrics = metrics,
+      log     = { warn = function(fmt, ...) warned[#warned + 1] = string.format(fmt, ...) end },
+    }
+  end
+
+  it("emits agent_slow_step_total{step} when an induced slow step runs past its budget", function()
+    local reg, warned, ran = metrics.new(), {}, false
+    local a, b, c = tick_guard.run_step(opts(reg, clock_of(100, 131), warned),
+      "usage_report", function(x) ran = true; return x, nil, "third" end, "arg")
+
+    -- liveness: the wrapped step really ran, and its full arity came back
+    assert.is_true(ran)
+    assert.are.equal("arg", a)
+    assert.is_nil(b)
+    assert.are.equal("third", c)
+
+    assert.are.equal(1, slow_step_count(reg, "usage_report"))
+    assert.are.equal(1, #warned)
+    assert.is_truthy(warned[1]:find("usage_report", 1, true))
+
+    -- and it reaches the pushed batch, not just the in-process registry
+    local batch = metrics.build_batch(reg, "2026-09-17T00:00:00Z")
+    local found = false
+    for _, s in ipairs(batch.counters or {}) do
+      if s.name == "agent_slow_step_total" then found = true end
+    end
+    assert.is_true(found)
+  end)
+
+  it("does not emit for a step inside its budget, though the same rig emits for a slow one", function()
+    local reg, warned, ran = metrics.new(), {}, 0
+    tick_guard.run_step(opts(reg, clock_of(100, 110), warned), "eb_refresh",
+      function() ran = ran + 1 end)
+    assert.are.equal(1, ran)
+    assert.are.equal(0, slow_step_count(reg, "eb_refresh"))
+    assert.are.equal(0, #warned)
+
+    tick_guard.run_step(opts(reg, clock_of(200, 216), warned), "eb_refresh",
+      function() ran = ran + 1 end)
+    assert.are.equal(2, ran)
+    assert.are.equal(1, slow_step_count(reg, "eb_refresh"))
+  end)
+
+  it("folds a step name outside STEPS into one bounded label rather than a free-form one", function()
+    local reg = metrics.new()
+    tick_guard.run_step(opts(reg, clock_of(0, 60), {}), "per-mac aa:bb:cc", function() end)
+    assert.are.equal(0, slow_step_count(reg, "per-mac aa:bb:cc"))
+    assert.are.equal(1, slow_step_count(reg, "other"))
+  end)
+end)

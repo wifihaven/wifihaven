@@ -612,6 +612,17 @@ function M.load_table(text, ttl_seconds, now)
   return out
 end
 
+-- Default snapshot reader for the resolvers below.
+local function file_reader(path)
+  return function()
+    local f = io.open(path, "r")
+    if not f then return nil end
+    local t = f:read("*a")
+    f:close()
+    return t
+  end
+end
+
 -- ---------------------------------------------------------------------------
 -- new_cache_resolver(opts) -> function(ip) -> hostname | nil   (#2068)
 -- ---------------------------------------------------------------------------
@@ -634,22 +645,19 @@ end
 -- clock TTL) preserves the #583 attribution-race retry: the instant dns-tail
 -- rewrites the snapshot with a freshly-resolved IP, the next lookup re-parses
 -- and sees it. The entry TTL is still applied by `load_table` on each re-parse.
+-- #2796: parse-once only holds while the content is unchanged, and dns-tail
+-- rewrites it continuously, so the usage flush now uses frozen_resolver below;
+-- this one serves the per-flow conntrack lookups.
 --
 --   opts.path     snapshot file path (used by the default reader).
 --   opts.ttl      entry TTL seconds passed to load_table (default 3600).
 --   opts.read_fn  injectable reader -> text | nil (default reads opts.path).
 --   opts.now_fn   injectable clock -> epoch seconds (default os.time).
+
 function M.new_cache_resolver(opts)
   opts = opts or {}
   local ttl     = opts.ttl or 3600
-  local path    = opts.path
-  local read_fn = opts.read_fn or function()
-    local f = io.open(path, "r")
-    if not f then return nil end
-    local t = f:read("*a")
-    f:close()
-    return t
-  end
+  local read_fn = opts.read_fn or file_reader(opts.path)
   local now_fn = opts.now_fn or os.time
   local memo_text                 -- last raw text we parsed (nil until first read)
   local memo_tbl   = {}           -- parsed { canon_ip -> hostname } for memo_text
@@ -660,6 +668,32 @@ function M.new_cache_resolver(opts)
       memo_tbl  = M.load_table(text, ttl, now_fn())
     end
     return memo_tbl[host_norm.canon_ip(ip)]
+  end
+end
+
+-- ---------------------------------------------------------------------------
+-- frozen_resolver(opts) -> function(ip) -> hostname | nil   (#2796)
+-- ---------------------------------------------------------------------------
+-- Reads and parses the dns-tail snapshot ONCE, at construction, and answers
+-- every lookup from that one table. For a caller that makes many lookups in one
+-- go and needs one consistent view: the usage flush.
+--
+-- new_cache_resolver is not safe there. It re-reads the file on every call and
+-- re-parses whenever the content changed, and wifihaven-dns-tail rewrites the
+-- file continuously under load. On the prod family router one flush of 4,602
+-- counters re-parsed the 210 KB cache 87 times: 27.5 s of pure Lua inside
+-- on_tick, the residual W16 tick stall. With one parse the same flush took
+-- 0.16 s. The per-flow conntrack path keeps new_cache_resolver, because the
+-- #583 attribution-race retry needs to see a rewrite immediately.
+--
+-- opts: same as new_cache_resolver ({ path | read_fn, ttl, now_fn }).
+function M.frozen_resolver(opts)
+  opts = opts or {}
+  local read_fn = opts.read_fn or file_reader(opts.path)
+  local now_fn  = opts.now_fn or os.time
+  local tbl     = M.load_table(read_fn() or "", opts.ttl or 3600, now_fn())
+  return function(ip)
+    return tbl[host_norm.canon_ip(ip)]
   end
 end
 

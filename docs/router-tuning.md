@@ -199,7 +199,11 @@ reached us as "my child cannot open an app" rather than as an alert.
   many seconds increments `agent_slow_step_total{step}`, where `step` is the
   fixed enum `ws_apply` / `block_page_token` / `blocklist_refresh` /
   `eb_refresh` / `usage_report` / `metrics_push`. This is the attribution: a
-  stall without it says only "something blocked me".
+  stall without it says only "something blocked me". A step only gets
+  attributed if its slow work is inside the timer, so `usage_report` covers the
+  whole usage flush (counter read, report build, post, counter reset) and
+  `eb_refresh` covers the inventory build as well as the slice
+  ([#2796](https://github.com/wifihaven/wifihaven/issues/2796)).
 
 These four knobs form **one ordering**, and it is load-bearing:
 

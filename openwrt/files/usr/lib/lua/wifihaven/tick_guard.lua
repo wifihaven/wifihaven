@@ -110,6 +110,41 @@ function M.step_over_budget(elapsed, budget)
   return e > (tonumber(budget) or M.DEFAULT_STEP_BUDGET_SECONDS)
 end
 
+-- Label used for a step name that is not in STEPS, so a typo or a new call site
+-- cannot become a free-form label value.
+M.OTHER_STEP = "other"
+
+local STEP_SET = {}
+for _, s in ipairs(M.STEPS) do STEP_SET[s] = true end
+
+-- Lua 5.1 has no table.pack; this is the idiom, and it keeps nil holes.
+-- unpack is a global on 5.1 (the router) and table.unpack on the 5.2+ dev host.
+local function pack(...) return { n = select("#", ...), ... } end
+local unpack_ = table.unpack or unpack
+
+-- run_step(opts, step, fn, ...) -> fn's return values   (#2796)
+--   Times one in-tick step and, past opts.budget, increments
+--   agent_slow_step_total{step} and warns, so the next stall names its cause in
+--   Grafana. This used to live inline in the agent, where no spec could drive
+--   it, and the metric never emitted on prod because the slow work sat just
+--   OUTSIDE the timed calls. Keep the heavy part of a step inside `fn`.
+--   opts: { budget, now_fn, reg, metrics, log }
+--   Returns fn's FULL arity (http_get returns three values).
+function M.run_step(opts, step, fn, ...)
+  local t0 = opts.now_fn()
+  local r = pack(fn(...))
+  local elapsed = opts.now_fn() - t0
+  if M.step_over_budget(elapsed, opts.budget) then
+    local label = STEP_SET[step] and step or M.OTHER_STEP
+    opts.metrics.inc_counter(opts.reg, "agent_slow_step_total", { step = label })
+    if opts.log then
+      opts.log.warn("on_tick: step %q took %.1fs (budget %ss) — it blocked the cooperative loop " ..
+                    "for that long (#2785)", tostring(step), elapsed, tostring(opts.budget))
+    end
+  end
+  return unpack_(r, 1, r.n)
+end
+
 -- apply_pending(trigger_etag, current_etag) -> boolean
 --   `trigger_etag` is what the sidecar last persisted (paths.ws_pending, nil
 --   when there is no trigger file); `current_etag` is what the agent has

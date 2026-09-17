@@ -796,24 +796,20 @@ end
 
 -- wh_timed_step(step, fn, ...) -> fn's return values. Times one in-tick step and
 -- attributes it when it runs past the budget, so the NEXT stall names its cause
--- in Grafana instead of needing an SSH into the router.
--- Lua 5.1 has no table.pack; this is the idiom, and it keeps nil holes.
-local function wh_pack(...) return { n = select("#", ...), ... } end
+-- in Grafana instead of needing an SSH into the router. The timing and the
+-- agent_slow_step_total emit live in tick_guard.run_step, where a spec can
+-- induce a slow step (#2796). A step is only attributable if its slow work is
+-- inside `fn`: pass a closure over the whole unit of work, not just its last call.
+local wh_step_opts = {
+  budget  = tick_step_budget,
+  now_fn  = clock.monotonic_seconds,
+  reg     = mreg,
+  metrics = metrics,
+  log     = log,
+}
 
 function wh_timed_step(step, fn, ...)
-  local t0 = clock.monotonic_seconds()
-  -- Capture the wrapped function's FULL arity. No call site needs a third
-  -- return value today, but a fixed two-value capture is a silent trap for the
-  -- next one (http_get returns three), and getting it right once costs less
-  -- than remembering to.
-  local r = wh_pack(fn(...))
-  local elapsed = clock.monotonic_seconds() - t0
-  if tick_guard.step_over_budget(elapsed, tick_step_budget) then
-    metrics.inc_counter(mreg, "agent_slow_step_total", { step = step })
-    log.warn("on_tick: step %q took %.1fs (budget %ds) — it blocked the cooperative loop " ..
-             "for that long (#2785)", step, elapsed, tick_step_budget)
-  end
-  return unpack(r, 1, r.n)
+  return tick_guard.run_step(wh_step_opts, step, fn, ...)
 end
 
 -- wh_defer_network(pending, mono) -> boolean. True while a snapshot the sidecar
@@ -1518,6 +1514,15 @@ local lookup_hostname = dns_log.new_cache_resolver({
   ttl  = dns_cache_ttl,
 })
 
+-- #2796: the usage flush resolves thousands of counters in one go. Against
+-- lookup_hostname every dns-tail rewrite mid-flush re-parsed the whole cache
+-- (87 parses, 27.5 s on the prod family router: the residual W16 stall), so the
+-- flush takes one frozen parse instead. A GLOBAL so on_tick gains no upvalue
+-- (Lua 5.1 60-upvalue load limit, #1930).
+function wh_frozen_lookup()
+  return dns_log.frozen_resolver({ path = dns_cache_path, ttl = dns_cache_ttl })
+end
+
 -- #1122/#1126: nflog tail. render.lua emits
 --   `log prefix "wh_drop:<mac>:<reason> " counter drop`
 -- on every forward-chain drop rule so dropped flows (which never reach the
@@ -1881,18 +1886,23 @@ conntrack.watch({
     -- back the cost we are taking out.
     if ts.last_snapshot and not ts.in_failover_render and not defer_network
        and (ts.eb_cursor > 0 or (mono - ts.last_eb_refresh_run) >= eb_refresh_int) then
-      if ts.eb_cursor == 0 or not ts.eb_inventory then
-        -- #2782: `bl_hosts_by_mac` only when eb_refresh_blocklists is on — see
-        -- the knob's comment. With it off this sweep is the AUTHORED
-        -- extraBlocked hosts, which is the set #2782 is about and which fits
-        -- inside one slice (11 hosts, 1.21 s cold / 0.11 s warm, measured on prod).
-        ts.eb_inventory = eb_refresh.collect_inventory(
-          eb_hosts_by_mac, eb_refresh_bl and bl_hosts_by_mac or {})
-      end
-      local inv = ts.eb_inventory
-      if #inv.eb_hosts > 0 or #inv.bl_pairs > 0 then
-        local rt0 = clock.monotonic_seconds()
-        local stats = wh_timed_step("eb_refresh", eb_refresh.refresh, {
+      -- #2796: the inventory build is part of the step. collect_inventory walks
+      -- and sorts the whole inventory (6.2 s over the blocklist half on the prod
+      -- family router) and used to run just before the timer, so it could
+      -- never be attributed. nil stats = nothing to sweep.
+      local rt0 = clock.monotonic_seconds()
+      local stats = wh_timed_step("eb_refresh", function()
+        if ts.eb_cursor == 0 or not ts.eb_inventory then
+          -- #2782: `bl_hosts_by_mac` only when eb_refresh_blocklists is on — see
+          -- the knob's comment. With it off this sweep is the AUTHORED
+          -- extraBlocked hosts, which is the set #2782 is about and which fits
+          -- inside one slice (11 hosts, 1.21 s cold / 0.11 s warm, measured on prod).
+          ts.eb_inventory = eb_refresh.collect_inventory(
+            eb_hosts_by_mac, eb_refresh_bl and bl_hosts_by_mac or {})
+        end
+        local inv = ts.eb_inventory
+        if #inv.eb_hosts == 0 and #inv.bl_pairs == 0 then return nil end
+        return eb_refresh.refresh({
           eb_hosts  = inv.eb_hosts,
           bl_pairs  = inv.bl_pairs,
           nft_table = "inet wifihaven",
@@ -1905,6 +1915,8 @@ conntrack.watch({
           start_index      = ts.eb_cursor,
           log       = log,
         })
+      end)
+      if stats then
         local elapsed = clock.monotonic_seconds() - rt0
         ts.eb_cursor = stats.next_index or 0
         if stats.done then
@@ -1947,6 +1959,7 @@ conntrack.watch({
         if stats.adds > 0 then
           metrics.inc_counter(mreg, "eb_refresh_adds_total", {}, stats.adds)
         end
+        -- elapsed includes the inventory build on a sweep's first slice (#2796).
         log.debug("eb_refresh slice: hosts=%d ok=%d empty=%d err=%d adds=%d " ..
                   "elapsed=%.2fs cursor=%d/%d done=%s",
                   stats.hosts, stats.resolves_ok, stats.resolves_empty,
@@ -2078,51 +2091,57 @@ conntrack.watch({
       -- single-keyed `ip_tracking_rx` per #879 but that lost the remote
       -- axis). After a successful POST we `nft reset set ...` on both to
       -- zero those per-element counters in lock-step.
-      local counters = read_nft_counters()
-      if counters then
-        -- Final sample at flush so set elements that appeared after the
-        -- last activity_sample_int tick still get an active sample counted.
-        -- #2025: thread wall-clock so this final tick extends the activity
-        -- envelope build_report emits.
-        usage.tracker_sample(activity_tracker, counters, wall)
-        ts.last_activity_sample = mono
-        local report = usage.build_report(
-          counters, nft_sets, period_start, period_end, router_id,
-          nil, lookup_hostname, activity_tracker,
-          activity_sample_int, usage_int)
-        log.debug("usage timer: %d counter(s), %d record(s) prepared",
-                  #counters, report.records and #report.records or 0)
-        -- Retry queue's next_attempt_at math runs on the monotonic clock so
-        -- a backward wall-clock jump can't freeze the drain (#336).
-        -- #1848: usage POST goes through the ws outbound tee (pass-through to
-        -- http_post whenever ws is off or unhealthy). A spool write counts as a
-        -- successful "post"
-        -- to the retry queue (at-least-once; the sidecar owns delivery + the
-        -- server dedups), so the queue/reset semantics below are unchanged.
-        local posted = wh_timed_step("usage_report", usage.post_with_retry,
-          api_url, router_token, report, usage_events_post, usage_queue, mono, nil, log)
-        -- #1033: classify the immediate-post outcome so operators can see whether
-        -- usage reports are flowing (`ok`) or stacking up in the retry queue
-        -- (`queued`). The empty-report short-circuit in post_with_retry also
-        -- returns true, but it never reaches this branch (build_report only
-        -- emits a report with records when there were counters to fold).
-        metrics.inc_counter(mreg, "usage_post_total",
-                            { result = posted and "ok" or "queued" })
-        -- Reset counters and tracker regardless of post outcome: the report
-        -- is now owned by the retry queue (or already sent), so leaving the
-        -- nft counters intact would double-count on the next bucket.
-        os.execute("nft reset set inet wifihaven mac_ip_tracking >/dev/null 2>&1")
-        os.execute("nft reset set inet wifihaven ip_pair_tracking_rx >/dev/null 2>&1")
-        -- #1796: reset the v6 accounting sets too, else v6 counters carry over
-        -- and double-count on the next bucket.
-        os.execute("nft reset set inet wifihaven mac_ip6_tracking >/dev/null 2>&1")
-        os.execute("nft reset set inet wifihaven ip_pair6_tracking_rx >/dev/null 2>&1")
-        usage.tracker_reset(activity_tracker)
-        if not posted then
-          log.warn("usage timer: queued for retry (queue depth=%d)",
-                   #usage_queue.buckets)
+      -- #2796: the step is the WHOLE flush: counter read, report build, post
+      -- and counter reset. Timing only the post (a spool write on the ws path)
+      -- left a 27.5 s report build on the prod family router outside the timer,
+      -- so the loop stalled ~12 times a day with agent_slow_step_total silent.
+      wh_timed_step("usage_report", function()
+        local counters = read_nft_counters()
+        if counters then
+          -- Final sample at flush so set elements that appeared after the
+          -- last activity_sample_int tick still get an active sample counted.
+          -- #2025: thread wall-clock so this final tick extends the activity
+          -- envelope build_report emits.
+          usage.tracker_sample(activity_tracker, counters, wall)
+          ts.last_activity_sample = mono
+          local report = usage.build_report(
+            counters, nft_sets, period_start, period_end, router_id,
+            nil, wh_frozen_lookup(), activity_tracker,
+            activity_sample_int, usage_int)
+          log.debug("usage timer: %d counter(s), %d record(s) prepared",
+                    #counters, report.records and #report.records or 0)
+          -- Retry queue's next_attempt_at math runs on the monotonic clock so
+          -- a backward wall-clock jump can't freeze the drain (#336).
+          -- #1848: usage POST goes through the ws outbound tee (pass-through to
+          -- http_post whenever ws is off or unhealthy). A spool write counts as a
+          -- successful "post"
+          -- to the retry queue (at-least-once; the sidecar owns delivery + the
+          -- server dedups), so the queue/reset semantics below are unchanged.
+          local posted = usage.post_with_retry(
+            api_url, router_token, report, usage_events_post, usage_queue, mono, nil, log)
+          -- #1033: classify the immediate-post outcome so operators can see whether
+          -- usage reports are flowing (`ok`) or stacking up in the retry queue
+          -- (`queued`). The empty-report short-circuit in post_with_retry also
+          -- returns true, but it never reaches this branch (build_report only
+          -- emits a report with records when there were counters to fold).
+          metrics.inc_counter(mreg, "usage_post_total",
+                              { result = posted and "ok" or "queued" })
+          -- Reset counters and tracker regardless of post outcome: the report
+          -- is now owned by the retry queue (or already sent), so leaving the
+          -- nft counters intact would double-count on the next bucket.
+          os.execute("nft reset set inet wifihaven mac_ip_tracking >/dev/null 2>&1")
+          os.execute("nft reset set inet wifihaven ip_pair_tracking_rx >/dev/null 2>&1")
+          -- #1796: reset the v6 accounting sets too, else v6 counters carry over
+          -- and double-count on the next bucket.
+          os.execute("nft reset set inet wifihaven mac_ip6_tracking >/dev/null 2>&1")
+          os.execute("nft reset set inet wifihaven ip_pair6_tracking_rx >/dev/null 2>&1")
+          usage.tracker_reset(activity_tracker)
+          if not posted then
+            log.warn("usage timer: queued for retry (queue depth=%d)",
+                     #usage_queue.buckets)
+          end
         end
-      end
+      end)
     end
 
     -- Metrics push timer (#1206). Independent of the ~5 s policy poll: ships

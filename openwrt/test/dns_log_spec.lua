@@ -1062,3 +1062,80 @@ describe("new_cache_resolver (#2068)", function()
     assert.is_nil(resolve("1.2.3.4"))
   end)
 end)
+
+-- ---------------------------------------------------------------------------
+-- frozen_resolver (#2796)
+-- ---------------------------------------------------------------------------
+-- new_cache_resolver re-reads the snapshot on every call and re-parses when the
+-- content changed. usage.build_report called it once per counter while
+-- wifihaven-dns-tail kept rewriting the file, so one flush on the prod family
+-- router re-parsed the 210 KB cache 87 times: 27.5 s of pure Lua inside
+-- on_tick, which is the residual W16 stall. A flush needs one consistent view
+-- of the cache, parsed once.
+describe("frozen_resolver (#2796)", function()
+  local function row(ip, host, ts) return ip .. "\t" .. host .. "\t" .. ts .. "\n" end
+
+  -- A reader whose content changes on EVERY read, as dns-tail's does under load.
+  local function churning_reader(now)
+    local reads, text = 0, row("1.2.3.4", "host.example", now)
+    return function()
+      reads = reads + 1
+      text = text .. row("10.0.0." .. reads, "churn" .. reads .. ".example", now)
+      return text
+    end, function() return reads end
+  end
+
+  local function spy_parses()
+    local orig, n = dns_log.load_table, 0
+    dns_log.load_table = function(...) n = n + 1; return orig(...) end
+    return function() return n end, function() dns_log.load_table = orig end
+  end
+
+  it("reads and parses the cache once for a whole flush, however often dns-tail rewrites it", function()
+    local now = 5000
+    local read_fn, reads = churning_reader(now)
+    local parses, restore = spy_parses()
+    local resolve = dns_log.frozen_resolver({
+      read_fn = read_fn, now_fn = function() return now end, ttl = 3600,
+    })
+    local hits = 0
+    for _ = 1, 1000 do
+      if resolve("1.2.3.4") == "host.example" then hits = hits + 1 end
+    end
+    restore()
+    assert.are.equal(1000, hits)   -- liveness: the lookups actually resolved
+    assert.are.equal(1, parses())
+    assert.are.equal(1, reads())
+  end)
+
+  it("contrast: the live per-flow resolver re-parses on every read under the same churn", function()
+    -- This is why the flush must not use new_cache_resolver, and proves the
+    -- rig above can tell the two apart.
+    local now = 5000
+    local read_fn = churning_reader(now)
+    local parses, restore = spy_parses()
+    local resolve = dns_log.new_cache_resolver({
+      read_fn = read_fn, now_fn = function() return now end, ttl = 3600,
+    })
+    for _ = 1, 50 do resolve("1.2.3.4") end
+    restore()
+    assert.are.equal(50, parses())
+  end)
+
+  it("canonicalizes the v6 query key and tolerates a missing cache file", function()
+    local now = 6000
+    local resolve = dns_log.frozen_resolver({
+      read_fn = function()
+        return "2607:f8b0:400f:0801:0000:0000:0000:2002\tv6.example\t" .. now .. "\n"
+      end,
+      now_fn = function() return now end,
+    })
+    assert.are.equal("v6.example", resolve("2607:f8b0:400f:801::2002"))
+    assert.is_nil(resolve("9.9.9.9"))
+
+    local empty = dns_log.frozen_resolver({
+      read_fn = function() return nil end, now_fn = function() return 0 end,
+    })
+    assert.is_nil(empty("1.2.3.4"))
+  end)
+end)
