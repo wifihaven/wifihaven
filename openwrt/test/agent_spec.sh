@@ -315,7 +315,11 @@ fi
 #      heavy work inside it.
 timed_body() {
   awk -v step="$1" '
-    index($0, "wh_timed_step(\"" step "\"") { on = 1; match($0, /^ */); ind = RLENGTH; print; next }
+    index($0, "wh_timed_step(\"" step "\"") {
+      print
+      if ($0 !~ /function\(/) exit   # one-line call: no body to extract
+      on = 1; match($0, /^ */); ind = RLENGTH; next
+    }
     on { print; if ($0 ~ /^ *end\)/) { match($0, /^ */); if (RLENGTH <= ind) exit } }
   ' "$SCRIPT"
 }
@@ -349,6 +353,30 @@ if printf '%s\n' "$USAGE_BODY" | grep -q 'dns_log\.frozen_resolver\|wh_frozen_lo
 else
   check "usage flush resolves against one frozen parse of the dns cache (#2796)" \
     "build_report uses the live per-flow resolver — every dns-tail rewrite mid-flush re-parses the cache"
+fi
+
+# (6c) #2796: tick_guard.run_step folds a step name outside tick_guard.STEPS
+#      into `other` so a typo cannot mint a free-form label. The dashboard and
+#      W16 text describe the six named steps, so pin that no call site ever
+#      produces `other`: every wh_timed_step("<name>" …) must name a STEPS value.
+STEPS_LIST=$(awk '/^M\.STEPS = \{/{on=1; next} on && /^\}/{exit} on' "$ROOT/files/usr/lib/lua/wifihaven/tick_guard.lua" \
+  | grep -oE '"[a-z_]+"' | tr -d '"')
+CALL_STEPS=$(grep -oE 'wh_timed_step\("[^"]+"' "$SCRIPT" | sed -E 's/.*\("//; s/"$//' | sort -u)
+if [ -n "$STEPS_LIST" ] && [ -n "$CALL_STEPS" ]; then
+  check "found tick_guard.STEPS and the agent's timed call sites (liveness anchor)" ok
+  BAD=""
+  for s in $CALL_STEPS; do
+    printf '%s\n' "$STEPS_LIST" | grep -qx "$s" || BAD="$BAD $s"
+  done
+  if [ -z "$BAD" ]; then
+    check "every wh_timed_step call site names a tick_guard.STEPS value (#2796)" ok
+  else
+    check "every wh_timed_step call site names a tick_guard.STEPS value (#2796)" \
+      "not in STEPS:$BAD — it would be reported as step=\"other\""
+  fi
+else
+  check "found tick_guard.STEPS and the agent's timed call sites (liveness anchor)" \
+    "steps=[$STEPS_LIST] calls=[$CALL_STEPS]"
 fi
 
 # (7) The four tick-liveness knobs form one ordering

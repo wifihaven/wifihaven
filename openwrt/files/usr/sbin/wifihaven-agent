@@ -1959,6 +1959,7 @@ conntrack.watch({
         if stats.adds > 0 then
           metrics.inc_counter(mreg, "eb_refresh_adds_total", {}, stats.adds)
         end
+        -- elapsed includes the inventory build on a sweep's first slice (#2796).
         log.debug("eb_refresh slice: hosts=%d ok=%d empty=%d err=%d adds=%d " ..
                   "elapsed=%.2fs cursor=%d/%d done=%s",
                   stats.hosts, stats.resolves_ok, stats.resolves_empty,

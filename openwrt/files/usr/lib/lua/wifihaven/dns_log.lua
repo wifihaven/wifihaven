@@ -612,6 +612,17 @@ function M.load_table(text, ttl_seconds, now)
   return out
 end
 
+-- Default snapshot reader for the resolvers below.
+local function file_reader(path)
+  return function()
+    local f = io.open(path, "r")
+    if not f then return nil end
+    local t = f:read("*a")
+    f:close()
+    return t
+  end
+end
+
 -- ---------------------------------------------------------------------------
 -- new_cache_resolver(opts) -> function(ip) -> hostname | nil   (#2068)
 -- ---------------------------------------------------------------------------
@@ -634,20 +645,14 @@ end
 -- clock TTL) preserves the #583 attribution-race retry: the instant dns-tail
 -- rewrites the snapshot with a freshly-resolved IP, the next lookup re-parses
 -- and sees it. The entry TTL is still applied by `load_table` on each re-parse.
+-- #2796: parse-once only holds while the content is unchanged, and dns-tail
+-- rewrites it continuously, so the usage flush now uses frozen_resolver below;
+-- this one serves the per-flow conntrack lookups.
 --
 --   opts.path     snapshot file path (used by the default reader).
 --   opts.ttl      entry TTL seconds passed to load_table (default 3600).
 --   opts.read_fn  injectable reader -> text | nil (default reads opts.path).
 --   opts.now_fn   injectable clock -> epoch seconds (default os.time).
-local function file_reader(path)
-  return function()
-    local f = io.open(path, "r")
-    if not f then return nil end
-    local t = f:read("*a")
-    f:close()
-    return t
-  end
-end
 
 function M.new_cache_resolver(opts)
   opts = opts or {}
