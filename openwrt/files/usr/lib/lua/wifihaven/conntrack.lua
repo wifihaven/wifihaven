@@ -482,13 +482,44 @@ local function monotonic_now()
   return os.time()
 end
 
-local function default_sleep(s)
-  -- BusyBox usleep takes microseconds; fall back to `sleep` for whole seconds
-  -- if usleep is missing on some exotic build.
-  local us = math.floor((s or 0) * 1e6)
-  if us <= 0 then return end
-  os.execute(string.format("usleep %d 2>/dev/null || sleep %d", us, math.max(1, math.floor(s))))
+-- #2797: the default sleeper must be genuinely sub-second, in-process.
+--
+-- It used to shell out to `usleep <us> 2>/dev/null || sleep <max(1,floor(s))>`.
+-- That degrades to a FULL SECOND on the shipped target: OpenWrt 25.12's
+-- BusyBox has no `usleep` applet and its `sleep` rejects fractions
+-- ("sleep: invalid number '0.2'", verified on the prod router 2026-09-16,
+-- agent 0.3.33). So every 0.1s retry below cost 1s plus two forks inside the
+-- conntrack read loop that also drives on_tick, and the per-second token
+-- budget did not bound it because a 1s sleep refills the window every time.
+--
+-- cqueues is a hard DEPENDS of the wifihaven package (openwrt/Makefile, shipped
+-- for the ws sidecar since #2036), and cqueues.sleep() is a real sub-second
+-- sleep with no fork. The agent process runs no cqueues controller — the
+-- controller lives in the separate wifihaven-ws sidecar process (see
+-- files/etc/init.d/wifihaven) — so cqueues.sleep() blocks here rather than
+-- yielding, which is exactly the semantics this retry wants.
+--
+-- If cqueues is somehow unreachable there is NO sub-second primitive left on
+-- this target, so default_sleep reports that it did not sleep and the retry is
+-- SKIPPED rather than stretched to a second: a skipped retry costs one
+-- mislabeled event, a 1s stall costs the whole conntrack loop. Deliberately no
+-- busy-wait fallback — burning a tenth of a second of CPU per unattributed
+-- flow is worse than the miss.
+local ok_cqueues, cqueues = pcall(require, "cqueues")
+M._subsecond_sleep = (ok_cqueues and type(cqueues) == "table"
+                      and type(cqueues.sleep) == "function") and cqueues.sleep or nil
+
+-- default_sleep(s) -> boolean   true = slept (or nothing to sleep for),
+--                               false = no sub-second primitive, did not sleep
+function M.default_sleep(s)
+  s = tonumber(s) or 0
+  if s <= 0 then return true end
+  local sleep = M._subsecond_sleep
+  if not sleep then return false end
+  sleep(s)
+  return true
 end
+local default_sleep = M.default_sleep
 
 function M.new_fqdn_retry_state(opts)
   opts = opts or {}
@@ -533,8 +564,14 @@ function M.attribute_hostname(dst_ip, lookup_fn, retry_state)
   if (retry_state.tokens or 0) <= 0 then return nil end
   retry_state.tokens = retry_state.tokens - 1
 
+  -- A sleeper that reports `false` could not honor the sub-second delay
+  -- (#2797). Skip the retry and refund the token: an immediate re-read would
+  -- just re-lose the dns-tail flush race this delay exists to absorb.
   local sleep_fn = retry_state.sleep_fn or default_sleep
-  sleep_fn(retry_state.delay_seconds)
+  if sleep_fn(retry_state.delay_seconds) == false then
+    retry_state.tokens = retry_state.tokens + 1
+    return nil
+  end
   return lookup_fn(dst_ip)
 end
 
