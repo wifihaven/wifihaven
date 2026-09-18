@@ -446,6 +446,43 @@ function M.host_matches(hname, host)
   return hname:sub(-(#host + 1)) == "." .. host
 end
 
+-- ---------------------------------------------------------------------------
+-- suffix_match(hname, map) -> key, value | nil
+--
+-- The inverted form of host_matches (#2798): instead of testing hname against
+-- every key of `map`, probe `map` for hname and for each of its suffixes.
+-- Returns the matched key and its value, or nil.
+--
+-- The candidate list is exactly the set of strings H for which
+-- host_matches(hname, H) is true — hname itself, plus the remainder after
+-- each "." in hname — so this agrees with host_matches by construction rather
+-- than by re-stating the rule. conntrack_spec pins that equivalence.
+--
+-- Cost is O(number of labels in hname), independent of #map. The scan it
+-- replaces was O(#map) per flow: on the prod family router bl_hosts_by_mac[mac]
+-- holds ~160k member hosts (ads_extended + adult_extended), so every
+-- DNS-attributed flow built and compared ~160k strings on the watcher's
+-- foreground loop — the #2785 shape, per-flow work scaling with the CATALOG
+-- rather than with the household.
+--
+-- Most-specific-first: hname is probed before its parents, so an entry for
+-- "b.example.com" wins over one for "example.com". The scan it replaces used
+-- `pairs`, whose winner among overlapping entries was unspecified.
+-- ---------------------------------------------------------------------------
+function M.suffix_match(hname, map)
+  if not hname or not map then return nil end
+  local v = map[hname]
+  if v ~= nil then return hname, v end
+  local i = hname:find(".", 1, true)
+  while i do
+    local cand = hname:sub(i + 1)
+    v = map[cand]
+    if v ~= nil then return cand, v end
+    i = hname:find(".", i + 1, true)
+  end
+  return nil
+end
+
 local function default_log()
   local ok, l = pcall(require, "wifihaven.log")
   if ok then return l end
@@ -1097,14 +1134,9 @@ function M.handle_flow(flow, ctx, batcher)
   -- when DNS attribution is missing for flows from a blocked MAC.
   if not allowed and match_hname and mac then
     local ea_hosts = ctx.ea_hosts_by_mac and ctx.ea_hosts_by_mac[mac]
-    if ea_hosts then
-      for ea_host in pairs(ea_hosts) do
-        if M.host_matches(match_hname, ea_host) then
-          allowed = true
-          reason  = nil
-          break
-        end
-      end
+    if ea_hosts and M.suffix_match(match_hname, ea_hosts) then
+      allowed = true
+      reason  = nil
     end
   end
 
@@ -1146,14 +1178,10 @@ function M.handle_flow(flow, ctx, batcher)
   local function check_ea_carveout(eb_hit_host)
     local ea_hosts = ctx.ea_hosts_by_mac and ctx.ea_hosts_by_mac[mac]
     if not ea_hosts then return false end
-    for ea_host in pairs(ea_hosts) do
-      if match_hname then
-        if M.host_matches(match_hname, ea_host) then return true end
-      else
-        if ea_host == eb_hit_host then return true end
-      end
+    if match_hname then
+      return M.suffix_match(match_hname, ea_hosts) ~= nil
     end
-    return false
+    return eb_hit_host ~= nil and ea_hosts[eb_hit_host] ~= nil
   end
 
   -- #2719: the carve-out check for a slow-path hit, where there is no hostname
@@ -1249,13 +1277,12 @@ function M.handle_flow(flow, ctx, batcher)
     local bl_hit_host
     local bl_hit_id
     if match_hname and bl_hosts then
-      -- Fast path: the attributed hostname is matched against the MAC's
-      -- membership table, so the event names both the list AND the host.
-      for host, id in pairs(bl_hosts) do
-        if M.host_matches(match_hname, host) then
-          bl_hit_host = host; bl_hit_id = id; break
-        end
-      end
+      -- Fast path: the attributed hostname is looked up in the MAC's
+      -- membership table by suffix (#2798), so the event names both the list
+      -- AND the host at a cost bounded by the hostname's label count. The
+      -- scan this replaces was O(every member host of every subscribed list)
+      -- on every attributed flow.
+      bl_hit_host, bl_hit_id = M.suffix_match(match_hname, bl_hosts)
     elseif not match_hname and slow_path_ok then
       -- #2719 slow path: one probe per ASSIGNED LIST against the kernel's
       -- bl_<id>/bl6_<id> set, which dnsmasq's nftset= callback already
