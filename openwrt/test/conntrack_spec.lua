@@ -1604,6 +1604,126 @@ describe("attribute_hostname (#583 dns-tail race)", function()
   end)
 end)
 
+-- ---------------------------------------------------------------------------
+-- #2797: the DEFAULT sleeper must actually be sub-second.
+--
+-- It used to shell out to `usleep <us> 2>/dev/null || sleep <max(1,floor(s))>`.
+-- OpenWrt 25.12's BusyBox ships no `usleep` applet and its `sleep` rejects
+-- fractions ("sleep: invalid number '0.2'"), so every 0.1s retry cost a FULL
+-- SECOND plus two forks inside the conntrack read loop that also drives
+-- on_tick. The per-second token budget did not bound it: a 1s sleep refills
+-- the window every time.
+-- ---------------------------------------------------------------------------
+
+describe("default FQDN-retry sleeper (#2797)", function()
+  local saved_execute, saved_primitive
+
+  before_each(function()
+    saved_execute   = os.execute
+    saved_primitive = conntrack._subsecond_sleep
+    os.execute = function(cmd)
+      error("default_sleep must not fork a shell: " .. tostring(cmd))
+    end
+  end)
+
+  after_each(function()
+    os.execute = saved_execute
+    conntrack._subsecond_sleep = saved_primitive
+  end)
+
+  it("sleeps the requested sub-second delay through the in-process primitive", function()
+    local got = {}
+    conntrack._subsecond_sleep = function(s) got[#got + 1] = s end
+    assert.is_true(conntrack.default_sleep(0.1))
+    assert.same({ 0.1 }, got)
+  end)
+
+  it("skips the sleep instead of stretching it to a second when no primitive exists", function()
+    -- No sub-second primitive is reachable => there is nothing to fall back to
+    -- on this target. Skipping the retry costs one mislabeled event; a 1s
+    -- stall costs the whole conntrack loop.
+    conntrack._subsecond_sleep = nil
+    assert.is_false(conntrack.default_sleep(0.1))
+  end)
+
+  it("is a no-op for a non-positive delay", function()
+    conntrack._subsecond_sleep = function() error("must not sleep for 0s") end
+    assert.is_true(conntrack.default_sleep(0))
+    assert.is_true(conntrack.default_sleep(nil))
+  end)
+
+  -- Liveness anchor: the absence assertions above pass for free if the retry
+  -- path never runs at all, so pin that it DOES still retry on the default
+  -- sleeper when a sub-second primitive is present.
+  it("still retries once through the default sleeper when a primitive exists", function()
+    local got, n = {}, 0
+    conntrack._subsecond_sleep = function(s) got[#got + 1] = s end
+    local state = conntrack.new_fqdn_retry_state({
+      max_per_second = 2, delay_seconds = 0.1,
+      now_fn = function() return 0 end,
+    })
+    local h = conntrack.attribute_hostname("1.2.3.4", function(_ip)
+      n = n + 1
+      if n == 2 then return "late.example" end
+    end, state)
+    assert.equal("late.example", h)
+    assert.equal(2, n)
+    assert.same({ 0.1 }, got)
+    assert.equal(1, state.tokens)
+  end)
+
+  it("skips the retry and refunds the token when there is no way to sleep", function()
+    local n = 0
+    conntrack._subsecond_sleep = nil
+    local state = conntrack.new_fqdn_retry_state({
+      max_per_second = 2, delay_seconds = 0.1,
+      now_fn = function() return 0 end,
+    })
+    local h = conntrack.attribute_hostname("1.2.3.4", function(_ip)
+      n = n + 1
+      return nil
+    end, state)
+    assert.is_nil(h)
+    assert.equal(1, n)           -- no second lookup
+    assert.equal(2, state.tokens) -- budget untouched: no work was done
+  end)
+
+  it("reports 'did not sleep' when running inside a cqueues controller", function()
+    -- cqueues.sleep() blocks only OUTSIDE a controller; inside one it yields
+    -- the coroutine, which would resume attribution on someone else's
+    -- schedule. Keep the "no controller in this process" invariant structural.
+    local saved_running = conntrack._cqueues_running
+    finally(function() conntrack._cqueues_running = saved_running end)
+    conntrack._subsecond_sleep = function() error("must not sleep under a controller") end
+    conntrack._cqueues_running = function() return {} end
+    assert.is_false(conntrack.default_sleep(0.1))
+  end)
+
+  -- The stubbed tests above pass identically whether or not the module-load
+  -- `require("cqueues")` actually succeeded, so pin the REAL wiring too. CI's
+  -- lua-tests job installs lua-cqueues (.github/workflows/ci.yml), so this
+  -- gates there; it self-skips on a host without the dependency.
+  it("wires up the real cqueues primitive when the dependency is present", function()
+    conntrack._subsecond_sleep = saved_primitive  -- undo before_each's isolation
+    os.execute = saved_execute
+    if not pcall(require, "cqueues") then
+      -- Report the skip rather than scoring a vacuous PASS. CI's lua-tests job
+      -- installs lua-cqueues, so this branch is local-dev only.
+      pending("cqueues not installed on this host")
+      return
+    end
+    assert.is_not_nil(conntrack._subsecond_sleep)
+
+    local cq = require("cqueues")
+    local t0 = cq.monotime()
+    assert.is_true(conntrack.default_sleep(0.1))
+    local elapsed = cq.monotime() - t0
+    -- The bug this pins: the old shell-out took a FULL SECOND for this call.
+    assert.is_true(elapsed < 0.5, "default_sleep(0.1) took " .. tostring(elapsed) .. "s")
+    assert.is_true(elapsed >= 0.05, "default_sleep(0.1) did not actually sleep")
+  end)
+end)
+
 describe("build_dhcp_lease_event", function()
   it("builds a dhcp_lease event with mac/ip/hostname/ts", function()
     local ev = conntrack.build_dhcp_lease_event({
