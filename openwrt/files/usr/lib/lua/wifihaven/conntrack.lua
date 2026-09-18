@@ -1646,7 +1646,9 @@ function M.watch(cfg)
     local lan_ip_set = (flow and flow.src_ip:find(":", 1, true)) and neighbor_table() or nil
     -- #2799: both families need the router's own addresses for the dst test.
     -- v4 gets less out of it than v6 — br-lan's v4 address is already excluded
-    -- by lan_prefix, so only a hairpin to the WAN address is newly caught — but
+    -- by lan_prefix, so what is newly caught is a router-held v4 address
+    -- OUTSIDE lan_prefix (the WAN address, a guest bridge, a secondary LAN, a
+    -- VPN endpoint); the dst test matches any address the router holds — but
     -- the set is built once per second regardless of family, so running one
     -- table for both costs nothing over gating it on v6 and keeps a single
     -- destination test rather than a family fork.
