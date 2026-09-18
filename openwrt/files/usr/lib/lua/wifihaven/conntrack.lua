@@ -475,6 +475,11 @@ end
 -- not stall the conntrack loop.
 --
 -- opts: { max_per_second = 10, delay_seconds = 0.1, now_fn, sleep_fn }
+--
+-- sleep_fn(seconds) -> boolean|nil. Returning exactly `false` means "I could not
+-- honor this sub-second delay and did NOT sleep", which makes the caller skip
+-- the retry and refund its token (#2797). Any other return value (including
+-- nil) means the delay was honored.
 -- ---------------------------------------------------------------------------
 local function monotonic_now()
   local ok, clock = pcall(require, "wifihaven.clock")
@@ -508,18 +513,31 @@ end
 local ok_cqueues, cqueues = pcall(require, "cqueues")
 M._subsecond_sleep = (ok_cqueues and type(cqueues) == "table"
                       and type(cqueues.sleep) == "function") and cqueues.sleep or nil
+M._cqueues_running = (ok_cqueues and type(cqueues) == "table"
+                      and type(cqueues.running) == "function") and cqueues.running or nil
 
--- default_sleep(s) -> boolean   true = slept (or nothing to sleep for),
---                               false = no sub-second primitive, did not sleep
+-- default_sleep(s) -> boolean   true  = slept (or there was nothing to sleep for)
+--                               false = could not sleep sub-second, did NOT sleep
+--                                       (callers must skip the work, never stretch
+--                                        the delay or busy-wait)
 function M.default_sleep(s)
   s = tonumber(s) or 0
   if s <= 0 then return true end
   local sleep = M._subsecond_sleep
   if not sleep then return false end
+  -- cqueues.sleep() only BLOCKS outside a cqueues controller; inside one it
+  -- YIELDS the running coroutine. Today no controller exists in this process
+  -- (the only cqueues.new() is in the separate wifihaven-ws sidecar, and
+  -- nothing there requires this module), so the comment above holds — but keep
+  -- the invariant structural rather than prose: if this module is ever pulled
+  -- into a controller-running process, yielding mid-attribution would resume on
+  -- someone else's schedule with no error and no crash. Report "did not sleep"
+  -- instead and take the already-tested skip path.
+  local running = M._cqueues_running
+  if running and running() then return false end
   sleep(s)
   return true
 end
-local default_sleep = M.default_sleep
 
 function M.new_fqdn_retry_state(opts)
   opts = opts or {}
@@ -545,6 +563,11 @@ end
 -- been ingested + atomically flushed to the cache file by wifihaven-dns-tail
 -- at the moment conntrack -E NEW fires.
 --
+-- If the sleeper reports it could not sleep sub-second (returns exactly
+-- `false`, see #2797) the retry is SKIPPED and the token refunded: an
+-- immediate re-read would just re-lose the flush race the delay absorbs, and
+-- stretching the delay to a whole second stalls the conntrack loop.
+--
 -- retry_state is mutated (token decrement, window refill); callers should
 -- share one state across the watch loop so the budget is honored globally.
 -- Passing retry_state=nil disables the retry (used by tests and by callers
@@ -567,7 +590,7 @@ function M.attribute_hostname(dst_ip, lookup_fn, retry_state)
   -- A sleeper that reports `false` could not honor the sub-second delay
   -- (#2797). Skip the retry and refund the token: an immediate re-read would
   -- just re-lose the dns-tail flush race this delay exists to absorb.
-  local sleep_fn = retry_state.sleep_fn or default_sleep
+  local sleep_fn = retry_state.sleep_fn or M.default_sleep
   if sleep_fn(retry_state.delay_seconds) == false then
     retry_state.tokens = retry_state.tokens + 1
     return nil
@@ -1481,6 +1504,9 @@ end
 --                                  (default 0.1 — long enough to absorb the
 --                                  typical dns-tail flush latency).
 --   fqdn_retry_sleep_fn       function (optional) injectable sleep for tests.
+--                                  Same contract as new_fqdn_retry_state's
+--                                  sleep_fn: returning exactly `false` means
+--                                  "did not sleep" and skips the retry (#2797).
 --   fqdn_retry_state          table   (optional) inject a pre-built retry state
 --                                     (tests; usually omitted).
 -- }
@@ -1502,6 +1528,15 @@ function M.watch(cfg)
   local event_queue = cfg.event_queue or M.new_event_queue()
 
   -- #583: per-second budget for FQDN-attribution race retries.
+  -- #2797: cqueues is a hard DEPENDS of the package (openwrt/Makefile), so if
+  -- its sleep is unreachable the install is broken, not merely configured off.
+  -- FQDN-attribution retries are silently disabled in that state, which would
+  -- otherwise show up only as a slow drift toward ip-only-labelled events — say
+  -- so loudly at watcher start rather than degrading in the dark.
+  if not M._subsecond_sleep and not cfg.fqdn_retry_sleep_fn then
+    log.warn("conntrack: no sub-second sleep primitive (cqueues unavailable); " ..
+             "#583 FQDN-attribution retries are DISABLED")
+  end
   local fqdn_retry_state = cfg.fqdn_retry_state or M.new_fqdn_retry_state({
     max_per_second = cfg.fqdn_retry_max_per_second,
     delay_seconds  = cfg.fqdn_retry_delay_seconds,

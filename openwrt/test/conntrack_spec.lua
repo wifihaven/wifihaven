@@ -1687,6 +1687,36 @@ describe("default FQDN-retry sleeper (#2797)", function()
     assert.equal(1, n)           -- no second lookup
     assert.equal(2, state.tokens) -- budget untouched: no work was done
   end)
+
+  it("reports 'did not sleep' when running inside a cqueues controller", function()
+    -- cqueues.sleep() blocks only OUTSIDE a controller; inside one it yields
+    -- the coroutine, which would resume attribution on someone else's
+    -- schedule. Keep the "no controller in this process" invariant structural.
+    local saved_running = conntrack._cqueues_running
+    finally(function() conntrack._cqueues_running = saved_running end)
+    conntrack._subsecond_sleep = function() error("must not sleep under a controller") end
+    conntrack._cqueues_running = function() return {} end
+    assert.is_false(conntrack.default_sleep(0.1))
+  end)
+
+  -- The stubbed tests above pass identically whether or not the module-load
+  -- `require("cqueues")` actually succeeded, so pin the REAL wiring too. CI's
+  -- lua-tests job installs lua-cqueues (.github/workflows/ci.yml), so this
+  -- gates there; it self-skips on a host without the dependency.
+  it("wires up the real cqueues primitive when the dependency is present", function()
+    conntrack._subsecond_sleep = saved_primitive  -- undo before_each's isolation
+    os.execute = saved_execute
+    if not pcall(require, "cqueues") then return end
+    assert.is_not_nil(conntrack._subsecond_sleep)
+
+    local cq = require("cqueues")
+    local t0 = cq.monotime()
+    assert.is_true(conntrack.default_sleep(0.1))
+    local elapsed = cq.monotime() - t0
+    -- The bug this pins: the old shell-out took a FULL SECOND for this call.
+    assert.is_true(elapsed < 0.5, "default_sleep(0.1) took " .. tostring(elapsed) .. "s")
+    assert.is_true(elapsed >= 0.05, "default_sleep(0.1) did not actually sleep")
+  end)
 end)
 
 describe("build_dhcp_lease_event", function()
