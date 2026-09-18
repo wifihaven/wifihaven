@@ -459,11 +459,11 @@ end
 -- than by re-stating the rule. conntrack_spec pins that equivalence.
 --
 -- Cost is O(number of labels in hname), independent of #map. The scan it
--- replaces was O(#map) per flow: on the prod family router bl_hosts_by_mac[mac]
--- holds ~160k member hosts (ads_extended + adult_extended), so every
--- DNS-attributed flow built and compared ~160k strings on the watcher's
--- foreground loop — the #2785 shape, per-flow work scaling with the CATALOG
--- rather than with the household.
+-- replaces was O(#map) per flow, and for bl_hosts_by_mac[mac] that map is the
+-- MAC's whole blocklist member index — so every DNS-attributed flow built and
+-- compared one string per catalog entry on the watcher's foreground loop, the
+-- #2785 shape of per-flow work scaling with the CATALOG rather than with the
+-- household. #2798 has the dated prod measurement.
 --
 -- Most-specific-first: hname is probed before its parents, so an entry for
 -- "b.example.com" wins over one for "example.com". The scan it replaces used
@@ -1227,15 +1227,21 @@ function M.handle_flow(flow, ctx, batcher)
     if eb_hosts and (match_hname or slow_path_ok) then
       local eb_hit = false
       local eb_hit_host
-      -- Sorted, not pairs(): under a tripped ceiling the subset of hosts that
-      -- actually get probed must not vary run to run, or an intermittently
-      -- capped flow classifies differently for identical input.
-      for _, host in ipairs(sorted_keys(eb_hosts)) do
-        if match_hname then
-          if M.host_matches(match_hname, host) then
-            eb_hit = true; eb_hit_host = host; break
-          end
-        else
+      if match_hname then
+        -- Same suffix lookup as the bl_ path below (#2798), so the two sibling
+        -- paths resolve an overlap by one rule rather than two: most specific
+        -- wins. eb_hosts is household-sized, so this is about keeping the rule
+        -- uniform, not about cost — though it does drop a sorted_keys() sort
+        -- from the attributed hot path.
+        eb_hit_host = M.suffix_match(match_hname, eb_hosts)
+        eb_hit      = eb_hit_host ~= nil
+      else
+        -- Sorted, not pairs(): under a tripped ceiling the subset of hosts that
+        -- actually get probed must not vary run to run, or an intermittently
+        -- capped flow classifies differently for identical input. This applies
+        -- to the probing branch only — the lookup above has no budget and
+        -- cannot be capped.
+        for _, host in ipairs(sorted_keys(eb_hosts)) do
           if not budget.take("eb") then break end
           if M.nft_eb_hit(flow.dst_ip, host, ctx.exec_fn) then
             eb_hit = true; eb_hit_host = host; break
@@ -1260,10 +1266,12 @@ function M.handle_flow(flow, ctx, batcher)
         -- When `eb_hosts` for this MAC contains more than one host whose
         -- ipset covers the same `dst_ip` (rare overlap, e.g. same anycast
         -- IP resolved for two different extraBlocked apex domains), the
-        -- labeled `eb_hit_host` is the first in sorted order (#2719 made the
-        -- iteration deterministic; it used to be `pairs` order). The drop
-        -- itself is unaffected (the kernel already matched at least one eb_
-        -- set); only the debug label is chosen here.
+        -- labeled `eb_hit_host` is the most specific match on the attributed
+        -- path (#2798) and the first in sorted probe order on the slow path
+        -- (#2719 made that iteration deterministic; it used to be `pairs`
+        -- order). Either way the drop itself is unaffected (the kernel
+        -- already matched at least one eb_ set); only the debug label is
+        -- chosen here.
         reason  = "host:" .. eb_hit_host
       end
     end
@@ -1314,6 +1322,10 @@ function M.handle_flow(flow, ctx, batcher)
         end
       end
     end
+    -- bl_hit_host is nil on the slow path (no hostname to name a member with),
+    -- which is exactly the branch check_ea_carveout reads it in — so the carve
+    -- check there falls through to the kernel probes. Passed anyway so the two
+    -- call sites keep the same shape.
     if bl_hit_id and not check_ea_carveout(bl_hit_host) then
       allowed = false
       reason  = "category:" .. tostring(bl_hit_id)

@@ -2711,6 +2711,52 @@ describe("#2798 suffix_match", function()
     assert.is_nil(conntrack.suffix_match(nil, { ["example.com"] = true }))
   end)
 
+  it("agrees with host_matches over randomised inputs", function()
+    -- The case table above pins the divergences we thought of. The guarantee
+    -- is universally quantified, so also fuzz it over an alphabet that
+    -- deliberately produces empty strings, leading/trailing/doubled dots and
+    -- near-miss suffixes. Seeded, so a failure is reproducible.
+    math.randomseed(2798)
+    local atoms = { "a", "b", "example", "com", "not", ".", "" }
+    local function gen()
+      local parts = {}
+      for _ = 1, math.random(0, 5) do
+        parts[#parts + 1] = atoms[math.random(#atoms)]
+      end
+      return table.concat(parts)
+    end
+    for _ = 1, 2000 do
+      local hname, host = gen(), gen()
+      assert.equal(conntrack.host_matches(hname, host),
+        conntrack.suffix_match(hname, { [host] = true }) ~= nil,
+        ("suffix_match disagrees with host_matches for hname=%q host=%q")
+          :format(hname, host))
+    end
+    -- And over multi-key maps: a returned key must itself satisfy
+    -- host_matches, and nil must mean no key did.
+    for _ = 1, 2000 do
+      local hname = gen()
+      local map, keys = {}, {}
+      for _ = 1, 3 do
+        local k = gen()
+        map[k] = true
+        keys[#keys + 1] = k
+      end
+      local hit = conntrack.suffix_match(hname, map)
+      local any = false
+      for _, k in ipairs(keys) do
+        if conntrack.host_matches(hname, k) then any = true end
+      end
+      if hit then
+        assert.is_true(conntrack.host_matches(hname, hit),
+          ("returned key %q does not match hname %q"):format(hit, hname))
+      else
+        assert.is_false(any,
+          ("suffix_match missed a matching key for hname=%q"):format(hname))
+      end
+    end
+  end)
+
   it("agrees with host_matches for every case", function()
     local hnames = {
       "example.com", "foo.example.com", "a.b.example.com", "notexample.com",
