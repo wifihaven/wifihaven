@@ -1375,7 +1375,7 @@ function M.parse_conntrack_line(line)
 end
 
 -- ---------------------------------------------------------------------------
--- is_wan_bound(flow, lan_prefix, lan_prefix_v6) -> bool
+-- is_wan_bound(flow, lan_prefix, lan_prefix_v6, lan_ip_set, local_ip_set) -> bool
 --
 -- Returns true when the flow is an outbound WAN-destined flow: src_ip is on
 -- the LAN AND dst_ip is NOT on the LAN.  This filters out LAN-internal flows
@@ -1645,6 +1645,11 @@ function M.watch(cfg)
     -- the prefix and pays no per-line table cost.
     local lan_ip_set = (flow and flow.src_ip:find(":", 1, true)) and neighbor_table() or nil
     -- #2799: both families need the router's own addresses for the dst test.
+    -- v4 gets less out of it than v6 — br-lan's v4 address is already excluded
+    -- by lan_prefix, so only a hairpin to the WAN address is newly caught — but
+    -- the set is built once per second regardless of family, so running one
+    -- table for both costs nothing over gating it on v6 and keeps a single
+    -- destination test rather than a family fork.
     local local_ip_set = flow and local_address_table() or nil
     if flow and M.is_wan_bound(flow, lan_prefix, lan_prefix_v6, lan_ip_set, local_ip_set) then
       -- v6 reuses the cached neighbor table (src is guaranteed present — it just

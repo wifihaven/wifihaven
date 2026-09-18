@@ -2218,12 +2218,10 @@ describe("router's own addresses are LAN destinations (#2799)", function()
     it("behaves exactly as before when the own-address set is nil or empty", function()
       -- nil/empty is the unreadable-`ip`-dump case: no new rejections, and the
       -- pre-fix classification of the router's ULA is unchanged.
-      for _, own in ipairs({ {} }) do
-        assert.is_true(conntrack.is_wan_bound(
-          { src_ip = CLIENT6, dst_ip = "fdcd:f224:23d6::1" }, LAN, "", NEIGH, own))
-        assert.is_true(conntrack.is_wan_bound(
-          { src_ip = CLIENT6, dst_ip = "2606:4700::6812:446" }, LAN, "", NEIGH, own))
-      end
+      assert.is_true(conntrack.is_wan_bound(
+        { src_ip = CLIENT6, dst_ip = "fdcd:f224:23d6::1" }, LAN, "", NEIGH, {}))
+      assert.is_true(conntrack.is_wan_bound(
+        { src_ip = CLIENT6, dst_ip = "2606:4700::6812:446" }, LAN, "", NEIGH, {}))
       assert.is_true(conntrack.is_wan_bound(
         { src_ip = CLIENT6, dst_ip = "fdcd:f224:23d6::1" }, LAN, "", NEIGH, nil))
       assert.is_true(conntrack.is_wan_bound(
