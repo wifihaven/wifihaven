@@ -1706,7 +1706,12 @@ describe("default FQDN-retry sleeper (#2797)", function()
   it("wires up the real cqueues primitive when the dependency is present", function()
     conntrack._subsecond_sleep = saved_primitive  -- undo before_each's isolation
     os.execute = saved_execute
-    if not pcall(require, "cqueues") then return end
+    if not pcall(require, "cqueues") then
+      -- Report the skip rather than scoring a vacuous PASS. CI's lua-tests job
+      -- installs lua-cqueues, so this branch is local-dev only.
+      pending("cqueues not installed on this host")
+      return
+    end
     assert.is_not_nil(conntrack._subsecond_sleep)
 
     local cq = require("cqueues")

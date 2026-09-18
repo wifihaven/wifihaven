@@ -1533,9 +1533,19 @@ function M.watch(cfg)
   -- FQDN-attribution retries are silently disabled in that state, which would
   -- otherwise show up only as a slow drift toward ip-only-labelled events — say
   -- so loudly at watcher start rather than degrading in the dark.
-  if not M._subsecond_sleep and not cfg.fqdn_retry_sleep_fn then
-    log.warn("conntrack: no sub-second sleep primitive (cqueues unavailable); " ..
-             "#583 FQDN-attribution retries are DISABLED")
+  -- Both halves of the invariant are loud: a missing primitive AND a cqueues
+  -- controller in this process disable the retry, and the second one leaves
+  -- _subsecond_sleep non-nil, so keying the warn on that alone would re-open
+  -- the dark-degradation gap one branch over. Skipped when the caller injected
+  -- its own sleeper or retry state — the message would not be true for it.
+  if not cfg.fqdn_retry_sleep_fn and not cfg.fqdn_retry_state then
+    if not M._subsecond_sleep then
+      log.warn("conntrack: no sub-second sleep primitive (cqueues unavailable); " ..
+               "#583 FQDN-attribution retries are DISABLED")
+    elseif M._cqueues_running and M._cqueues_running() then
+      log.warn("conntrack: running under a cqueues controller, where a sleep would " ..
+               "yield mid-attribution; #583 FQDN-attribution retries are DISABLED")
+    end
   end
   local fqdn_retry_state = cfg.fqdn_retry_state or M.new_fqdn_retry_state({
     max_per_second = cfg.fqdn_retry_max_per_second,
