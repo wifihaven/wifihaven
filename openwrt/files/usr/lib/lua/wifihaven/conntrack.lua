@@ -635,6 +635,44 @@ function M.parse_arp_table(lan_dev)
 end
 
 -- ---------------------------------------------------------------------------
+-- parse_local_addresses() -> { ip -> true }
+--
+-- Every address the router itself holds, across all interfaces and both
+-- families, read from `ip -o addr show`. A destination in this set is the
+-- ROUTER — DNS to dnsmasq, LuCI, the block page, NTP — not the WAN, so
+-- is_wan_bound must not class it as outbound (#2799).
+--
+-- Why all interfaces and not just the LAN bridge: "traffic to an address the
+-- router owns is router-destined" is true of the WAN address too, and scoping
+-- the dump would only leave a narrower set of the same kind of flow
+-- misclassified. It also sidesteps having to know which of br-lan's addresses
+-- (stable ULA vs ISP-delegated GUA, both present on a real router) matter.
+--
+-- This set is used ONLY as a destination test. The router's own addresses must
+-- never become valid flow *sources*: that is exactly the #2368 regression where
+-- an unscoped neighbor dump made router-sourced flows look LAN-sourced and the
+-- agent autocreated a phantom household device.
+--
+-- `ip -o` puts each address on one line, e.g.
+--   `10: br-lan    inet6 fdcd:f224:23d6::1/60 scope global noprefixroute \ ...`
+--   `10: br-lan    inet 192.168.10.1/24 brd 192.168.10.255 scope global br-lan`
+-- The address is the token right after `inet`/`inet6`, minus its prefix length.
+-- Returns an empty table when the dump is unreadable — callers then behave
+-- exactly as they did before this function existed.
+-- ---------------------------------------------------------------------------
+function M.parse_local_addresses()
+  local result = {}
+  local pf = io.popen("ip -o addr show 2>/dev/null")
+  if not pf then return result end
+  for line in pf:lines() do
+    local addr = line:match("%sinet6?%s+([^%s/]+)")
+    if addr then result[addr] = true end
+  end
+  pf:close()
+  return result
+end
+
+-- ---------------------------------------------------------------------------
 -- parse_dhcp_leases(path) -> { mac -> { ip = string, hostname = string|nil } }
 --
 -- Reads a dnsmasq lease file (default /tmp/dhcp.leases).  Each line is:
@@ -1366,8 +1404,10 @@ end
 -- lan_prefix    example: "192.168.1."
 -- lan_prefix_v6 example: "fdaa:bbbb:cccc:"  (optional override; usually unset)
 -- lan_ip_set    example: { ["2601:280:4700:f32::42"] = "aa:bb:.." }  (parse_arp_table)
+-- local_ip_set  example: { ["fdcd:f224:23d6::1"] = true }  (parse_local_addresses)
+--               the router's OWN addresses — a destination-only LAN test (#2799).
 -- ---------------------------------------------------------------------------
-function M.is_wan_bound(flow, lan_prefix, lan_prefix_v6, lan_ip_set)
+function M.is_wan_bound(flow, lan_prefix, lan_prefix_v6, lan_ip_set, local_ip_set)
   -- #2719: multicast and link-local destinations are link-scoped LAN traffic
   -- by definition — a DHCPv6 solicit to ff02::1:2, an mDNS query to
   -- 224.0.0.251 — so they are exactly the noise #575 exists to filter. They
@@ -1378,6 +1418,14 @@ function M.is_wan_bound(flow, lan_prefix, lan_prefix_v6, lan_ip_set)
   -- which is the correct semantics AND removes the only category of flow that
   -- is guaranteed to miss every attribution path.
   if not M.is_attributable_dst(flow.dst_ip) then return false end
+  -- #2799: a destination the router itself holds is the router, not the WAN —
+  -- DNS to dnsmasq, LuCI, the block page. Family-agnostic and dst-only (see
+  -- parse_local_addresses for why it must never widen the LAN *source* test).
+  -- This closes the gap the other two v6 paths structurally cannot: a router is
+  -- never in its own neighbor table, and lan_prefix_v6 ships unset, so without
+  -- this every v6 flow to the router counted as WAN-bound, missed attribution
+  -- and burned the slow-path deadline.
+  if local_ip_set and local_ip_set[flow.dst_ip] then return false end
   local is_v6 = flow.src_ip:find(":", 1, true) ~= nil
   if not is_v6 then
     if not lan_prefix or lan_prefix == "" then return false end
@@ -1572,6 +1620,19 @@ function M.watch(cfg)
     return arp_cache
   end
 
+  -- #2799: the router's own addresses, needed by BOTH families' destination
+  -- test, cached on the same per-wall-clock-second cadence as the neighbor
+  -- table so a burst of conntrack NEW events costs at most one `ip -o addr`
+  -- per second. They change rarely (a prefix-delegation renewal), so a
+  -- one-second staleness window is immaterial.
+  local own_cache, own_cache_sec = nil, nil
+  local function local_address_table()
+    local now = os.time()
+    if own_cache and own_cache_sec == now then return own_cache end
+    own_cache, own_cache_sec = M.parse_local_addresses(), now
+    return own_cache
+  end
+
   while true do
     local line = handle:read("*l")
     if not line then break end
@@ -1583,7 +1644,9 @@ function M.watch(cfg)
     -- Only v6 needs the neighbor set for the LAN-source decision; v4 stays on
     -- the prefix and pays no per-line table cost.
     local lan_ip_set = (flow and flow.src_ip:find(":", 1, true)) and neighbor_table() or nil
-    if flow and M.is_wan_bound(flow, lan_prefix, lan_prefix_v6, lan_ip_set) then
+    -- #2799: both families need the router's own addresses for the dst test.
+    local local_ip_set = flow and local_address_table() or nil
+    if flow and M.is_wan_bound(flow, lan_prefix, lan_prefix_v6, lan_ip_set, local_ip_set) then
       -- v6 reuses the cached neighbor table (src is guaranteed present — it just
       -- passed the membership check); v4 fetches a fresh ARP table as before
       -- (lan_dev scopes only the v6 half; the v4 /proc/net/arp lookup is
