@@ -2725,15 +2725,24 @@ describe("#2798 suffix_match", function()
       end
       return table.concat(parts)
     end
+    local positives = 0
     for _ = 1, 2000 do
       local hname, host = gen(), gen()
-      assert.equal(conntrack.host_matches(hname, host),
+      local expected = conntrack.host_matches(hname, host)
+      if expected then positives = positives + 1 end
+      assert.equal(expected,
         conntrack.suffix_match(hname, { [host] = true }) ~= nil,
         ("suffix_match disagrees with host_matches for hname=%q host=%q")
           :format(hname, host))
     end
+    -- Liveness anchor: without this an `atoms` edit could make every round a
+    -- non-match and leave the loop asserting false == false 2000 times. The
+    -- observed rate is ~7%; the floor is set well under it.
+    assert.is_true(positives > 50,
+      "fuzz generated no matching pairs, so it asserts nothing: " .. positives)
     -- And over multi-key maps: a returned key must itself satisfy
     -- host_matches, and nil must mean no key did.
+    local map_positives = 0
     for _ = 1, 2000 do
       local hname = gen()
       local map, keys = {}, {}
@@ -2743,6 +2752,7 @@ describe("#2798 suffix_match", function()
         keys[#keys + 1] = k
       end
       local hit = conntrack.suffix_match(hname, map)
+      if hit then map_positives = map_positives + 1 end
       local any = false
       for _, k in ipairs(keys) do
         if conntrack.host_matches(hname, k) then any = true end
@@ -2755,6 +2765,9 @@ describe("#2798 suffix_match", function()
           ("suffix_match missed a matching key for hname=%q"):format(hname))
       end
     end
+    assert.is_true(map_positives > 50,
+      "fuzz found no key in any map, so the hit branch is never taken: "
+        .. map_positives)
   end)
 
   it("agrees with host_matches for every case", function()

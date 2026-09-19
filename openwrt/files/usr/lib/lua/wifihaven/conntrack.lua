@@ -438,6 +438,12 @@ end
 --   host_matches("foo.example.com", "example.com") → true   (subdomain)
 --   host_matches("notexample.com",  "example.com") → false  (no dot prefix)
 --   host_matches("foo.bar",         "example.com") → false
+--
+-- #2798 moved every caller onto M.suffix_match, so this has no production call
+-- site today. It is kept deliberately: it is the statement of the matching
+-- rule, and conntrack_spec's differential test uses it as the oracle that
+-- suffix_match's candidate walk is checked against. Deleting it as dead code
+-- would take that pin with it.
 -- ---------------------------------------------------------------------------
 function M.host_matches(hname, host)
   if hname == host then return true end
@@ -1104,7 +1110,7 @@ function M.handle_flow(flow, ctx, batcher)
   -- #1708 carve-out / blocklist matching uses `match_hname`, NOT `hname`:
   -- label-typed attributions ("apple-push", "google-dns") must not feed the
   -- string-level suffix tests below (extraAllowed carve-out, extraBlocked
-  -- host_matches, category-blocklist host_matches). The server-side
+  -- suffix_match, category-blocklist suffix_match). The server-side
   -- HostMatch.matchesAny already returns false for HostId.Label, so a label
   -- can never appear in ea_hosts/eb_hosts/bl_hosts in the first place — this
   -- is defense-in-depth keeping the label/fqdn boundary local to the agent.
@@ -1323,9 +1329,10 @@ function M.handle_flow(flow, ctx, batcher)
       end
     end
     -- bl_hit_host is nil on the slow path (no hostname to name a member with),
-    -- which is exactly the branch check_ea_carveout reads it in — so the carve
-    -- check there falls through to the kernel probes. Passed anyway so the two
-    -- call sites keep the same shape.
+    -- which is exactly the branch check_ea_carveout reads it in — so the call
+    -- below returns false immediately. That is not a gap: the carve-out on
+    -- this path was already decided by slow_path_carve_state() above. Passed
+    -- anyway so the two call sites keep the same shape.
     if bl_hit_id and not check_ea_carveout(bl_hit_host) then
       allowed = false
       reason  = "category:" .. tostring(bl_hit_id)
