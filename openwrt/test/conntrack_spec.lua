@@ -2193,6 +2193,229 @@ describe("is_wan_bound (#575)", function()
   end)
 end)
 
+
+-- ---------------------------------------------------------------------------
+-- #2799: the router's OWN addresses are LAN destinations
+--
+-- Measured on the prod family router 2026-09-16/17: in the hour before 00:00Z
+-- the agent logged ~340 `handle_flow: slow-path probe ceiling hit (deadline)`
+-- warnings, and 305 of them were ONE client talking to `fdcd:f224:23d6::1` —
+-- the router's own ULA on br-lan (`network.globals.ula_prefix` =
+-- `fdcd:f224:23d6::/48`; `ip -o addr show` carries `fdcd:f224:23d6::1/60` on
+-- br-lan). That is almost certainly DNS to the router itself.
+--
+-- is_wan_bound decided "v6 LAN destination" by NDP-neighbor membership or the
+-- `lan_prefix_v6` prefix. `wifihaven.wifihaven.lan_prefix_v6` is unset on that
+-- router, and a router is NEVER in its own neighbor table — so a flow TO the
+-- router classified as WAN-bound, missed every DNS attribution path, burned
+-- the 0.5 s per-flow nft probe deadline, and shipped a connection event.
+--
+-- The fix reads the router's own addresses (all families, all interfaces) and
+-- treats them as LAN destinations inside the ONE decision function. It is a
+-- dst-only test on purpose: the router's own addresses must NOT become valid
+-- flow *sources*, or #2368's phantom-device regression comes straight back.
+-- ---------------------------------------------------------------------------
+
+describe("router's own addresses are LAN destinations (#2799)", function()
+  -- Real `ip -o addr show` output from the prod family router (2026-09-18),
+  -- trimmed to the lines that matter.
+  local ADDR_LINES = {
+    "1: lo    inet 127.0.0.1/8 scope host lo\\       valid_lft forever preferred_lft forever",
+    "1: lo    inet6 ::1/128 scope host proto kernel_lo \\       valid_lft forever preferred_lft forever",
+    "3: eth1    inet 24.128.78.106/23 brd 24.128.79.255 scope global eth1\\       valid_lft forever",
+    "3: eth1    inet6 2001:558:6040:1:d44:6a39:1949:13c1/128 scope global dynamic noprefixroute \\       valid_lft 6211sec",
+    "10: br-lan    inet 192.168.10.1/24 brd 192.168.10.255 scope global br-lan\\       valid_lft forever",
+    "10: br-lan    inet6 2601:280:4700:3f1::1/64 scope global dynamic noprefixroute \\       valid_lft 6210sec",
+    "10: br-lan    inet6 fdcd:f224:23d6::1/60 scope global noprefixroute \\       valid_lft forever",
+    "10: br-lan    inet6 fe80::9683:c4ff:fed4:9dd9/64 scope link proto kernel_ll \\       valid_lft forever",
+  }
+
+  local function with_addr_stub(lines, body)
+    local saved_popen = io.popen
+    io.popen = function(cmd)
+      if not cmd:match("ip %-o addr") then return nil end
+      if not lines then return nil end
+      local i = 0
+      return {
+        lines = function() return function() i = i + 1; return lines[i] end end,
+        read  = function() return nil end,
+        close = function() end,
+      }
+    end
+    local ok, err = pcall(body)
+    io.popen = saved_popen
+    assert(ok, err)
+  end
+
+  describe("parse_local_addresses", function()
+    it("collects the router's v4 and v6 addresses from `ip -o addr show`", function()
+      with_addr_stub(ADDR_LINES, function()
+        local own = conntrack.parse_local_addresses()
+        assert.is_true(own["fdcd:f224:23d6::1"])           -- br-lan ULA (#2799)
+        assert.is_true(own["2601:280:4700:3f1::1"])        -- br-lan delegated GUA
+        assert.is_true(own["192.168.10.1"])                -- br-lan v4
+        assert.is_true(own["24.128.78.106"])               -- WAN v4
+        assert.is_true(own["2001:558:6040:1:d44:6a39:1949:13c1"]) -- WAN v6
+        assert.is_true(own["fe80::9683:c4ff:fed4:9dd9"])   -- link-local
+      end)
+    end)
+
+    it("strips the prefix length and keeps no other tokens", function()
+      with_addr_stub(ADDR_LINES, function()
+        local own = conntrack.parse_local_addresses()
+        assert.is_nil(own["fdcd:f224:23d6::1/60"])
+        assert.is_nil(own["br-lan"])
+        assert.is_nil(own["forever"])
+      end)
+    end)
+
+    it("returns an empty table when the address dump is unreadable", function()
+      with_addr_stub(nil, function()
+        assert.same({}, conntrack.parse_local_addresses())
+      end)
+    end)
+  end)
+
+  describe("is_wan_bound with the router's own address set", function()
+    -- The measured shape: a LAN client (present in the br-lan NDP set) sending
+    -- to the router's own ULA.
+    local CLIENT6 = "2601:280:4700:3f1:cd10:109c:441c:49df"
+    local NEIGH   = { [CLIENT6] = "ca:ef:a1:72:6a:a3" }
+    local OWN     = {
+      ["fdcd:f224:23d6::1"]    = true,
+      ["2601:280:4700:3f1::1"] = true,
+      ["192.168.10.1"]         = true,
+      ["24.128.78.106"]        = true,
+    }
+    local LAN     = "192.168.10."
+
+    it("rejects a v6 flow to the router's own ULA (#2799)", function()
+      assert.is_false(conntrack.is_wan_bound(
+        { src_ip = CLIENT6, dst_ip = "fdcd:f224:23d6::1" }, LAN, "", NEIGH, OWN))
+    end)
+
+    it("rejects a v6 flow to the router's own delegated GUA", function()
+      assert.is_false(conntrack.is_wan_bound(
+        { src_ip = CLIENT6, dst_ip = "2601:280:4700:3f1::1" }, LAN, "", NEIGH, OWN))
+    end)
+
+    -- LIVENESS ANCHOR: without this, an over-broad fix that classified every
+    -- destination as LAN would pass every assertion above.
+    it("still accepts the same client's flow to a genuine internet v6 dst", function()
+      assert.is_true(conntrack.is_wan_bound(
+        { src_ip = CLIENT6, dst_ip = "2606:4700::6812:446" }, LAN, "", NEIGH, OWN))
+    end)
+
+    it("rejects a v4 flow to the router's own WAN address, keeps internet v4", function()
+      assert.is_false(conntrack.is_wan_bound(
+        { src_ip = "192.168.10.42", dst_ip = "24.128.78.106" }, LAN, "", NEIGH, OWN))
+      assert.is_true(conntrack.is_wan_bound(
+        { src_ip = "192.168.10.42", dst_ip = "1.2.3.4" }, LAN, "", NEIGH, OWN))
+    end)
+
+    it("leaves the neighbor-set path intact (#1796/#2368)", function()
+      -- LAN peer -> LAN peer still LAN-internal; non-neighbor src still rejected;
+      -- the router's own address as a *source* is still NOT a LAN source.
+      local PEER6 = "2601:280:4700:3f1:aef7:a1ee:2623:6f41"
+      local N2 = { [CLIENT6] = "ca:ef:a1:72:6a:a3", [PEER6] = "78:78:35:a2:03:3a" }
+      assert.is_false(conntrack.is_wan_bound(
+        { src_ip = CLIENT6, dst_ip = PEER6 }, LAN, "", N2, OWN))
+      assert.is_false(conntrack.is_wan_bound(
+        { src_ip = "2001:db8::99", dst_ip = "2606:4700::6812:446" }, LAN, "", N2, OWN))
+      assert.is_false(conntrack.is_wan_bound(
+        { src_ip = "fdcd:f224:23d6::1", dst_ip = "2606:4700::6812:446" }, LAN, "", N2, OWN))
+    end)
+
+    it("leaves the authored lan_prefix_v6 path intact (union, back-compat)", function()
+      assert.is_true(conntrack.is_wan_bound(
+        { src_ip = "fdaa:bbbb:cccc::42", dst_ip = "2606:4700::6812:446" },
+        LAN, "fdaa:bbbb:cccc:", nil, OWN))
+      assert.is_false(conntrack.is_wan_bound(
+        { src_ip = "fdaa:bbbb:cccc::42", dst_ip = "fdaa:bbbb:cccc::1" },
+        LAN, "fdaa:bbbb:cccc:", nil, OWN))
+    end)
+
+    it("behaves exactly as before when the own-address set is nil or empty", function()
+      -- nil/empty is the unreadable-`ip`-dump case: no new rejections, and the
+      -- pre-fix classification of the router's ULA is unchanged.
+      assert.is_true(conntrack.is_wan_bound(
+        { src_ip = CLIENT6, dst_ip = "fdcd:f224:23d6::1" }, LAN, "", NEIGH, {}))
+      assert.is_true(conntrack.is_wan_bound(
+        { src_ip = CLIENT6, dst_ip = "2606:4700::6812:446" }, LAN, "", NEIGH, {}))
+      assert.is_true(conntrack.is_wan_bound(
+        { src_ip = CLIENT6, dst_ip = "fdcd:f224:23d6::1" }, LAN, "", NEIGH, nil))
+      assert.is_true(conntrack.is_wan_bound(
+        { src_ip = CLIENT6, dst_ip = "2606:4700::6812:446" }, LAN, "", NEIGH, nil))
+    end)
+  end)
+
+  -- The unit assertions above prove the decision function; this one proves the
+  -- WIRING — that watch() actually builds the own-address set and hands it to
+  -- is_wan_bound. Without it the fix could be correct and still dead on the
+  -- router.
+  describe("watch() wiring", function()
+    local CLIENT6 = "2601:280:4700:3f1:cd10:109c:441c:49df"
+    local NEIGH_LINE = CLIENT6 .. " lladdr ca:ef:a1:72:6a:a3 REACHABLE"
+
+    local function posted_events_for(dst)
+      local posted = 0
+      local saved_open, saved_popen = io.open, io.popen
+      io.open  = function() return nil end   -- no /proc/net/arp, no leases file
+      io.popen = function(cmd)
+        local lines
+        if cmd:match("ip %-6 neigh") then lines = { NEIGH_LINE }
+        elseif cmd:match("ip %-o addr") then lines = ADDR_LINES
+        else return nil end
+        local i = 0
+        return {
+          lines = function() return function() i = i + 1; return lines[i] end end,
+          read  = function() return nil end,
+          close = function() end,
+        }
+      end
+      local reader_lines = {
+        "[NEW] udp 17 30 src=" .. CLIENT6 .. " dst=" .. dst .. " sport=5000 dport=53",
+        nil,
+      }
+      local ok, err = pcall(function()
+        conntrack.watch({
+          api_url      = "http://test.invalid",
+          router_id    = "r1",
+          router_token = "tok",
+          lan_prefix   = "192.168.10.",
+          lan_dev      = "br-lan",
+          max_batch    = 1,          -- flush on the first event
+          http_post    = function() posted = posted + 1; return 200, "", nil end,
+          sleep_fn     = function() end,
+          exec_fn      = function() return "" end,
+          lookup_hostname = function() return nil end,
+          open_reader  = function()
+            local i = 0
+            return {
+              read = function(_, _) i = i + 1; return reader_lines[i] end,
+              close = function() end,
+            }
+          end,
+        })
+      end)
+      io.open, io.popen = saved_open, saved_popen
+      assert(ok, err)
+      return posted
+    end
+
+    it("posts no event for a flow to the router's own ULA (#2799)", function()
+      assert.equal(0, posted_events_for("fdcd:f224:23d6::1"))
+    end)
+
+    -- LIVENESS ANCHOR for the wiring: a watch() that dropped everything would
+    -- satisfy the assertion above for free. (Count, not exact: a first-seen MAC
+    -- also ships a device report alongside the connection_attempt.)
+    it("still posts for the same client's internet v6 flow", function()
+      assert.is_true(posted_events_for("2606:4700::6812:446") > 0)
+    end)
+  end)
+end)
+
 -- ---------------------------------------------------------------------------
 -- #579: eb_san + nft_eb_hit helpers
 -- ---------------------------------------------------------------------------
