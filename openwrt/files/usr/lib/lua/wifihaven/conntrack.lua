@@ -438,12 +438,55 @@ end
 --   host_matches("foo.example.com", "example.com") → true   (subdomain)
 --   host_matches("notexample.com",  "example.com") → false  (no dot prefix)
 --   host_matches("foo.bar",         "example.com") → false
+--
+-- #2798 moved every caller onto M.suffix_match, so this has no production call
+-- site today. It is kept deliberately: it is the statement of the matching
+-- rule, and conntrack_spec's differential test uses it as the oracle that
+-- suffix_match's candidate walk is checked against. Deleting it as dead code
+-- would take that pin with it.
 -- ---------------------------------------------------------------------------
 function M.host_matches(hname, host)
   if hname == host then return true end
   -- Check suffix ".<host>" — avoids false positive on e.g. "notexample.com"
   -- matching "example.com".
   return hname:sub(-(#host + 1)) == "." .. host
+end
+
+-- ---------------------------------------------------------------------------
+-- suffix_match(hname, map) -> key, value | nil
+--
+-- The inverted form of host_matches (#2798): instead of testing hname against
+-- every key of `map`, probe `map` for hname and for each of its suffixes.
+-- Returns the matched key and its value, or nil.
+--
+-- The candidate list is exactly the set of strings H for which
+-- host_matches(hname, H) is true — hname itself, plus the remainder after
+-- each "." in hname — so this agrees with host_matches by construction rather
+-- than by re-stating the rule. conntrack_spec pins that equivalence.
+--
+-- Cost is O(number of labels in hname), independent of #map. The scan it
+-- replaces was O(#map) per flow, and for bl_hosts_by_mac[mac] that map is the
+-- MAC's whole blocklist member index — so every DNS-attributed flow built and
+-- compared one string per catalog entry on the watcher's foreground loop, the
+-- #2785 shape of per-flow work scaling with the CATALOG rather than with the
+-- household. #2798 has the dated prod measurement.
+--
+-- Most-specific-first: hname is probed before its parents, so an entry for
+-- "b.example.com" wins over one for "example.com". The scan it replaces used
+-- `pairs`, whose winner among overlapping entries was unspecified.
+-- ---------------------------------------------------------------------------
+function M.suffix_match(hname, map)
+  if not hname or not map then return nil end
+  local v = map[hname]
+  if v ~= nil then return hname, v end
+  local i = hname:find(".", 1, true)
+  while i do
+    local cand = hname:sub(i + 1)
+    v = map[cand]
+    if v ~= nil then return cand, v end
+    i = hname:find(".", i + 1, true)
+  end
+  return nil
 end
 
 local function default_log()
@@ -1127,7 +1170,7 @@ function M.handle_flow(flow, ctx, batcher)
   -- #1708 carve-out / blocklist matching uses `match_hname`, NOT `hname`:
   -- label-typed attributions ("apple-push", "google-dns") must not feed the
   -- string-level suffix tests below (extraAllowed carve-out, extraBlocked
-  -- host_matches, category-blocklist host_matches). The server-side
+  -- suffix_match, category-blocklist suffix_match). The server-side
   -- HostMatch.matchesAny already returns false for HostId.Label, so a label
   -- can never appear in ea_hosts/eb_hosts/bl_hosts in the first place — this
   -- is defense-in-depth keeping the label/fqdn boundary local to the agent.
@@ -1157,14 +1200,9 @@ function M.handle_flow(flow, ctx, batcher)
   -- when DNS attribution is missing for flows from a blocked MAC.
   if not allowed and match_hname and mac then
     local ea_hosts = ctx.ea_hosts_by_mac and ctx.ea_hosts_by_mac[mac]
-    if ea_hosts then
-      for ea_host in pairs(ea_hosts) do
-        if M.host_matches(match_hname, ea_host) then
-          allowed = true
-          reason  = nil
-          break
-        end
-      end
+    if ea_hosts and M.suffix_match(match_hname, ea_hosts) then
+      allowed = true
+      reason  = nil
     end
   end
 
@@ -1206,14 +1244,10 @@ function M.handle_flow(flow, ctx, batcher)
   local function check_ea_carveout(eb_hit_host)
     local ea_hosts = ctx.ea_hosts_by_mac and ctx.ea_hosts_by_mac[mac]
     if not ea_hosts then return false end
-    for ea_host in pairs(ea_hosts) do
-      if match_hname then
-        if M.host_matches(match_hname, ea_host) then return true end
-      else
-        if ea_host == eb_hit_host then return true end
-      end
+    if match_hname then
+      return M.suffix_match(match_hname, ea_hosts) ~= nil
     end
-    return false
+    return eb_hit_host ~= nil and ea_hosts[eb_hit_host] ~= nil
   end
 
   -- #2719: the carve-out check for a slow-path hit, where there is no hostname
@@ -1259,15 +1293,21 @@ function M.handle_flow(flow, ctx, batcher)
     if eb_hosts and (match_hname or slow_path_ok) then
       local eb_hit = false
       local eb_hit_host
-      -- Sorted, not pairs(): under a tripped ceiling the subset of hosts that
-      -- actually get probed must not vary run to run, or an intermittently
-      -- capped flow classifies differently for identical input.
-      for _, host in ipairs(sorted_keys(eb_hosts)) do
-        if match_hname then
-          if M.host_matches(match_hname, host) then
-            eb_hit = true; eb_hit_host = host; break
-          end
-        else
+      if match_hname then
+        -- Same suffix lookup as the bl_ path below (#2798), so the two sibling
+        -- paths resolve an overlap by one rule rather than two: most specific
+        -- wins. eb_hosts is household-sized, so this is about keeping the rule
+        -- uniform, not about cost — though it does drop a sorted_keys() sort
+        -- from the attributed hot path.
+        eb_hit_host = M.suffix_match(match_hname, eb_hosts)
+        eb_hit      = eb_hit_host ~= nil
+      else
+        -- Sorted, not pairs(): under a tripped ceiling the subset of hosts that
+        -- actually get probed must not vary run to run, or an intermittently
+        -- capped flow classifies differently for identical input. This applies
+        -- to the probing branch only — the lookup above has no budget and
+        -- cannot be capped.
+        for _, host in ipairs(sorted_keys(eb_hosts)) do
           if not budget.take("eb") then break end
           if M.nft_eb_hit(flow.dst_ip, host, ctx.exec_fn) then
             eb_hit = true; eb_hit_host = host; break
@@ -1292,10 +1332,12 @@ function M.handle_flow(flow, ctx, batcher)
         -- When `eb_hosts` for this MAC contains more than one host whose
         -- ipset covers the same `dst_ip` (rare overlap, e.g. same anycast
         -- IP resolved for two different extraBlocked apex domains), the
-        -- labeled `eb_hit_host` is the first in sorted order (#2719 made the
-        -- iteration deterministic; it used to be `pairs` order). The drop
-        -- itself is unaffected (the kernel already matched at least one eb_
-        -- set); only the debug label is chosen here.
+        -- labeled `eb_hit_host` is the most specific match on the attributed
+        -- path (#2798) and the first in sorted probe order on the slow path
+        -- (#2719 made that iteration deterministic; it used to be `pairs`
+        -- order). Either way the drop itself is unaffected (the kernel
+        -- already matched at least one eb_ set); only the debug label is
+        -- chosen here.
         reason  = "host:" .. eb_hit_host
       end
     end
@@ -1309,13 +1351,12 @@ function M.handle_flow(flow, ctx, batcher)
     local bl_hit_host
     local bl_hit_id
     if match_hname and bl_hosts then
-      -- Fast path: the attributed hostname is matched against the MAC's
-      -- membership table, so the event names both the list AND the host.
-      for host, id in pairs(bl_hosts) do
-        if M.host_matches(match_hname, host) then
-          bl_hit_host = host; bl_hit_id = id; break
-        end
-      end
+      -- Fast path: the attributed hostname is looked up in the MAC's
+      -- membership table by suffix (#2798), so the event names both the list
+      -- AND the host at a cost bounded by the hostname's label count. The
+      -- scan this replaces was O(every member host of every subscribed list)
+      -- on every attributed flow.
+      bl_hit_host, bl_hit_id = M.suffix_match(match_hname, bl_hosts)
     elseif not match_hname and slow_path_ok then
       -- #2719 slow path: one probe per ASSIGNED LIST against the kernel's
       -- bl_<id>/bl6_<id> set, which dnsmasq's nftset= callback already
@@ -1347,6 +1388,11 @@ function M.handle_flow(flow, ctx, batcher)
         end
       end
     end
+    -- bl_hit_host is nil on the slow path (no hostname to name a member with),
+    -- which is exactly the branch check_ea_carveout reads it in — so the call
+    -- below returns false immediately. That is not a gap: the carve-out on
+    -- this path was already decided by slow_path_carve_state() above. Passed
+    -- anyway so the two call sites keep the same shape.
     if bl_hit_id and not check_ea_carveout(bl_hit_host) then
       allowed = false
       reason  = "category:" .. tostring(bl_hit_id)

@@ -2781,3 +2781,190 @@ describe("slow-path bounding (#2719)", function()
     assert.equal(0, #metered)
   end)
 end)
+
+-- ---------------------------------------------------------------------------
+-- #2798: suffix lookup instead of a full scan of the blocklist member index
+--
+-- handle_flow used to walk every member host of every blocklist subscribed for
+-- the MAC (159,748 entries on the prod family router) on EVERY DNS-attributed
+-- flow, building a "." .. host string per comparison. The lookup is inverted
+-- here: probe the map for the hostname and each of its suffixes, which is
+-- O(labels) and independent of how big the catalog is.
+--
+-- host_matches stays the single source of truth for the matching semantics;
+-- suffix_match must agree with it by construction, which the equivalence test
+-- below pins over a table of cases.
+-- ---------------------------------------------------------------------------
+
+describe("#2798 suffix_match", function()
+  it("finds an exact-host entry and returns its value", function()
+    local k, v = conntrack.suffix_match("ad.doubleclick.net",
+      { ["ad.doubleclick.net"] = "ads" })
+    assert.equal("ad.doubleclick.net", k)
+    assert.equal("ads", v)
+  end)
+
+  it("finds a parent-domain entry for a subdomain (dnsmasq nftset semantics)", function()
+    local k, v = conntrack.suffix_match("a.b.example.com", { ["example.com"] = "ads" })
+    assert.equal("example.com", k)
+    assert.equal("ads", v)
+  end)
+
+  it("does NOT match a host that merely ends with the entry's text", function()
+    -- The naive suffix walk's failure mode: 'notexample.com' is not a
+    -- subdomain of 'example.com'.
+    assert.is_nil(conntrack.suffix_match("notexample.com", { ["example.com"] = "ads" }))
+  end)
+
+  it("prefers the most specific entry when several suffixes are present", function()
+    local k, v = conntrack.suffix_match("a.b.example.com", {
+      ["example.com"]   = "ads",
+      ["b.example.com"] = "adult",
+    })
+    assert.equal("b.example.com", k)
+    assert.equal("adult", v)
+  end)
+
+  it("returns nil for an empty map, a nil map, or a nil hostname", function()
+    assert.is_nil(conntrack.suffix_match("example.com", {}))
+    assert.is_nil(conntrack.suffix_match("example.com", nil))
+    assert.is_nil(conntrack.suffix_match(nil, { ["example.com"] = true }))
+  end)
+
+  it("agrees with host_matches over randomised inputs", function()
+    -- The case table above pins the divergences we thought of. The guarantee
+    -- is universally quantified, so also fuzz it over an alphabet that
+    -- deliberately produces empty strings, leading/trailing/doubled dots and
+    -- near-miss suffixes. Seeded, so a failure is reproducible.
+    math.randomseed(2798)
+    local atoms = { "a", "b", "example", "com", "not", ".", "" }
+    local function gen()
+      local parts = {}
+      for _ = 1, math.random(0, 5) do
+        parts[#parts + 1] = atoms[math.random(#atoms)]
+      end
+      return table.concat(parts)
+    end
+    local positives = 0
+    for _ = 1, 2000 do
+      local hname, host = gen(), gen()
+      local expected = conntrack.host_matches(hname, host)
+      if expected then positives = positives + 1 end
+      assert.equal(expected,
+        conntrack.suffix_match(hname, { [host] = true }) ~= nil,
+        ("suffix_match disagrees with host_matches for hname=%q host=%q")
+          :format(hname, host))
+    end
+    -- Liveness anchor: without this an `atoms` edit could make every round a
+    -- non-match and leave the loop asserting false == false 2000 times. The
+    -- observed rate is ~7%; the floor is set well under it.
+    assert.is_true(positives > 50,
+      "fuzz generated no matching pairs, so it asserts nothing: " .. positives)
+    -- And over multi-key maps: a returned key must itself satisfy
+    -- host_matches, and nil must mean no key did.
+    local map_positives = 0
+    for _ = 1, 2000 do
+      local hname = gen()
+      local map, keys = {}, {}
+      for _ = 1, 3 do
+        local k = gen()
+        map[k] = true
+        keys[#keys + 1] = k
+      end
+      local hit = conntrack.suffix_match(hname, map)
+      if hit then map_positives = map_positives + 1 end
+      local any = false
+      for _, k in ipairs(keys) do
+        if conntrack.host_matches(hname, k) then any = true end
+      end
+      if hit then
+        assert.is_true(conntrack.host_matches(hname, hit),
+          ("returned key %q does not match hname %q"):format(hit, hname))
+      else
+        assert.is_false(any,
+          ("suffix_match missed a matching key for hname=%q"):format(hname))
+      end
+    end
+    assert.is_true(map_positives > 50,
+      "fuzz found no key in any map, so the hit branch is never taken: "
+        .. map_positives)
+  end)
+
+  it("agrees with host_matches for every case", function()
+    local hnames = {
+      "example.com", "foo.example.com", "a.b.example.com", "notexample.com",
+      "example.com.evil.test", "com", "b.example.com", "xexample.com",
+      "", "a.", ".example.com",
+    }
+    local hosts = {
+      "example.com", "b.example.com", "com", "notexample.com", "a.b.example.com",
+      "evil.test", "", ".example.com",
+    }
+    for _, hname in ipairs(hnames) do
+      for _, host in ipairs(hosts) do
+        local expected = conntrack.host_matches(hname, host)
+        local got      = conntrack.suffix_match(hname, { [host] = true }) ~= nil
+        assert.equal(expected, got,
+          ("suffix_match disagrees with host_matches for hname=%q host=%q")
+            :format(hname, host))
+      end
+    end
+  end)
+end)
+
+describe("#2798 handle_flow blocklist lookup cost", function()
+  local SRC_IP = "192.168.1.42"
+  local DST_IP = "1.2.3.4"
+  local MAC    = "aa:bb:cc:dd:ee:ff"
+
+  -- A table that answers reads from `real` and counts every key probe. It has
+  -- no keys of its own, so a `pairs()` scan over it yields nothing: an
+  -- implementation that scans instead of looking up both misses the match and
+  -- fails the count assertion.
+  local function probe_counting_map(real)
+    local count = 0
+    local proxy = setmetatable({}, {
+      __index = function(_, k)
+        count = count + 1
+        return real[k]
+      end,
+    })
+    return proxy, function() return count end
+  end
+
+  local function collecting_batcher()
+    local b = { events = {} }
+    b.add = function(ev) b.events[#b.events + 1] = ev end
+    return b
+  end
+
+  it("probes once per hostname label, not once per catalog entry", function()
+    local real = { ["doubleclick.net"] = "ads" }
+    -- Stand-in for the 159k-host prod index: if the lookup scaled with the
+    -- catalog this would be 50k probes, not 4.
+    for i = 1, 50000 do real["host" .. i .. ".junk.test"] = "ads" end
+    local bl_map, probes = probe_counting_map(real)
+
+    local b = collecting_batcher()
+    conntrack.handle_flow({ src_ip = SRC_IP, dst_ip = DST_IP }, {
+      arp_table       = { [SRC_IP] = MAC },
+      reported_macs   = { [MAC] = true },
+      leases          = {},
+      nft_sets        = {},
+      blocked_macs    = {},
+      blocked_reason  = {},
+      lookup_hostname = function(ip) if ip == DST_IP then return "ad.g.doubleclick.net" end end,
+      eb_hosts_by_mac = {},
+      ea_hosts_by_mac = {},
+      bl_hosts_by_mac = { [MAC] = bl_map },
+      ts              = "2026-09-18T12:00:00Z",
+    }, b)
+
+    local ev = b.events[#b.events]
+    assert.equal(false,          ev.allowed)
+    assert.equal("category:ads", ev.reason)
+    -- "ad.g.doubleclick.net" has 4 labels, so at most 4 probes.
+    assert.is_true(probes() <= 4,
+      "per-flow blocklist probes must be bounded by the label count, got " .. probes())
+  end)
+end)
