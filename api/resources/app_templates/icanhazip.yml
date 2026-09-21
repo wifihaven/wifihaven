@@ -1,0 +1,14 @@
+slug: icanhazip
+name: icanhazip
+icon: "https://icons.duckduckgo.com/ip3/one.one.one.one.ico"
+icon_type: url
+# Display-cleanup app (#2805): icanhazip is a public-IP lookup utility (run by
+# Cloudflare), not something a kid "uses", but ipv4.icanhazip.com was the single
+# largest orphan host on the Kids profiles (~18k proportional min / 30d) and
+# buried the real gaps in the per-device list. The apex suffix-matches
+# ipv4./ipv6. too. Icon is Cloudflare's 1.1.1.1 favicon because DuckDuckGo has
+# none for icanhazip.com (404 placeholder); the name is what identifies the app.
+# Sits on Cloudflare's shared 104.16.x pool, so blocking it would over-drop other
+# Cloudflare tenants: this app is meant for attribution/visibility, not blocking.
+hosts:
+  - icanhazip.com

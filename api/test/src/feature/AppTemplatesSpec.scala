@@ -183,6 +183,7 @@ object AppTemplatesSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
           // #2790: orphan-driven catalog pass — BrickLink marketplace + Studio
           "bricklink",
           "hamstudy",
+          "icanhazip",
         )
         val slugs    = templates.map(_.slug.value).toSet
         assertTrue(slugs == expected) &&

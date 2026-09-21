@@ -9,6 +9,6 @@ showed no new cluster (platform infra, ad-tech, Shopify shops, weather polling).
 | blog.hamstudy.org | 27 | covered by apex suffix match |
 
 Both resolve to dedicated 44.x addresses (no shared-pool collateral).
-Disposition: new app `hamstudy`, host-set `hamstudy.org`.
+Disposition: new app `hamstudy`, host-set `hamstudy.org`. Also `icanhazip` (host `icanhazip.com`) as a display-cleanup app: top orphan host (~18k min), operator asked for it.
 Watch-items not templated: weather.com / weatherbug (background widget
 polling), icanhazip/ipify (shared IP-check utilities).
