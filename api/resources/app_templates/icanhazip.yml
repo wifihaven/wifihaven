@@ -8,7 +8,8 @@ icon_type: url
 # buried the real gaps in the per-device list. The apex suffix-matches
 # ipv4./ipv6. too. Icon is Cloudflare's 1.1.1.1 favicon because DuckDuckGo has
 # none for icanhazip.com (404 placeholder); the name is what identifies the app.
-# Sits on Cloudflare's shared 104.16.x pool, so blocking it would over-drop other
-# Cloudflare tenants: this app is meant for attribution/visibility, not blocking.
+# Cloudflare-fronted (104.16.184-185.241, `server: cloudflare`); whether those
+# addresses are shared with unrelated tenants was NOT verified, so treat this app
+# as for attribution/visibility, not blocking.
 hosts:
   - icanhazip.com

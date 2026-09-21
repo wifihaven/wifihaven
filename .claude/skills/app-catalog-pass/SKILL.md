@@ -203,8 +203,9 @@ above is now wrong, fix the step too — don't just log around it.
   read: the top of the list was ~all platform infra, ad-tech and shared
   IP-check utilities (`ipv4.icanhazip.com` is #1 at ~18k min; `api.ipify.org`
   too) — not real apps, but per the operator they now get display-cleanup apps
-  (Step 2); `icanhazip` shipped, `ipify`/weather are candidates next pass. `weather.com`/`weatherbug` show large bytes (376 MB) but are
-  background widget polling. Dedicated-address check for a small brand: amateur
+  (Step 2); `icanhazip` shipped, `ipify`/weather are candidates next pass
+  (`weather.com`/`weatherbug` show large bytes, 376 MB, but are background
+  widget polling). Dedicated-address check for a small brand: amateur
   radio's `hamstudy.org` resolves into AMPRNet 44.x (dedicated, no collateral);
   operator then asked for it as an app despite the sub-bar volume — an explicit
   operator ask overrides the engagement bar.
