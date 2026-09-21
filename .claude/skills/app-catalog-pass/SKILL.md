@@ -191,6 +191,15 @@ above is now wrong, fix the step too — don't just log around it.
 
 ## Learnings log (newest first)
 
+- **2026-09-21 (#2805)** — A no-cluster pass is still worth the `orphanHosts`
+  read: the top of the list was ~all platform infra, ad-tech and shared
+  IP-check utilities (`ipv4.icanhazip.com` is #1 at ~18k min; `api.ipify.org`
+  too) — never apps. `weather.com`/`weatherbug` show large bytes (376 MB) but are
+  background widget polling. Dedicated-address check for a small brand: amateur
+  radio's `hamstudy.org` resolves into AMPRNet 44.x (dedicated, no collateral);
+  operator then asked for it as an app despite the sub-bar volume — an explicit
+  operator ask overrides the engagement bar.
+
 - **2026-09-13 (#2778)** — **A shared-pool host-set has TWO collateral
   directions, and every pass so far has only reasoned about one.** The
   `eb_`/over-drop argument is the reflex. The other one is worse: `extraAllowed`

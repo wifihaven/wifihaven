@@ -78,3 +78,5 @@ slugs:
   # BrickLink marketplace + Studio, a sibling LEGO property excluded from
   # lego.yml at #1815 for lack of traffic; now shows real recurring use
   - bricklink
+  # #2805: HamStudy amateur-radio exam study (operator request)
+  - hamstudy

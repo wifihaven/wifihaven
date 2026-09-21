@@ -1,0 +1,10 @@
+slug: hamstudy
+name: HamStudy
+icon: "https://icons.duckduckgo.com/ip3/hamstudy.org.ico"
+icon_type: url
+# Operator request (#2805, 2026-09-21 app-catalog pass): HamStudy.org, amateur
+# radio license exam study tools. The bare apex suffix-matches the blog
+# (blog.hamstudy.org) too. Both sit on dedicated 44.x addresses (not a shared
+# CDN or platform pool), so there is no collateral to carve around.
+hosts:
+  - hamstudy.org
