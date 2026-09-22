@@ -114,6 +114,14 @@ returns `subdomains[]`.
   reason to give a kid a daily time *budget* for a filter-evasion tool; it's a
   block target, full stop (operator decision, #1815). Put it in `games.yml` and
   do NOT author an app template for it.
+- **Display-cleanup app** — a host that isn't really an "app" but carries
+  enough time to clutter the per-device / orphan list (IP-check utilities like
+  `icanhazip`, background weather polling, other ambient utilities). **Author an
+  app for it anyway** (operator decision, #2805): a named row is cleaner than a
+  loose orphan host and un-buries the real gaps. Note in the template comment
+  that it exists for display, and if it sits on a shared pool, that it is for
+  attribution not blocking. This overrides "skip" for ambient-utility hosts;
+  ad/RTB networks and shared CDN pools still skip.
 - **Skip** — ad/RTB networks (flashtalking, adsrvr, pubmatic…), shared
   service/CDN pools (icloud-content, apple-dns, fastly, akadns, googleapis),
   shared corporate infra (adobe.com, autodesk.com), and below-engagement-bar
@@ -190,6 +198,17 @@ above is now wrong, fix the step too — don't just log around it.
 ---
 
 ## Learnings log (newest first)
+
+- **2026-09-21 (#2805)** — A no-cluster pass is still worth the `orphanHosts`
+  read: the top of the list was ~all platform infra, ad-tech and shared
+  IP-check utilities (`ipv4.icanhazip.com` is #1 at ~18k min; `api.ipify.org`
+  too) — not real apps, but per the operator they now get display-cleanup apps
+  (Step 2); `icanhazip` shipped, `ipify`/weather are candidates next pass
+  (`weather.com`/`weatherbug` show large bytes, 376 MB, but are background
+  widget polling). Dedicated-address check for a small brand: amateur
+  radio's `hamstudy.org` resolves into AMPRNet 44.x (dedicated, no collateral);
+  operator then asked for it as an app despite the sub-bar volume — an explicit
+  operator ask overrides the engagement bar.
 
 - **2026-09-13 (#2778)** — **A shared-pool host-set has TWO collateral
   directions, and every pass so far has only reasoned about one.** The
