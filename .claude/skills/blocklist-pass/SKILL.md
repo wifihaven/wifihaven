@@ -203,6 +203,45 @@ that edit in the same PR.** If a step above is now wrong, fix the step too.
 
 ## Learnings log (newest first)
 
+- **2026-09-22** (#2807) — **A `.ai`-TLD company whose actual product is video
+  or programmatic ad delivery keeps recurring as an `ai.yml`-sweep false
+  positive — checking the OBSERVED SUBDOMAIN for an ad-infra shape (`ortb.`,
+  `ads.`, `bid.`) resolves it faster than a fresh identity search each time.**
+  `vdo.ai` (video-ad platform/adserver; observed `ortb.vdo.ai` — literally
+  "open RTB") and `bidsystem.ai` (Ezoic's programmatic bidding engine;
+  observed `ads.`/`assets.` subdomains) are two more instances of the
+  `axon.ai`/`programmaticx.ai`/`trygravity.ai`/`koah.ai`/`mediayo.ai` trap
+  (5th and 6th confirmed instances across passes). Both filed in `ads.yml`.
+  A non-`.ai` ad-tech company can also read as ambiguous from the apex name
+  alone: `responsiveads.com` needed a company-identity search
+  (BusinessWire/own-site confirmation) despite its self-descriptive name,
+  because "responsive ads" is also a generic industry term (Google Ads has a
+  "Responsive Display Ads" feature) — don't skip verification just because a
+  name sounds descriptive.
+- **2026-09-22** (#2807) — **A brand-new consumer AI product (`hellohaven.ai`
+  — a personal-AI-assistant app that launched 5 days before this pass) is a
+  reminder that `ai.yml` gaps are not only long-tail obscure apexes; genuine
+  gaps can be a company that didn't exist in traffic last week.** Confirmed
+  via press coverage (funding announcement, App Store/Play Store listings)
+  and the observed subdomain (`my.hellohaven.ai`) matching the product's own
+  stated URL exactly. Coincidental name collision with this project
+  ("Haven") — unrelated company, verify by product function not name vibes.
+- **2026-09-22** (#2807) — **A `ssp`/`ads`/`track`/`analytic` keyword sweep
+  will keep matching inside unrelated words — two new substring false
+  positives this pass: `paperlesspost.com` (matched `ssp` inside
+  "paperle**ssp**ost" — a legitimate greeting-card company) and
+  `livesteamstation.com` (matched `steam` — a model-train store, not Valve
+  Steam). Neither needed deep research, just reading the matched substring
+  in context before running a search.
+- **2026-09-22** (#2807) — **`hs-analytics.net` (confirmed HubSpot) joins the
+  dual-use-analytics skip bucket alongside `google-analytics.com` and
+  `siteimproveanalytics.com` — a marketing-automation/CRM analytics domain
+  that legitimate sites embed for their own first-party visitor tracking is
+  not an ads.yml add just because "analytics" matched the keyword sweep.**
+  Same reasoning as the standing `app-measurement.com`/Firebase skip; the
+  distinguishing test from the *session-recording* tools that ARE curated
+  under ads (Hotjar, Mouseflow) is still: does the tool primarily serve ad
+  delivery/monetization, or a site owner's own product analytics.
 - **2026-09-15** (#2792) — **A "track"-substring apex whose subdomains
   are marketing-site-shaped (`info.`/`www.`) rather than redirect/pixel-shaped
   (`go-us.`/`sync.`/`bid.`) is a strong signal of a false-positive consumer
