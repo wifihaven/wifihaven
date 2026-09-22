@@ -694,16 +694,15 @@ hosts:
   - bidgust.com
   - impression.link
   # traffic-driven additions (#2807): 30-day prod recent-apexes sweep (30
-  # devices, 2026-09-22). All three are confirmed ad-tech companies whose
-  # observed subdomains corroborate the function: responsiveads.com
-  # (ResponsiveAds — display-ad creative/serving; publish./video2. subdomains)
-  # and vdo.ai (VDO.AI — video-ad platform; ortb. subdomain is a direct
-  # open-RTB signal) are two more instances of the recurring ".ai/company-name
-  # TLD is not an AI-product signal" trap (#2599/#2742/#2756/#2759/#2792) —
-  # both surfaced in the ai.yml sweep but their entire business is ad
-  # delivery. bidsystem.ai (Ezoic's programmatic ad-bidding engine;
-  # ads./assets. subdomains) is a genuine gap absent from both
-  # ads-extended and the .ai ad-company cluster already curated here.
+  # devices, 2026-09-22). Both are confirmed ad-tech companies whose observed
+  # subdomains corroborate the function: responsiveads.com (ResponsiveAds —
+  # display-ad creative/serving; publish./video2. subdomains) and vdo.ai
+  # (VDO.AI — video-ad platform; ortb. subdomain is a direct open-RTB signal)
+  # are two more instances of the recurring ".ai/company-name TLD is not an
+  # AI-product signal" trap (#2599/#2742/#2756/#2759/#2792) — both surfaced
+  # in the ai.yml sweep but their entire business is ad delivery.
+  # (bidsystem.ai, a third .ai-TLD ad candidate from this sweep, was found on
+  # independent review to already be curated above at line 378 — not
+  # re-added.)
   - responsiveads.com
   - vdo.ai
-  - bidsystem.ai

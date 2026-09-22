@@ -12,8 +12,22 @@ also cross-checked the StevenBlack `ads-extended` feed).
 |---|---|---|---|---|
 | ads | responsiveads.com | 713,507 | 7 | ResponsiveAds — display-ad creative/serving platform (NBCUniversal, Condé Nast among clients). Observed subdomains `publish.`/`video2.`/`analytics.` corroborate. |
 | ads | vdo.ai | 464,205 | 5 | VDO.AI — video-ad platform/adserver. Observed subdomain `ortb.vdo.ai` is a direct open-RTB signal. Another instance of the recurring ".ai TLD is not an AI-product signal" trap (#2599/#2742/#2756/#2759/#2792) — surfaced in the `ai.yml` sweep but is ad-tech. Also present in `ads-extended` (`a.vdo.ai`), corroborating. |
-| ads | bidsystem.ai | 3,012,250 | 7 | Ezoic's programmatic ad-bidding engine ("Performance advertising on the open web"). Observed subdomains `ads.`/`assets.`. Same `.ai`-TLD-ad-company trap. Absent from `ads-extended` — a genuine gap. |
 | ai | hellohaven.ai | 1,365,942 | 4 | Hello Haven's "Haven" — a consumer personal-AI digital-twin assistant app (launched 2026-09-17, $15M pre-seed led by Mayfield, available on iOS/Android). Observed at its confirmed product subdomain `my.hellohaven.ai`. |
+
+## Investigated, already curated — corrected during independent review
+
+- **bidsystem.ai** — 3,012,250 bytes / 7 hits, subdomains `ads.`/`assets.`.
+  Confirmed as Ezoic's programmatic ad-bidding engine, and initially treated
+  as a genuine gap in this pass's first draft. Independent PR review caught
+  that it was already added to `ads.yml` in a prior pass (in the RTB/bidder/
+  SSP name-pattern block) — the identity call was correct, the membership
+  check against `ads.yml` was not done because the candidate surfaced from
+  the `ai.yml` keyword sweep and only got cross-checked against `ai.yml`.
+  Not re-added; the duplicate line and test pin were removed. Same failure
+  class as the #2742 learning ("check membership across every curated file,
+  not just the one the sweep bucketed it into") — that lesson wasn't applied
+  to a host discovered fresh mid-pass, only to hosts already known from prior
+  evidence docs. See the updated Learnings log entry in SKILL.md.
 
 ## Held out — investigated this pass, no confirmed identity or wrong scope
 

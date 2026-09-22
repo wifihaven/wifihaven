@@ -203,15 +203,28 @@ that edit in the same PR.** If a step above is now wrong, fix the step too.
 
 ## Learnings log (newest first)
 
+- **2026-09-22** (#2807) — **The #2742 "check membership across every curated
+  file, not just the one the sweep bucketed it into" lesson was only being
+  applied to hosts already known from prior evidence docs — NOT to a host
+  discovered fresh, mid-pass, by identity research. Apply it to every
+  candidate before authoring, regardless of how it was confirmed.**
+  `bidsystem.ai` surfaced in the `ai.yml` keyword sweep (`.ai` TLD), was
+  correctly identified via websearch as Ezoic's programmatic ad-bidding
+  engine, and was checked against `ai.yml`'s curated list (absent, as
+  expected) — but never checked against `ads.yml`, where it was already
+  curated from a prior pass (the RTB/bidder/SSP name-pattern block).
+  Independent PR review caught the duplicate before merge; harmless in
+  practice (`BundledBlocklists.scala` `.distinct`s inline hosts at load
+  time) but it shipped an inaccurate evidence-doc claim. Before writing any
+  candidate to a category file, grep ALL SIX curated `.txt` extractions for
+  it, not just the category it happened to keyword-match into.
 - **2026-09-22** (#2807) — **A `.ai`-TLD company whose actual product is video
   or programmatic ad delivery keeps recurring as an `ai.yml`-sweep false
   positive — checking the OBSERVED SUBDOMAIN for an ad-infra shape (`ortb.`,
   `ads.`, `bid.`) resolves it faster than a fresh identity search each time.**
   `vdo.ai` (video-ad platform/adserver; observed `ortb.vdo.ai` — literally
-  "open RTB") and `bidsystem.ai` (Ezoic's programmatic bidding engine;
-  observed `ads.`/`assets.` subdomains) are two more instances of the
-  `axon.ai`/`programmaticx.ai`/`trygravity.ai`/`koah.ai`/`mediayo.ai` trap
-  (5th and 6th confirmed instances across passes). Both filed in `ads.yml`.
+  "open RTB") is another instance of the `axon.ai`/`programmaticx.ai`/
+  `trygravity.ai`/`koah.ai`/`mediayo.ai` trap. Filed in `ads.yml`.
   A non-`.ai` ad-tech company can also read as ambiguous from the apex name
   alone: `responsiveads.com` needed a company-identity search
   (BusinessWire/own-site confirmation) despite its self-descriptive name,
