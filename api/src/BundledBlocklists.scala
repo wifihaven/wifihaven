@@ -225,23 +225,33 @@ object BundledBlocklists {
       lists: List[BundledBlocklist],
   ): Task[Unit] =
     Clock.instant.flatMap(now =>
-      ZIO.foreachDiscard(lists)(b => seedOne(repo, cache, fetcher, b, now)),
+      ZIO.foreachDiscard(lists)(b => applyResolved(repo, cache, fetcher, b, now).unit),
     )
 
-  private def seedOne(
+  /**
+   * The one ingest primitive. Both doors — the startup `seed` and the admin `refresh` endpoint —
+   * resolve hosts and then land here, so neither can acquire a behaviour the other lacks.
+   *
+   * They used to carry the clear+insert+upsertMeta body twice, which is how #2809's review found
+   * them already diverging: the failure-path sweep had been added to `seed` alone, leaving the
+   * poison in place on exactly the door an admin reaches for when sign-in is broken.
+   *
+   * Returns the number of hosts the category now holds, or None when nothing was written.
+   */
+  private def applyResolved(
       repo: BlocklistRepo,
       cache: BlocklistCache,
       fetcher: BlocklistFetcher,
       b: BundledBlocklist,
       now: java.time.Instant,
-  ): Task[Unit] =
+  ): Task[Option[Int]] =
     resolveHosts(cache, fetcher, b).flatMap {
-      // #2809: a failed fetch leaves the existing rows — but those rows may be the POISON
-      // this filter exists to remove, seeded by an earlier build that had no filter. Stale
-      // CONTENT is fine to keep; stale shared-GFE hosts are the bug, and waiting for
-      // upstream to answer before fixing them means Google sign-in stays broken on a
-      // network-partitioned install. So sweep what is already in the table.
-      case None        => purgeBannedRows(repo, b.id)
+      // #2809: a failed fetch leaves the existing rows — but those rows may be the POISON this
+      // filter exists to remove, seeded by an earlier build that had no filter. Stale CONTENT is
+      // fine to keep (an empty blocklist blocks nothing, which beats a partial one); stale
+      // shared-GFE rows are the bug itself, and waiting for upstream to answer before removing
+      // them means Google sign-in stays broken on a network-partitioned install.
+      case None        => purgeBannedRows(repo, b).as(None)
       case Some(hosts) =>
         for {
           _ <- repo.clearCategory(b.id)
@@ -254,7 +264,7 @@ object BundledBlocklists {
             Some(b.source),
             now,
           )
-        } yield ()
+        } yield Some(hosts.size)
     }
 
   /**
@@ -292,11 +302,12 @@ object BundledBlocklists {
           (if excluded.isEmpty then ""
            else s" sample=${excluded.take(5).map(_.value).mkString(",")}"),
       )
-      // Two outcomes on one series so a zero `excluded` is readable: `kept` carrying a
-      // plausible host count while `excluded` sits at zero means the filter ran and matched
-      // nothing, which is a different state from the filter never running at all. Both are
-      // written ONCE per list per ingest, so the dashboard reads them as a LEVEL, not a rate.
-      _ <- AppMetrics.recordBlocklistIngest(id, kept = kept.size, excluded = excluded.size)
+      // Two outcomes on one GAUGE so a zero `excluded` is readable: `kept` carrying a plausible
+      // host count while `excluded` sits at zero means the filter ran and matched nothing, which
+      // is a different state from the filter never running at all. A gauge rather than a counter
+      // because this is a composition, not a rate — a second admin refresh must re-state the
+      // same numbers, not double them.
+      _ <- AppMetrics.recordBlocklistComposition(id, kept = kept.size, excluded = excluded.size)
     } yield kept
   }
 
@@ -308,7 +319,8 @@ object BundledBlocklists {
    * blocks nothing), but rows that are themselves the collateral hazard have to go regardless.
    * No-ops when the table is already clean, so a healthy install pays one read.
    */
-  private def purgeBannedRows(repo: BlocklistRepo, id: BlocklistId): Task[Unit] =
+  private def purgeBannedRows(repo: BlocklistRepo, b: BundledBlocklist): Task[Unit] = {
+    val id = b.id
     repo.loadCategory(id).flatMap { existing =>
       val (banned, kept) = existing.toList.partition(SharedGfeHosts.isBanned)
       ZIO
@@ -319,12 +331,36 @@ object BundledBlocklists {
               s"sample=${banned.take(5).map(_.value).mkString(",")} " +
               "(upstream fetch failed; swept shared-GFE rows seeded before the exception set)",
           ) *>
-            AppMetrics.recordBlocklistIngest(id, kept = kept.size, excluded = banned.size) *>
-            repo.clearCategory(id) *>
-            repo.insertBatch(kept.map(h => (h.value, id.value))).unit,
+            // A TARGETED delete, not clear+reinsert. This runs only when upstream is already
+            // unreachable, so the DB rows are the only surviving copy of the list — a
+            // clear-then-insert pair would open a window where the category is empty, and a
+            // failure inside that window would lose the whole list rather than ~170 rows of it.
+            repo.deleteHosts(id, banned).unit *>
+            // Record the post-sweep composition, so the gauge keeps describing what the table
+            // actually holds. `kept` here is "rows that survived", not "hosts ingested" — the
+            // `event=blocklist_ingest_purged` warning above is what distinguishes the two.
+            AppMetrics.recordBlocklistComposition(id, kept = kept.size, excluded = banned.size) *>
+            Clock.instant.flatMap(now =>
+              // #2809 review: the sweep changes the rows, so `last_built_at` has to move with
+              // them — otherwise the SPA's host count and its "last built" stamp disagree about
+              // when the category last changed. The other columns are restated from the YAML,
+              // not defaulted: `upsertMeta` overwrites every column it is given, so passing
+              // placeholder name/description/source here would clobber the real metadata.
+              repo
+                .upsertMeta(
+                  id,
+                  b.name,
+                  Some(b.description),
+                  bundled = true,
+                  Some(b.source),
+                  now,
+                )
+                .unit,
+            ),
         )
         .unit
     }
+  }
 
   /** Resolve a bundled list's hosts. None means "skip this seed cycle, keep existing DB rows." */
   private def resolveHosts(
@@ -356,31 +392,20 @@ object BundledBlocklists {
         )
   }
 
-  /** Refresh a single bundled list on demand (admin endpoint). Returns Some(count) on success. */
+  /**
+   * Refresh a single bundled list on demand (admin endpoint). Returns Some(count) on success.
+   *
+   * Shares `applyResolved` with the startup seed, so it gets the #2809 ingest exception AND the
+   * failed-fetch sweep on the same terms. This is the door an admin reaches for when sign-in is
+   * broken, so it is the one that must not silently skip the repair.
+   */
   def refresh(
       repo: BlocklistRepo,
       cache: BlocklistCache,
       fetcher: BlocklistFetcher,
       b: BundledBlocklist,
   ): Task[Option[Int]] =
-    Clock.instant.flatMap { now =>
-      resolveHosts(cache, fetcher, b).flatMap {
-        case None        => ZIO.none
-        case Some(hosts) =>
-          for {
-            _ <- repo.clearCategory(b.id)
-            _ <- repo.insertBatch(hosts.map(h => (h.value, b.id.value)))
-            _ <- repo.upsertMeta(
-              b.id,
-              b.name,
-              Some(b.description),
-              bundled = true,
-              Some(b.source),
-              now,
-            )
-          } yield Some(hosts.size)
-      }
-    }
+    Clock.instant.flatMap(applyResolved(repo, cache, fetcher, b, _))
 
   /**
    * #706: dev-only test categories, seeded on startup when WIFIHAVEN_SEED_TEST_BLOCKLISTS is set.

@@ -297,22 +297,25 @@ object MetricGuard {
       "router_id",
       "installation_id",
     ),
-    // #2809 — what the shared-GFE ingest exception did to each FETCHED blocklist at
-    // load. `blocklist_id` is bounded by the bundled set (api/resources/blocklists/
+    // #2809 — the composition of each FETCHED blocklist as of its last ingest:
+    // how many hosts were kept and how many the shared-GFE exception set removed.
+    // `blocklist_id` is bounded by the bundled set (api/resources/blocklists/
     // _index.yml); `outcome` is a fixed 2-value enum (kept | excluded).
     //
-    // WRITTEN ONCE PER LIST PER PROCESS — at the startup seed, plus each
-    // POST /api/blocklists/<id>/refresh. It is therefore FLAT BY CONSTRUCTION
-    // between restarts, and rate()/increase() over it reads zero forever; the
-    // dashboard reads it as a LEVEL (`last_over_time`), not as a rate. Do not
-    // "fix" a flat line here by switching the panel to a rate.
+    // A GAUGE, not a counter, and deliberately so. It is written once per list per
+    // ingest — the startup seed, plus each POST /api/blocklists/<id>/refresh — and
+    // what it reports is a LEVEL (the current makeup of the table), not a rate. A
+    // counter would be wrong twice over: rate()/increase() over a write-once series
+    // reads zero forever, and a second admin refresh would DOUBLE `kept` with no
+    // upstream change, contradicting the only reading that matters ("excluded went
+    // up ⇒ upstream added shared-frontend hosts").
     //
     // Both halves ride ONE series on purpose: an exception set that matches nothing
     // is a normal, expected state, so a lone `excluded` series sitting at 0 could
     // not be told apart from the filter never running (the §826 "flat counter ⇒
     // nothing is looking" trap). `kept` carrying a plausible host count is what
-    // distinguishes them — it is the liveness anchor, read as a level.
-    "blocklist_ingest_hosts_total"              -> Set("blocklist_id", "outcome"),
+    // distinguishes them — it is the liveness anchor.
+    "blocklist_ingest_hosts"                    -> Set("blocklist_id", "outcome"),
     "enforcement_drops_total"                   -> Set("reason", "router_id", "installation_id"),
     // #1658 — eb_/bl_ ipset re-resolve heartbeat. Each fire of the agent's
     // eb_refresh timer re-resolves the inventory of (extraBlocked, blocklist)
@@ -978,23 +981,25 @@ object AppMetrics {
       Map("route" -> route, "status" -> status.toString),
     )
 
-  // ── Fetched-blocklist ingest exceptions (#2809) ──────────────────────────────
-  // Emitted once per FETCHED blocklist per ingest (startup seed + admin refresh) from
-  // BundledBlocklists.exceptSharedGfe. Both outcomes are always recorded, including
-  // excluded=0 — `update(0)` still registers the series, so the zero is present at
-  // /metrics rather than being an absent series. See the registry comment for why the
-  // zero has to be visible, and why this is read as a level, not a rate.
+  // ── Fetched-blocklist composition after the ingest exception (#2809) ─────────
+  // Set once per FETCHED blocklist per ingest, from BundledBlocklists — by
+  // `exceptSharedGfe` on a successful fetch, and by `purgeBannedRows` after a sweep of
+  // rows an older unfiltered build left behind, so the gauge keeps describing what the
+  // table actually holds either way. (`kept` after a sweep means "rows that survived",
+  // not "hosts ingested"; the `event=blocklist_ingest_purged` warning is what tells the
+  // two apart.) Both outcomes are always set, including excluded=0 — see the registry
+  // comment for why the zero has to be visible.
 
-  def recordBlocklistIngest(id: BlocklistId, kept: Int, excluded: Int): UIO[Unit] =
-    MetricGuard.counter(
-      "blocklist_ingest_hosts_total",
+  def recordBlocklistComposition(id: BlocklistId, kept: Int, excluded: Int): UIO[Unit] =
+    MetricGuard.gauge(
+      "blocklist_ingest_hosts",
       Map("blocklist_id" -> id.value, "outcome" -> "kept"),
-      kept.toLong,
+      kept.toDouble,
     ) *>
-      MetricGuard.counter(
-        "blocklist_ingest_hosts_total",
+      MetricGuard.gauge(
+        "blocklist_ingest_hosts",
         Map("blocklist_id" -> id.value, "outcome" -> "excluded"),
-        excluded.toLong,
+        excluded.toDouble,
       )
 
   // ── DB query timing (#1204) ──────────────────────────────────────────────────

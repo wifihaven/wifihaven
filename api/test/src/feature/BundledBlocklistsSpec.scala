@@ -651,6 +651,39 @@ object BundledBlocklistsSpec
         // liveness anchor: the sweep removed the hazard, not the category
         assertTrue(after.contains(Hostname.unsafe("adnxs-stale-probe.test")))
     },
+    test("#2809: a FAILED refresh() sweeps too — both ingest doors, not just startup") {
+      // Review found the sweep on `seed` alone. `refresh` is the door an ADMIN reaches for when
+      // sign-in is broken, so it is the one that must not silently skip the repair — with
+      // upstream down they would otherwise get no sweep and no log, and have to wait for a
+      // process restart. Both doors now share `applyResolved`, so they cannot diverge again;
+      // this pins that from the outside.
+      //
+      // LIVENESS ANCHOR: `adnxs-refresh-stale.test` must SURVIVE, and `refresh` must still
+      // report None (nothing was ingested) rather than a fabricated count.
+      val failing = new StubFetcher(stubbedUpstreams, failures = Set(adsExtendedUrl))
+      for {
+        _       <- cleanDb
+        blRepo  <- ZIO.service[BlocklistRepo]
+        cache   <- newCache
+        bundled <- BundledBlocklists.loadAll()
+        adsExt = bundled.find(_.id == BlocklistId.unsafe("ads-extended")).get
+        _      <- blRepo.insertBatch(
+          List(
+            ("firebaselogging.googleapis.com", "ads-extended"),
+            ("adnxs-refresh-stale.test", "ads-extended"),
+          ),
+        )
+        before <- blRepo.loadCategory(BlocklistId.unsafe("ads-extended"))
+        n      <- BundledBlocklists.refresh(blRepo, cache, failing, adsExt)
+        after  <- blRepo.loadCategory(BlocklistId.unsafe("ads-extended"))
+        meta   <- blRepo.findMeta(BlocklistId.unsafe("ads-extended"))
+      } yield assertTrue(before.contains(Hostname.unsafe("firebaselogging.googleapis.com"))) &&
+        assertTrue(!after.contains(Hostname.unsafe("firebaselogging.googleapis.com"))) &&
+        assertTrue(after.contains(Hostname.unsafe("adnxs-refresh-stale.test"))) &&
+        assertTrue(n.isEmpty) &&
+        // the sweep restates the YAML metadata rather than clobbering it with placeholders
+        assertTrue(meta.exists(_.name == "Ads, Trackers, and Malware (StevenBlack)"))
+    },
     test("#2809: a FAILED fetch on an already-clean list leaves its rows exactly alone") {
       // The sweep must be a no-op when there is nothing to sweep — it must not become a
       // second way for a network failure to empty a blocklist, which is the failure mode the

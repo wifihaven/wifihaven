@@ -16,7 +16,7 @@
 # hosts from the #2601/#2369 ban set, including the ones that broke Drive.
 # What the filter removed is logged per ingest
 # (`event=blocklist_ingest_exceptions`) and metered as
-# `blocklist_ingest_hosts_total{blocklist_id,outcome}`. Adding an exception is an
+# `blocklist_ingest_hosts{blocklist_id,outcome}` (a gauge). Adding an exception is an
 # edit to `SharedGfeHosts`, NOT an entry in the infra allow-carve — carving puts
 # the shared pool on the allow side and re-opens #2369. Background:
 # evidence/googleapis-shared-gfe-2809.md.

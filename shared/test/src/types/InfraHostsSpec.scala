@@ -622,25 +622,31 @@ object InfraHostsSpec extends ZIOSpecDefault {
         SharedGfeHosts.isBanned(Hostname.unsafe("static.doubleclick.net")),
       )
     },
-    test("#2809: the #2369 googleSharedFrontend hosts are all on the ban set too") {
+    test("#2809: every #2369 shared-frontend host is on the ban set, subdomains included") {
       // The mirror-image assertion. #2369 demoted these OFF the allow-carve; #2601/#2809
       // forbid them as enforcement targets. Same hosts, opposite sides of the same rule —
       // so a future edit that drops one from `SharedGfeHosts` without saying why fails
       // here rather than quietly re-opening one half.
-      val googleSharedFrontend = List(
+      //
+      // Includes the SUBDOMAIN forms deliberately: `SharedGfeHosts`'s scaladoc claims suffix
+      // matching reaches all twelve `googleSharedFrontend` entries above, and the bare apexes
+      // alone would never exercise that claim. (Named distinctly from the `:581` fixture so
+      // the two do not read as the same list.)
+      val bannedFrontend = List(
         "app-analytics-services.com",
+        "v1.app-analytics-services.com",
         "clientservices.googleapis.com",
         "gvt2.com",
+        "r3---sn-abc.gvt2.com",
+        "beacons3.gvt2.com",
         "gvt3.com",
+        "beacons.gvt3.com",
         "nel.goog",
+        "b1.nel.goog",
         "safebrowsing.google.com",
         "safebrowsingohttpgateway.googleapis.com",
       )
-      assertTrue(
-        googleSharedFrontend.forall(h => SharedGfeHosts.isBanned(Hostname.unsafe(h))),
-        // …and none of them is allow-carved (the #2369 fix, restated through the matcher)
-        googleSharedFrontend.forall(h => !InfraHosts.isInfra(h)),
-      )
+      assertTrue(bannedFrontend.forall(h => SharedGfeHosts.isBanned(Hostname.unsafe(h))))
     },
     test("#2369 connectivity-critical infra stays allow-carved (the design boundary)") {
       // The design line the #2369 fix draws: allow-carve survives ONLY for connectivity-critical

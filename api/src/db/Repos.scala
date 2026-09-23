@@ -963,6 +963,17 @@ trait BlocklistRepo {
   def listCategories: Task[List[BlocklistId]]
   def countByCategory: Task[List[(BlocklistId, Int)]]
   def loadCategory(cat: BlocklistId): Task[Set[Hostname]]
+
+  /**
+   * #2809: delete exactly these domains from one category, in ONE statement.
+   *
+   * Used by the ingest sweep, which removes a handful of shared-GFE rows from a list that may hold
+   * ~76K. `clearCategory` + `insertBatch` would express the same intent as two separate
+   * transactions with a window in between where the category is EMPTY — and the sweep runs only
+   * when upstream is unreachable, i.e. exactly when the DB rows are the only surviving copy. A
+   * targeted delete has no such window and does not rewrite the rows that stay.
+   */
+  def deleteHosts(cat: BlocklistId, hosts: List[Hostname]): Task[Int]
   def loadAll: Task[Map[BlocklistId, Set[Hostname]]]
 
   // #1983: for each of the given EXACT domains, which category blocklists
@@ -2531,7 +2542,13 @@ class BlocklistRepoLive(xa: Transactor[Task]) extends BlocklistRepo {
       .query[(BlocklistId, Int)]
       .to[List]
       .transact(xa)
-  def loadCategory(cat: BlocklistId)          =
+  def deleteHosts(cat: BlocklistId, hosts: List[Hostname]) =
+    if hosts.isEmpty then ZIO.succeed(0)
+    else
+      Update[(String, String)](
+        "DELETE FROM blocklist_domains WHERE category=? AND domain=?",
+      ).updateMany(hosts.map(h => (cat.value, h.value))).transact(xa)
+  def loadCategory(cat: BlocklistId)                       =
     DbMetrics.timed("blocklist.loadCategory")(
       sql"SELECT domain FROM blocklist_domains WHERE category=${cat.value}"
         .query[Hostname]
@@ -2539,7 +2556,7 @@ class BlocklistRepoLive(xa: Transactor[Task]) extends BlocklistRepo {
         .transact(xa)
         .map(_.toSet),
     )
-  def loadAll                                 = sql"SELECT category,domain FROM blocklist_domains"
+  def loadAll = sql"SELECT category,domain FROM blocklist_domains"
     .query[(BlocklistId, Hostname)]
     .to[List]
     .transact(xa)
