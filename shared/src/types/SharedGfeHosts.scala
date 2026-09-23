@@ -109,9 +109,16 @@ object SharedGfeHosts {
    */
   def isBanned(host: Hostname): Boolean = {
     val h = host.value.toLowerCase
-    googleAdApexes.exists { apex =>
-      val a = apex.value.toLowerCase
-      h == a || h.endsWith("." + a)
-    }
+    lowered.exists { case (apex, dotApex) => h == apex || h.endsWith(dotApex) }
   }
+
+  // Precomputed once: `isBanned` runs over every host of every fetched list at ingest
+  // (~76K x this list on ads-extended alone, on the startup critical path), so folding case
+  // and building the dotted form per (host, apex) pair would be ~1.2M throwaway allocations
+  // per boot for a comparison that never changes.
+  private val lowered: List[(String, String)] =
+    googleAdApexes.map { apex =>
+      val a = apex.value.toLowerCase
+      (a, "." + a)
+    }
 }

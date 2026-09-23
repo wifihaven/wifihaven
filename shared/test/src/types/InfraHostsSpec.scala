@@ -601,6 +601,47 @@ object InfraHostsSpec extends ZIOSpecDefault {
         InfraHosts.matchedPattern("r3---sn-abc.gvt2.com").isEmpty,
       )
     },
+    test("#2809: no allow-carved host is on the shared-GFE ban set — mechanically") {
+      // The two sides of one fact. `SharedGfeHosts` says "never an IP-layer enforcement
+      // TARGET"; `InfraHosts.canonical` is the IP-layer allow-CARVE. A host on both would
+      // punch its whole shared pool out of every drop for every MAC (`extraAllowed` beats
+      // every block path, #421) — the #2369 leak. Until #2809 the two lists lived in
+      // different modules and could only be kept apart by hand, in three places: the
+      // literal below, the `googleAdApexes` list, and this spec's `googleSharedFrontend`
+      // fixture. `SharedGfeHosts` now lives in `shared`, so the guard can be mechanical
+      // instead: whatever anyone adds to either list, this fails if they overlap.
+      //
+      // LIVENESS ANCHOR: the matcher must be live. An `isBanned` that returned false for
+      // everything would satisfy the emptiness check for free, and it is exactly the kind
+      // of thing a refactor breaks silently.
+      val carvedAndBanned =
+        InfraHosts.canonical.filter(h => SharedGfeHosts.isBanned(Hostname.unsafe(h)))
+      assertTrue(
+        carvedAndBanned.isEmpty,
+        SharedGfeHosts.isBanned(Hostname.unsafe("clientservices.googleapis.com")),
+        SharedGfeHosts.isBanned(Hostname.unsafe("static.doubleclick.net")),
+      )
+    },
+    test("#2809: the #2369 googleSharedFrontend hosts are all on the ban set too") {
+      // The mirror-image assertion. #2369 demoted these OFF the allow-carve; #2601/#2809
+      // forbid them as enforcement targets. Same hosts, opposite sides of the same rule —
+      // so a future edit that drops one from `SharedGfeHosts` without saying why fails
+      // here rather than quietly re-opening one half.
+      val googleSharedFrontend = List(
+        "app-analytics-services.com",
+        "clientservices.googleapis.com",
+        "gvt2.com",
+        "gvt3.com",
+        "nel.goog",
+        "safebrowsing.google.com",
+        "safebrowsingohttpgateway.googleapis.com",
+      )
+      assertTrue(
+        googleSharedFrontend.forall(h => SharedGfeHosts.isBanned(Hostname.unsafe(h))),
+        // …and none of them is allow-carved (the #2369 fix, restated through the matcher)
+        googleSharedFrontend.forall(h => !InfraHosts.isInfra(h)),
+      )
+    },
     test("#2369 connectivity-critical infra stays allow-carved (the design boundary)") {
       // The design line the #2369 fix draws: allow-carve survives ONLY for connectivity-critical
       // infra. OCSP responders validate TLS certs for the hosts a device legitimately reaches

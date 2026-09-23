@@ -236,7 +236,12 @@ object BundledBlocklists {
       now: java.time.Instant,
   ): Task[Unit] =
     resolveHosts(cache, fetcher, b).flatMap {
-      case None        => ZIO.unit // remote fetch failed; leave existing rows untouched
+      // #2809: a failed fetch leaves the existing rows — but those rows may be the POISON
+      // this filter exists to remove, seeded by an earlier build that had no filter. Stale
+      // CONTENT is fine to keep; stale shared-GFE hosts are the bug, and waiting for
+      // upstream to answer before fixing them means Google sign-in stays broken on a
+      // network-partitioned install. So sweep what is already in the table.
+      case None        => purgeBannedRows(repo, b.id)
       case Some(hosts) =>
         for {
           _ <- repo.clearCategory(b.id)
@@ -287,12 +292,39 @@ object BundledBlocklists {
           (if excluded.isEmpty then ""
            else s" sample=${excluded.take(5).map(_.value).mkString(",")}"),
       )
-      // Two outcomes on one series so a flat `excluded` is readable: `kept` moving while
-      // `excluded` sits at zero means the filter ran and matched nothing, which is a different
-      // state from the filter never running at all.
+      // Two outcomes on one series so a zero `excluded` is readable: `kept` carrying a
+      // plausible host count while `excluded` sits at zero means the filter ran and matched
+      // nothing, which is a different state from the filter never running at all. Both are
+      // written ONCE per list per ingest, so the dashboard reads them as a LEVEL, not a rate.
       _ <- AppMetrics.recordBlocklistIngest(id, kept = kept.size, excluded = excluded.size)
     } yield kept
   }
+
+  /**
+   * #2809: remove already-seeded shared-GFE hosts from a list we could not re-fetch.
+   *
+   * The seed path normally repairs the table by rewriting it from a filtered fetch. When the fetch
+   * fails we keep the existing rows (that is the right call for stale content — an empty blocklist
+   * blocks nothing), but rows that are themselves the collateral hazard have to go regardless.
+   * No-ops when the table is already clean, so a healthy install pays one read.
+   */
+  private def purgeBannedRows(repo: BlocklistRepo, id: BlocklistId): Task[Unit] =
+    repo.loadCategory(id).flatMap { existing =>
+      val (banned, kept) = existing.toList.partition(SharedGfeHosts.isBanned)
+      ZIO
+        .when(banned.nonEmpty)(
+          ZIO.logWarning(
+            s"event=blocklist_ingest_purged blocklist_id=${id.value} " +
+              s"purged=${banned.size} kept=${kept.size} " +
+              s"sample=${banned.take(5).map(_.value).mkString(",")} " +
+              "(upstream fetch failed; swept shared-GFE rows seeded before the exception set)",
+          ) *>
+            AppMetrics.recordBlocklistIngest(id, kept = kept.size, excluded = banned.size) *>
+            repo.clearCategory(id) *>
+            repo.insertBatch(kept.map(h => (h.value, id.value))).unit,
+        )
+        .unit
+    }
 
   /** Resolve a bundled list's hosts. None means "skip this seed cycle, keep existing DB rows." */
   private def resolveHosts(

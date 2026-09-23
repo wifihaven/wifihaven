@@ -299,11 +299,19 @@ object MetricGuard {
     ),
     // #2809 — what the shared-GFE ingest exception did to each FETCHED blocklist at
     // load. `blocklist_id` is bounded by the bundled set (api/resources/blocklists/
-    // _index.yml); `outcome` is a fixed 2-value enum (kept | excluded). Both halves
-    // ride ONE series on purpose: an exception set that matches nothing is a normal,
-    // expected state, and a lone `excluded` counter flat at zero could not be told
-    // apart from the filter never running (the §826 "flat counter ⇒ nothing is
-    // looking" trap). `kept` moving is the liveness anchor.
+    // _index.yml); `outcome` is a fixed 2-value enum (kept | excluded).
+    //
+    // WRITTEN ONCE PER LIST PER PROCESS — at the startup seed, plus each
+    // POST /api/blocklists/<id>/refresh. It is therefore FLAT BY CONSTRUCTION
+    // between restarts, and rate()/increase() over it reads zero forever; the
+    // dashboard reads it as a LEVEL (`last_over_time`), not as a rate. Do not
+    // "fix" a flat line here by switching the panel to a rate.
+    //
+    // Both halves ride ONE series on purpose: an exception set that matches nothing
+    // is a normal, expected state, so a lone `excluded` series sitting at 0 could
+    // not be told apart from the filter never running (the §826 "flat counter ⇒
+    // nothing is looking" trap). `kept` carrying a plausible host count is what
+    // distinguishes them — it is the liveness anchor, read as a level.
     "blocklist_ingest_hosts_total"              -> Set("blocklist_id", "outcome"),
     "enforcement_drops_total"                   -> Set("reason", "router_id", "installation_id"),
     // #1658 — eb_/bl_ ipset re-resolve heartbeat. Each fire of the agent's
@@ -973,7 +981,9 @@ object AppMetrics {
   // ── Fetched-blocklist ingest exceptions (#2809) ──────────────────────────────
   // Emitted once per FETCHED blocklist per ingest (startup seed + admin refresh) from
   // BundledBlocklists.exceptSharedGfe. Both outcomes are always recorded, including
-  // excluded=0 — see the registry comment for why the zero has to be visible.
+  // excluded=0 — `update(0)` still registers the series, so the zero is present at
+  // /metrics rather than being an absent series. See the registry comment for why the
+  // zero has to be visible, and why this is read as a level, not a rate.
 
   def recordBlocklistIngest(id: BlocklistId, kept: Int, excluded: Int): UIO[Unit] =
     MetricGuard.counter(
