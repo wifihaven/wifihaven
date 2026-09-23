@@ -423,6 +423,34 @@
           "refId": "A"
         }
       ]
+    },
+    {
+      "title": "Fetched-blocklist ingest exceptions (#2809)",
+      "description": "sum by (blocklist_id, outcome) (increase(blocklist_ingest_hosts_total[1h])) \u2014 what the #2809 shared-GFE exception set did to each FETCHED blocklist at ingest (startup seed + POST /api/blocklists/<id>/refresh). Enforcement matches on DESTINATION IP, so a fetched member that fronts on Google's shared GFE anycast pool puts that whole pool into bl_<id> and drops everything else served from it \u2014 on prod 2026-09-23 that was oauthaccountmanager.googleapis.com, i.e. Google sign-in, taken out by firebaselogging.googleapis.com and three siblings in StevenBlack/hosts. READ BOTH SERIES TOGETHER: outcome=excluded sitting at 0 is a normal state (upstream currently carries nothing banned), but it only MEANS that while outcome=kept is moving \u2014 kept flat at zero means no list was ingested at all, which is the failure this panel exists to make visible. A jump in excluded means upstream added shared-frontend hosts; a sample of them is logged per ingest (event=blocklist_ingest_exceptions). API-side series (no router_id label), so this is not filtered by the Router variable.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 49 },
+      "id": 14,
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "unit": "short",
+          "min": 0,
+          "custom": { "drawStyle": "line", "fillOpacity": 15, "showPoints": "never", "lineWidth": 1 }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "calcs": ["lastNotNull", "max"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (blocklist_id, outcome) (increase(blocklist_ingest_hosts_total{env=\"$env\"}[1h]))",
+          "legendFormat": "{{blocklist_id}} {{outcome}}",
+          "refId": "A"
+        }
+      ]
     }
   ],
   "refresh": "30s",

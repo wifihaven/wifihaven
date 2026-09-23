@@ -1,6 +1,7 @@
 package wifihaven.api
 
 import wifihaven.api.db.BlocklistRepo
+import wifihaven.api.metrics.AppMetrics
 import wifihaven.shared.types.*
 import org.yaml.snakeyaml.LoaderOptions
 import org.yaml.snakeyaml.Yaml
@@ -251,6 +252,48 @@ object BundledBlocklists {
         } yield ()
     }
 
+  /**
+   * #2809: drop the shared-GFE hosts from a FETCHED list before it is seeded.
+   *
+   * Enforcement matches on DESTINATION IP. A fetched member that fronts on Google's shared GFE
+   * anycast pool puts that pool's addresses into `bl_<id>`, which drops every other host GFE serves
+   * from them — on prod that was `oauthaccountmanager.googleapis.com`, i.e. Google sign-in, taken
+   * out by `firebaselogging.googleapis.com` and three siblings in StevenBlack/hosts. The same file
+   * carries 170 members of the already-confirmed #2601/#2369 ban set, including the literal hosts
+   * that broke Drive.
+   *
+   * INGEST rather than allow-carve: the host never enters the drop set at all. Adding it to
+   * `InfraHosts.canonical` instead would put the shared pool into `@global_allow`, where it beats
+   * every drop (#421) and silently defeats every Google host-block — the #2369 regression.
+   *
+   * Scoped to FETCHED content on purpose. Repo-authored catalogs are guarded at authoring time by
+   * `BundledBlocklistsSpec` / `AppTemplatesSpec`, which fail the build; filtering them here too
+   * would let an authoring mistake ship green.
+   *
+   * Applied at the one point both ingest doors pass through — startup `seed` and the admin
+   * `refresh` endpoint — so a refresh cannot undo it.
+   */
+  private def exceptSharedGfe(
+      id: BlocklistId,
+      hosts: List[Hostname],
+  ): UIO[List[Hostname]] = {
+    val (excluded, kept) = hosts.partition(SharedGfeHosts.isBanned)
+    for {
+      // Always logged, including at zero (no-dark-by-default): an exception set that silently
+      // matches nothing must not be indistinguishable from one that is not running.
+      _ <- ZIO.logInfo(
+        s"event=blocklist_ingest_exceptions blocklist_id=${id.value} " +
+          s"fetched=${hosts.size} kept=${kept.size} excluded=${excluded.size}" +
+          (if excluded.isEmpty then ""
+           else s" sample=${excluded.take(5).map(_.value).mkString(",")}"),
+      )
+      // Two outcomes on one series so a flat `excluded` is readable: `kept` moving while
+      // `excluded` sits at zero means the filter ran and matched nothing, which is a different
+      // state from the filter never running at all.
+      _ <- AppMetrics.recordBlocklistIngest(id, kept = kept.size, excluded = excluded.size)
+    } yield kept
+  }
+
   /** Resolve a bundled list's hosts. None means "skip this seed cycle, keep existing DB rows." */
   private def resolveHosts(
       cache: BlocklistCache,
@@ -264,9 +307,13 @@ object BundledBlocklists {
         .fetch(url, fmt)
         .tap(hosts =>
           Clock.instant.flatMap(now =>
+            // The cache holds what upstream SENT, not what we seeded — it exists to avoid
+            // re-fetching, and recording a filtered copy would make the exception set
+            // irreversible without a network round trip.
             cache.put(b.id, BlocklistCache.Entry(hosts, fetchedAt = now, source = url)),
           ),
         )
+        .flatMap(exceptSharedGfe(b.id, _))
         .map(Some(_))
         .catchAll(e =>
           ZIO

@@ -3,6 +3,7 @@ package wifihaven.api.metrics
 import com.zaxxer.hikari.HikariDataSource
 import wifihaven.api.db.RouterRepo
 import wifihaven.api.support.DispatchTracker
+import wifihaven.shared.types.BlocklistId
 import zio.*
 import zio.metrics.*
 import zio.metrics.connectors
@@ -296,6 +297,14 @@ object MetricGuard {
       "router_id",
       "installation_id",
     ),
+    // #2809 — what the shared-GFE ingest exception did to each FETCHED blocklist at
+    // load. `blocklist_id` is bounded by the bundled set (api/resources/blocklists/
+    // _index.yml); `outcome` is a fixed 2-value enum (kept | excluded). Both halves
+    // ride ONE series on purpose: an exception set that matches nothing is a normal,
+    // expected state, and a lone `excluded` counter flat at zero could not be told
+    // apart from the filter never running (the §826 "flat counter ⇒ nothing is
+    // looking" trap). `kept` moving is the liveness anchor.
+    "blocklist_ingest_hosts_total"              -> Set("blocklist_id", "outcome"),
     "enforcement_drops_total"                   -> Set("reason", "router_id", "installation_id"),
     // #1658 — eb_/bl_ ipset re-resolve heartbeat. Each fire of the agent's
     // eb_refresh timer re-resolves the inventory of (extraBlocked, blocklist)
@@ -960,6 +969,23 @@ object AppMetrics {
       "api_errors_total",
       Map("route" -> route, "status" -> status.toString),
     )
+
+  // ── Fetched-blocklist ingest exceptions (#2809) ──────────────────────────────
+  // Emitted once per FETCHED blocklist per ingest (startup seed + admin refresh) from
+  // BundledBlocklists.exceptSharedGfe. Both outcomes are always recorded, including
+  // excluded=0 — see the registry comment for why the zero has to be visible.
+
+  def recordBlocklistIngest(id: BlocklistId, kept: Int, excluded: Int): UIO[Unit] =
+    MetricGuard.counter(
+      "blocklist_ingest_hosts_total",
+      Map("blocklist_id" -> id.value, "outcome" -> "kept"),
+      kept.toLong,
+    ) *>
+      MetricGuard.counter(
+        "blocklist_ingest_hosts_total",
+        Map("blocklist_id" -> id.value, "outcome" -> "excluded"),
+        excluded.toLong,
+      )
 
   // ── DB query timing (#1204) ──────────────────────────────────────────────────
   // Emitted from DbMetrics.timed around the Doobie transact of hot repo methods.
