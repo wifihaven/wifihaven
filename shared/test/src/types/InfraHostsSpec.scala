@@ -4,6 +4,27 @@ import zio.test.*
 
 object InfraHostsSpec extends ZIOSpecDefault {
 
+  /**
+   * The #2369 Google shared-frontend hosts, apexes and the subdomain forms that exercise suffix
+   * matching. Single-sourced because two tests assert the two halves of ONE rule about them — they
+   * are NOT allow-carved (#2369) and they ARE on the enforcement ban set (#2601/#2809) — and a
+   * second literal copy would let one half silently fall out of step with the other.
+   */
+  private val googleSharedFrontend = List(
+    "app-analytics-services.com",    // #2369 confirmed in youtube.com's pool
+    "v1.app-analytics-services.com",
+    "clientservices.googleapis.com", // #2369 resolved to youtube.com's exact IP
+    "gvt2.com",
+    "r3---sn-abc.gvt2.com",
+    "beacons3.gvt2.com",
+    "gvt3.com",
+    "beacons.gvt3.com",
+    "nel.goog",
+    "b1.nel.goog",
+    "safebrowsing.google.com",
+    "safebrowsingohttpgateway.googleapis.com",
+  )
+
   def spec = suite("InfraHosts")(
     test(
       "apex entries match every subdomain (ls.apple services; #2369-demoted gvt2 via background)",
@@ -578,20 +599,6 @@ object InfraHostsSpec extends ZIOSpecDefault {
       // ~36% background share keeps being suppressed), but are no longer reachable through a
       // block — exactly the anti-tunnel reasoning `suppressOnly` was created for
       // (`mask*.icloud.com` Private Relay).
-      val googleSharedFrontend = List(
-        "app-analytics-services.com",    // #2369 confirmed in youtube.com's pool
-        "v1.app-analytics-services.com",
-        "clientservices.googleapis.com", // #2369 resolved to youtube.com's exact IP
-        "gvt2.com",
-        "r3---sn-abc.gvt2.com",
-        "beacons3.gvt2.com",
-        "gvt3.com",
-        "beacons.gvt3.com",
-        "nel.goog",
-        "b1.nel.goog",
-        "safebrowsing.google.com",
-        "safebrowsingohttpgateway.googleapis.com",
-      )
       assertTrue(
         // #1503/#1499 presence-suppression PRESERVED — they remain on the background set.
         googleSharedFrontend.forall(InfraHosts.isBackground),
@@ -607,8 +614,8 @@ object InfraHostsSpec extends ZIOSpecDefault {
       // punch its whole shared pool out of every drop for every MAC (`extraAllowed` beats
       // every block path, #421) — the #2369 leak. Until #2809 the two lists lived in
       // different modules and could only be kept apart by hand, in three places: the
-      // literal below, the `googleAdApexes` list, and this spec's `googleSharedFrontend`
-      // fixture. `SharedGfeHosts` now lives in `shared`, so the guard can be mechanical
+      // `InfraHosts.suppressOnly` literal, the `googleAdApexes` list, and this spec's
+      // `googleSharedFrontend` fixture (now one val at the top of this file, not two copies). `SharedGfeHosts` now lives in `shared`, so the guard can be mechanical
       // instead: whatever anyone adds to either list, this fails if they overlap.
       //
       // LIVENESS ANCHOR: the matcher must be live. An `isBanned` that returned false for
@@ -629,24 +636,10 @@ object InfraHostsSpec extends ZIOSpecDefault {
       // here rather than quietly re-opening one half.
       //
       // Includes the SUBDOMAIN forms deliberately: `SharedGfeHosts`'s scaladoc claims suffix
-      // matching reaches all twelve `googleSharedFrontend` entries above, and the bare apexes
-      // alone would never exercise that claim. (Named distinctly from the `:581` fixture so
-      // the two do not read as the same list.)
-      val bannedFrontend = List(
-        "app-analytics-services.com",
-        "v1.app-analytics-services.com",
-        "clientservices.googleapis.com",
-        "gvt2.com",
-        "r3---sn-abc.gvt2.com",
-        "beacons3.gvt2.com",
-        "gvt3.com",
-        "beacons.gvt3.com",
-        "nel.goog",
-        "b1.nel.goog",
-        "safebrowsing.google.com",
-        "safebrowsingohttpgateway.googleapis.com",
-      )
-      assertTrue(bannedFrontend.forall(h => SharedGfeHosts.isBanned(Hostname.unsafe(h))))
+      // matching reaches all twelve `googleSharedFrontend` entries, and the bare apexes alone
+      // would never exercise that claim. Shares the file-level fixture with the #2369
+      // suppress-but-not-carve test above, so the two halves of the rule cannot drift apart.
+      assertTrue(googleSharedFrontend.forall(h => SharedGfeHosts.isBanned(Hostname.unsafe(h))))
     },
     test("#2369 connectivity-critical infra stays allow-carved (the design boundary)") {
       // The design line the #2369 fix draws: allow-carve survives ONLY for connectivity-critical

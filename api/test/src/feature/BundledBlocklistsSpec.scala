@@ -7,6 +7,7 @@ import wifihaven.api.{
   BundledBlocklist,
   BundledBlocklistContent,
   BundledBlocklists,
+  IngestOutcome,
 }
 import wifihaven.api.db.*
 import wifihaven.shared.*
@@ -667,22 +668,33 @@ object BundledBlocklistsSpec
         cache   <- newCache
         bundled <- BundledBlocklists.loadAll()
         adsExt = bundled.find(_.id == BlocklistId.unsafe("ads-extended")).get
-        _      <- blRepo.insertBatch(
+        _          <- blRepo.insertBatch(
           List(
             ("firebaselogging.googleapis.com", "ads-extended"),
             ("adnxs-refresh-stale.test", "ads-extended"),
           ),
         )
-        before <- blRepo.loadCategory(BlocklistId.unsafe("ads-extended"))
-        n      <- BundledBlocklists.refresh(blRepo, cache, failing, adsExt)
-        after  <- blRepo.loadCategory(BlocklistId.unsafe("ads-extended"))
-        meta   <- blRepo.findMeta(BlocklistId.unsafe("ads-extended"))
+        before     <- blRepo.loadCategory(BlocklistId.unsafe("ads-extended"))
+        metaBefore <- blRepo.findMeta(BlocklistId.unsafe("ads-extended"))
+        n          <- BundledBlocklists.refresh(blRepo, cache, failing, adsExt)
+        after      <- blRepo.loadCategory(BlocklistId.unsafe("ads-extended"))
+        meta       <- blRepo.findMeta(BlocklistId.unsafe("ads-extended"))
       } yield assertTrue(before.contains(Hostname.unsafe("firebaselogging.googleapis.com"))) &&
         assertTrue(!after.contains(Hostname.unsafe("firebaselogging.googleapis.com"))) &&
         assertTrue(after.contains(Hostname.unsafe("adnxs-refresh-stale.test"))) &&
-        assertTrue(n.isEmpty) &&
-        // the sweep restates the YAML metadata rather than clobbering it with placeholders
-        assertTrue(meta.exists(_.name == "Ads, Trackers, and Malware (StevenBlack)"))
+        // …and it says SO. `Unchanged` would tell the admin "rows unchanged" on the very run
+        // that repaired them, which is the answer this endpoint must not give.
+        assertTrue(n == IngestOutcome.SweptOnly(1)) &&
+        // …and the sweep stamps `last_built_at`, so the SPA's host count and its "last built"
+        // date do not disagree about when the category changed. No meta row existed before —
+        // the rows were inserted raw, the way an older unfiltered build would have left them —
+        // so a sweep that skipped `upsertMeta` leaves this None and the test red.
+        assertTrue(metaBefore.isEmpty) &&
+        assertTrue(meta.exists(_.lastBuiltAt.isDefined)) &&
+        // restating the YAML metadata, not clobbering it with placeholders (`upsertMeta`
+        // overwrites every column it is given)
+        assertTrue(meta.exists(_.name == "Ads, Trackers, and Malware (StevenBlack)")) &&
+        assertTrue(meta.exists(_.source.exists(_.contains("StevenBlack"))))
     },
     test("#2809: a FAILED fetch on an already-clean list leaves its rows exactly alone") {
       // The sweep must be a no-op when there is nothing to sweep — it must not become a
@@ -720,7 +732,7 @@ object BundledBlocklistsSpec
         assertTrue(!hosts.contains(Hostname.unsafe("firebaselogging.googleapis.com"))) &&
         // the returned count is the count actually SEEDED, not the count fetched — an operator
         // reading the refresh response must not be told a number the DB does not hold.
-        assertTrue(n.contains(1))
+        assertTrue(n == IngestOutcome.Ingested(1))
     },
     test("refresh(): re-fetches a single bundled list and returns new host count") {
       for {
@@ -731,7 +743,7 @@ object BundledBlocklistsSpec
         _       <- BundledBlocklists.seed(blRepo, cache, stubFetcher, bundled)
         adsExt = bundled.find(_.id == BlocklistId.unsafe("ads-extended")).get
         n <- BundledBlocklists.refresh(blRepo, cache, stubFetcher, adsExt)
-      } yield assertTrue(n.contains(2))
+      } yield assertTrue(n == IngestOutcome.Ingested(2))
     },
   ) @@ TestAspect.sequential
 }

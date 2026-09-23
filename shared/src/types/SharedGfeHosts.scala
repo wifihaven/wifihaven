@@ -113,9 +113,9 @@ object SharedGfeHosts {
   }
 
   // Precomputed once: `isBanned` runs over every host of every fetched list at ingest
-  // (~76K x this list on ads-extended alone, on the startup critical path), so folding case
-  // and building the dotted form per (host, apex) pair would be ~1.2M throwaway allocations
-  // per boot for a comparison that never changes.
+  // (tens of thousands of hosts x this list on the startup critical path), so folding case
+  // and building the dotted form per (host, apex) pair would be a throwaway allocation per
+  // comparison, on a comparison that never changes.
   private val lowered: List[(String, String)] =
     googleAdApexes.map { apex =>
       val a = apex.value.toLowerCase

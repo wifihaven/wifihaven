@@ -51,6 +51,26 @@ enum BlocklistFormat {
   case DomainList
 }
 
+/**
+ * #2809: what one ingest attempt actually did, so the admin refresh endpoint can say so.
+ *
+ * `Option[Int]` was enough while a failed fetch meant "nothing happened". It no longer does: the
+ * failure path sweeps shared-GFE rows an older unfiltered build left behind, so "fetch failed" and
+ * "nothing changed" came apart. The endpoint an admin reaches for when Google sign-in is broken
+ * must not answer "rows unchanged" on the run that repaired them.
+ */
+enum IngestOutcome {
+
+  /** Upstream answered; the category was rewritten from the filtered fetch. */
+  case Ingested(hosts: Int)
+
+  /** Upstream failed, and the sweep removed this many already-seeded shared-GFE rows. */
+  case SweptOnly(purged: Int)
+
+  /** Upstream failed and there was nothing to sweep — the rows really are unchanged. */
+  case Unchanged
+}
+
 final case class BundledBlocklist(
     id: BlocklistId,
     name: String,
@@ -236,7 +256,8 @@ object BundledBlocklists {
    * them already diverging: the failure-path sweep had been added to `seed` alone, leaving the
    * poison in place on exactly the door an admin reaches for when sign-in is broken.
    *
-   * Returns the number of hosts the category now holds, or None when nothing was written.
+   * Returns what the attempt did — see [[IngestOutcome]]. A failed fetch is not the same thing as
+   * an unchanged table.
    */
   private def applyResolved(
       repo: BlocklistRepo,
@@ -244,14 +265,14 @@ object BundledBlocklists {
       fetcher: BlocklistFetcher,
       b: BundledBlocklist,
       now: java.time.Instant,
-  ): Task[Option[Int]] =
+  ): Task[IngestOutcome] =
     resolveHosts(cache, fetcher, b).flatMap {
       // #2809: a failed fetch leaves the existing rows — but those rows may be the POISON this
       // filter exists to remove, seeded by an earlier build that had no filter. Stale CONTENT is
       // fine to keep (an empty blocklist blocks nothing, which beats a partial one); stale
       // shared-GFE rows are the bug itself, and waiting for upstream to answer before removing
       // them means Google sign-in stays broken on a network-partitioned install.
-      case None        => purgeBannedRows(repo, b).as(None)
+      case None        => purgeBannedRows(repo, b)
       case Some(hosts) =>
         for {
           _ <- repo.clearCategory(b.id)
@@ -264,7 +285,7 @@ object BundledBlocklists {
             Some(b.source),
             now,
           )
-        } yield Some(hosts.size)
+        } yield IngestOutcome.Ingested(hosts.size)
     }
 
   /**
@@ -319,7 +340,7 @@ object BundledBlocklists {
    * blocks nothing), but rows that are themselves the collateral hazard have to go regardless.
    * No-ops when the table is already clean, so a healthy install pays one read.
    */
-  private def purgeBannedRows(repo: BlocklistRepo, b: BundledBlocklist): Task[Unit] = {
+  private def purgeBannedRows(repo: BlocklistRepo, b: BundledBlocklist): Task[IngestOutcome] = {
     val id = b.id
     repo.loadCategory(id).flatMap { existing =>
       val (banned, kept) = existing.toList.partition(SharedGfeHosts.isBanned)
@@ -358,7 +379,10 @@ object BundledBlocklists {
                 .unit,
             ),
         )
-        .unit
+        .as(
+          if banned.isEmpty then IngestOutcome.Unchanged
+          else IngestOutcome.SweptOnly(banned.size),
+        )
     }
   }
 
@@ -393,7 +417,7 @@ object BundledBlocklists {
   }
 
   /**
-   * Refresh a single bundled list on demand (admin endpoint). Returns Some(count) on success.
+   * Refresh a single bundled list on demand (admin endpoint).
    *
    * Shares `applyResolved` with the startup seed, so it gets the #2809 ingest exception AND the
    * failed-fetch sweep on the same terms. This is the door an admin reaches for when sign-in is
@@ -404,7 +428,7 @@ object BundledBlocklists {
       cache: BlocklistCache,
       fetcher: BlocklistFetcher,
       b: BundledBlocklist,
-  ): Task[Option[Int]] =
+  ): Task[IngestOutcome] =
     Clock.instant.flatMap(applyResolved(repo, cache, fetcher, b, _))
 
   /**
