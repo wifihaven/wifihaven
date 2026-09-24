@@ -347,6 +347,12 @@ hosts:
   - bolt.new
   - lovable.dev
   - qodo.ai
+  # traffic-driven addition (#2807): 30-day prod recent-apexes sweep (30
+  # devices, 2026-09-22). Hello Haven's "Haven" personal AI digital-twin
+  # assistant (launched 2026-09-17, $15M pre-seed) — a consumer-facing
+  # personal-assistant app, observed at its confirmed product subdomain
+  # my.hellohaven.ai.
+  - hellohaven.ai
   #
   # HELD OUT as dual-use, deliberately NOT added (record so a later pass does
   # not re-litigate):
