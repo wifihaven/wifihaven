@@ -230,7 +230,7 @@ hosts:
   # disjoint from Drive/Docs. One disjoint observation is not evidence of
   # safety; the observed collision is evidence of the hazard. Putting it in `bl_ai`
   # therefore risks dropping Google Drive for a kid MAC — precisely the #2601
-  # collateral bug (see `api/test/src/SharedGfeHosts.scala` and
+  # collateral bug (see `shared/src/types/SharedGfeHosts.scala` and
   # `evidence/google-gfe-collateral-2601.md`). This is the same structural limit
   # §2 of evidence/ai-classification-2768.md describes for Search/Docs/Gmail.
   # Blocking Google's own AI surfaces is a product decision tracked in #2605,

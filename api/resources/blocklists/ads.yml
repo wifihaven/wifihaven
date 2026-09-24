@@ -12,7 +12,7 @@ source: curated (subset of StevenBlack/hosts + EasyList apex domains)
 # Historical record of what this list used to carry: doubleclick.net,
 # googleadservices.com, googlesyndication.com, googletagmanager.com,
 # googletagservices.com, google-analytics.com, adservice.google.com, 2mdn.net.
-# The CURRENT banned set is owned by test-infra `SharedGfeHosts` and is wider
+# The CURRENT banned set is owned by `SharedGfeHosts` (shared/src/types) and is wider
 # than these eight — read it there, not here.
 # These are textbook ad-tech and were curated here from the start, but Google
 # serves them from the same shared GFE anycast frontends as its ordinary
@@ -29,9 +29,12 @@ source: curated (subset of StevenBlack/hosts + EasyList apex domains)
 # Same reasoning as #2369, which demoted the mirror-image hosts off the infra
 # allow-carve. #2377 (SNI-level disambiguation) is what would let us block these
 # again; until it lands they stay out of every curated list.
-# The authoritative host set lives in test-infra `SharedGfeHosts` (consumed by both
-# BundledBlocklistsSpec and AppTemplatesSpec, suffix-matched so subdomains are caught
-# too); this comment exists to stop a human author, not a build. Residual exposures
+# The authoritative host set lives in `SharedGfeHosts` (shared/src/types),
+# suffix-matched so subdomains are caught too. It has three consumers now:
+# BundledBlocklistsSpec and AppTemplatesSpec fail the build on an AUTHORED entry,
+# and (#2809) BundledBlocklists filters FETCHED lists through it at ingest, since
+# upstream content is not ours to author. This comment exists to stop a human
+# author, not a build. Residual exposures
 # that no catalog guard can reach are tracked in #2605. Background:
 # evidence/google-gfe-collateral-2601.md.
 hosts:

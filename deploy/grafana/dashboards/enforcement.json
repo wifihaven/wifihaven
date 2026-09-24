@@ -423,6 +423,34 @@
           "refId": "A"
         }
       ]
+    },
+    {
+      "title": "Fetched-blocklist ingest exceptions (#2809)",
+      "description": "max by (blocklist_id, outcome) (blocklist_ingest_hosts) \u2014 the composition of each FETCHED blocklist as of its last ingest: how many hosts were kept, and how many the #2809 shared-GFE exception set removed. A GAUGE, so this is a LEVEL, not a rate \u2014 it is set once per list per ingest (startup seed, plus POST /api/blocklists/<id>/refresh) and is flat between them by construction. Do not switch this to rate()/increase(); that reads zero forever on a write-once series. Enforcement matches on DESTINATION IP, so a fetched member that fronts on Google's shared GFE anycast pool puts that whole pool into bl_<id> and drops everything else served from it \u2014 on prod 2026-09-23 that was oauthaccountmanager.googleapis.com, i.e. Google sign-in, taken out by firebaselogging.googleapis.com and three siblings in StevenBlack/hosts. READ BOTH SERIES TOGETHER: outcome=excluded at 0 is a normal state (upstream currently carries nothing banned), but it only MEANS that while outcome=kept shows a plausible host count \u2014 kept absent or at 0 means no list was ingested, which is the failure this panel exists to make visible. A rise in excluded means upstream added shared-frontend hosts; a sample is logged per ingest (event=blocklist_ingest_exceptions). After a failed fetch the sweep restates both series from the surviving rows and logs event=blocklist_ingest_purged. API-side series (no router_id label), so this is not filtered by the Router variable.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 49 },
+      "id": 14,
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "unit": "short",
+          "min": 0,
+          "custom": { "drawStyle": "line", "fillOpacity": 15, "showPoints": "never", "lineWidth": 1 }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "calcs": ["lastNotNull", "max"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "max by (blocklist_id, outcome) (blocklist_ingest_hosts{env=\"$env\"})",
+          "legendFormat": "{{blocklist_id}} {{outcome}}",
+          "refId": "A"
+        }
+      ]
     }
   ],
   "refresh": "30s",

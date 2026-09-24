@@ -11,6 +11,14 @@ import java.time.Instant
  * `blocklist_domains` is the durable copy; the cache is just a tap so we can re-seed without
  * re-hitting the network and so an admin "show me what's cached" endpoint has data to return).
  *
+ * #2809 TRAP: entries hold what upstream SENT, deliberately unfiltered — the shared-GFE exception
+ * set is applied on the way to the DB, not on the way into the cache, so widening or narrowing it
+ * never needs a network round trip. The consequence is that **any future path that re-seeds from
+ * this cache must route the hosts through `BundledBlocklists.exceptSharedGfe` first**, or it will
+ * put the banned hosts straight back into `bl_<id>` and re-break Google sign-in. Today nothing
+ * reads the cache back, so the trap is latent — this note exists so the re-seed path the docstring
+ * below anticipates does not spring it.
+ *
  * Entries are populated by `BundledBlocklists.seed` / `.refresh`; nothing in the cache means "never
  * successfully fetched in this process." Misses fall through to the DB on read paths.
  */

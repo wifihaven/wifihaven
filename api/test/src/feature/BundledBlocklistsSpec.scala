@@ -7,6 +7,7 @@ import wifihaven.api.{
   BundledBlocklist,
   BundledBlocklistContent,
   BundledBlocklists,
+  IngestOutcome,
 }
 import wifihaven.api.db.*
 import wifihaven.shared.*
@@ -56,8 +57,11 @@ object BundledBlocklistsSpec
    * Stub responses keyed by the URLs referenced by our bundled YAML files. Each upstream is given a
    * tiny canned response so seeding completes without network.
    */
+  /** The ads-extended upstream, named so #2809's tests can override just that response. */
+  private val adsExtendedUrl = "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts"
+
   private val stubbedUpstreams: Map[String, List[Hostname]] = Map(
-    "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts"                        ->
+    adsExtendedUrl                                                                            ->
       List("ads-extended-upstream.example", "tracker.example").map(Hostname.unsafe),
     "https://urlhaus.abuse.ch/downloads/hostfile/"                                            ->
       List("malware-upstream.example").map(Hostname.unsafe),
@@ -472,13 +476,16 @@ object BundledBlocklistsSpec
         // #2768 review: these two front on Google's shared GFE pool, so putting
         // them in `bl_ai` can drop Drive/Docs for a kid MAC (the #2601 class).
         // Google's own AI surfaces are tracked in #2605, not added by a catalog
-        // pass. `SharedGfeHosts` guards 15 ad/shared-frontend apexes mechanically
-        // (#2601's eight plus #2369's seven); these are pinned here instead
+        // pass. `SharedGfeHosts` guards the ad/shared-frontend apexes mechanically
+        // (#2601's eight, #2369's seven, #2809's `googleapis.com` class entry —
+        // 16, not the 15 this comment said before); these are pinned here instead
         // because they are AI hosts, not ad hosts. The pin is therefore
         // CATEGORY-SCOPED on purpose: adding either host to a different inline
         // blocklist or an app template's host-set reproduces the same IP-plane
-        // collateral with nothing to catch it. Widening `SharedGfeHosts` would
-        // also reach `AppTemplatesSpec`, so that call belongs to #2605.
+        // collateral with nothing to catch it. #2809 DID widen `SharedGfeHosts`,
+        // and that widening does reach `AppTemplatesSpec` — it cost nothing,
+        // because no catalog carries a `googleapis.com` host. Widening it to
+        // Google's AI surfaces is still #2605's call, not a catalog pass's.
         assertTrue(!hosts.contains(Hostname.unsafe("notebooklm.google.com"))) &&
         assertTrue(!hosts.contains(Hostname.unsafe("labs.google"))) &&
         // #2768 review: dropped on re-check — no apex A/AAAA, and parked on
@@ -517,6 +524,216 @@ object BundledBlocklistsSpec
         }
       } yield assertTrue(offenders.isEmpty)
     },
+    test("#2809: fetched-list members on the shared-GFE pool are excepted at ingest") {
+      // `ads-extended` is FETCHED from StevenBlack/hosts (~76K entries), so we do not control
+      // its contents and upstream can reintroduce anything at any time. Enforcement matches on
+      // DESTINATION IP, so a member that fronts on Google's shared GFE anycast pool puts that
+      // pool's addresses into `bl_ads_extended` and drops everything else GFE serves from them.
+      //
+      // Prod evidence 2026-09-23 (#2809): `firebaselogging.googleapis.com`,
+      // `firebaselogging-pa.googleapis.com`, `clientmetrics-pa.googleapis.com` and
+      // `ogads-pa.googleapis.com` are all in today's upstream file AND all four were live in the
+      // prod router's dnsmasq nftset directives for `bl_ads_extended`. All four resolve to the
+      // SAME eight addresses — 172.217.112.4 … 172.217.119.4 — as
+      // `oauthaccountmanager.googleapis.com` and `securetoken.googleapis.com`, which is how
+      // Google sign-in broke. The same upstream file also carries 170 members of the already-
+      // confirmed #2601/#2369 ban set, including the literal `static.doubleclick.net` /
+      // `pagead2.googlesyndication.com` / `www.googletagmanager.com` that took out Drive.
+      //
+      // The fix is an INGEST exception, not an allow-carve: the host never enters `bl_<id>`.
+      // Carving it into `@global_allow` instead would put the shared pool on the allow side and
+      // re-open #2369 — pinned separately in PolicySnapshotAppsSpec.
+      //
+      // LIVENESS ANCHOR: `adnxs-ingest-probe.test` must SURVIVE the filter. Without it a rig
+      // that seeded nothing at all would satisfy every "is absent" assertion for free.
+      val upstream = List(
+        "firebaselogging.googleapis.com",
+        "clientmetrics-pa.googleapis.com",
+        "ogads-pa.googleapis.com",
+        "static.doubleclick.net",
+        "pagead2.googlesyndication.com",
+        "beacons.gvt2.com",
+        "adnxs-ingest-probe.test",
+      ).map(Hostname.unsafe)
+      for {
+        _       <- cleanDb
+        blRepo  <- ZIO.service[BlocklistRepo]
+        cache   <- newCache
+        bundled <- BundledBlocklists.loadAll()
+        fetcher = new StubFetcher(stubbedUpstreams + (adsExtendedUrl -> upstream))
+        _     <- BundledBlocklists.seed(blRepo, cache, fetcher, bundled)
+        hosts <- blRepo.loadCategory(BlocklistId.unsafe("ads-extended"))
+      } yield assertTrue(hosts.contains(Hostname.unsafe("adnxs-ingest-probe.test"))) &&
+        assertTrue(!hosts.contains(Hostname.unsafe("firebaselogging.googleapis.com"))) &&
+        assertTrue(!hosts.contains(Hostname.unsafe("clientmetrics-pa.googleapis.com"))) &&
+        assertTrue(!hosts.contains(Hostname.unsafe("ogads-pa.googleapis.com"))) &&
+        assertTrue(!hosts.contains(Hostname.unsafe("static.doubleclick.net"))) &&
+        assertTrue(!hosts.contains(Hostname.unsafe("pagead2.googlesyndication.com"))) &&
+        assertTrue(!hosts.contains(Hostname.unsafe("beacons.gvt2.com")))
+    },
+    test("#2809: the ingest exception covers every fetched list, not just ads-extended") {
+      // Upstream is one project publishing four files; a shared-frontend host can appear in any
+      // of them. The exception is therefore applied at the single fetched-ingest point rather
+      // than per-list. LIVENESS ANCHOR: the benign host in each list must survive.
+      val banned     = Hostname.unsafe("www.googletagmanager.com")
+      val withBanned = stubbedUpstreams.map { case (url, hs) =>
+        url -> (banned :: hs)
+      }
+      for {
+        _       <- cleanDb
+        blRepo  <- ZIO.service[BlocklistRepo]
+        cache   <- newCache
+        bundled <- BundledBlocklists.loadAll()
+        _       <- BundledBlocklists.seed(blRepo, cache, new StubFetcher(withBanned), bundled)
+        fetchedIds = List("ads-extended", "adult-extended", "social-extended", "malware")
+          .map(BlocklistId.unsafe)
+        rows <- ZIO.foreach(fetchedIds)(id => blRepo.loadCategory(id).map(id -> _))
+      } yield assertTrue(rows.forall { case (_, hs) => hs.nonEmpty }) &&
+        assertTrue(rows.forall { case (_, hs) => !hs.contains(banned) })
+    },
+    test("#2809: an INLINE list is not silently filtered — authoring stays test-guarded") {
+      // Repo-authored catalogs are guarded at authoring time by the `SharedGfeHosts` test above,
+      // which FAILS the build. Silently filtering them at ingest too would let an authoring
+      // mistake ship green. So the ingest exception is scoped to fetched content only, and the
+      // inline guard stays the load-bearing one. This pins that scoping decision.
+      val inline = BundledBlocklist(
+        BlocklistId.unsafe("test_ads"),
+        "Test Ads",
+        "fixture",
+        "test",
+        BundledBlocklistContent.Inline(
+          List("static.doubleclick.net", "adnxs-inline-probe.test").map(Hostname.unsafe),
+        ),
+      )
+      for {
+        _      <- cleanDb
+        blRepo <- ZIO.service[BlocklistRepo]
+        cache  <- newCache
+        _      <- BundledBlocklists.seed(blRepo, cache, stubFetcher, List(inline))
+        hosts  <- blRepo.loadCategory(BlocklistId.unsafe("test_ads"))
+      } yield assertTrue(hosts.contains(Hostname.unsafe("adnxs-inline-probe.test"))) &&
+        assertTrue(hosts.contains(Hostname.unsafe("static.doubleclick.net")))
+    },
+    test("#2809: a FAILED fetch still sweeps banned rows an older build seeded") {
+      // The seed path normally repairs the table by rewriting it from a filtered fetch. On an
+      // upstream failure we keep the existing rows — right for stale CONTENT, wrong for stale
+      // POISON. A prod install whose first post-deploy fetch fails would otherwise keep the
+      // shared-GFE rows an earlier, unfiltered build seeded, and Google sign-in would stay
+      // broken until GitHub answered. So the failure path sweeps them.
+      //
+      // The pre-state is written with `insertBatch` directly, which is exactly what an
+      // unfiltered build left behind.
+      //
+      // LIVENESS ANCHOR: `adnxs-stale-probe.test` must SURVIVE the sweep. A purge that simply
+      // emptied the category would satisfy the absence assertions for free — and would be a
+      // worse bug than the one being fixed, since it silently disables the category.
+      val failing = new StubFetcher(stubbedUpstreams, failures = Set(adsExtendedUrl))
+      for {
+        _       <- cleanDb
+        blRepo  <- ZIO.service[BlocklistRepo]
+        cache   <- newCache
+        bundled <- BundledBlocklists.loadAll()
+        _       <- blRepo.insertBatch(
+          List(
+            ("static.doubleclick.net", "ads-extended"),
+            ("firebaselogging.googleapis.com", "ads-extended"),
+            ("adnxs-stale-probe.test", "ads-extended"),
+          ),
+        )
+        before  <- blRepo.loadCategory(BlocklistId.unsafe("ads-extended"))
+        _       <- BundledBlocklists.seed(blRepo, cache, failing, bundled)
+        after   <- blRepo.loadCategory(BlocklistId.unsafe("ads-extended"))
+      } yield
+      // the pre-state really was poisoned — otherwise the sweep has nothing to prove
+      assertTrue(before.contains(Hostname.unsafe("static.doubleclick.net"))) &&
+        assertTrue(before.contains(Hostname.unsafe("firebaselogging.googleapis.com"))) &&
+        assertTrue(!after.contains(Hostname.unsafe("static.doubleclick.net"))) &&
+        assertTrue(!after.contains(Hostname.unsafe("firebaselogging.googleapis.com"))) &&
+        // liveness anchor: the sweep removed the hazard, not the category
+        assertTrue(after.contains(Hostname.unsafe("adnxs-stale-probe.test")))
+    },
+    test("#2809: a FAILED refresh() sweeps too — both ingest doors, not just startup") {
+      // Review found the sweep on `seed` alone. `refresh` is the door an ADMIN reaches for when
+      // sign-in is broken, so it is the one that must not silently skip the repair — with
+      // upstream down they would otherwise get no sweep and no log, and have to wait for a
+      // process restart. Both doors now share `applyResolved`, so they cannot diverge again;
+      // this pins that from the outside.
+      //
+      // LIVENESS ANCHOR: `adnxs-refresh-stale.test` must SURVIVE, and `refresh` must still
+      // report None (nothing was ingested) rather than a fabricated count.
+      val failing = new StubFetcher(stubbedUpstreams, failures = Set(adsExtendedUrl))
+      for {
+        _       <- cleanDb
+        blRepo  <- ZIO.service[BlocklistRepo]
+        cache   <- newCache
+        bundled <- BundledBlocklists.loadAll()
+        adsExt = bundled.find(_.id == BlocklistId.unsafe("ads-extended")).get
+        _          <- blRepo.insertBatch(
+          List(
+            ("firebaselogging.googleapis.com", "ads-extended"),
+            ("adnxs-refresh-stale.test", "ads-extended"),
+          ),
+        )
+        before     <- blRepo.loadCategory(BlocklistId.unsafe("ads-extended"))
+        metaBefore <- blRepo.findMeta(BlocklistId.unsafe("ads-extended"))
+        n          <- BundledBlocklists.refresh(blRepo, cache, failing, adsExt)
+        after      <- blRepo.loadCategory(BlocklistId.unsafe("ads-extended"))
+        meta       <- blRepo.findMeta(BlocklistId.unsafe("ads-extended"))
+      } yield assertTrue(before.contains(Hostname.unsafe("firebaselogging.googleapis.com"))) &&
+        assertTrue(!after.contains(Hostname.unsafe("firebaselogging.googleapis.com"))) &&
+        assertTrue(after.contains(Hostname.unsafe("adnxs-refresh-stale.test"))) &&
+        // …and it says SO. `Unchanged` would tell the admin "rows unchanged" on the very run
+        // that repaired them, which is the answer this endpoint must not give.
+        assertTrue(n == IngestOutcome.SweptOnly(1)) &&
+        // …and the sweep stamps `last_built_at`, so the SPA's host count and its "last built"
+        // date do not disagree about when the category changed. No meta row existed before —
+        // the rows were inserted raw, the way an older unfiltered build would have left them —
+        // so a sweep that skipped `upsertMeta` leaves this None and the test red.
+        assertTrue(metaBefore.isEmpty) &&
+        assertTrue(meta.exists(_.lastBuiltAt.isDefined)) &&
+        // restating the YAML metadata, not clobbering it with placeholders (`upsertMeta`
+        // overwrites every column it is given)
+        assertTrue(meta.exists(_.name == "Ads, Trackers, and Malware (StevenBlack)")) &&
+        assertTrue(meta.exists(_.source.exists(_.contains("StevenBlack"))))
+    },
+    test("#2809: a FAILED fetch on an already-clean list leaves its rows exactly alone") {
+      // The sweep must be a no-op when there is nothing to sweep — it must not become a
+      // second way for a network failure to empty a blocklist, which is the failure mode the
+      // keep-existing-rows behaviour exists to prevent in the first place.
+      val failing = new StubFetcher(stubbedUpstreams, failures = Set(adsExtendedUrl))
+      for {
+        _       <- cleanDb
+        blRepo  <- ZIO.service[BlocklistRepo]
+        cache   <- newCache
+        bundled <- BundledBlocklists.loadAll()
+        _       <- blRepo.insertBatch(
+          List(("adnxs-clean-probe.test", "ads-extended"), ("criteo-probe.test", "ads-extended")),
+        )
+        before  <- blRepo.loadCategory(BlocklistId.unsafe("ads-extended"))
+        _       <- BundledBlocklists.seed(blRepo, cache, failing, bundled)
+        after   <- blRepo.loadCategory(BlocklistId.unsafe("ads-extended"))
+      } yield assertTrue(before.nonEmpty) && assertTrue(after == before)
+    },
+    test("#2809: refresh() applies the same ingest exception as seed()") {
+      // `POST /api/blocklists/ads-extended/refresh` is a second ingest door. A filter applied
+      // only on the startup path would be undone by the next admin refresh.
+      val upstream = List("firebaselogging.googleapis.com", "adnxs-refresh-probe.test")
+        .map(Hostname.unsafe)
+      for {
+        _       <- cleanDb
+        blRepo  <- ZIO.service[BlocklistRepo]
+        cache   <- newCache
+        bundled <- BundledBlocklists.loadAll()
+        adsExt  = bundled.find(_.id == BlocklistId.unsafe("ads-extended")).get
+        fetcher = new StubFetcher(stubbedUpstreams + (adsExtendedUrl -> upstream))
+        n     <- BundledBlocklists.refresh(blRepo, cache, fetcher, adsExt)
+        hosts <- blRepo.loadCategory(BlocklistId.unsafe("ads-extended"))
+      } yield assertTrue(hosts.contains(Hostname.unsafe("adnxs-refresh-probe.test"))) &&
+        assertTrue(!hosts.contains(Hostname.unsafe("firebaselogging.googleapis.com"))) &&
+        // the returned count is the count actually SEEDED, not the count fetched — an operator
+        // reading the refresh response must not be told a number the DB does not hold.
+        assertTrue(n == IngestOutcome.Ingested(1))
+    },
     test("refresh(): re-fetches a single bundled list and returns new host count") {
       for {
         _       <- cleanDb
@@ -526,7 +743,7 @@ object BundledBlocklistsSpec
         _       <- BundledBlocklists.seed(blRepo, cache, stubFetcher, bundled)
         adsExt = bundled.find(_.id == BlocklistId.unsafe("ads-extended")).get
         n <- BundledBlocklists.refresh(blRepo, cache, stubFetcher, adsExt)
-      } yield assertTrue(n.contains(2))
+      } yield assertTrue(n == IngestOutcome.Ingested(2))
     },
   ) @@ TestAspect.sequential
 }

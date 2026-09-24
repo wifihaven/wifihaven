@@ -1,10 +1,26 @@
 # Comprehensive ads + malware list, fetched from StevenBlack/hosts.
 #
 # StevenBlack/hosts is MIT-licensed. The "hosts" file is the aggregated
-# mainline list (~200K entries last we checked) covering ads + tracking
-# + malware. Refreshed daily upstream; we re-fetch on every API restart
+# mainline list covering ads + tracking + malware. Measured 2026-09-23:
+# 83,333 lines, 76,522 parseable apexes after `BlocklistFetcher.parseHostsFile`
+# (the earlier "~200K entries" here was never re-checked). Refreshed daily upstream; we re-fetch on every API restart
 # and expose POST /api/blocklists/ads-extended/refresh for ad-hoc
 # refreshes between restarts.
+#
+# Because we do not control this file, it is filtered at INGEST through
+# `SharedGfeHosts` (shared/src/types) before it is seeded: any member that fronts
+# on Google's shared GFE anycast pool is dropped rather than written to
+# `blocklist_domains`. Enforcement matches on DESTINATION IP, so such a member
+# puts the whole pool into `bl_ads-extended` and drops everything else served
+# from it. On 2026-09-23 that was Google sign-in, via four
+# `*.googleapis.com` members of this list (#2809); today's file also carries 170
+# hosts from the #2601/#2369 ban set, including the ones that broke Drive.
+# What the filter removed is logged per ingest
+# (`event=blocklist_ingest_exceptions`) and metered as
+# `blocklist_ingest_hosts{blocklist_id,outcome}` (a gauge). Adding an exception is an
+# edit to `SharedGfeHosts`, NOT an entry in the infra allow-carve — carving puts
+# the shared pool on the allow side and re-opens #2369. Background:
+# evidence/googleapis-shared-gfe-2809.md.
 #
 # This is the "kitchen sink" companion to the hand-curated `ads` list —
 # operators enable one or the other depending on how aggressive they want
