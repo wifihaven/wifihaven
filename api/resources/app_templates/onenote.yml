@@ -25,9 +25,14 @@ icon_type: url
 # the same addresses oauth.officeapps.live.com and common.online.office.com
 # return, i.e. the front door for ALL Office web apps (Word, Excel, PowerPoint
 # Online), not just OneNote. Blocking OneNote drops those addresses, so the other
-# Office web apps stop loading; allowing it carves them out of category and
-# per-host drops (#421). `shared_hosts` never enter a drop set, but they do not
-# help here because the distinctive hosts are on the same pool. There is no
+# Office web apps stop loading; allowing it carves them into `extraAllowed`,
+# which beats category drops, per-host drops and whole-device blocks (Paused,
+# Schedule, daily limit) on that MAC (#421). `shared_hosts` never enter a drop
+# set, but in Allowed mode they ARE carved into `extraAllowed` too, so an
+# Allowed OneNote also opens a multi-tenant Cloudflare edge
+# (res.public.onecdn.static.microsoft), Akamai (res-1.cdn.office.net) and the
+# ecs.office.com / augloop.office.com pools. They do not help on the block
+# side because the distinctive hosts are on the same WAC pool. There is no
 # OneNote-only host with meaningful bytes to fall back to (cdn.onenote.net and
 # onenote.com carry almost nothing), so the block half is inherently
 # compromised; the visibility half is not, because attribution is

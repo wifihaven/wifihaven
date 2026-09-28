@@ -2,8 +2,8 @@
 
 Method: `GET /api/profiles/{1,5,6,7}/usage-by-app?from=2026-08-29&to=2026-09-28`
 (orphan hosts, bare IP literals filtered), then `recent-apexes?windowDays=30` on
-the two Kids-profile devices to scope host-sets. All three candidates are on the
-Kids profile (id 1).
+the two Kids-profile devices to scope host-sets. All candidates are on the Kids
+profile (id 1); `api64.ipify.org` also appears on profile 5 (Chromebook, 8 min).
 
 | host | proportional min (30d) | disposition |
 |---|---|---|

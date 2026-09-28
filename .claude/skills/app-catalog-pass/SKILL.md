@@ -214,7 +214,8 @@ above is now wrong, fix the step too — don't just log around it.
     front Word/Excel/PowerPoint Online too, so a OneNote block/allow has
     collateral in both directions (`onenote.yml` documents it). Pattern used:
     the app-specific hosts in `hosts:`, the Office backing hosts in
-    `shared_hosts:` (co-presence credit, never a drop-set member), and the
+    `shared_hosts:` (co-presence credit; never a drop-set member, but in
+    Allowed mode they ARE carved into `extraAllowed`), and the
     identity hosts (`login.live.com`, `login.microsoftonline.com`,
     `storage.live.com`) left out entirely.
   - Scope a small-utility app to its `api.` hosts when the apex has a

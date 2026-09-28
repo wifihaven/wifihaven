@@ -5,7 +5,8 @@ icon_type: url
 # Display-cleanup app (#2811), sibling of icanhazip (#2805): ipify is
 # a public-IP lookup API that apps and scripts call in the background, not
 # something a kid "uses". api.ipify.org (~173 proportional min) and
-# api64.ipify.org (~8) showed up as orphans on the Kids and Chromebook profiles.
+# api64.ipify.org (~8) showed up as orphans (api.ipify.org on the Kids profile, api64 on Kids and
+# the Chromebook profile).
 #
 # Scoped to the two API hosts rather than the `ipify.org` apex on purpose:
 # www.ipify.org CNAMEs to a CloudFront distribution on the 99.84.118.x pool that
