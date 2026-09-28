@@ -199,6 +199,37 @@ above is now wrong, fix the step too — don't just log around it.
 
 ## Learnings log (newest first)
 
+- **2026-09-28 (#2811)** — Delivered the two display-cleanup candidates #2805
+  left (`weather`, `ipify`) plus a real gap the byte table would have hidden:
+  **OneNote for the web** (~2.7k orphan min, no app). Things this pass taught:
+  - `usage-by-app` orphans are `{host: {type: "fqdn"|"ip", value}, proportionalSeconds,
+    presenceSeconds}`, so filter literals with `select(.host.type=="fqdn")`
+    instead of the `:`/digit regex; aggregate the four kid profiles' files with
+    the same `jq | awk` shape as Step 0. `GET /api/profiles` rows are nested
+    under `.profile` (same trap as `/api/apps`), and `/api/devices` gives the
+    profile id but no kid flag: profiles 1 (Kids) and 5-7 held all the signal.
+  - **Office Online is one shared front door.** `onenote.officeapps.live.com`,
+    `oauth.officeapps.live.com` and `common.online.office.com` all resolve via
+    `app-geo.wac.trafficmanager.net` to the same 52.108.8.x addresses, which
+    front Word/Excel/PowerPoint Online too, so a OneNote block/allow has
+    collateral in both directions (`onenote.yml` documents it). Pattern used:
+    the app-specific hosts in `hosts:`, the Office backing hosts in
+    `shared_hosts:` (co-presence credit, never a drop-set member), and the
+    identity hosts (`login.live.com`, `login.microsoftonline.com`,
+    `storage.live.com`) left out entirely.
+  - Scope a small-utility app to its `api.` hosts when the apex has a
+    `www` on a shared pool: `www.ipify.org` sits on the CloudFront 99.84.118.x
+    pool `arduino.yml` already flags, `api.ipify.org` does not.
+  - Display-cleanup weather: `api.weather.com` CNAMEs to Fastly's shared edge, so
+    it ships for attribution only (same wording as `icanhazip`). Apple
+    WeatherKit is platform infra, skip. Unity SDK analytics
+    (`collect.analytics.unity3d.com`, `cdp.cloud.unity3d.com`, ~5k min) is the
+    largest remaining non-platform orphan and is skipped as shared-SDK
+    telemetry; revisit only if a per-game scoping appears.
+  - macOS shell gotchas in Step 0/5: no `timeout` binary; BSD `sed -i` needs
+    `-i ''` and does not do `{a,b}` brace expansion in paths. Prior pass issues
+    (#2774/#2790/#2805) carry no board Epic, so none was set here.
+
 - **2026-09-21 (#2805)** — A no-cluster pass is still worth the `orphanHosts`
   read: the top of the list was ~all platform infra, ad-tech and shared
   IP-check utilities (`ipv4.icanhazip.com` is #1 at ~18k min; `api.ipify.org`

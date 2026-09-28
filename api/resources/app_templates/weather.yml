@@ -1,0 +1,27 @@
+slug: weather
+name: Weather
+icon: "https://icons.duckduckgo.com/ip3/weather.com.ico"
+icon_type: url
+# Display-cleanup app (#2811): background weather-widget polling, not
+# something a kid "uses". api.weather.com alone was the #1 non-platform orphan
+# host on the Kids profile (~3.5k proportional min / 30d, 1.5k presence min;
+# 376 MB across 2,242 hits on one device), so it gets a named row instead of
+# burying real gaps in the per-device list. `weather.com` suffix-matches
+# api./api0./dsx./mparticle.; `weatherbug.net` / `weatherbug.com` are WeatherBug's
+# own widget backends (pulse./maps. and the site). Apple WeatherKit
+# (weatherkit.apple.com, weather-data.apple.com) is Apple platform infra and is
+# deliberately NOT listed.
+#
+# FOR ATTRIBUTION/VISIBILITY, NOT BLOCKING OR ALLOWING. api.weather.com CNAMEs
+# to api.twc.map.fastly.net (199.232.65.91), Fastly's shared multi-tenant edge,
+# and bare weather.com resolves to an Akamai address (184.30.90.53). Both
+# directions are collateral: Blocked puts that Fastly address in the drop set
+# (other Fastly-fronted sites on this pool go with it), and Allowed carves it
+# into `extraAllowed`, which beats category and per-host drops on that MAC
+# (#421) for every other tenant of the pool. Attribution is hostname-based and
+# carries neither risk. If an operator wants a weather block anyway, the
+# narrower edit is dropping `weather.com` for the WeatherBug hosts only.
+hosts:
+  - weather.com
+  - weatherbug.net
+  - weatherbug.com

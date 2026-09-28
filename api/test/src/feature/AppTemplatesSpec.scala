@@ -184,6 +184,10 @@ object AppTemplatesSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
           "bricklink",
           "hamstudy",
           "icanhazip",
+          // #2811: weather + ipify display-cleanup apps, OneNote for the web
+          "weather",
+          "onenote",
+          "ipify",
         )
         val slugs    = templates.map(_.slug.value).toSet
         assertTrue(slugs == expected) &&
