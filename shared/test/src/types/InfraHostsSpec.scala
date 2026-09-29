@@ -662,5 +662,55 @@ object InfraHostsSpec extends ZIOSpecDefault {
         stillCarved.forall(InfraHosts.isBackground),
       )
     },
+    test("#2813 patternSpecificity measures all three pattern forms in dot-separated labels") {
+      // Load-bearing for the anchor decision: the comparison in
+      // `Presence.ambientGatedRowsWithDropCount` is only meaningful if the three pattern forms
+      // this codebase uses are measured on ONE scale. The suffix-family case is the one a reader
+      // is most likely to get wrong — the leading `-` is stripped, so `-pa.googleapis.com` is 3.
+      assertTrue(
+        InfraHosts.patternSpecificity("client-log-forwarder.1password.com") == 3,
+        InfraHosts.patternSpecificity("1password.com") == 2,
+        InfraHosts.patternSpecificity("serato.com") == 2,
+        InfraHosts.patternSpecificity("*.example.com") == 2,
+        InfraHosts.patternSpecificity("-pa.googleapis.com") == 3,
+        // and the ordering the gate actually relies on
+        InfraHosts.patternSpecificity("client-log-forwarder.1password.com") >
+          InfraHosts.patternSpecificity("1password.com"),
+        InfraHosts.patternSpecificity("serato.com") == InfraHosts.patternSpecificity("serato.com"),
+      )
+    },
+    test(
+      "#2813 the background class claims each new entry, and the app-apex ties are as intended",
+    ) {
+      // The #2813 additions resolve as claimed, including the deliberate choice of exact host over
+      // apex where a shipped app template would otherwise TIE and win.
+      assertTrue(
+        InfraHosts.matchedCloudBackgroundPattern("api.wifihaven.net").contains("api.wifihaven.net"),
+        InfraHosts
+          .matchedCloudBackgroundPattern("client-log-forwarder.1password.com")
+          .contains("client-log-forwarder.1password.com"),
+        InfraHosts.matchedCloudBackgroundPattern("bam.nr-data.net").contains("nr-data.net"),
+        InfraHosts
+          .matchedCloudBackgroundPattern("ipv4.icanhazip.com")
+          .contains("ipv4.icanhazip.com"),
+        // `icanhazip.yml` claims the APEX; the class entry must be STRICTLY more specific so the
+        // classification survives that template being assigned (#2805 added it to be assigned).
+        InfraHosts.patternSpecificity("ipv4.icanhazip.com") > InfraHosts.patternSpecificity(
+          "icanhazip.com",
+        ),
+        // the `wifihaven.net` apex is deliberately NOT swept in — the SPA is a user-facing surface
+        !InfraHosts.isCloudBackground("wifihaven.net"),
+        !InfraHosts.isCloudBackground("www.wifihaven.net"),
+        // nor are the deliberate exclusions named in the file
+        !InfraHosts.isCloudBackground("www.google.com"),
+        !InfraHosts.isCloudBackground("accounts.google.com"),
+        !InfraHosts.isCloudBackground("ssl.gstatic.com"),
+        !InfraHosts.isCloudBackground("1password.com"),
+        // attribution-only: nothing new is allow-carved
+        !InfraHosts.isInfra("api.wifihaven.net"),
+        !InfraHosts.isInfra("client-log-forwarder.1password.com"),
+        !InfraHosts.isInfra("bam.nr-data.net"),
+      )
+    },
   )
 }

@@ -75,16 +75,24 @@ object OvernightBackgroundPhantomSpec extends ZIOSpec[TestDatabase.AllRepos & Em
     }
 
   /**
-   * The prod overnight shape: 00:00–06:00 UTC, background-only. `api.wifihaven.net` and the
-   * 1Password log forwarder drip every 3 minutes (continuous under the 120s continuation, so they
-   * stitch into one long span); the beacon / IP-echo / Apple-init probes fire sporadically.
+   * The prod overnight shape: 00:00–04:00 UTC, background-only. `api.wifihaven.net` and the
+   * 1Password log forwarder drip every 2 minutes; the beacon / IP-echo / Apple-init probes fire
+   * sporadically.
+   *
+   * The 2-minute cadence is chosen for MARGIN, not to sit on the seam. With 60-second buckets the
+   * stitch gap is `Presence.effectiveGap` = `max(DefaultContinuationSeconds, 2 × periodSeconds)` =
+   * `max(120, 120)` = 120s (`Presence.scala` `DefaultContinuationSeconds`), so a 2-minute cadence
+   * leaves a 60s gap — half the budget. A 3-minute cadence would leave exactly 120s and stitch only
+   * because the merge test is `<=`, which means a one-second fixture change, or any change to that
+   * constant, would silently split one long span into 120 separate ones and quietly change what
+   * this test tests.
    */
   private def seedOvernightBackground(
       rid: RouterId,
       date: LocalDate,
   ): ZIO[TrafficReportRepo, Throwable, Unit] =
     ZIO.foreachDiscard(0 until 120) { i =>
-      val m = i * 3
+      val m = i * 2
       seedBucket(rid, "api.wifihaven.net", date, m) *>
         seedBucket(rid, "client-log-forwarder.1password.com", date, m) *>
         ZIO.when(i % 20 == 0)(seedBucket(rid, "bam.nr-data.net", date, m)).unit *>
@@ -152,15 +160,74 @@ object OvernightBackgroundPhantomSpec extends ZIOSpec[TestDatabase.AllRepos & Em
         _         <- seedOvernightBackground(rid2, day)
         _         <- TimeUsedRollupJob.oneTickForTest(ru, aru, pr, dr, atl, trr, hsr, now, ahr)
         nightOnly <- ru.getDayMapForHousehold(HouseholdId.Default, day)
-        overnightMin    = nightOnly.get(kid2).map(r => (r.usedSeconds / 60L).toInt).getOrElse(0)
-        realSessionMins = usedMin - overnightMin
+        overnightMin = nightOnly.get(kid2).map(r => (r.usedSeconds / 60L).toInt).getOrElse(0)
       } yield assertTrue(
         // THE BUG: six hours of background-only traffic must not become screen time.
         overnightMin <= 2,
-        // LIVENESS ANCHOR: the same rig still credits the genuine 20-minute session in full, so a
-        // rig that produced no traffic (or a change that suppressed everything) cannot pass.
-        realSessionMins >= 18,
+        // LIVENESS ANCHOR: the same rig, on the same day, still credits the genuine 20-minute
+        // session in full, so a rig that produced no traffic — or a change that suppressed
+        // everything — cannot pass. Asserted directly on the first run's total rather than as
+        // `usedMin - overnightMin`: `overnightMin` comes from a separately seeded DB state, and it
+        // is already pinned `<= 2` on its own, so the subtraction added nothing but coupling.
+        usedMin >= 18,
       )
     },
-  )
+    test("api.wifihaven.net alone never anchors, so our own control plane credits 0") {
+      // #2813 acceptance criterion 2, pinned directly rather than inferred from the aggregate
+      // above. A whole day of nothing but WifiHaven's own control-plane traffic — the SPA tab
+      // left open on the laptop — must credit zero.
+      //
+      // SCOPE OF THE GUARANTEE, stated so a later reader does not over-read this test:
+      // `cloudBackground` is anchor-ineligibility, not suppression. It pins that this host can
+      // never START a span, which is what makes a background-only window credit 0. It does NOT
+      // pin that the host contributes 0 inside a span anchored by something real (the ordinary
+      // daytime case, kid browsing with the dashboard open) — only `suppressOnly` would give
+      // that, and the placement is an open question on #2813.
+      for {
+        _   <- cleanDb
+        hsr <- ZIO.service[HouseholdSettingsRepo]
+        pr  <- ZIO.service[ProfileRepo]
+        dr  <- ZIO.service[DeviceRepo]
+        ahr <- ZIO.service[AmbientHostsRepo]
+        ru  <- ZIO.service[TimeUsedRollupRepo]
+        aru <- ZIO.service[AppUsedRollupRepo]
+        atl <- ZIO.service[AppTimeLimitRepo]
+        trr <- ZIO.service[TrafficReportRepo]
+        s0  <- hsr.getForHousehold(HouseholdId.Default)
+        _   <- hsr.update(
+          HouseholdId.Default,
+          s0.copy(dailyResetTz = ZoneOffset.UTC, ambientGateEnabled = true),
+        )
+        kid <- TestLayers.seedKidsProfile(pr)
+        _   <- TestLayers.seedDevice(dr, kidMac, "Kid Laptop", kid)
+        rid <- seedRouterRow
+        day = LocalDate.of(2026, 9, 29)
+        // Six hours of nothing but our own control plane, at 1 MB a bucket — far above the
+        // heartbeat byte floor, so nothing here is dropped for being small.
+        _ <- ZIO.foreachDiscard(0 until 180)(i => seedBucket(rid, "api.wifihaven.net", day, i * 2))
+        now = LocalDateTime.of(day, LocalTime.of(20, 0)).toInstant(ZoneOffset.UTC)
+        _     <- TimeUsedRollupJob.oneTickForTest(ru, aru, pr, dr, atl, trr, hsr, now, ahr)
+        rolls <- ru.getDayMapForHousehold(HouseholdId.Default, day)
+        mins = rolls.get(kid).map(r => (r.usedSeconds / 60L).toInt).getOrElse(0)
+        // LIVENESS ANCHOR: the identical rig, same host count and byte volume, on a host that is
+        // NOT classified, must credit real minutes. Without this half the assertion above would
+        // also pass on a rig that seeded nothing, or one whose rollup silently wrote no row.
+        _    <- cleanDb
+        s1   <- hsr.getForHousehold(HouseholdId.Default)
+        _    <- hsr.update(
+          HouseholdId.Default,
+          s1.copy(dailyResetTz = ZoneOffset.UTC, ambientGateEnabled = true),
+        )
+        kid2 <- TestLayers.seedKidsProfile(pr)
+        _    <- TestLayers.seedDevice(dr, kidMac, "Kid Laptop", kid2)
+        rid2 <- seedRouterRow
+        _ <- ZIO.foreachDiscard(0 until 180)(i => seedBucket(rid2, "a-z-animals.com", day, i * 2))
+        _ <- TimeUsedRollupJob.oneTickForTest(ru, aru, pr, dr, atl, trr, hsr, now, ahr)
+        ctrl <- ru.getDayMapForHousehold(HouseholdId.Default, day)
+        ctrlMins = ctrl.get(kid2).map(r => (r.usedSeconds / 60L).toInt).getOrElse(0)
+      } yield assertTrue(mins == 0, ctrlMins >= 180)
+    },
+    // Both tests recreate the shared embedded-Postgres database via `cleanAndMigrate`, so they
+    // cannot run concurrently. Same aspect the sibling rollup/ambient DB specs carry.
+  ) @@ TestAspect.sequential
 }

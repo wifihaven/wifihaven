@@ -127,6 +127,22 @@ dropped whole; anchored spans count **in full** — ambient rows inside an
 anchored span still contribute their seconds, so a real session's total is
 never shaved (no re-opening of the #1446/#2068 undercount class).
 
+**#2813 amendment — the #1506 seam is a specificity comparison, not an
+unconditional win.** App attribution anchors a row *unless* the device-cloud
+background class ([[InfraHosts.cloudBackground]]) claimed the same host **more
+specifically**, measured in dot-separated labels
+([[InfraHosts.patternSpecificity]]). At EQUAL specificity the app still wins, so
+an app whose own host *is* the class entry keeps anchoring (`serato.yml` against
+the `serato.com` class apex is the live instance). A strictly-more-specific class
+entry wins, so a template claiming a brand APEX cannot launder an anchor onto a
+background LANE of that brand enumerated by exact host — which is how six hours
+of `client-log-forwarder.1password.com` log shipping anchored an overnight span
+under the `1password.com` app assignment, and every ambient row inside it,
+`api.wifihaven.net` included, then counted in full. This changes anchor
+eligibility ONLY; row suppression (`Presence.isHeartbeat` /
+`suppressedAsBackground`, over `canonical ++ suppressOnly`) still lets any app
+pattern win outright — see the tier-divergence note below.
+
 Results on the 14-day sample (in-sample):
 
 | surface | before | after gate | casualties |
@@ -265,7 +281,10 @@ alone in a window is alone regardless of span width). The gate composes with
   shows essentially doesn't happen (real use lights up co-hosts). If it ever
   does: the host is visible in the explain surface, and the canonical remedy
   is authoring an app template for it — app attribution beats ambient
-  structurally (#1506).
+  structurally (#1506). **Caveat (#2813):** the template must claim the host at
+  least as specifically as any `cloudBackground` entry that also matches it. A
+  template claiming a brand apex will NOT restore the anchor for a background
+  lane this file enumerates by exact host; claim the exact host instead.
 - *Fleet-wide agent wedge* (the #2068 class): a wedged agent emitting
   single-host reports could teach false ambient entries. The learner keys on
   *distinct days*; a transient wedge contributes ≤ 1–2 days, below
@@ -329,9 +348,22 @@ it only erodes the safety margin on genuinely-isolated real use.
 
 Both tiers are **anchor-eligibility only** — never row suppression. A class
 row inside a genuinely-anchored span still counts in full, app attribution
-(#1506) still beats the class, and everything rides the existing
-`ambient_gate_enabled` kill-switch (off ⇒ identity). The gate remains
-only-ever-removes, so the #1446/#2068 undercount class stays closed.
+(#1506) beats the class **at equal-or-greater specificity** (#2813 — see the
+gate-rule amendment above; before #2813 it beat the class unconditionally, which
+is what let a brand-apex template anchor a background lane), and everything rides
+the existing `ambient_gate_enabled` kill-switch (off ⇒ identity). The gate
+remains only-ever-removes, so the #1446/#2068 undercount class stays closed.
+
+**Tier divergence (#2813).** The specificity comparison applies to the ANCHOR
+decision only. The suppression decision (`Presence.suppressedAsBackground` →
+`isHeartbeat`, keyed on `canonical ++ suppressOnly`) still lets any app pattern
+win outright, so a brand-apex template un-suppresses an enumerated background
+lane on that tier — `brave.com` over `collector.bsg.brave.com` /
+`star-randsrv.bsg.brave.com`, and `plex.tv` over `pubsub.plex.tv`, are the live
+instances. That is deliberately left alone here: suppression REMOVES a row
+outright, so extending the comparison to it can only ever subtract minutes and
+re-opens the #1446/#2068 undercount risk that the anchor tier is structurally
+immune to. Tracked separately in #2815.
 
 Replay of the shipped rule set on the same window:
 

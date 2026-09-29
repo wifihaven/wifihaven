@@ -473,11 +473,16 @@ object InfraHosts {
     // an SDK beacon embedded in pages the user may genuinely be viewing, which is exactly why
     // this tier (anchor-ineligible, still counts inside an anchored span) is the right one.
     "nr-data.net",
-    // Public-IP echo utility called by apps and scripts in the background. Apex covers the
-    // observed `ipv4.` / `ipv6.` subdomains. `GET /` returns a 14-byte IP string — a machine
-    // endpoint, not a browsing surface. Sibling of the existing `ipify` / `icanhazip`
-    // display-cleanup app templates (#2805/#2811), neither of which is assigned.
-    "icanhazip.com",
+    // Public-IP echo utility called by apps and scripts in the background. `GET /` returns a
+    // 14-byte IP string — a machine endpoint, not a browsing surface.
+    //
+    // The two observed hosts, NOT the `icanhazip.com` apex, and the reason is the specificity
+    // comparison this file now feeds (see [[patternSpecificity]]): `icanhazip.yml` (#2805) claims
+    // the apex, so an apex entry here would TIE with that template and lose the moment an operator
+    // assigns it — which is exactly what #2805 added the template for. At 3 labels these beat the
+    // 2-label template pattern, so the classification holds whether or not the app is assigned.
+    "ipv4.icanhazip.com",
+    "ipv6.icanhazip.com",
     // Apple device init / config probe (`init-s01md` is the sibling on the same cert).
     // 404 on `/`; the same class as `configuration.apple.com` on the #1629 tail.
     "init-p01md.apple.com",
@@ -491,9 +496,14 @@ object InfraHosts {
   // (exactly the boundary [[canonical]] documents). One entry covers the whole family.
   val cloudBackgroundSuffixes: List[String] = List("-pa.googleapis.com")
 
-  /** Whether `fqdn` is on the #2177 device-cloud background CLASS (apex or suffix family). */
+  /**
+   * Whether `fqdn` is on the #2177 device-cloud background CLASS (apex or suffix family).
+   * Short-circuits — it answers a Boolean and must not pay for the ordering
+   * [[matchedCloudBackgroundPattern]] computes.
+   */
   def isCloudBackground(fqdn: String): Boolean =
-    matchedCloudBackgroundPattern(fqdn).isDefined
+    cloudBackground.exists(p => HostMatch.matchesPattern(fqdn, p)) ||
+      cloudBackgroundSuffixes.exists(s => fqdn.endsWith(s))
 
   /**
    * #2813: the most SPECIFIC device-cloud-background pattern this FQDN matches, if any —
@@ -511,12 +521,11 @@ object InfraHosts {
       .maxByOption(patternSpecificity)
 
   /**
-   * #2813: how specific a host pattern is, as its count of dot-separated labels. `*.` and a leading
-   * `-` (the `-pa.googleapis.com` suffix family) are stripped first so the three forms this file
-   * uses — exact host, apex, suffix family — are all measured the same way.
+   * #2813: how specific a host pattern is — see [[HostMatch.patternSpecificity]], which owns the
+   * measure because it is a pure property of the pattern string and belongs next to the matcher it
+   * is compared against. Aliased here so the background-class call sites read in one vocabulary.
    */
-  def patternSpecificity(pattern: String): Int =
-    pattern.stripPrefix("*.").stripPrefix("-").count(_ == '.') + 1
+  def patternSpecificity(pattern: String): Int = HostMatch.patternSpecificity(pattern)
 
   /**
    * #2177 host-keyed device-cloud-background CLASS predicate — the anchor-eligibility analogue of
