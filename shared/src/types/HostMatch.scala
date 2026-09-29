@@ -74,9 +74,22 @@ object HostMatch {
    * returns `None` for IPv4/IPv6 hosts. An empty `patterns` returns `false`.
    */
   def matchesAny(host: HostId, patterns: List[String]): Boolean =
-    patterns.nonEmpty && host.asFqdn.exists(fqdn =>
-      patterns.exists(p => matchesPattern(fqdn.value, p)),
-    )
+    matchedPatternIn(host, patterns).isDefined
+
+  /**
+   * #2813: the most SPECIFIC of `patterns` that `host` matches, if any — the pattern, not just a
+   * Boolean, so a caller can compare two competing classifications by how specifically each one
+   * claimed the host. Specificity is [[InfraHosts.patternSpecificity]] (dot-separated labels), the
+   * same measure the background class uses, so the two are directly comparable.
+   */
+  def matchedPatternIn(host: HostId, patterns: List[String]): Option[String] =
+    if patterns.isEmpty then None
+    else
+      host.asFqdn.flatMap(fqdn =>
+        patterns
+          .filter(p => matchesPattern(fqdn.value, p))
+          .maxByOption(InfraHosts.patternSpecificity),
+      )
 
   /** Boolean variant of [[lookupApex]] over a set of apexes. */
   def hasApexMatch(host: String, apexes: Set[String], maxHops: Int = 5): Boolean =

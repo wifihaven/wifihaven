@@ -1069,11 +1069,33 @@ object Presence {
         // row (IP-literal / label — no hostname identity for either set to vouch against) anchors
         // only when the span's non-FQDN rows carry real payload (> [[IpAnchorSpanBytes]]): the
         // FaceTime shape survives, the low-byte Apple-infra IP drip inside a wakeup burst does not.
-        def isHostAnchor(r: PresenceRow): Boolean      =
-          isAppAttributed(r, appHostPatterns) ||
-            (r.host.asFqdn.isDefined &&
-              !ambient.hosts.contains(r.host.value) &&
-              !InfraHosts.isCloudBackground(r.host))
+        //
+        // #2813: the class beats app attribution when it claimed the host MORE SPECIFICALLY.
+        // An app template that claims a brand APEX (the operator's 1Password app claims
+        // `1password.com`) otherwise launders an anchor onto a background LANE of that brand
+        // that this file enumerates by exact host (`client-log-forwarder.1password.com`) — which
+        // is how six hours of overnight log-shipping anchored a span that then counted every
+        // ambient row inside it, `api.wifihaven.net` included. Comparing specificity rather than
+        // letting either side win outright keeps #1506 intact where it matters: at EQUAL
+        // specificity the app still wins, so an app whose own host IS the class entry (the
+        // `serato.com` template against the `serato.com` class apex) keeps anchoring, and the
+        // #1446/#2068 undercount guarantee is untouched. This only ever removes an ANCHOR; a
+        // class row inside a genuinely anchored span still counts.
+        def isHostAnchor(r: PresenceRow): Boolean      = {
+          val classSpec = InfraHosts
+            .matchedCloudBackgroundPattern(r.host)
+            .map(InfraHosts.patternSpecificity)
+          val appSpec   = HostMatch
+            .matchedPatternIn(r.host, appHostPatterns)
+            .map(InfraHosts.patternSpecificity)
+          (appSpec, classSpec) match {
+            case (Some(a), Some(c)) => a >= c
+            case (Some(_), None)    => true
+            case (None, Some(_))    => false
+            case (None, None)       =>
+              r.host.asFqdn.isDefined && !ambient.hosts.contains(r.host.value)
+          }
+        }
         def overlaps(s: Span, r: PresenceRow): Boolean = {
           val rs = spanOf(r)
           rs.startEpoch <= s.endEpoch && rs.endEpoch >= s.startEpoch
