@@ -734,13 +734,17 @@ object TimeStatusService {
 
   /**
    * #1506: the union of EVERY active app's host-set for this profile — the app-attribution set fed
-   * to [[Presence.isHeartbeat]] so a host an active app genuinely depends on is never dropped as
-   * background infra (attribution beats suppression). Derived from the same per-app collapse
-   * (`groupAppLimits`) the per-app bars and `exemptPatterns` use, so the daily total and the
-   * per-app surfaces agree on what counts as an "active app host". Includes exempt apps' hosts too:
-   * exclusion from the daily total is handled separately by [[exemptPatterns]] in
-   * [[Presence.countedRows]] (attribution only prevents suppression, not exemption), so an exempt
-   * app's host is still excluded — it is simply no longer mis-classified as a heartbeat first.
+   * to [[Presence.isHeartbeat]] so a host an active app genuinely depends on is not dropped as
+   * background infra (attribution beats suppression). Since #2815 that rescue is conditional on
+   * SPECIFICITY: it holds when the app's pattern is at least as specific as the background entry
+   * that also matched, so an app naming its infra dependency exactly still wins, while a brand apex
+   * no longer rescues a background lane [[InfraHosts]] enumerates by exact host. Derived from the
+   * same per-app collapse (`groupAppLimits`) the per-app bars and `exemptPatterns` use, so the
+   * daily total and the per-app surfaces agree on what counts as an "active app host". Includes
+   * exempt apps' hosts too: exclusion from the daily total is handled separately by
+   * [[exemptPatterns]] in [[Presence.countedRows]] (attribution only prevents suppression, not
+   * exemption), so an exempt app's host is still excluded — it is simply no longer mis-classified
+   * as a heartbeat first.
    */
   // #2077: widened from private[policy] — the ambient learner (AmbientLearnJob) derives its
   // app-attribution context through this same seam so learning and gating cannot diverge.

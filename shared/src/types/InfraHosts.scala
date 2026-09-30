@@ -379,21 +379,23 @@ object InfraHosts {
    * needs the most specific match instead, so it can be compared against the app pattern that also
    * claimed the host (`Presence.suppressedAsBackground`).
    */
-  def matchedBackgroundPatternSpecific(fqdn: String): Option[String] = {
+  def matchedBackgroundPatternSpecific(fqdn: String): Option[String] =
     // Single fold, no intermediate List: this runs on EVERY row of every counting and ranking
     // surface via `Presence.suppressedAsBackground`, and the overwhelmingly common case is a host
     // on no background list at all. `HostMatch.matchedPatternIn`'s docstring states this rule for
     // the app-pattern side; it applies at least as strongly here, where the list is ~78 entries.
-    var best     = Option.empty[String]
-    var bestSpec = 0
-    background.foreach { p =>
-      if (HostMatch.matchesPattern(fqdn, p)) {
-        val sp = patternSpecificity(p)
-        if (sp > bestSpec) { best = Some(p); bestSpec = sp }
+    //
+    // Strictly-greater keeps the FIRST maximal entry in list order, matching the `maxByOption` this
+    // replaced, so ties resolve identically.
+    background
+      .foldLeft(Option.empty[(String, Int)]) { (best, p) =>
+        if (!HostMatch.matchesPattern(fqdn, p)) best
+        else {
+          val sp = patternSpecificity(p)
+          if (best.exists(_._2 >= sp)) best else Some((p, sp))
+        }
       }
-    }
-    best
-  }
+      .map(_._1)
 
   /**
    * #2815: host-keyed [[matchedBackgroundPatternSpecific]]. IP-literal / label hosts never match.

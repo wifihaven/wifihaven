@@ -718,10 +718,35 @@ object InfraHostsSpec extends ZIOSpecDefault {
         !InfraHosts.isInfra("bam.nr-data.net"),
       )
     },
-    test("#2815 matchedBackgroundPatternSpecific returns the MOST specific match, not the first") {
-      // `matchedBackgroundPattern` returns the first match in LIST order and is kept for the
-      // explain surfaces; suppression precedence needs the most specific one so it can be compared
-      // against the app pattern that also claimed the host.
+    test("#2815 no background entry is shadowed by another, so the two matchers agree today") {
+      // THE PRECONDITION, pinned because everything else leans on it. `matchedBackgroundPattern`
+      // (first match in list order) and `matchedBackgroundPatternSpecific` (most specific match)
+      // can only disagree for a host that matches TWO background entries. No such pair exists
+      // today, which is why the explain surfaces (`suppressedHostUsage`, `classifyRows`) can keep
+      // using the first-match matcher and still name the pattern that actually drove the decision.
+      //
+      // Adding an apex alongside a lane already on the list — `brave.com` next to
+      // `collector.bsg.brave.com`, say — breaks that silently. This test is the tripwire: it fails
+      // on exactly that change, and the fix is to move the explain surfaces onto the specific
+      // matcher at the same time.
+      val all      = InfraHosts.canonical ++ InfraHosts.suppressOnly
+      val shadowed = for {
+        outer <- all
+        inner <- all
+        if outer != inner
+        if HostMatch.matchesPattern(inner, outer)
+      } yield (outer, inner)
+      assertTrue(
+        // liveness: an empty list would satisfy the emptiness check for free
+        all.size > 50,
+        shadowed.isEmpty,
+      )
+    },
+    test("#2815 matchedBackgroundPatternSpecific resolves each host to its background entry") {
+      // Given the precondition above these agree with the first-match matcher by construction, so
+      // this is a resolution pin, NOT a demonstration that specificity is honoured — for that see
+      // the `patternSpecificity` ordering test and `SuppressionSpecificitySpec`, which exercise the
+      // comparison against APP patterns, where competing claims genuinely do exist.
       assertTrue(
         InfraHosts
           .matchedBackgroundPatternSpecific("collector.bsg.brave.com")

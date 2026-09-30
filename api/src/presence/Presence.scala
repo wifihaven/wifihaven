@@ -1125,8 +1125,8 @@ object Presence {
         // `canonical ++ suppressOnly`), so one precedence rule spans both predicates. #2813 shipped
         // this tier alone and deferred the other on the reasoning that suppression REMOVES a row
         // outright and so can only subtract minutes; #2815 took it up once the blast radius proved
-        // enumerable (four apex-over-lane pairs in the whole catalog, zero rows flipping on a
-        // 7-day prod replay). Written up as "Tier convergence (#2813 → #2815)" in
+        // enumerable (four app patterns over five background lanes in the whole catalog, derived
+        // and pinned by `BackgroundApexShadowSpec`; zero rows flipped on a 7-day prod replay). Written up as "Tier convergence (#2813 → #2815)" in
         // docs/design/idle-traffic-discrimination.md.
         //
         // The two tiers still differ in CONSEQUENCE, which is why they were staged: this one only

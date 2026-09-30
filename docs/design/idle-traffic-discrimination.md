@@ -394,9 +394,10 @@ uses `hosts` rather than `distinctiveHosts`, so a shared vendor backend counts
 toward the profile's daily total on the strength of another app's assignment.
 Where the backend is also on the background list, #2815's comparison now settles
 it; where it is not — `elevenlabs.io`, say — there is no suppression to compare
-against and the traffic simply counts as that app's. That is a wider change than the specificity comparison
-(it touches every shared host on every assigned app, not four enumerable pairs)
-and wants its own evidence pass.
+against and the traffic simply counts as that app's. Closing that is a wider
+change than the specificity comparison, since it touches every shared host on
+every assigned app rather than an enumerable pair set, so it wants its own
+evidence pass.
 
 Replay of the shipped rule set on the same window:
 
