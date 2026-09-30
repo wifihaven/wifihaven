@@ -232,9 +232,10 @@ object InfraHosts {
     // operator-authored 1Password app already covers it as a member host, so
     // it attributes to that app (which is `allowed` + `exemptFromDaily` for
     // every assigned profile) instead of being suppressed. Putting it here
-    // would be redundant given #1506 (app attribution wins over suppression),
-    // and the app-attribution path is the canonical model when a user-allowed
-    // app exists.
+    // would be redundant given #1506 (app attribution wins over suppression at
+    // equal-or-greater specificity, post-#2815 — and it would be equal here, an
+    // app apex against the same apex), and the app-attribution path is the
+    // canonical model when a user-allowed app exists.
     "sentry.io",
     "bugsnag.com",
     // Plex pubsub keepalive — the long-poll notification channel runs

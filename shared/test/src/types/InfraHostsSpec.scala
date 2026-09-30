@@ -729,6 +729,9 @@ object InfraHostsSpec extends ZIOSpecDefault {
       // `collector.bsg.brave.com`, say — breaks that silently. This test is the tripwire: it fails
       // on exactly that change, and the fix is to move the explain surfaces onto the specific
       // matcher at the same time.
+      // Mirrors `InfraHosts.background` (`canonical ++ suppressOnly`), which is private. If that
+      // definition ever widens — folding in `cloudBackground`, say — the predicate's domain grows
+      // and this reconstruction silently keeps checking the old one. Keep the two in step.
       val all      = InfraHosts.canonical ++ InfraHosts.suppressOnly
       val shadowed = for {
         outer <- all

@@ -1065,12 +1065,23 @@ object PresenceSpec extends ZIOSpecDefault {
     ),
     // ── #1506: app-aware background suppression ───────────────────────────────
     //
-    // Attribution BEATS suppression. A host that is BOTH a background/infra
-    // pattern AND a member of an ACTIVE app's host-set must NOT be dropped as
-    // device infra — it attributes to the app and COUNTS. Only hosts attributed
-    // to no active app fall through to background suppression, so device-level
-    // infra (connectivity probes, OCSP, telemetry) with no app behind it stays
-    // suppressed exactly as before (#1499 over-count protection preserved).
+    // Attribution BEATS suppression — since #2815, when the app claimed the host
+    // at least as SPECIFICALLY as the background list did. A host that is BOTH a
+    // background/infra pattern AND a member of an ACTIVE app's host-set is not
+    // dropped as device infra; it attributes to the app and COUNTS. Only hosts
+    // attributed to no active app fall through to background suppression, so
+    // device-level infra (connectivity probes, OCSP, telemetry) with no app
+    // behind it stays suppressed exactly as before (#1499 over-count protection
+    // preserved).
+    //
+    // EVERY case below is an EQUAL-specificity claim, so every one lands on the
+    // #2815 carve-out and the suite is unaffected by that change: the app claims
+    // `clientservices.googleapis.com` exactly, and the byte-floor case claims
+    // `gvt2.com` against the `gvt2.com` apex. Stated because it is a property of
+    // the fixtures rather than of the rule — a case added here with a BROADER app
+    // pattern than the background entry (a brand apex over a lane InfraHosts
+    // enumerates by exact host) is now suppressed, and belongs in
+    // SuppressionSpecificitySpec instead.
     suite("app-aware background suppression (#1506)")(
       test("a background host that IS in an active app's host-set is NOT a heartbeat") {
         // clientservices.googleapis.com is canonical device infra (suppressed by
