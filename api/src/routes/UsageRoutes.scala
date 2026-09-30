@@ -921,9 +921,11 @@ object UsageRoutes {
           settings.presenceContinuationSeconds,
         )
       // #1507: surface what the engaged-time calculation excluded so the drill-in can show a
-      // collapsed "background / infra" group. App-aware via [[appLookup]] — a host attributed to
-      // any app's host-set is NOT reported here, matching the post-#1506 attribution-beats-
-      // suppression semantics. #1560 will centralize this with the per-host-span call site.
+      // collapsed "background / infra" group. App-aware via [[appLookup]] — a host an app claims
+      // at least as SPECIFICALLY as the background list does is NOT reported here, matching the
+      // post-#1506 / #2815 attribution-beats-suppression semantics. One claimed only by a broader
+      // app pattern IS reported, because it is genuinely suppressed. #1560 will centralize this
+      // with the per-host-span call site.
       suppressedHostRows                     =
         wifihaven.api.presence.Presence.suppressedHostUsage(
           rows,

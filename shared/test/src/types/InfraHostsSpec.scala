@@ -418,8 +418,12 @@ object InfraHostsSpec extends ZIOSpecDefault {
         // Suppress-only tier: these must NOT be allow-carved through the block.
         phantomBackground.forall(h => !InfraHosts.isInfra(h)),
         // Defensive: plex.tv apex is NOT background — the Plex client app needs it to
-        // attribute, and #1506 lets app attribution win over suppression even when entries
-        // overlap. Verifying the absence here prevents over-fitting to this incident.
+        // attribute. Note this is load-bearing POST-#2815 in a way it was not before: app
+        // attribution now wins only at equal-or-greater specificity, so if the `plex.tv` apex
+        // were ever added here, a `plex.tv`-claiming template could no longer rescue it, and
+        // `pubsub.plex.tv` already sits below it as a pinned apex-over-lane pair
+        // (BackgroundApexShadowSpec). Verifying the absence prevents over-fitting to this
+        // incident.
         !InfraHosts.isBackground("plex.tv"),
         !InfraHosts.isBackground("www.plex.tv"),
         // Defensive: kid-real-app apexes seen in the same window stay unsuppressed.

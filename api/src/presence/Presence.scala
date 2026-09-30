@@ -537,9 +537,10 @@ object Presence {
    * suppresses — the same rows excluded from session-stitch counting. Lets the dashboard surface
    * "background / infra (no engaged time)" without re-implementing the predicate (the
    * single-source-of-truth lesson; see AGENTS.md §1532). `appHostPatterns` flows straight into
-   * [[isHeartbeat]] so app-attributed hosts (after #1506) are NOT reported as suppressed — they're
-   * counted as engagement. IP-literal hosts never appear because the suppression list keys on
-   * FQDNs.
+   * [[isHeartbeat]], so a host an app claims at least as SPECIFICALLY as the background list does
+   * (#1506, narrowed by #2815) is not reported as suppressed — it is counted as engagement. A host
+   * claimed only by a BROADER app pattern than the background entry IS reported here, because it is
+   * genuinely suppressed. IP-literal hosts never appear because the suppression list keys on FQDNs.
    *
    * #1560 will collapse the per-device span and suppression-list call sites into one entry point;
    * until then, callers should pass the same `appHostPatterns` they pass to [[deviceSessionSpans]]
