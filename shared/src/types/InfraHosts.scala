@@ -333,11 +333,15 @@ object InfraHosts {
     //    The agent reaches the API over the WAN, which household forward-drop rules never touch.
     //
     //    Exact host, NOT the `wifihaven.net` apex: the SPA and the marketing site are user-facing
-    //    surfaces. Per #1506 the `wifihaven` app template — which claims this host via its
-    //    `wifihaven.net` apex (`wifihaven.yml` lists that apex and nothing else; the apex
-    //    suffix-matches this subdomain) and is unassigned today — still wins over suppression if
-    //    an operator assigns it, which is the right outcome: assigning it is an explicit request
-    //    to see that activity.
+    //    surfaces, and only the control plane is unambiguously background.
+    //
+    //    #2815 UPDATE: assigning the `wifihaven` app no longer restores counting for this host.
+    //    That template claims the `wifihaven.net` apex (2 labels) and nothing else, so it is now
+    //    strictly LESS specific than this entry (3) and loses the suppression comparison. An
+    //    earlier revision of this comment promised the opposite, on the pre-#2815 rule where any
+    //    app pattern won outright. To surface WifiHaven traffic as an app again, the template
+    //    would have to name `api.wifihaven.net` itself — an equal-specificity claim, which still
+    //    wins.
     //
     //    SCOPE OF THAT RESCUE: it reaches the COUNTING path only, and structurally so.
     //    `Presence.hostMinutes` has no `appHostPatterns` parameter at all — it calls `isHeartbeat`
@@ -365,6 +369,24 @@ object InfraHosts {
   /** The first background (allow+suppress or suppress-only) pattern this FQDN matches, if any. */
   def matchedBackgroundPattern(fqdn: String): Option[String] =
     background.find(p => HostMatch.matchesPattern(fqdn, p))
+
+  /**
+   * #2815: the most SPECIFIC background (allow+suppress or suppress-only) pattern this FQDN
+   * matches, if any — the suppression-tier analogue of [[matchedCloudBackgroundPattern]].
+   *
+   * Separate from [[matchedBackgroundPattern]], which returns the FIRST match in list order and is
+   * kept for the explain surfaces that want "which rule named this host". Suppression precedence
+   * needs the most specific match instead, so it can be compared against the app pattern that also
+   * claimed the host (`Presence.suppressedAsBackground`).
+   */
+  def matchedBackgroundPatternSpecific(fqdn: String): Option[String] =
+    background.filter(p => HostMatch.matchesPattern(fqdn, p)).maxByOption(patternSpecificity)
+
+  /**
+   * #2815: host-keyed [[matchedBackgroundPatternSpecific]]. IP-literal / label hosts never match.
+   */
+  def matchedBackgroundPatternSpecific(host: HostId): Option[String] =
+    host.asFqdn.flatMap(fqdn => matchedBackgroundPatternSpecific(fqdn.value))
 
   /**
    * Whether `fqdn` is device-level background infra — the presence/dashboard suppression predicate.

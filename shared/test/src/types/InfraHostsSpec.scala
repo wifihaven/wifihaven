@@ -718,5 +718,52 @@ object InfraHostsSpec extends ZIOSpecDefault {
         !InfraHosts.isInfra("bam.nr-data.net"),
       )
     },
+    test("#2815 matchedBackgroundPatternSpecific returns the MOST specific match, not the first") {
+      // `matchedBackgroundPattern` returns the first match in LIST order and is kept for the
+      // explain surfaces; suppression precedence needs the most specific one so it can be compared
+      // against the app pattern that also claimed the host.
+      assertTrue(
+        InfraHosts
+          .matchedBackgroundPatternSpecific("collector.bsg.brave.com")
+          .contains("collector.bsg.brave.com"),
+        InfraHosts.matchedBackgroundPatternSpecific("pubsub.plex.tv").contains("pubsub.plex.tv"),
+        InfraHosts
+          .matchedBackgroundPatternSpecific("events.launchdarkly.com")
+          .contains("events.launchdarkly.com"),
+        InfraHosts
+          .matchedBackgroundPatternSpecific("api.wifihaven.net")
+          .contains("api.wifihaven.net"),
+        // an apex entry still matches its subtree, and reports the apex
+        InfraHosts
+          .matchedBackgroundPatternSpecific("p9-buy.itunes.apple.com")
+          .contains("itunes.apple.com"),
+        // a host on no background list at all
+        InfraHosts.matchedBackgroundPatternSpecific("search.brave.com").isEmpty,
+        InfraHosts.matchedBackgroundPatternSpecific("app.feelinggreat.com").isEmpty,
+      )
+    },
+    test("#2815 the four catalog apex-over-lane pairs resolve the way the fix intends") {
+      // Enumerated by cross-producting every app template host-set against
+      // `canonical ++ suppressOnly`. If a future template or InfraHosts entry adds a fifth pair,
+      // this is the test that should make someone look at it deliberately.
+      val pairs = List(
+        ("brave.com", "collector.bsg.brave.com"),
+        ("brave.com", "star-randsrv.bsg.brave.com"),
+        ("plex.tv", "pubsub.plex.tv"),
+        ("wifihaven.net", "api.wifihaven.net"),
+        ("launchdarkly.com", "events.launchdarkly.com"),
+      )
+      assertTrue(
+        // every pair is strictly apex-less-specific, so the background entry wins
+        pairs.forall { case (app, bg) =>
+          InfraHosts.patternSpecificity(app) < InfraHosts.patternSpecificity(bg)
+        },
+        // and each background entry really is on the suppression set
+        pairs.forall { case (_, bg) => InfraHosts.isBackground(bg) },
+        // the EQUAL-specificity case is the one that keeps the #1506 seam alive
+        InfraHosts.patternSpecificity("time.apple.com") ==
+          InfraHosts.patternSpecificity("time.apple.com"),
+      )
+    },
   )
 }

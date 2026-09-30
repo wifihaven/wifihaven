@@ -461,7 +461,32 @@ object Presence {
    * preserves prior behavior for callers without app-attribution data.
    */
   def suppressedAsBackground(host: HostId, appHostPatterns: List[String]): Boolean =
-    InfraHosts.isBackground(host) && !HostMatch.matchesAny(host, appHostPatterns)
+    InfraHosts.matchedBackgroundPatternSpecific(host) match {
+      case None        => false
+      case Some(bgPat) =>
+        // #2815: attribution beats suppression only when the app claimed the host at least as
+        // SPECIFICALLY as the background list did — the same comparison #2813 shipped for the
+        // anchor decision, applied to the second predicate so one precedence rule governs both.
+        //
+        // At EQUAL specificity the app still wins, which is the whole #1506 seam: an app that
+        // genuinely depends on an infra host and names it exactly (`ess.apple.com` on the iMessage
+        // template) keeps attributing, and the #1446/#2068 undercount class stays closed. What no
+        // longer wins is a BRAND APEX sweeping in a background lane this list enumerates by exact
+        // host — `brave.com` over `collector.bsg.brave.com`, `plex.tv` over `pubsub.plex.tv`,
+        // `launchdarkly.com` over `events.launchdarkly.com`.
+        //
+        // The LaunchDarkly pair is why this matters beyond tidiness. `launchdarkly.com` reaches
+        // `appHostPatterns` as a SHARED host (`shared_hosts:`) of an assigned, time-limited app.
+        // #1897 already stops a shared backend inflating that app's OWN engaged minutes — that
+        // path reads `distinctiveHosts` — but `appHostPatterns` is built from `hosts` (all of
+        // them), so before this change a shared vendor backend still overrode suppression and its
+        // seconds reached the profile's DAILY total. This closes that residual path.
+        HostMatch
+          .matchedPatternIn(host, appHostPatterns)
+          .forall(appPat =>
+            InfraHosts.patternSpecificity(appPat) < InfraHosts.patternSpecificity(bgPat),
+          )
+    }
 
   /**
    * #1506: whether the row's FQDN is attributed to one of the active apps' host-sets — the
