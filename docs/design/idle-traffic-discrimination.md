@@ -140,8 +140,9 @@ of `client-log-forwarder.1password.com` log shipping anchored an overnight span
 under the `1password.com` app assignment, and every ambient row inside it,
 `api.wifihaven.net` included, then counted in full. This changes anchor
 eligibility ONLY; row suppression (`Presence.isHeartbeat` /
-`suppressedAsBackground`, over `canonical ++ suppressOnly`) still lets any app
-pattern win outright — see the tier-divergence note below.
+`suppressedAsBackground`, over `canonical ++ suppressOnly`) is a separate
+predicate, which #2815 brought onto this same comparison — see the
+tier-convergence note below.
 
 Results on the 14-day sample (in-sample):
 
@@ -389,9 +390,11 @@ specifically-enumerated lane loses, and a lane is on this list precisely because
 it is not engagement.
 
 **Residual, not closed by #2815 (tracked in #2818):** `appHostPatterns` still
-uses `hosts` rather than `distinctiveHosts`, so a shared backend that is NOT on
-the background list — `elevenlabs.io`, say — still overrides suppression and
-reaches the daily total. That is a wider change than the specificity comparison
+uses `hosts` rather than `distinctiveHosts`, so a shared vendor backend counts
+toward the profile's daily total on the strength of another app's assignment.
+Where the backend is also on the background list, #2815's comparison now settles
+it; where it is not — `elevenlabs.io`, say — there is no suppression to compare
+against and the traffic simply counts as that app's. That is a wider change than the specificity comparison
 (it touches every shared host on every assigned app, not four enumerable pairs)
 and wants its own evidence pass.
 

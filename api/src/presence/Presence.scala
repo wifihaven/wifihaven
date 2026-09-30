@@ -423,19 +423,28 @@ object Presence {
    * low-byte requests are not on the list, so they still count. The `bytesThreshold` keepalive
    * floor is unchanged and still gated on `filter.enabled`.
    *
-   * #1506: ATTRIBUTION BEATS SUPPRESSION. `appHostPatterns` is the union of the host-sets of the
-   * apps active for the profile/MAC being counted (from #1505
-   * [[TimeStatusService.groupAppLimits]]). A row whose host matches any of those patterns is
-   * attributed to a real app, so it can NEVER be dropped as background infra OR as a
-   * sub-threshold-byte keepalive — it must count toward that app. This is the runtime guard for the
-   * boundary [[InfraHosts]] documents (device-level infra only; per-app asset hosts must attribute
-   * and count) and closes the #1499 over-suppression seam: an asset/CDN host an app genuinely
-   * depends on that happens to match a background pattern is rescued by its app membership. Only
-   * hosts attributed to NO active app fall through to background/byte suppression, so device infra
-   * with nothing behind it stays suppressed exactly as before. Callers that have no app context
-   * pass `Nil` (the default), preserving prior behavior. This is the single app-aware predicate
-   * every counting surface routes through — do not re-derive suppression elsewhere (the #1532
-   * divergence lesson).
+   * #1506: ATTRIBUTION BEATS SUPPRESSION — since #2815, when claimed at least as SPECIFICALLY.
+   * `appHostPatterns` is the union of the host-sets of the apps active for the profile/MAC being
+   * counted (from #1505 [[TimeStatusService.groupAppLimits]]). A row whose host matches one of
+   * those patterns is attributed to a real app and must count toward it, which is the runtime guard
+   * for the boundary [[InfraHosts]] documents (device-level infra only; per-app asset hosts must
+   * attribute and count) and closes the #1499 over-suppression seam.
+   *
+   * The two branches below now apply that rescue differently, deliberately:
+   *
+   *   - BACKGROUND branch ([[suppressedAsBackground]]): the app wins only if its pattern is at
+   *     least as specific as the background entry that also matched (#2815). A brand APEX no longer
+   *     rescues a background lane [[InfraHosts]] enumerates by exact host.
+   *   - BYTE-FLOOR branch ([[isAppAttributed]]): ANY app claim still rescues the row,
+   *     unconditionally. This asymmetry is intentional. The byte floor is a keepalive HEURISTIC —
+   *     "this row is too small to be real activity" — not a judgement about the host's identity,
+   *     and a genuine app's traffic can legitimately be small. Specificity answers "whose host is
+   *     this", which is the background question, not the size question. Tightening this branch too
+   *     would shave real low-byte app traffic and re-open #1446/#2068 for no stated benefit.
+   *
+   * Only hosts attributed to NO active app fall through both. Callers with no app context pass
+   * `Nil` (the default). This is the single app-aware predicate every counting surface routes
+   * through — do not re-derive suppression elsewhere (the #1532 divergence lesson).
    */
   def isHeartbeat(
       row: PresenceRow,
@@ -450,14 +459,28 @@ object Presence {
 
   /**
    * #1559: host-keyed "drop unless app-attributed" predicate — the ranking-side analogue of
-   * [[isHeartbeat]]'s suppression branch, without the PresenceRow byte-floor. A host is suppressed
-   * as device-level background iff it is on the [[InfraHosts.isBackground]] list AND no active
-   * app's host-set claims it (attribution beats suppression, same #1506 contract every counting
-   * surface routes through). The SINGLE host-keyed entry point: `isHeartbeat` reuses this for its
-   * suppression branch and `DashboardNowRoutes.dropBackground` calls it directly, so the rule
-   * cannot diverge between counting and ranking (#1532).
+   * [[isHeartbeat]]'s suppression branch, without the PresenceRow byte-floor. The SINGLE host-keyed
+   * entry point: `isHeartbeat` reuses this for its suppression branch and
+   * `DashboardNowRoutes.dropBackground` calls it directly, so the rule cannot diverge between
+   * counting and ranking (#1532).
    *
-   * An empty `appHostPatterns` (no app context) reduces to plain `InfraHosts.isBackground` —
+   * THE RULE (#2815). A host is suppressed as device-level background iff it is on the
+   * [[InfraHosts.isBackground]] list AND no active app's host-set claims it AT LEAST AS
+   * SPECIFICALLY as the background list did, measured in dot-separated labels
+   * ([[InfraHosts.patternSpecificity]]).
+   *
+   * Before #2815 any app claim won outright. That let a brand APEX un-suppress a background lane
+   * enumerated here by exact host — `brave.com` over `collector.bsg.brave.com`, `launchdarkly.com`
+   * over `events.launchdarkly.com` — and those rows reached the profile's daily total. #2813 had
+   * already made this comparison for the ANCHOR decision; #2815 brought this predicate onto the
+   * same rule, so ONE precedence rule now governs both.
+   *
+   * EQUAL specificity still gives the app the win, and that is what keeps #1506 intact: an app that
+   * genuinely depends on an infra host and names it exactly (`ess.apple.com` on the iMessage
+   * template is the live instance) keeps attributing, so the #1446/#2068 undercount class stays
+   * closed.
+   *
+   * An empty `appHostPatterns` (no app context) reduces to plain [[InfraHosts.isBackground]] —
    * preserves prior behavior for callers without app-attribution data.
    */
   def suppressedAsBackground(host: HostId, appHostPatterns: List[String]): Boolean =
@@ -1097,16 +1120,19 @@ object Presence {
         //
         // #2813: the class beats app attribution when it claimed the host MORE SPECIFICALLY.
         //
-        // TIER DIVERGENCE, deliberate: this comparison governs the ANCHOR decision only. The
-        // SUPPRESSION decision ([[suppressedAsBackground]] → [[isHeartbeat]], keyed on
-        // `canonical ++ suppressOnly`) still lets any app pattern win outright, so a brand-apex
-        // template does still un-suppress an enumerated background lane there (`brave.com` over
-        // `collector.bsg.brave.com`, `plex.tv` over `pubsub.plex.tv`). Not an oversight and not
-        // drift: suppression REMOVES a row outright, so extending the comparison to it can only
-        // subtract minutes and re-opens the #1446/#2068 undercount risk this tier is structurally
-        // immune to (it only ever declines to START a span; the row still counts inside an anchored
-        // one). That needs its own evidence pass over real Brave/Plex use — tracked in #2815, and
-        // written up as "Tier divergence (#2813)" in docs/design/idle-traffic-discrimination.md.
+        // TIER CONVERGENCE (#2813 → #2815): the SAME comparison now governs the SUPPRESSION
+        // decision ([[suppressedAsBackground]] → [[isHeartbeat]], keyed on
+        // `canonical ++ suppressOnly`), so one precedence rule spans both predicates. #2813 shipped
+        // this tier alone and deferred the other on the reasoning that suppression REMOVES a row
+        // outright and so can only subtract minutes; #2815 took it up once the blast radius proved
+        // enumerable (four apex-over-lane pairs in the whole catalog, zero rows flipping on a
+        // 7-day prod replay). Written up as "Tier convergence (#2813 → #2815)" in
+        // docs/design/idle-traffic-discrimination.md.
+        //
+        // The two tiers still differ in CONSEQUENCE, which is why they were staged: this one only
+        // declines to START a span and the row still counts inside an anchored one, whereas
+        // suppression drops the row. Both share the equal-specificity carve-out that keeps
+        // #1446/#2068 closed.
         // An app template that claims a brand APEX (the operator's 1Password app claims
         // `1password.com`) otherwise launders an anchor onto a background LANE of that brand
         // that this file enumerates by exact host (`client-log-forwarder.1password.com`) — which
