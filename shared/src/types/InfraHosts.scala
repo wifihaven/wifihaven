@@ -316,6 +316,27 @@ object InfraHosts {
     "app-analytics-services.com",    // app analytics beacons (#2369 confirmed leak vector)
     "safebrowsing.google.com",       // Google Safe Browsing
     "safebrowsingohttpgateway.googleapis.com", // Safe Browsing OHTTP gateway
+    // ── #2813 WifiHaven's OWN control plane. The largest single contributor to the overnight
+    //    phantom on the Kids profile 2026-09-29 (101 rows / 3.6 MB / 74 active-minutes — an SPA
+    //    tab left open on the laptop, polling and holding the ws connection as designed).
+    //
+    //    SUPPRESS-ONLY, and on this tier rather than the #2177 background CLASS deliberately.
+    //    The class is anchor-ineligibility only: it stops the host STARTING a span, which is
+    //    enough for a background-only night, but a class row still counts inside a span anchored
+    //    by something real — so on an ordinary afternoon, with the dashboard tab open behind a
+    //    browsing session, our own control plane would still be charged to the child's budget.
+    //    Our agent/SPA traffic is never a child's engagement at any hour, so it belongs with
+    //    `push.apple.com` and the rest of the never-counts tier. (Operator call on #2813.)
+    //
+    //    NEVER ALLOW-CARVED: like the rest of this tier it is absent from
+    //    [[canonical]] / `PolicyService.infraAllowHosts`, so nothing about reachability changes.
+    //    The agent reaches the API over the WAN, which household forward-drop rules never touch.
+    //
+    //    Exact host, NOT the `wifihaven.net` apex: the SPA and the marketing site are user-facing
+    //    surfaces. Per #1506 the `wifihaven` app template — which claims this host explicitly and
+    //    is unassigned today — still wins over suppression if an operator assigns it, which is
+    //    the right outcome: assigning it is an explicit request to see that activity.
+    "api.wifihaven.net",
   )
 
   /** All hosts suppressed from presence counting: allow+suppress plus suppress-only (#1525). */
@@ -451,14 +472,11 @@ object InfraHosts {
     //    profile's Kid Laptop (`ca:ef:a1:72:6a:a3`) with the children asleep: 820 raw rows,
     //    no engagement host anywhere in the window, zero minutes against every time-limited
     //    app — yet the profile accrued 77 minutes. Each host below was verified by what it
-    //    actually serves (TLS subject + a GET on `/`), not by brand:
+    //    actually serves (TLS subject + a GET on `/`), not by brand.
     //
-    // WifiHaven's OWN control plane — the single largest contributor (101 rows / 3.6 MB /
-    // 74 active-minutes, an SPA tab left open on the laptop). Charging a child's screen-time
-    // budget for our own agent/SPA traffic is never right. Exact host, NOT the `wifihaven.net`
-    // apex: the SPA and marketing site are user-facing surfaces and an operator who assigns
-    // the `wifihaven` app template deliberately wants that activity visible.
-    "api.wifihaven.net",
+    //    `api.wifihaven.net` was the largest single contributor but is NOT here — it is on
+    //    [[suppressOnly]], the stronger tier, for the reason recorded there.
+    //
     // 1Password background log shipping (83 rows). The background LANE, not the brand — the
     // `1password.com` apex stays anchor-eligible, since vault use, autofill and sign-in are
     // genuine engagement. Serves no browsable page (404 on `/`); the cert covers only the

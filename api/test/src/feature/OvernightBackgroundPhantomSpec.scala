@@ -177,12 +177,15 @@ object OvernightBackgroundPhantomSpec extends ZIOSpec[TestDatabase.AllRepos & Em
       // above. A whole day of nothing but WifiHaven's own control-plane traffic — the SPA tab
       // left open on the laptop — must credit zero.
       //
-      // SCOPE OF THE GUARANTEE, stated so a later reader does not over-read this test:
-      // `cloudBackground` is anchor-ineligibility, not suppression. It pins that this host can
-      // never START a span, which is what makes a background-only window credit 0. It does NOT
-      // pin that the host contributes 0 inside a span anchored by something real (the ordinary
-      // daytime case, kid browsing with the dashboard open) — only `suppressOnly` would give
-      // that, and the placement is an open question on #2813.
+      // SCOPE OF THE GUARANTEE. `api.wifihaven.net` is on `InfraHosts.suppressOnly`, not the
+      // #2177 background class, so this is the STRONG property: the host is dropped from presence
+      // counting outright and contributes 0 at any hour — including inside a span anchored by real
+      // browsing, which is the ordinary afternoon case the class tier would NOT have covered
+      // (operator call on #2813). Suppression carries no enforcement effect: `suppressOnly` is
+      // absent from `canonical` / `PolicyService.infraAllowHosts`, so reachability is unchanged.
+      //
+      // Per #1506 the unassigned `wifihaven` app template would still win over suppression if an
+      // operator assigned it — deliberately, since assigning it asks to see that activity.
       for {
         _   <- cleanDb
         hsr <- ZIO.service[HouseholdSettingsRepo]

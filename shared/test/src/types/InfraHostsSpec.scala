@@ -685,7 +685,6 @@ object InfraHostsSpec extends ZIOSpecDefault {
       // The #2813 additions resolve as claimed, including the deliberate choice of exact host over
       // apex where a shipped app template would otherwise TIE and win.
       assertTrue(
-        InfraHosts.matchedCloudBackgroundPattern("api.wifihaven.net").contains("api.wifihaven.net"),
         InfraHosts
           .matchedCloudBackgroundPattern("client-log-forwarder.1password.com")
           .contains("client-log-forwarder.1password.com"),
@@ -698,7 +697,14 @@ object InfraHostsSpec extends ZIOSpecDefault {
         InfraHosts.patternSpecificity("ipv4.icanhazip.com") > InfraHosts.patternSpecificity(
           "icanhazip.com",
         ),
-        // the `wifihaven.net` apex is deliberately NOT swept in — the SPA is a user-facing surface
+        // `api.wifihaven.net` is on the STRONGER suppressOnly tier, not the class: the class would
+        // still let it count inside a span anchored by real browsing (operator call on #2813).
+        InfraHosts.isBackground("api.wifihaven.net"),
+        !InfraHosts.isCloudBackground("api.wifihaven.net"),
+        // the `wifihaven.net` apex is deliberately NOT swept in — the SPA and marketing site are
+        // user-facing surfaces, so only the exact control-plane host is classified.
+        !InfraHosts.isBackground("wifihaven.net"),
+        !InfraHosts.isBackground("www.wifihaven.net"),
         !InfraHosts.isCloudBackground("wifihaven.net"),
         !InfraHosts.isCloudBackground("www.wifihaven.net"),
         // nor are the deliberate exclusions named in the file
