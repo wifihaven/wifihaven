@@ -339,10 +339,12 @@ object InfraHosts {
     //    an operator assigns it, which is the right outcome: assigning it is an explicit request
     //    to see that activity.
     //
-    //    SCOPE OF THAT RESCUE: it reaches the COUNTING path only. `Presence.hostMinutes` takes
-    //    `appHostPatterns` at its default `Nil` at every call site, so the per-host DISPLAY views
-    //    built on it (`TimeStatusService.assembleProfileTimeStatus` `hostUsage`, the usage and
-    //    dashboard host rows) suppress a `suppressOnly` host whether or not an app claims it.
+    //    SCOPE OF THAT RESCUE: it reaches the COUNTING path only, and structurally so.
+    //    `Presence.hostMinutes` has no `appHostPatterns` parameter at all — it calls `isHeartbeat`
+    //    two-arg, so the app-attribution set is hardwired to `Nil` inside it, not chosen per call
+    //    site. Every per-host DISPLAY view built on it (`TimeStatusService` `hostUsage`, the usage
+    //    and dashboard host rows) therefore suppresses a `suppressOnly` host whether or not an app
+    //    claims it, and no assignment can change that without a signature change.
     //    Pre-existing and true of every entry on this tier — the #2744 display-vs-enforcement
     //    shape — noted here because this comment is what makes the promise.
     "api.wifihaven.net",
