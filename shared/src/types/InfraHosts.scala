@@ -333,9 +333,18 @@ object InfraHosts {
     //    The agent reaches the API over the WAN, which household forward-drop rules never touch.
     //
     //    Exact host, NOT the `wifihaven.net` apex: the SPA and the marketing site are user-facing
-    //    surfaces. Per #1506 the `wifihaven` app template — which claims this host explicitly and
-    //    is unassigned today — still wins over suppression if an operator assigns it, which is
-    //    the right outcome: assigning it is an explicit request to see that activity.
+    //    surfaces. Per #1506 the `wifihaven` app template — which claims this host via its
+    //    `wifihaven.net` apex (`wifihaven.yml` lists that apex and nothing else; the apex
+    //    suffix-matches this subdomain) and is unassigned today — still wins over suppression if
+    //    an operator assigns it, which is the right outcome: assigning it is an explicit request
+    //    to see that activity.
+    //
+    //    SCOPE OF THAT RESCUE: it reaches the COUNTING path only. `Presence.hostMinutes` takes
+    //    `appHostPatterns` at its default `Nil` at every call site, so the per-host DISPLAY views
+    //    built on it (`TimeStatusService.assembleProfileTimeStatus` `hostUsage`, the usage and
+    //    dashboard host rows) suppress a `suppressOnly` host whether or not an app claims it.
+    //    Pre-existing and true of every entry on this tier — the #2744 display-vs-enforcement
+    //    shape — noted here because this comment is what makes the promise.
     "api.wifihaven.net",
   )
 

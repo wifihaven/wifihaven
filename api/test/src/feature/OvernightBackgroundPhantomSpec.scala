@@ -30,10 +30,14 @@ import java.time.{LocalDate, LocalDateTime, LocalTime, ZoneOffset}
  * brand-apex app template must not launder an anchor onto a specifically-enumerated background lane
  * of that brand.
  *
- * LIVENESS ANCHOR (recorded lesson: a one-sided rig asserts nothing). `realSessionMins` pins that
- * the SAME rig, on the SAME day, still credits a genuine 20-minute diverse session in full. A rig
- * that generated no traffic, or a change that suppressed everything, fails that assertion — so the
- * ~0 overnight result can only be earned by discrimination, never by emptiness.
+ * LIVENESS ANCHOR (recorded lesson: a one-sided rig asserts nothing). Each test pairs its ~0
+ * assertion with a control arm that must credit REAL minutes: the first requires the same rig, on
+ * the same day, to still count a genuine 20-minute diverse session in full; the second runs an
+ * identical rig on an unclassified host and requires it to count. A rig that generated no traffic,
+ * or a change that suppressed everything, fails those halves, so the ~0 result can only be earned
+ * by discrimination, never by emptiness.
+ *
+ * Verified red on these exact fixtures with the fix reverted: 239 and 359 minutes.
  */
 object OvernightBackgroundPhantomSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres] {
 
@@ -80,12 +84,13 @@ object OvernightBackgroundPhantomSpec extends ZIOSpec[TestDatabase.AllRepos & Em
    * sporadically.
    *
    * The 2-minute cadence is chosen for MARGIN, not to sit on the seam. With 60-second buckets the
-   * stitch gap is `Presence.effectiveGap` = `max(DefaultContinuationSeconds, 2 × periodSeconds)` =
-   * `max(120, 120)` = 120s (`Presence.scala` `DefaultContinuationSeconds`), so a 2-minute cadence
-   * leaves a 60s gap — half the budget. A 3-minute cadence would leave exactly 120s and stitch only
-   * because the merge test is `<=`, which means a one-second fixture change, or any change to that
-   * constant, would silently split one long span into 120 separate ones and quietly change what
-   * this test tests.
+   * stitch gap is `Presence.effectiveGap` = `max(DefaultContinuationSeconds, 2 × spanOf(row))`.
+   * `spanOf` reads the #2025 activity envelope when the row has one and falls back to the flush
+   * window otherwise; these fixtures leave `activeStart`/`activeEnd` unset, so it is the 60s flush
+   * window and the gap is `max(120, 120)` = 120s. A 2-minute cadence therefore leaves a 60s gap,
+   * half the budget. A 3-minute cadence would leave exactly 120s and stitch only because the merge
+   * test is `<=`, which means a one-second fixture change, or any change to that constant, would
+   * silently split one long span into 120 separate ones and quietly change what this test tests.
    */
   private def seedOvernightBackground(
       rid: RouterId,
@@ -162,7 +167,8 @@ object OvernightBackgroundPhantomSpec extends ZIOSpec[TestDatabase.AllRepos & Em
         nightOnly <- ru.getDayMapForHousehold(HouseholdId.Default, day)
         overnightMin = nightOnly.get(kid2).map(r => (r.usedSeconds / 60L).toInt).getOrElse(0)
       } yield assertTrue(
-        // THE BUG: six hours of background-only traffic must not become screen time.
+        // THE BUG: four hours of background-only traffic must not become screen time.
+        // Without the fix this credits 239 minutes.
         overnightMin <= 2,
         // LIVENESS ANCHOR: the same rig, on the same day, still credits the genuine 20-minute
         // session in full, so a rig that produced no traffic — or a change that suppressed
@@ -206,7 +212,8 @@ object OvernightBackgroundPhantomSpec extends ZIOSpec[TestDatabase.AllRepos & Em
         rid <- seedRouterRow
         day = LocalDate.of(2026, 9, 29)
         // Six hours of nothing but our own control plane, at 1 MB a bucket — far above the
-        // heartbeat byte floor, so nothing here is dropped for being small.
+        // heartbeat byte floor, so nothing here is dropped for being small. Without
+        // the fix this credits 359 minutes.
         _ <- ZIO.foreachDiscard(0 until 180)(i => seedBucket(rid, "api.wifihaven.net", day, i * 2))
         now = LocalDateTime.of(day, LocalTime.of(20, 0)).toInstant(ZoneOffset.UTC)
         _     <- TimeUsedRollupJob.oneTickForTest(ru, aru, pr, dr, atl, trr, hsr, now, ahr)
