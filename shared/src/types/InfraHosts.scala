@@ -250,9 +250,15 @@ object InfraHosts {
     //    (Quintus), 6 in the 2026-06-10..06-11 prod orphan window. Each
     //    sub-section is suppress-only (no allow-carve role); specific
     //    subdomains rather than apexes where the apex would absorb legitimate
-    //    per-app traffic on sibling subdomains. Per #1506 `Presence.isAppAttributed`,
-    //    if a future app template claims one of these hosts, app attribution wins
-    //    over suppression — the entries are a fallback.
+    //    per-app traffic on sibling subdomains.
+    //
+    //    FALLBACK, but only against an EQUALLY-SPECIFIC claim (#2815). Per #1506 a future app
+    //    template claiming one of these hosts wins over suppression — provided it names the host
+    //    as specifically as this list does. A template claiming a broader brand APEX does NOT:
+    //    `brave.yml` claims `brave.com` while `collector.bsg.brave.com` and
+    //    `star-randsrv.bsg.brave.com` below are 4-label entries, so those two stay suppressed even
+    //    with Brave assigned. That is deliberate — they are Shields telemetry, not engagement —
+    //    and `BackgroundApexShadowSpec` pins both as known apex-over-lane pairs.
     //
     //    Note: `clients4.google.com` and `android.clients.google.com` from the
     //    original #1672 evidence list are already covered by the #1694

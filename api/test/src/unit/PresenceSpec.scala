@@ -1085,8 +1085,10 @@ object PresenceSpec extends ZIOSpecDefault {
     suite("app-aware background suppression (#1506)")(
       test("a background host that IS in an active app's host-set is NOT a heartbeat") {
         // clientservices.googleapis.com is canonical device infra (suppressed by
-        // identity). But if an app's host-set claims it, attribution wins: the
-        // app-aware predicate does not classify it as a heartbeat.
+        // identity). But if an app's host-set claims it AT LEAST AS
+        // SPECIFICALLY (#2815 — here exactly, 3 labels against the same 3-label
+        // entry), attribution wins: the app-aware predicate does not classify it
+        // as a heartbeat.
         val f       = HeartbeatFilter(enabled = true, bytesThreshold = 10000)
         val r       =
           appRow(mac1, 0L, "clientservices.googleapis.com", periodSeconds = 300, bytes = 90_000L)

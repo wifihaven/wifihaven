@@ -333,9 +333,11 @@ object InfraHostsSpec extends ZIOSpecDefault {
       // Specific subdomains (not apex `gstatic.com` / `googleusercontent.com`) so
       // real apps that use sibling subdomains keep attributing.
       //
-      // Safety w.r.t. real apps: #1506 (`Presence.isAppAttributed`) makes app
-      // attribution win over suppression — when an active app template claims
-      // one of these hosts, it counts toward the app, not the suppression list.
+      // Safety w.r.t. real apps: #1506 (`Presence.isAppAttributed`) makes app attribution win
+      // over suppression when an active app template claims one of these hosts AT LEAST AS
+      // SPECIFICALLY as this list does (#2815) — then it counts toward the app, not the
+      // suppression list. A template claiming a broader brand apex does not rescue them; that is
+      // the point of listing specific subdomains rather than apexes in the first place.
       // These are suppress-only and never allow-carved.
       val assetCdns = List(
         "use.fontawesome.com",
