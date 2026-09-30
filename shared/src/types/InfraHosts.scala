@@ -316,6 +316,38 @@ object InfraHosts {
     "app-analytics-services.com",    // app analytics beacons (#2369 confirmed leak vector)
     "safebrowsing.google.com",       // Google Safe Browsing
     "safebrowsingohttpgateway.googleapis.com", // Safe Browsing OHTTP gateway
+    // ── #2813 WifiHaven's OWN control plane. The largest single contributor to the overnight
+    //    phantom on the Kids profile 2026-09-29 (101 rows / 3.6 MB / 74 active-minutes — an SPA
+    //    tab left open on the laptop, polling and holding the ws connection as designed).
+    //
+    //    SUPPRESS-ONLY, and on this tier rather than the #2177 background CLASS deliberately.
+    //    The class is anchor-ineligibility only: it stops the host STARTING a span, which is
+    //    enough for a background-only night, but a class row still counts inside a span anchored
+    //    by something real — so on an ordinary afternoon, with the dashboard tab open behind a
+    //    browsing session, our own control plane would still be charged to the child's budget.
+    //    Our agent/SPA traffic is never a child's engagement at any hour, so it belongs with
+    //    `push.apple.com` and the rest of the never-counts tier. (Operator call on #2813.)
+    //
+    //    NEVER ALLOW-CARVED: like the rest of this tier it is absent from
+    //    [[canonical]] / `PolicyService.infraAllowHosts`, so nothing about reachability changes.
+    //    The agent reaches the API over the WAN, which household forward-drop rules never touch.
+    //
+    //    Exact host, NOT the `wifihaven.net` apex: the SPA and the marketing site are user-facing
+    //    surfaces. Per #1506 the `wifihaven` app template — which claims this host via its
+    //    `wifihaven.net` apex (`wifihaven.yml` lists that apex and nothing else; the apex
+    //    suffix-matches this subdomain) and is unassigned today — still wins over suppression if
+    //    an operator assigns it, which is the right outcome: assigning it is an explicit request
+    //    to see that activity.
+    //
+    //    SCOPE OF THAT RESCUE: it reaches the COUNTING path only, and structurally so.
+    //    `Presence.hostMinutes` has no `appHostPatterns` parameter at all — it calls `isHeartbeat`
+    //    two-arg, so the app-attribution set is hardwired to `Nil` inside it, not chosen per call
+    //    site. Every per-host DISPLAY view built on it (`TimeStatusService` `hostUsage`, the usage
+    //    and dashboard host rows) therefore suppresses a `suppressOnly` host whether or not an app
+    //    claims it, and no assignment can change that without a signature change.
+    //    Pre-existing and true of every entry on this tier — the #2744 display-vs-enforcement
+    //    shape — noted here because this comment is what makes the promise.
+    "api.wifihaven.net",
   )
 
   /** All hosts suppressed from presence counting: allow+suppress plus suppress-only (#1525). */
@@ -447,6 +479,42 @@ object InfraHosts {
     // Google software-update service. Explicitly NOT a `-pa` private API and NOT the
     // googleapis apex — background update control plane only.
     "update.googleapis.com",
+    // ── #2813 overnight background tail. Captured 2026-09-29 06:12–13:04Z on the Kids
+    //    profile's Kid Laptop (`ca:ef:a1:72:6a:a3`) with the children asleep: 820 raw rows,
+    //    no engagement host anywhere in the window, zero minutes against every time-limited
+    //    app — yet the profile accrued 77 minutes. Each host below was verified by what it
+    //    actually serves (TLS subject + a GET on `/`), not by brand.
+    //
+    //    `api.wifihaven.net` was the largest single contributor but is NOT here — it is on
+    //    [[suppressOnly]], the stronger tier, for the reason recorded there.
+    //
+    // 1Password background log shipping (83 rows). The background LANE, not the brand — the
+    // `1password.com` apex stays anchor-eligible, since vault use, autofill and sign-in are
+    // genuine engagement. Serves no browsable page (404 on `/`); the cert covers only the
+    // `client-log-forwarder` name across 1Password's .com/.eu/.ca realms.
+    "client-log-forwarder.1password.com",
+    // Apple Stocks widget data feed — the periodic widget refresh, exact sibling of
+    // `weather-edge.apple.com` / `news-edge.apple.com` already on the #1694 tail. 401 on `/`.
+    "stocks-data-service.apple.com",
+    // New Relic browser-telemetry beacon. Apex form: the wildcard cert is `*.nr-data.net` and
+    // every subdomain is a beacon collector (`bam.`, `bam-cell.`, …), so there is no
+    // user-facing sibling for the apex to absorb. Same class as `app-measurement.com` above —
+    // an SDK beacon embedded in pages the user may genuinely be viewing, which is exactly why
+    // this tier (anchor-ineligible, still counts inside an anchored span) is the right one.
+    "nr-data.net",
+    // Public-IP echo utility called by apps and scripts in the background. `GET /` returns a
+    // 14-byte IP string — a machine endpoint, not a browsing surface.
+    //
+    // The two observed hosts, NOT the `icanhazip.com` apex, and the reason is the specificity
+    // comparison this file now feeds (see [[patternSpecificity]]): `icanhazip.yml` (#2805) claims
+    // the apex, so an apex entry here would TIE with that template and lose the moment an operator
+    // assigns it — which is exactly what #2805 added the template for. At 3 labels these beat the
+    // 2-label template pattern, so the classification holds whether or not the app is assigned.
+    "ipv4.icanhazip.com",
+    "ipv6.icanhazip.com",
+    // Apple device init / config probe (`init-s01md` is the sibling on the same cert).
+    // 404 on `/`; the same class as `configuration.apple.com` on the #1629 tail.
+    "init-p01md.apple.com",
   )
 
   // Google "private API" (protocol-agnostic) background services all share the
@@ -457,10 +525,36 @@ object InfraHosts {
   // (exactly the boundary [[canonical]] documents). One entry covers the whole family.
   val cloudBackgroundSuffixes: List[String] = List("-pa.googleapis.com")
 
-  /** Whether `fqdn` is on the #2177 device-cloud background CLASS (apex or suffix family). */
+  /**
+   * Whether `fqdn` is on the #2177 device-cloud background CLASS (apex or suffix family).
+   * Short-circuits — it answers a Boolean and must not pay for the ordering
+   * [[matchedCloudBackgroundPattern]] computes.
+   */
   def isCloudBackground(fqdn: String): Boolean =
     cloudBackground.exists(p => HostMatch.matchesPattern(fqdn, p)) ||
       cloudBackgroundSuffixes.exists(s => fqdn.endsWith(s))
+
+  /**
+   * #2813: the most SPECIFIC device-cloud-background pattern this FQDN matches, if any —
+   * specificity measured in dot-separated labels, so the exact host
+   * `client-log-forwarder.1password.com` (3) outranks a 2-label apex.
+   *
+   * The pattern itself, not just a Boolean, because the #2077 anchor gate has to compare this class
+   * against the app-attribution pattern that also matched the row (see
+   * [[wifihaven.api.presence.Presence.ambientGatedRowsWithDropCount]]). A `-pa.googleapis.com`
+   * suffix hit reports the suffix, whose label count is its own specificity.
+   */
+  def matchedCloudBackgroundPattern(fqdn: String): Option[String] =
+    (cloudBackground.filter(p => HostMatch.matchesPattern(fqdn, p)) ++
+      cloudBackgroundSuffixes.filter(s => fqdn.endsWith(s)))
+      .maxByOption(patternSpecificity)
+
+  /**
+   * #2813: how specific a host pattern is — see [[HostMatch.patternSpecificity]], which owns the
+   * measure because it is a pure property of the pattern string and belongs next to the matcher it
+   * is compared against. Aliased here so the background-class call sites read in one vocabulary.
+   */
+  def patternSpecificity(pattern: String): Int = HostMatch.patternSpecificity(pattern)
 
   /**
    * #2177 host-keyed device-cloud-background CLASS predicate — the anchor-eligibility analogue of
@@ -470,4 +564,8 @@ object InfraHosts {
    */
   def isCloudBackground(host: HostId): Boolean =
     host.asFqdn.exists(fqdn => isCloudBackground(fqdn.value))
+
+  /** #2813: host-keyed [[matchedCloudBackgroundPattern]]. IP-literal / label hosts never match. */
+  def matchedCloudBackgroundPattern(host: HostId): Option[String] =
+    host.asFqdn.flatMap(fqdn => matchedCloudBackgroundPattern(fqdn.value))
 }

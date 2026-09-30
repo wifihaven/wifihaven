@@ -1069,11 +1069,44 @@ object Presence {
         // row (IP-literal / label — no hostname identity for either set to vouch against) anchors
         // only when the span's non-FQDN rows carry real payload (> [[IpAnchorSpanBytes]]): the
         // FaceTime shape survives, the low-byte Apple-infra IP drip inside a wakeup burst does not.
-        def isHostAnchor(r: PresenceRow): Boolean      =
-          isAppAttributed(r, appHostPatterns) ||
-            (r.host.asFqdn.isDefined &&
-              !ambient.hosts.contains(r.host.value) &&
-              !InfraHosts.isCloudBackground(r.host))
+        //
+        // #2813: the class beats app attribution when it claimed the host MORE SPECIFICALLY.
+        //
+        // TIER DIVERGENCE, deliberate: this comparison governs the ANCHOR decision only. The
+        // SUPPRESSION decision ([[suppressedAsBackground]] → [[isHeartbeat]], keyed on
+        // `canonical ++ suppressOnly`) still lets any app pattern win outright, so a brand-apex
+        // template does still un-suppress an enumerated background lane there (`brave.com` over
+        // `collector.bsg.brave.com`, `plex.tv` over `pubsub.plex.tv`). Not an oversight and not
+        // drift: suppression REMOVES a row outright, so extending the comparison to it can only
+        // subtract minutes and re-opens the #1446/#2068 undercount risk this tier is structurally
+        // immune to (it only ever declines to START a span; the row still counts inside an anchored
+        // one). That needs its own evidence pass over real Brave/Plex use — tracked in #2815, and
+        // written up as "Tier divergence (#2813)" in docs/design/idle-traffic-discrimination.md.
+        // An app template that claims a brand APEX (the operator's 1Password app claims
+        // `1password.com`) otherwise launders an anchor onto a background LANE of that brand
+        // that this file enumerates by exact host (`client-log-forwarder.1password.com`) — which
+        // is how six hours of overnight log-shipping anchored a span that then counted every
+        // ambient row inside it, `api.wifihaven.net` included. Comparing specificity rather than
+        // letting either side win outright keeps #1506 intact where it matters: at EQUAL
+        // specificity the app still wins, so an app whose own host IS the class entry (the
+        // `serato.com` template against the `serato.com` class apex) keeps anchoring, and the
+        // #1446/#2068 undercount guarantee is untouched. This only ever removes an ANCHOR; a
+        // class row inside a genuinely anchored span still counts.
+        def isHostAnchor(r: PresenceRow): Boolean      = {
+          val classSpec = InfraHosts
+            .matchedCloudBackgroundPattern(r.host)
+            .map(InfraHosts.patternSpecificity)
+          val appSpec   = HostMatch
+            .matchedPatternIn(r.host, appHostPatterns)
+            .map(InfraHosts.patternSpecificity)
+          (appSpec, classSpec) match {
+            case (Some(a), Some(c)) => a >= c
+            case (Some(_), None)    => true
+            case (None, Some(_))    => false
+            case (None, None)       =>
+              r.host.asFqdn.isDefined && !ambient.hosts.contains(r.host.value)
+          }
+        }
         def overlaps(s: Span, r: PresenceRow): Boolean = {
           val rs = spanOf(r)
           rs.startEpoch <= s.endEpoch && rs.endEpoch >= s.startEpoch
