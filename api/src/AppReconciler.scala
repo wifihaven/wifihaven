@@ -31,7 +31,7 @@ final case class AppReconcileSummary(
  * #1777: idempotent reconciler that collapses every `<slug>-template`-suffixed `apps` row onto its
  * canonical `<slug>` form, with the canonical row gaining the union of both host-sets and every FK
  * reference (assignments, rollups, usage) reattached. After running, no app slug ends in
- * `-template`, and `AppTemplates.findByTemplateId` finds each template's canonical row directly.
+ * `-template`, and `AppRepo.findByTemplateId` finds each template's canonical row directly.
  *
  * Why this exists: when `AppTemplates.seed` runs against a DB where an operator already created an
  * app at the template's canonical slug, [[AppTemplates#findFreeSlug]] falls back to

@@ -323,6 +323,42 @@ object AppTemplatesSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
         after.name == "Public IP lookup",
       )
     },
+    test("#2820 the seeder acts on the resolved row, and says so, when a template has two") {
+      // reconcileOne can stamp a template_id onto a canonical row while a `-template-N`
+      // row already carries one, and nothing collapses that pair. The seeder then has to
+      // pick — deterministically, and loudly enough that the losing row's hosts and usage
+      // are not quietly stranded.
+      for {
+        _       <- cleanDb
+        appRepo <- ZIO.service[AppRepo]
+        t = tmpl("youtube", List("youtube.com"), Nil).copy(name = "YouTube")
+        // suffixed row first, so "oldest" and "canonical slug" disagree
+        suffixedId  <- appRepo.create(
+          "Seeded",
+          "youtube-template-2",
+          Some(t.slug),
+          None,
+          IconType.Url,
+        )
+        _           <- appRepo.setHosts(suffixedId, List(Hostname.unsafe("ytimg.com")))
+        canonicalId <- appRepo.create("Adopted", "youtube", Some(t.slug), None, IconType.Url)
+        _           <- appRepo.setHosts(canonicalId, List(Hostname.unsafe("youtube.com")))
+        _           <- AppTemplates.seed(appRepo, List(t))
+        canonical   <- appRepo.findById(canonicalId).someOrFailException
+        suffixed    <- appRepo.findById(suffixedId).someOrFailException
+        logged      <- ZTestLogger.logOutput
+      } yield assertTrue(
+        // the canonical-slug row is the one the seeder names and tops up
+        canonical.name == "YouTube",
+        suffixed.name == "Seeded",
+        // and the ambiguity is reported rather than absorbed
+        logged.exists(e =>
+          e.logLevel == LogLevel.Warning &&
+            e.message().contains("template_id=youtube is on 2 rows") &&
+            e.message().contains(s"$canonicalId:youtube"),
+        ),
+      )
+    },
     test("#1896 catalog satisfies the shared-host invariants") {
       for {
         templates <- AppTemplates.loadAll()
