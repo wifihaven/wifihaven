@@ -513,13 +513,14 @@ object Presence {
     }
 
   /**
-   * #1506: whether the row's FQDN is attributed to one of the active apps' host-sets. Post-#2815
-   * this governs ONLY [[isHeartbeat]]'s byte-floor branch, where any app claim still rescues the
-   * row unconditionally; the background branch compares SPECIFICITY instead
-   * ([[suppressedAsBackground]]), so this predicate is no longer the whole of
-   * attribution-beats-suppression. Keyed on host identity via the shared [[matchesPattern]] (so
-   * apex patterns match subdomains, same as the app-presence surfaces); IP-literal hosts never
-   * match patterns. An empty `appHostPatterns` (no app context) is never attributed.
+   * #1506: whether the row's FQDN is attributed to one of the active apps' host-sets — ANY app
+   * claim, unconditionally. Post-#2815 this is no longer the whole of
+   * attribution-beats-suppression: it governs [[isHeartbeat]]'s byte-floor branch and
+   * [[isolatedSpanHosts]]'s span-has-an-app check, both unconditional, while the background branch
+   * compares SPECIFICITY instead ([[suppressedAsBackground]]). Keyed on host identity via the
+   * shared [[matchesPattern]] (so apex patterns match subdomains, same as the app-presence
+   * surfaces); IP-literal hosts never match patterns. An empty `appHostPatterns` (no app context)
+   * is never attributed.
    */
   def isAppAttributed(row: PresenceRow, appHostPatterns: List[String]): Boolean =
     HostMatch.matchesAny(row.host, appHostPatterns)
@@ -775,9 +776,11 @@ object Presence {
       filter: HeartbeatFilter = HeartbeatFilter.Off,
       continuationSeconds: Int = DefaultContinuationSeconds,
   ): (Map[String, List[Span]], Int) = {
-    // #1506: the active apps ARE these groups, so their union host-set is the app-attribution set —
-    // a host on an app's host-set that also matches a background pattern (an off-domain asset / CDN
-    // host, #1505) attributes to the app and counts here instead of being suppressed as infra.
+    // #1506: the active apps ARE these groups, so their union host-set is the app-attribution set.
+    // A host on an app's host-set that also matches a background pattern (an off-domain asset / CDN
+    // host, #1505) attributes to the app and counts here instead of being suppressed as infra —
+    // post-#2815, when the app claims it at least as SPECIFICALLY as the background list does. The
+    // suppression decision itself is `isHeartbeat`'s; this comment only names the set fed to it.
     val appHostPatterns = groups.flatMap(_._2)
     val active          = rows.filterNot(r => isHeartbeat(r, filter, appHostPatterns))
     val gap             = effectiveGap(active, continuationSeconds)
@@ -1068,10 +1071,11 @@ object Presence {
    * #2077: the engagement-anchor gate over the isolation-learned ambient-host baseline
    * (docs/design/idle-traffic-discrimination.md). A device-level merged presence span counts toward
    * screen time iff it contains at least one ANCHOR row: app-attributed (the #1506 seam — an active
-   * app's traffic is engagement by definition) or a host NOT in the learned ambient set. Rows whose
-   * every containing span is unanchored are removed; anchored spans keep ALL their rows — ambient
-   * rows inside a real session still contribute their seconds, so the gate can only ever REMOVE
-   * minutes, never shave an anchored session (the #1446/#2068 undercount class stays closed).
+   * app's traffic is engagement by definition — unless the #2177 class claimed the host more
+   * specifically, per #2813) or a host NOT in the learned ambient set. Rows whose every containing
+   * span is unanchored are removed; anchored spans keep ALL their rows — ambient rows inside a real
+   * session still contribute their seconds, so the gate can only ever REMOVE minutes, never shave
+   * an anchored session (the #1446/#2068 undercount class stays closed).
    *
    * #2177 extends the anchor predicate with two class-level tiers, because the isolation learner
    * alone left a residual phantom (~45–75 min/day on prod): first-party-cloud wakeup-burst hosts
@@ -1113,8 +1117,9 @@ object Presence {
       if (active.isEmpty) (rows, 0)
       else {
         val gap                                        = effectiveGap(active, continuationSeconds)
-        // #2177: three anchor tiers. App attribution always anchors (#1506 — an active app's
-        // traffic is engagement by definition). A resolved FQDN anchors unless it is learned-
+        // #2177: three anchor tiers. App attribution anchors (#1506 — an active app's traffic is
+        // engagement by definition) unless the class claimed the host MORE specifically, per the
+        // #2813 comparison spelled out below. A resolved FQDN anchors unless it is learned-
         // ambient OR on the device-cloud background CLASS ([[InfraHosts.cloudBackground]] — the
         // wakeup-burst hosts the isolation learner structurally cannot learn, because they only
         // ever fire in dense co-occurring bursts and thus never accrue isolated days). A non-FQDN
