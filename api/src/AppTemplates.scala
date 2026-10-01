@@ -90,14 +90,16 @@ object AppTemplates {
    */
   private val ResourcePrefix = "/app_templates"
 
-  /** Default location of the manifest. Overridable for tests. */
-  val DefaultManifestResource: String = s"$ResourcePrefix/_index.yml"
+  /** Manifest location for a given catalog directory. */
+  private def manifestFor(resourcePrefix: String): String = s"$resourcePrefix/_index.yml"
+
+  /** Default location of the manifest. */
+  val DefaultManifestResource: String = manifestFor(ResourcePrefix)
 
   /** Load and parse all templates listed in the manifest. Fails fast on any malformed file. */
-  def loadAll(
-      manifestResource: String = DefaultManifestResource,
-      resourcePrefix: String = ResourcePrefix,
-  ): Task[List[AppTemplate]] =
+  def loadAll(resourcePrefix: String = ResourcePrefix): Task[List[AppTemplate]] = {
+    // One parameter, so the manifest and the templates can never point at different directories.
+    val manifestResource = manifestFor(resourcePrefix)
     for {
       slugs     <- readManifest(manifestResource)
       _         <- ZIO
@@ -124,6 +126,7 @@ object AppTemplates {
           .when(violations.nonEmpty)
       }
     } yield templates
+  }
 
   private def readManifest(resource: String): Task[List[String]] =
     withResource(resource) { in =>
@@ -370,11 +373,23 @@ object AppTemplates {
     )
 
   /**
-   * #2820: push a template rename onto the row it already seeded. `apps.name` is written only at
-   * CREATE and there is no operator rename surface (apps are template-authored only, #1798), so
-   * without this a `name:` edit — the operator-visible half of merging two templates into one —
-   * never reaches a deployment that seeded the row under the old name. Hosts stay on their own
-   * additive path; this touches the display name only.
+   * #2820: push a template rename onto the row it already seeded. `apps.name` was written only at
+   * CREATE, so without this a `name:` edit — the operator-visible half of merging two templates
+   * into one — never reaches a deployment that seeded the row under the old name.
+   *
+   * The rule this establishes, deliberately: **a template owns the name of every row carrying its
+   * `template_id`.** There is no app-create or app-rename route at all (apps are template-authored
+   * only, #1798 — `AppRoutes` exposes list / get / delete / policy / reset-to-template and nothing
+   * else), so a name that differs from the template's is drift, not an operator's choice. That
+   * includes a row ADOPTED by a template rather than created by one — `AppReconciler.reconcileOne`
+   * and `mergeAppInto`'s `transferTemplateId` both stamp a `template_id` onto a pre-existing row,
+   * and from then on the template names it. Pinned by test.
+   *
+   * This is also the ONLY writer of `apps.name` outside CREATE. `reconcileOne` deliberately does
+   * not duplicate it — one writer, and the next boot's seed converges any row it adopts, rather
+   * than two paths that can drift.
+   *
+   * Hosts stay on their own additive path; this touches the display name only.
    */
   private def syncName(
       repo: AppRepo,

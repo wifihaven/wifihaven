@@ -4278,6 +4278,14 @@ trait AppRepo {
   def findById(id: AppId): Task[Option[App]]
   def findBySlug(slug: String): Task[Option[App]]
   def findByTemplateId(templateId: AppTemplateId): Task[Option[App]]
+
+  /**
+   * #2820: every row carrying this `template_id`, ordered by id. `apps.template_id` has no UNIQUE
+   * constraint (`V28__apps.sql:17`) and `AppTemplates.findFreeSlug` can park a second row at
+   * `<slug>-template` or `<slug>-template-N`, so a caller that must handle the duplicate state uses
+   * this rather than the single-row [[findByTemplateId]], whose `.option` raises on two rows.
+   */
+  def listByTemplateId(templateId: AppTemplateId): Task[List[App]]
   def create(
       name: String,
       slug: String,
@@ -4425,6 +4433,14 @@ class AppRepoLive(xa: Transactor[Task]) extends AppRepo {
       .query[R]
       .map(toApp)
       .option
+      .transact(xa)
+
+  def listByTemplateId(templateId: AppTemplateId) =
+    sql"""SELECT id,name,slug,template_id,icon,icon_type,created_at
+          FROM apps WHERE template_id=$templateId ORDER BY id"""
+      .query[R]
+      .map(toApp)
+      .to[List]
       .transact(xa)
 
   def create(

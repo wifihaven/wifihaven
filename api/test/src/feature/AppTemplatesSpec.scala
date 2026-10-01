@@ -269,9 +269,7 @@ object AppTemplatesSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
       // The pure invariant check is covered above; this pins that the loader actually
       // refuses the catalog, because a bad entry would delete a shipped app's row.
       for {
-        result <- AppTemplates
-          .loadAll("/bad_app_templates/_index.yml", "/bad_app_templates")
-          .either
+        result <- AppTemplates.loadAll("/bad_app_templates").either
       } yield assertTrue(
         result.isLeft,
         result.swap.toOption.get.getMessage.contains("retires"),
@@ -299,6 +297,30 @@ object AppTemplatesSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
         summary.renamed.map(r => (r.slug, r.from, r.to)) ==
           List(("icanhazip", "icanhazip", "Public IP lookup")),
         again.renamed.isEmpty,
+      )
+    },
+    test("#2820 a template names every row carrying its template_id, including an adopted one") {
+      // reconcileOne stamps a template_id onto a pre-existing row without touching its
+      // name. From then on the template owns the name — there is no app-create or rename
+      // route (#1798), so a divergent name is drift, not a choice. Pinning it here makes
+      // the consequence of adoption explicit rather than a side effect.
+      for {
+        _       <- cleanDb
+        appRepo <- ZIO.service[AppRepo]
+        t = tmpl("icanhazip", List("icanhazip.com"), Nil).copy(name = "Public IP lookup")
+        // a pre-existing row on the canonical slug, carrying no template_id
+        adoptedId <- appRepo.create("My IP thing", "icanhazip", None, Some("📶"), IconType.Emoji)
+        _         <- appRepo.setHosts(adoptedId, List(Hostname.unsafe("icanhazip.com")))
+        // reconcile adopts it...
+        _         <- wifihaven.api.AppReconciler.reconcileTemplates(appRepo, List(t))
+        adopted   <- appRepo.findById(adoptedId).someOrFailException
+        // ...and the next seed names it
+        _         <- AppTemplates.seed(appRepo, List(t))
+        after     <- appRepo.findById(adoptedId).someOrFailException
+      } yield assertTrue(
+        adopted.templateId.contains(t.slug),
+        adopted.name == "My IP thing",
+        after.name == "Public IP lookup",
       )
     },
     test("#1896 catalog satisfies the shared-host invariants") {

@@ -343,11 +343,12 @@ object AppReconcilerSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgre
         squat.name == "My IP thing",
         // the template's own row absorbed the retirement
         template.id != squatId,
-        tmplHosts.toSet == Set(
-          Hostname.unsafe("icanhazip.com"),
-          Hostname.unsafe("api.ipify.org"),
-          Hostname.unsafe("api64.ipify.org"),
-        ),
+        // the retired hosts landed on the template's row, not the squatter's. Asserting
+        // presence rather than the template's exact host-set keeps this test about
+        // retirement — adding a host to icanhazip.yml later shouldn't break it.
+        tmplHosts.contains(Hostname.unsafe("api.ipify.org")),
+        tmplHosts.contains(Hostname.unsafe("icanhazip.com")),
+        !squatHosts.contains(Hostname.unsafe("api.ipify.org")),
         tmplAsgn.map(_.profileId) == List(kidsId),
         after.count(_.templateId.contains(AppTemplateId.unsafe("ipify"))) == 0,
       )
@@ -376,10 +377,17 @@ object AppReconcilerSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgre
         _         <- appRepo.upsertAssignment(survivor.id, kidsId, AppMode.Allowed, None, true)
         _         <- AppReconciler.retireSupersededRows(appRepo, templates)
         asgn      <- appRepo.listAssignmentsForApp(survivor.id)
+        logged    <- ZTestLogger.logOutput
       } yield assertTrue(
         asgn.map(_.profileId) == List(kidsId),
-        // documented "survivor wins" conflict policy, logged as a WARN before the merge
+        // documented "survivor wins" conflict policy...
         asgn.head.mode == AppMode.Allowed,
+        // ...and the discarded assignment is named in the log rather than vanishing
+        logged.exists(e =>
+          e.logLevel == LogLevel.Warning &&
+            e.message().contains("drops 1 assignment") &&
+            e.message().contains(s"profile=${kidsId.value}"),
+        ),
       )
     },
     test("reconcileTemplates is a no-op on already-clean state") {

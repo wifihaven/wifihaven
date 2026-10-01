@@ -86,14 +86,19 @@ object AppReconciler {
    * wins on a per-profile conflict, `app_used_daily` sums on overlap) and the retired row is
    * deleted, all in one transaction. Returns the retired ids actually merged on this pass.
    *
-   * BOTH sides are keyed on `template_id`, never on slug. On the retired side, a row that merely
-   * occupies the retired slug without carrying its template link is an operator's app, not ours to
-   * delete. On the surviving side the same asymmetry would be worse: `AppTemplates.findFreeSlug`
-   * parks the seeded row at `<slug>-template` when an operator app already owns the canonical slug,
-   * so a slug lookup at boot — where no `reconcileOne` pass has collapsed that yet — would return
-   * the OPERATOR's app and merge the retired row's hosts, assignments and history into it. Keyed on
-   * `template_id`, both call sites resolve the same row. Idempotent — a second pass finds nothing
-   * because the retired row is gone.
+   * BOTH sides are resolved by `template_id` alone, via `listByTemplateId` — no slug lookups, and
+   * no `findByTemplateId`, whose single-row `.option` raises when a template has a canonical row
+   * AND a `<slug>-template` duplicate. Slug is the wrong key in both directions. On the retired
+   * side, a row that merely occupies the retired slug without carrying its template link is an
+   * operator's app, not ours to delete. On the surviving side the error would be worse:
+   * `AppTemplates.findFreeSlug` parks the seeded row at `<slug>-template` (or `-template-N`) when
+   * another row already owns the canonical slug, so a slug lookup at boot — where no `reconcileOne`
+   * pass has collapsed that yet — would return that OTHER row and merge the retired row's hosts,
+   * assignments and history into it. Guessing the suffixed forms instead would miss `-template-N`.
+   *
+   * Where a template has several rows, the survivor is the one on the canonical slug, else the
+   * oldest — a deterministic choice, and `reconcileOne` has already collapsed the duplicates on the
+   * reconcile call site. Idempotent — a second pass finds nothing because the retired row is gone.
    *
    * Called from the boot sequence right after `AppTemplates.seed` (so a deploy that lands a merged
    * template cleans the orphan without operator action) and from `reconcileTemplates`, which the
@@ -105,29 +110,23 @@ object AppReconciler {
   ): Task[List[String]] =
     ZIO
       .foreach(templates.filter(_.retires.nonEmpty)) { t =>
-        repo.findByTemplateId(t.slug).flatMap {
+        repo.listByTemplateId(t.slug).map(pickSurvivor(_, t)).flatMap {
           // Survivor absent (nothing seeded yet) — nothing to merge into. Deliberately NOT falling
           // back to the slug: a row that does not carry this template's id is someone else's app.
           case None           => ZIO.succeed(List.empty[String])
           case Some(survivor) =>
             ZIO
               .foreach(t.retires) { retired =>
-                // Both the canonical and the `<slug>-template` fallback form can carry the retired
-                // template_id, so look each up by slug rather than by template_id — a DB holding
-                // both would trip the single-row `findByTemplateId` lookup.
                 for {
-                  canonical <- repo.findBySlug(retired.value)
-                  suffixed  <- repo.findBySlug(s"${retired.value}-template")
-                  rows = List(canonical, suffixed).flatten
-                    .filter(a => a.templateId.contains(retired) && a.id != survivor.id)
+                  rows <- repo.listByTemplateId(retired).map(_.filter(_.id != survivor.id))
                   // `mergeAppInto` is "survivor wins" where both rows hold an assignment for the
                   // same profile, so the retired row's is dropped there. That silently changes what
                   // the profile gets for those hosts — name each one before the merge erases it.
-                  _ <- ZIO.foreachDiscard(rows)(r =>
+                  _    <- ZIO.foreachDiscard(rows)(r =>
                     warnDiscardedAssignments(repo, from = r, to = survivor) *>
                       repo.mergeAppInto(from = r.id, to = survivor.id),
                   )
-                  _ <- ZIO
+                  _    <- ZIO
                     .logInfo(
                       s"app_templates: retired template_id=${retired.value} merged into " +
                         s"slug=${t.slug.value} (id=${survivor.id.value}, rows=${rows.size})",
@@ -145,6 +144,15 @@ object AppReconciler {
    * already holds one for the same profile. Read-only — the merge itself is unchanged; this only
    * makes the policy change visible in the boot log instead of silent.
    */
+  /**
+   * #2820: which of a template's rows survives a retirement merge. Normally there is exactly one.
+   * Where `AppTemplates.findFreeSlug` left a `<slug>-template` duplicate, prefer the row on the
+   * canonical slug and otherwise the oldest, so the choice is deterministic rather than whatever
+   * order the query returned.
+   */
+  private def pickSurvivor(rows: List[App], t: AppTemplate): Option[App] =
+    rows.find(_.slug == t.slug.value).orElse(rows.minByOption(_.id.value))
+
   private def warnDiscardedAssignments(repo: AppRepo, from: App, to: App): Task[Unit] =
     for {
       fromAsgn <- repo.listAssignmentsForApp(from.id)
