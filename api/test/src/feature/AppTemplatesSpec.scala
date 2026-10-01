@@ -332,7 +332,7 @@ object AppTemplatesSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
         _       <- cleanDb
         appRepo <- ZIO.service[AppRepo]
         t = tmpl("youtube", List("youtube.com"), Nil).copy(name = "YouTube")
-        // suffixed row first, so "oldest" and "canonical slug" disagree
+        // suffixed row first, so "lowest id" and "canonical slug" disagree
         suffixedId  <- appRepo.create(
           "Seeded",
           "youtube-template-2",
@@ -355,7 +355,9 @@ object AppTemplatesSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
         logged.exists(e =>
           e.logLevel == LogLevel.Warning &&
             e.message().contains("template_id=youtube is on 2 rows") &&
-            e.message().contains(s"$canonicalId:youtube"),
+            e.message().contains(s"$canonicalId:youtube") &&
+            // names the WINNER, not merely that both rows were listed
+            e.message().contains(s"resolved to id=${canonicalId.value}"),
         ),
       )
     },

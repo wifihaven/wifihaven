@@ -96,7 +96,7 @@ object AppReconciler {
    * miss `-template-N`.
    *
    * Where a template has several rows, `AppRepo.findByTemplateId` resolves which one is the
-   * survivor — the canonical-slug row, else the oldest — so every caller agrees on it; and
+   * survivor — the canonical-slug row, else the lowest id — so every caller agrees on it; and
    * `reconcileOne` has already collapsed the duplicates on the reconcile call site anyway.
    * Idempotent — a second pass finds nothing because the retired row is gone.
    *

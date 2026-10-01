@@ -245,7 +245,7 @@ object AppRepoSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Tr
         _    <- cleanDb
         repo <- ZIO.service[AppRepo]
         tid = AppTemplateId.unsafe("youtube")
-        // created suffixed-first so "oldest" and "canonical slug" disagree
+        // created suffixed-first so "lowest id" and "canonical slug" disagree
         suffixedId  <- repo.create("YouTube", "youtube-template", Some(tid), None, IconType.Url)
         canonicalId <- repo.create("YouTube", "youtube", Some(tid), None, IconType.Url)
         resolved    <- repo.findByTemplateId(tid)

@@ -4282,7 +4282,7 @@ trait AppRepo {
    * The one row this template manages. `apps.template_id` carries no UNIQUE constraint
    * (`V28__apps.sql:17`) and `AppTemplates.findFreeSlug` can park a second row at `<slug>-template`
    * / `<slug>-template-N`, so this RESOLVES the duplicate state rather than raising on it (#2820):
-   * the row on the canonical slug wins, else the oldest. Every caller that wants "the template's
+   * the row on the canonical slug wins, else the lowest id. Every caller that wants "the template's
    * row" goes through this, so they all agree on which row that is.
    */
   def findByTemplateId(templateId: AppTemplateId): Task[Option[App]]
@@ -4435,7 +4435,8 @@ class AppRepoLive(xa: Transactor[Task]) extends AppRepo {
       .transact(xa)
 
   // Resolves the canonical-slug row first, then the oldest, so a canonical + `<slug>-template`
-  // pair yields the canonical one deterministically instead of raising (#2820). "Canonical slug ==
+  // pair yields the canonical one (else the lowest id) deterministically instead of raising
+  // (#2820). "Canonical slug ==
   // the template id string" is the seeder's own rule — `AppTemplates.seedOne` creates the row with
   // `slug = findFreeSlug(t.slug.value)` and `template_id = t.slug`, falling back to a suffix only
   // when the base is taken.
