@@ -55,6 +55,13 @@ final case class AppTemplate(
     // existing template is unchanged. The flag is stored but ignored until S2-S5 — see
     // `docs/design/shared-host-allocation.md`.
     sharedHosts: List[Hostname] = Nil,
+    // #2820: template ids this template SUPERSEDES. When two catalog entries are merged into one,
+    // the surviving template lists the retired id here so `AppReconciler` folds the retired
+    // template's seeded `apps` row into this one. Without it, deleting a `.yml` leaves the row
+    // behind carrying its `template_id`, hosts, per-profile assignments and usage history, managed
+    // by no template — nothing else prunes it. Defaults to empty, so every existing template is
+    // unchanged.
+    retires: List[AppTemplateId] = Nil,
 )
 
 object AppTemplates {
@@ -80,6 +87,18 @@ object AppTemplates {
           ),
         )
         .when(templates.map(_.slug).distinct.size != templates.size)
+      // #2820: a bad `retires:` entry is destructive (the reconciler DELETEs the retired row), so
+      // reject the catalog at load rather than discovering it mid-merge.
+      _         <- {
+        val violations = retirementViolations(templates)
+        ZIO
+          .fail(
+            new RuntimeException(
+              s"invalid retires in $manifestResource: ${violations.mkString("; ")}",
+            ),
+          )
+          .when(violations.nonEmpty)
+      }
     } yield templates
 
   private def readManifest(resource: String): Task[List[String]] =
@@ -163,6 +182,29 @@ object AppTemplates {
         case Some(other)                 =>
           Left(s"shared_hosts must be a list of strings if present, got $other")
       }
+      retires     <- Option(root.get("retires")) match {
+        case None                        => Right(Nil)
+        case Some(xs: java.util.List[?]) =>
+          xs.asScala.toList
+            .map(_.toString.trim)
+            .foldLeft[Either[String, List[AppTemplateId]]](Right(Nil)) { (acc, raw) =>
+              acc.flatMap(prev =>
+                AppTemplateId
+                  .parse(raw)
+                  .left
+                  .map(e => s"invalid retires entry '$raw': $e")
+                  .map(_ :: prev),
+              )
+            }
+            .map(_.reverse.distinct)
+        case Some(other)                 =>
+          Left(s"retires must be a list of strings if present, got $other")
+      }
+      _           <- Either.cond(
+        !retires.contains(slug),
+        (),
+        s"template '${slug.value}' lists itself under retires",
+      )
       _           <- {
         val overlap = hosts.toSet.intersect(sharedHosts.toSet)
         Either.cond(
@@ -177,7 +219,7 @@ object AppTemplates {
           s"slug '${slug.value}' does not match file name $source"
         },
       )
-    } yield AppTemplate(slug, name, icon, iconType, hosts, sharedHosts)
+    } yield AppTemplate(slug, name, icon, iconType, hosts, sharedHosts, retires)
   }
 
   /**
@@ -209,6 +251,33 @@ object AppTemplates {
           "every template that lists it"
       }
     emptyDistinctive ++ conflicts
+  }
+
+  /**
+   * #2820: catalog-wide invariants for the `retires:` field. Returns a human-readable violation per
+   * breach (empty == valid); used by the validation test.
+   *   1. a retired id must not also be a LIVE template slug — the reconciler merges the retired row
+   *      away, so retiring a live template would delete a shipped app; 2. two templates must not
+   *      retire the same id — the merge target would be whichever template the reconciler happened
+   *      to walk first.
+   */
+  def retirementViolations(templates: List[AppTemplate]): List[String] = {
+    val liveSlugs  = templates.map(_.slug).toSet
+    val collisions = templates
+      .flatMap(t => t.retires.filter(liveSlugs.contains).map(r => (t.slug.value, r.value)))
+      .sorted
+      .map { case (owner, retired) =>
+        s"template '$owner' retires '$retired', which is a live template slug — retiring a live " +
+          "template would delete its seeded app row"
+      }
+    val claimedBy  =
+      templates.flatMap(t => t.retires.map(_.value -> t.slug.value)).groupMap(_._1)(_._2)
+    val contested  =
+      claimedBy.filter(_._2.size > 1).toList.sortBy(_._1).map { case (retired, owners) =>
+        s"retired id '$retired' is claimed by [${owners.sorted.mkString(",")}] — exactly one " +
+          "template may retire an id"
+      }
+    collisions ++ contested
   }
 
   private def withResource[A](resource: String)(f: InputStream => A): Task[A] =

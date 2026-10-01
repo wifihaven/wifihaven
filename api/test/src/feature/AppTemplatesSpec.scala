@@ -244,6 +244,27 @@ object AppTemplatesSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
         merged.name.toLowerCase.contains("public ip"),
       )
     },
+    test("#2820 the merged template declares the retired slug it supersedes") {
+      for {
+        templates <- AppTemplates.loadAll()
+        merged = templates.find(_.slug.value == "icanhazip").get
+      } yield assertTrue(merged.retires.map(_.value) == List("ipify"))
+    },
+    test("#2820 retirement ids never collide with a live template slug") {
+      for {
+        templates <- AppTemplates.loadAll()
+      } yield assertTrue(AppTemplates.retirementViolations(templates).isEmpty)
+    },
+    test("#2820 retirementViolations flags a retirement id that is also a live slug") {
+      val a = tmpl("a", List("a.com"), Nil).copy(retires = List(AppTemplateId.unsafe("b")))
+      val b = tmpl("b", List("b.com"), Nil)
+      assertTrue(AppTemplates.retirementViolations(List(a, b)).nonEmpty)
+    },
+    test("#2820 retirementViolations flags two templates retiring the same id") {
+      val a = tmpl("a", List("a.com"), Nil).copy(retires = List(AppTemplateId.unsafe("z")))
+      val b = tmpl("b", List("b.com"), Nil).copy(retires = List(AppTemplateId.unsafe("z")))
+      assertTrue(AppTemplates.retirementViolations(List(a, b)).nonEmpty)
+    },
     test("#1896 catalog satisfies the shared-host invariants") {
       for {
         templates <- AppTemplates.loadAll()

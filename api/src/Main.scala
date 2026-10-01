@@ -215,6 +215,16 @@ object Main extends ZIOAppDefault {
                   .mkString("[", ",", "]") + ", " +
                 s"preserved=${seedSummary.preserved.size}",
             )
+            // #2820: fold away the `apps` row of any template that was merged into another and
+            // deleted. `AppTemplates.seed` only walks templates that exist, so without this the
+            // retired row survives the deploy carrying its template_id, hosts, assignments and
+            // usage history, managed by no template. Idempotent — a no-op once merged.
+            retired     <- AppReconciler.retireSupersededRows(appRepoForSeed, templates)
+            _           <- ZIO
+              .logInfo(
+                s"app_templates: retired rows merged away ${retired.mkString("[", ",", "]")}",
+              )
+              .when(retired.nonEmpty)
             // #958: seed the bundled category blocklists. Inline lists pull hosts
             // straight from YAML; remote lists fetch from the declared upstream
             // URL (cached in-memory after first success — see BlocklistCache).

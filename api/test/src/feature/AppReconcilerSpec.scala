@@ -266,6 +266,38 @@ object AppReconcilerSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgre
         hosts == List(Hostname.unsafe("example.com")),
       )
     },
+    test("#2820 the boot sequence (seed then retire) leaves no orphan row behind") {
+      // Pins the wiring Main uses: AppTemplates.seed walks only templates that
+      // exist, so the retirement pass is what prunes the deleted template's row.
+      for {
+        _          <- cleanDb
+        appRepo    <- ZIO.service[AppRepo]
+        templates  <- wifihaven.api.AppTemplates.loadAll()
+        retiredId  <- appRepo.create(
+          "ipify",
+          "ipify",
+          Some(AppTemplateId.unsafe("ipify")),
+          None,
+          IconType.Url,
+        )
+        _          <- appRepo.setHosts(retiredId, List(Hostname.unsafe("api.ipify.org")))
+        _          <- wifihaven.api.AppTemplates.seed(appRepo, templates)
+        retiredNow <- AppReconciler.retireSupersededRows(appRepo, templates)
+        again      <- AppReconciler.retireSupersededRows(appRepo, templates)
+        after      <- appRepo.listAll
+        survivor   <- appRepo.findBySlug("icanhazip").someOrFailException
+        hosts      <- appRepo.getHosts(survivor.id)
+      } yield assertTrue(
+        retiredNow == List("ipify"),
+        again.isEmpty,
+        after.count(_.templateId.contains(AppTemplateId.unsafe("ipify"))) == 0,
+        hosts.toSet == Set(
+          Hostname.unsafe("icanhazip.com"),
+          Hostname.unsafe("api.ipify.org"),
+          Hostname.unsafe("api64.ipify.org"),
+        ),
+      )
+    },
     test("reconcileTemplates is a no-op on already-clean state") {
       for {
         _       <- cleanDb

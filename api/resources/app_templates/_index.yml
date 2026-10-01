@@ -80,9 +80,10 @@ slugs:
   - bricklink
   # #2805: HamStudy amateur-radio exam study (operator request)
   - hamstudy
+  # #2820: icanhazip and ipify merged into one public-IP-lookup display-cleanup
+  # app; the surviving template keeps this slug and retires `ipify`
   - icanhazip
-  # #2811: traffic-driven catalog pass (see evidence/classification-2811.md): weather + ipify
-  # display-cleanup apps, and OneNote for the web
+  # #2811: traffic-driven catalog pass (see evidence/classification-2811.md): weather
+  # display-cleanup app, and OneNote for the web
   - weather
   - onenote
-  - ipify

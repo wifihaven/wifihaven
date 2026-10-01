@@ -11,6 +11,9 @@ import zio.json.*
  */
 final case class AppReconcileSummary(
     mergedSlugs: List[String],
+    // #2820: retired template ids whose orphan `apps` row was folded into its surviving template's
+    // row on this pass. Empty on a clean DB and on every re-run after the first.
+    retiredSlugs: List[String] = Nil,
     renamedSlugs: List[String],
     hostsUnioned: List[String],
     templateIdSet: List[String],
@@ -18,8 +21,8 @@ final case class AppReconcileSummary(
     created: List[String],
 ) derives JsonCodec {
   def total: Int =
-    mergedSlugs.size + renamedSlugs.size + hostsUnioned.size + templateIdSet.size +
-      alreadyClean.size + created.size
+    mergedSlugs.size + retiredSlugs.size + renamedSlugs.size + hostsUnioned.size +
+      templateIdSet.size + alreadyClean.size + created.size
 }
 
 /**
@@ -54,18 +57,75 @@ object AppReconciler {
       repo: AppRepo,
       templates: List[AppTemplate],
   ): Task[AppReconcileSummary] =
+    for {
+      outcomes <- ZIO.foreach(templates)(t => reconcileOne(repo, t))
+      // Retirements run AFTER the per-template pass so the surviving row exists (created, renamed
+      // or collapsed) before anything is merged into it.
+      retired  <- retireSupersededRows(repo, templates)
+    } yield AppReconcileSummary(
+      mergedSlugs = outcomes.collect { case OneOutcome.Merged(s) => s },
+      retiredSlugs = retired,
+      renamedSlugs = outcomes.collect { case OneOutcome.Renamed(s) => s },
+      hostsUnioned = outcomes.collect { case OneOutcome.HostsUnioned(s) => s },
+      templateIdSet = outcomes.collect { case OneOutcome.TemplateIdSet(s) => s },
+      alreadyClean = outcomes.collect { case OneOutcome.AlreadyClean(s) => s },
+      created = outcomes.collect { case OneOutcome.Created(s) => s },
+    )
+
+  /**
+   * #2820: fold away the `apps` row left behind by a template that was merged into another and
+   * deleted. Nothing else prunes such a row — `reconcileOne` only walks templates that EXIST — so
+   * without this the retired row keeps its `template_id`, hosts, per-profile assignments and usage
+   * history while being managed by no template.
+   *
+   * For each `retires:` id on a surviving template, the retired row is merged INTO the survivor
+   * with `AppRepo.mergeAppInto` — the same machinery `reconcileOne` uses to collapse a
+   * `<slug>-template` duplicate, so hosts are unioned, assignments and rollups are reattached (`to`
+   * wins on a per-profile conflict, `app_used_daily` sums on overlap) and the retired row is
+   * deleted, all in one transaction. Returns the retired ids actually merged on this pass.
+   *
+   * Deliberately keyed on `template_id`, not slug: a row that merely occupies the retired slug
+   * without carrying its template link is an operator's app, not ours to delete. Idempotent — a
+   * second pass finds nothing because the retired row is gone.
+   *
+   * Called from the boot sequence right after `AppTemplates.seed` (so a deploy that lands a merged
+   * template cleans the orphan without operator action) and from `reconcileTemplates`, which the
+   * admin reconcile route drives. One implementation, two call sites.
+   */
+  def retireSupersededRows(
+      repo: AppRepo,
+      templates: List[AppTemplate],
+  ): Task[List[String]] =
     ZIO
-      .foreach(templates)(t => reconcileOne(repo, t))
-      .map { outcomes =>
-        AppReconcileSummary(
-          mergedSlugs = outcomes.collect { case OneOutcome.Merged(s) => s },
-          renamedSlugs = outcomes.collect { case OneOutcome.Renamed(s) => s },
-          hostsUnioned = outcomes.collect { case OneOutcome.HostsUnioned(s) => s },
-          templateIdSet = outcomes.collect { case OneOutcome.TemplateIdSet(s) => s },
-          alreadyClean = outcomes.collect { case OneOutcome.AlreadyClean(s) => s },
-          created = outcomes.collect { case OneOutcome.Created(s) => s },
-        )
+      .foreach(templates.filter(_.retires.nonEmpty)) { t =>
+        repo.findBySlug(t.slug.value).flatMap {
+          // Survivor absent (nothing seeded yet) — there is nothing to merge into.
+          case None           => ZIO.succeed(List.empty[String])
+          case Some(survivor) =>
+            ZIO
+              .foreach(t.retires) { retired =>
+                // Both the canonical and the `<slug>-template` fallback form can carry the retired
+                // template_id, so look each up by slug rather than by template_id — a DB holding
+                // both would trip the single-row `findByTemplateId` lookup.
+                for {
+                  canonical <- repo.findBySlug(retired.value)
+                  suffixed  <- repo.findBySlug(s"${retired.value}-template")
+                  rows = List(canonical, suffixed).flatten
+                    .filter(a => a.templateId.contains(retired) && a.id != survivor.id)
+                  _ <- ZIO
+                    .foreachDiscard(rows)(r => repo.mergeAppInto(from = r.id, to = survivor.id))
+                  _ <- ZIO
+                    .logInfo(
+                      s"app_templates: retired template_id=${retired.value} merged into " +
+                        s"slug=${t.slug.value} (id=${survivor.id.value}, rows=${rows.size})",
+                    )
+                    .when(rows.nonEmpty)
+                } yield if rows.nonEmpty then List(retired.value) else Nil
+              }
+              .map(_.flatten)
+        }
       }
+      .map(_.flatten)
 
   private def reconcileOne(repo: AppRepo, t: AppTemplate): Task[OneOutcome] = {
     val canonicalSlug = t.slug.value
