@@ -4434,9 +4434,8 @@ class AppRepoLive(xa: Transactor[Task]) extends AppRepo {
       .option
       .transact(xa)
 
-  // Resolves the canonical-slug row first, then the oldest, so a canonical + `<slug>-template`
-  // pair yields the canonical one (else the lowest id) deterministically instead of raising
-  // (#2820). "Canonical slug ==
+  // Resolves the canonical-slug row first, then the lowest id, so a canonical + `<slug>-template`
+  // pair yields the canonical one deterministically instead of raising (#2820). "Canonical slug ==
   // the template id string" is the seeder's own rule — `AppTemplates.seedOne` creates the row with
   // `slug = findFreeSlug(t.slug.value)` and `template_id = t.slug`, falling back to a suffix only
   // when the base is taken.

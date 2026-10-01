@@ -357,7 +357,8 @@ object AppTemplatesSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
             e.message().contains("template_id=youtube is on 2 rows") &&
             e.message().contains(s"$canonicalId:youtube") &&
             // names the WINNER, not merely that both rows were listed
-            e.message().contains(s"resolved to id=${canonicalId.value}"),
+            // trailing ';' so this can't be satisfied by a longer id with the same prefix
+            e.message().contains(s"resolved to id=${canonicalId.value};"),
         ),
       )
     },
