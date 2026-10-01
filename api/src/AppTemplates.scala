@@ -1,6 +1,7 @@
 package wifihaven.api
 
 import wifihaven.api.db.AppRepo
+import wifihaven.shared.App
 import wifihaven.shared.AppHostEntry
 import wifihaven.shared.IconType
 import wifihaven.shared.types.*
@@ -22,9 +23,25 @@ final case class AppTemplateSeedSummary(
     repopulated: List[String],
     preserved: List[String],
     augmented: List[AppTemplateAugmented],
+    // #2820: slugs whose `apps.name` was re-synced from the template because the template was
+    // renamed after the row was seeded. Counted separately from `augmented` (hosts).
+    renamed: List[AppTemplateRenamed] = Nil,
 ) derives JsonCodec {
-  def total: Int = created.size + repopulated.size + preserved.size + augmented.size
+  def total: Int =
+    created.size + repopulated.size + preserved.size + augmented.size + renamed.size
 }
+
+/**
+ * #2820: a row whose display name drifted from its template's `name:`. `apps.name` is only ever
+ * written at row CREATE, and there is no operator rename surface (apps are template-authored only,
+ * #1798), so the template is the single source of truth for the name and a rename has to be pushed
+ * onto the existing row or it never reaches a deployment that already seeded it.
+ */
+final case class AppTemplateRenamed(
+    slug: String,
+    from: String,
+    to: String,
+) derives JsonCodec
 
 /**
  * Per-template entry for the additive-merge outcome (#1087): the slug plus the host names that were
@@ -66,20 +83,27 @@ final case class AppTemplate(
 
 object AppTemplates {
 
-  /** Classpath path prefix used both for the manifest and for individual templates. */
+  /**
+   * Classpath path prefix used both for the manifest and for individual templates. Overridable on
+   * [[loadAll]] so a test can point the loader at a fixture catalog (e.g. one that violates the
+   * `retires:` invariants) without adding files to the shipped directory.
+   */
   private val ResourcePrefix = "/app_templates"
 
   /** Default location of the manifest. Overridable for tests. */
   val DefaultManifestResource: String = s"$ResourcePrefix/_index.yml"
 
   /** Load and parse all templates listed in the manifest. Fails fast on any malformed file. */
-  def loadAll(manifestResource: String = DefaultManifestResource): Task[List[AppTemplate]] =
+  def loadAll(
+      manifestResource: String = DefaultManifestResource,
+      resourcePrefix: String = ResourcePrefix,
+  ): Task[List[AppTemplate]] =
     for {
       slugs     <- readManifest(manifestResource)
       _         <- ZIO
         .fail(new RuntimeException(s"duplicate slug(s) in manifest $manifestResource"))
         .when(slugs.distinct.size != slugs.size)
-      templates <- ZIO.foreach(slugs)(loadOne)
+      templates <- ZIO.foreach(slugs)(loadOne(_, resourcePrefix))
       _         <- ZIO
         .fail(
           new RuntimeException(
@@ -111,8 +135,8 @@ object AppTemplates {
       }
     }
 
-  private def loadOne(slug: String): Task[AppTemplate] = {
-    val resource = s"$ResourcePrefix/$slug.yml"
+  private def loadOne(slug: String, resourcePrefix: String): Task[AppTemplate] = {
+    val resource = s"$resourcePrefix/$slug.yml"
     withResource(resource) { in =>
       val root = parseYaml(in, resource)
       parseTemplate(root, resource).fold(
@@ -255,7 +279,9 @@ object AppTemplates {
 
   /**
    * #2820: catalog-wide invariants for the `retires:` field. Returns a human-readable violation per
-   * breach (empty == valid); used by the validation test.
+   * breach (empty == valid). Enforced in two places: `loadAll` rejects a violating catalog at
+   * startup (a bad entry would delete a live app, so it must never reach the reconciler), and the
+   * catalog validation test calls it directly.
    *   1. a retired id must not also be a LIVE template slug — the reconciler merges the retired row
    *      away, so retiring a live template would delete a shipped app; 2. two templates must not
    *      retire the same id — the merge target would be whichever template the reconciler happened
@@ -316,12 +342,13 @@ object AppTemplates {
   def seed(repo: AppRepo, templates: List[AppTemplate]): Task[AppTemplateSeedSummary] =
     ZIO.foreach(templates)(t => seedOne(repo, t)).map { results =>
       AppTemplateSeedSummary(
-        created = results.collect { case (slug, SeedOutcome.Created) => slug },
-        repopulated = results.collect { case (slug, SeedOutcome.Repopulated) => slug },
-        preserved = results.collect { case (slug, SeedOutcome.Preserved) => slug },
-        augmented = results.collect { case (slug, SeedOutcome.Augmented(added)) =>
+        created = results.collect { case (slug, SeedOutcome.Created, _) => slug },
+        repopulated = results.collect { case (slug, SeedOutcome.Repopulated, _) => slug },
+        preserved = results.collect { case (slug, SeedOutcome.Preserved, _) => slug },
+        augmented = results.collect { case (slug, SeedOutcome.Augmented(added), _) =>
           AppTemplateAugmented(slug, added.map(_.value))
         },
+        renamed = results.flatMap(_._3),
       )
     }
 
@@ -342,35 +369,62 @@ object AppTemplates {
       AppHostEntry(_, shared = true),
     )
 
-  private def seedOne(repo: AppRepo, t: AppTemplate): Task[(String, SeedOutcome)] =
+  /**
+   * #2820: push a template rename onto the row it already seeded. `apps.name` is written only at
+   * CREATE and there is no operator rename surface (apps are template-authored only, #1798), so
+   * without this a `name:` edit — the operator-visible half of merging two templates into one —
+   * never reaches a deployment that seeded the row under the old name. Hosts stay on their own
+   * additive path; this touches the display name only.
+   */
+  private def syncName(
+      repo: AppRepo,
+      existing: App,
+      t: AppTemplate,
+  ): Task[Option[AppTemplateRenamed]] =
+    if existing.name == t.name then ZIO.none
+    else
+      repo.update(existing.copy(name = t.name)) *>
+        ZIO.logInfo(
+          s"app_templates: slug=${t.slug.value} renamed '${existing.name}' -> '${t.name}'",
+        ) *>
+        ZIO.some(AppTemplateRenamed(t.slug.value, existing.name, t.name))
+
+  private def seedOne(
+      repo: AppRepo,
+      t: AppTemplate,
+  ): Task[(String, SeedOutcome, Option[AppTemplateRenamed])] =
     repo
       .findByTemplateId(t.slug)
       .flatMap {
         case Some(existing) =>
-          repo.getHostEntries(existing.id).flatMap { existingEntries =>
-            if existingEntries.isEmpty then
-              repo.setHostEntries(existing.id, templateEntries(t)) *>
-                ZIO.logInfo(
-                  s"app_templates: slug=${t.slug.value} exists with empty hosts — repopulated (${t.hosts.size} hosts)",
-                ) *>
-                ZIO.succeed((t.slug.value, SeedOutcome.Repopulated))
-            else {
-              val existingHosts = existingEntries.map(_.host).toSet
-              // Additively merge only NEW hosts; existing rows keep their stored shared flag and
-              // operator-added hosts are never removed (#1087). New rows carry the template flag.
-              val missing       = templateEntries(t).filterNot(e => existingHosts.contains(e.host))
-              if missing.isEmpty then
-                ZIO.logDebug(
-                  s"app_templates: slug=${t.slug.value} exists (id=${existing.id.value}, hosts=${existingEntries.size}) — preserved",
-                ) *>
-                  ZIO.succeed((t.slug.value, SeedOutcome.Preserved))
-              else
-                repo.setHostEntries(existing.id, existingEntries ++ missing) *>
+          syncName(repo, existing, t).flatMap { renamed =>
+            repo.getHostEntries(existing.id).flatMap { existingEntries =>
+              if existingEntries.isEmpty then
+                repo.setHostEntries(existing.id, templateEntries(t)) *>
                   ZIO.logInfo(
-                    s"app_templates: slug=${t.slug.value} augmented (added ${missing.size} hosts: " +
-                      s"${missing.map(_.host.value).mkString(",")})",
+                    s"app_templates: slug=${t.slug.value} exists with empty hosts — repopulated (${t.hosts.size} hosts)",
                   ) *>
-                  ZIO.succeed((t.slug.value, SeedOutcome.Augmented(missing.map(_.host))))
+                  ZIO.succeed((t.slug.value, SeedOutcome.Repopulated, renamed))
+              else {
+                val existingHosts = existingEntries.map(_.host).toSet
+                // Additively merge only NEW hosts; existing rows keep their stored shared flag and
+                // operator-added hosts are never removed (#1087). New rows carry the template flag.
+                val missing = templateEntries(t).filterNot(e => existingHosts.contains(e.host))
+                if missing.isEmpty then
+                  ZIO.logDebug(
+                    s"app_templates: slug=${t.slug.value} exists (id=${existing.id.value}, hosts=${existingEntries.size}) — preserved",
+                  ) *>
+                    ZIO.succeed((t.slug.value, SeedOutcome.Preserved, renamed))
+                else
+                  repo.setHostEntries(existing.id, existingEntries ++ missing) *>
+                    ZIO.logInfo(
+                      s"app_templates: slug=${t.slug.value} augmented (added ${missing.size} hosts: " +
+                        s"${missing.map(_.host.value).mkString(",")})",
+                    ) *>
+                    ZIO.succeed(
+                      (t.slug.value, SeedOutcome.Augmented(missing.map(_.host)), renamed),
+                    )
+              }
             }
           }
         case None           =>
@@ -381,7 +435,7 @@ object AppTemplates {
             _        <- ZIO.logInfo(
               s"app_templates: created slug=${t.slug.value} (id=${id.value}, hosts=${t.hosts.size})",
             )
-          } yield (t.slug.value, SeedOutcome.Created)
+          } yield (t.slug.value, SeedOutcome.Created, None)
       }
       .tapErrorCause(c =>
         ZIO.logErrorCause(s"app_templates: seed failed for slug=${t.slug.value}", c),

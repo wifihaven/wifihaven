@@ -38,6 +38,10 @@ hosts:
 # #2820: the `ipify` template (#2811) was folded into this one. Listing its id
 # here makes the reconciler merge its seeded `apps` row INTO this one instead of
 # leaving it orphaned — carrying its hosts, per-profile assignments and usage
-# history across. Safe to drop once every deployment has run a pass with it.
+# history across.
+#
+# TODO(#2822): this entry is a one-shot migration instruction, not a standing
+# fact — remove it once every deployment has booted at least once with #2820.
+# The generic `retires:` mechanism stays.
 retires:
   - ipify

@@ -1,6 +1,7 @@
 package wifihaven.api
 
 import wifihaven.api.db.AppRepo
+import wifihaven.shared.App
 import wifihaven.shared.types.*
 import zio.*
 import zio.json.*
@@ -11,14 +12,15 @@ import zio.json.*
  */
 final case class AppReconcileSummary(
     mergedSlugs: List[String],
-    // #2820: retired template ids whose orphan `apps` row was folded into its surviving template's
-    // row on this pass. Empty on a clean DB and on every re-run after the first.
-    retiredSlugs: List[String] = Nil,
     renamedSlugs: List[String],
     hostsUnioned: List[String],
     templateIdSet: List[String],
     alreadyClean: List[String],
     created: List[String],
+    // #2820: retired template ids whose orphan `apps` row was folded into its surviving template's
+    // row on this pass. Trailing + defaulted so the admin response stays additive. Empty on a clean
+    // DB and on every re-run after the first.
+    retiredSlugs: List[String] = Nil,
 ) derives JsonCodec {
   def total: Int =
     mergedSlugs.size + retiredSlugs.size + renamedSlugs.size + hostsUnioned.size +
@@ -84,9 +86,14 @@ object AppReconciler {
    * wins on a per-profile conflict, `app_used_daily` sums on overlap) and the retired row is
    * deleted, all in one transaction. Returns the retired ids actually merged on this pass.
    *
-   * Deliberately keyed on `template_id`, not slug: a row that merely occupies the retired slug
-   * without carrying its template link is an operator's app, not ours to delete. Idempotent — a
-   * second pass finds nothing because the retired row is gone.
+   * BOTH sides are keyed on `template_id`, never on slug. On the retired side, a row that merely
+   * occupies the retired slug without carrying its template link is an operator's app, not ours to
+   * delete. On the surviving side the same asymmetry would be worse: `AppTemplates.findFreeSlug`
+   * parks the seeded row at `<slug>-template` when an operator app already owns the canonical slug,
+   * so a slug lookup at boot — where no `reconcileOne` pass has collapsed that yet — would return
+   * the OPERATOR's app and merge the retired row's hosts, assignments and history into it. Keyed on
+   * `template_id`, both call sites resolve the same row. Idempotent — a second pass finds nothing
+   * because the retired row is gone.
    *
    * Called from the boot sequence right after `AppTemplates.seed` (so a deploy that lands a merged
    * template cleans the orphan without operator action) and from `reconcileTemplates`, which the
@@ -98,8 +105,9 @@ object AppReconciler {
   ): Task[List[String]] =
     ZIO
       .foreach(templates.filter(_.retires.nonEmpty)) { t =>
-        repo.findBySlug(t.slug.value).flatMap {
-          // Survivor absent (nothing seeded yet) — there is nothing to merge into.
+        repo.findByTemplateId(t.slug).flatMap {
+          // Survivor absent (nothing seeded yet) — nothing to merge into. Deliberately NOT falling
+          // back to the slug: a row that does not carry this template's id is someone else's app.
           case None           => ZIO.succeed(List.empty[String])
           case Some(survivor) =>
             ZIO
@@ -112,8 +120,13 @@ object AppReconciler {
                   suffixed  <- repo.findBySlug(s"${retired.value}-template")
                   rows = List(canonical, suffixed).flatten
                     .filter(a => a.templateId.contains(retired) && a.id != survivor.id)
-                  _ <- ZIO
-                    .foreachDiscard(rows)(r => repo.mergeAppInto(from = r.id, to = survivor.id))
+                  // `mergeAppInto` is "survivor wins" where both rows hold an assignment for the
+                  // same profile, so the retired row's is dropped there. That silently changes what
+                  // the profile gets for those hosts — name each one before the merge erases it.
+                  _ <- ZIO.foreachDiscard(rows)(r =>
+                    warnDiscardedAssignments(repo, from = r, to = survivor) *>
+                      repo.mergeAppInto(from = r.id, to = survivor.id),
+                  )
                   _ <- ZIO
                     .logInfo(
                       s"app_templates: retired template_id=${retired.value} merged into " +
@@ -126,6 +139,28 @@ object AppReconciler {
         }
       }
       .map(_.flatten)
+
+  /**
+   * #2820: log the retired row's assignments that `mergeAppInto` will discard because the survivor
+   * already holds one for the same profile. Read-only — the merge itself is unchanged; this only
+   * makes the policy change visible in the boot log instead of silent.
+   */
+  private def warnDiscardedAssignments(repo: AppRepo, from: App, to: App): Task[Unit] =
+    for {
+      fromAsgn <- repo.listAssignmentsForApp(from.id)
+      toAsgn   <- repo.listAssignmentsForApp(to.id)
+      kept    = toAsgn.map(_.profileId).toSet
+      dropped = fromAsgn.filter(a => kept.contains(a.profileId))
+      _ <- ZIO
+        .logWarning(
+          s"app_templates: retiring app id=${from.id.value} slug=${from.slug} drops " +
+            s"${dropped.size} assignment(s) the survivor id=${to.id.value} already covers: " +
+            dropped
+              .map(a => s"profile=${a.profileId.value} mode=${a.mode}")
+              .mkString("[", ",", "]"),
+        )
+        .when(dropped.nonEmpty)
+    } yield ()
 
   private def reconcileOne(repo: AppRepo, t: AppTemplate): Task[OneOutcome] = {
     val canonicalSlug = t.slug.value

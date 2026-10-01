@@ -265,6 +265,42 @@ object AppTemplatesSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
       val b = tmpl("b", List("b.com"), Nil).copy(retires = List(AppTemplateId.unsafe("z")))
       assertTrue(AppTemplates.retirementViolations(List(a, b)).nonEmpty)
     },
+    test("#2820 loadAll REJECTS a catalog whose retires entry names a live template") {
+      // The pure invariant check is covered above; this pins that the loader actually
+      // refuses the catalog, because a bad entry would delete a shipped app's row.
+      for {
+        result <- AppTemplates
+          .loadAll("/bad_app_templates/_index.yml", "/bad_app_templates")
+          .either
+      } yield assertTrue(
+        result.isLeft,
+        result.swap.toOption.get.getMessage.contains("retires"),
+        result.swap.toOption.get.getMessage.contains("beta"),
+      )
+    },
+    test("#2820 a template rename is pushed onto the row it already seeded") {
+      // apps.name is written only at CREATE and there is no operator rename surface
+      // (#1798), so without this a merged template's new name never reaches a
+      // deployment that seeded the row under the old one.
+      for {
+        _       <- cleanDb
+        appRepo <- ZIO.service[AppRepo]
+        before = tmpl("icanhazip", List("icanhazip.com"), Nil)
+        _      <- AppTemplates.seed(appRepo, List(before))
+        seeded <- appRepo.findByTemplateId(before.slug).someOrFailException
+        after = before.copy(name = "Public IP lookup")
+        summary <- AppTemplates.seed(appRepo, List(after))
+        row     <- appRepo.findById(seeded.id).someOrFailException
+        // second pass with the same template is a no-op
+        again   <- AppTemplates.seed(appRepo, List(after))
+      } yield assertTrue(
+        row.name == "Public IP lookup",
+        row.id == seeded.id,
+        summary.renamed.map(r => (r.slug, r.from, r.to)) ==
+          List(("icanhazip", "icanhazip", "Public IP lookup")),
+        again.renamed.isEmpty,
+      )
+    },
     test("#1896 catalog satisfies the shared-host invariants") {
       for {
         templates <- AppTemplates.loadAll()

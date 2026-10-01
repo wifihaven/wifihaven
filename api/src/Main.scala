@@ -213,7 +213,11 @@ object Main extends ZIOAppDefault {
                 seedSummary.augmented
                   .map(a => s"${a.slug}+[${a.addedHosts.mkString(",")}]")
                   .mkString("[", ",", "]") + ", " +
-                s"preserved=${seedSummary.preserved.size}",
+                s"preserved=${seedSummary.preserved.size}, " +
+                s"renamed=${seedSummary.renamed.size} " +
+                seedSummary.renamed
+                  .map(r => s"${r.slug}:'${r.from}'->'${r.to}'")
+                  .mkString("[", ",", "]"),
             )
             // #2820: fold away the `apps` row of any template that was merged into another and
             // deleted. `AppTemplates.seed` only walks templates that exist, so without this the

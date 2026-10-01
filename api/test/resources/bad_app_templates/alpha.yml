@@ -1,0 +1,8 @@
+slug: alpha
+name: Alpha
+icon: "🅰️"
+hosts:
+  - alpha.example.com
+# Invalid on purpose: `beta` is a live template in this manifest.
+retires:
+  - beta

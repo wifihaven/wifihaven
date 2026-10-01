@@ -298,6 +298,90 @@ object AppReconcilerSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgre
         ),
       )
     },
+    test("#2820 retirement merges into the TEMPLATE's row, not an operator app on its slug") {
+      // AppTemplates.findFreeSlug parks the seeded row at `<slug>-template` when an
+      // operator app already owns the canonical slug. At boot no reconcileOne pass has
+      // collapsed that yet, so resolving the survivor by slug would hand the retired
+      // row's hosts, assignments and history to the operator's app.
+      for {
+        _        <- cleanDb
+        appRepo  <- ZIO.service[AppRepo]
+        profileR <- ZIO.service[ProfileRepo]
+        profiles <- profileR.listAllForHousehold(HouseholdId.Default)
+        kidsId = profiles.find(_.name == "Kids").get.id
+        templates  <- wifihaven.api.AppTemplates.loadAll()
+        // Operator app squatting the SURVIVOR's canonical slug.
+        squatId    <- appRepo.create("My IP thing", "icanhazip", None, Some("📶"), IconType.Emoji)
+        _          <- appRepo.setHosts(squatId, List(Hostname.unsafe("squatter.example.com")))
+        // The retired row, with an assignment and usage to be carried.
+        retiredId  <- appRepo.create(
+          "ipify",
+          "ipify",
+          Some(AppTemplateId.unsafe("ipify")),
+          None,
+          IconType.Url,
+        )
+        _          <- appRepo.setHosts(retiredId, List(Hostname.unsafe("api.ipify.org")))
+        _          <- appRepo.upsertAssignment(retiredId, kidsId, AppMode.Allowed, None, true)
+        // Boot order: seed (parks the template row at icanhazip-template), then retire.
+        _          <- wifihaven.api.AppTemplates.seed(appRepo, templates)
+        _          <- AppReconciler.retireSupersededRows(appRepo, templates)
+        squat      <- appRepo.findById(squatId).someOrFailException
+        squatHosts <- appRepo.getHosts(squatId)
+        squatAsgn  <- appRepo.listAssignmentsForApp(squatId)
+        template   <- appRepo
+          .findByTemplateId(AppTemplateId.unsafe("icanhazip"))
+          .someOrFailException
+        tmplHosts  <- appRepo.getHosts(template.id)
+        tmplAsgn   <- appRepo.listAssignmentsForApp(template.id)
+        after      <- appRepo.listAll
+      } yield assertTrue(
+        // the operator's app is untouched — no hosts, assignment or template_id grafted on
+        squatHosts == List(Hostname.unsafe("squatter.example.com")),
+        squatAsgn.isEmpty,
+        squat.templateId.isEmpty,
+        squat.name == "My IP thing",
+        // the template's own row absorbed the retirement
+        template.id != squatId,
+        tmplHosts.toSet == Set(
+          Hostname.unsafe("icanhazip.com"),
+          Hostname.unsafe("api.ipify.org"),
+          Hostname.unsafe("api64.ipify.org"),
+        ),
+        tmplAsgn.map(_.profileId) == List(kidsId),
+        after.count(_.templateId.contains(AppTemplateId.unsafe("ipify"))) == 0,
+      )
+    },
+    test("#2820 the survivor's assignment wins where both rows cover the same profile") {
+      for {
+        _        <- cleanDb
+        appRepo  <- ZIO.service[AppRepo]
+        profileR <- ZIO.service[ProfileRepo]
+        profiles <- profileR.listAllForHousehold(HouseholdId.Default)
+        kidsId = profiles.find(_.name == "Kids").get.id
+        templates <- wifihaven.api.AppTemplates.loadAll()
+        retiredId <- appRepo.create(
+          "ipify",
+          "ipify",
+          Some(AppTemplateId.unsafe("ipify")),
+          None,
+          IconType.Url,
+        )
+        _         <- appRepo.setHosts(retiredId, List(Hostname.unsafe("api.ipify.org")))
+        _         <- appRepo.upsertAssignment(retiredId, kidsId, AppMode.Blocked, None, true)
+        _         <- wifihaven.api.AppTemplates.seed(appRepo, templates)
+        survivor  <- appRepo
+          .findByTemplateId(AppTemplateId.unsafe("icanhazip"))
+          .someOrFailException
+        _         <- appRepo.upsertAssignment(survivor.id, kidsId, AppMode.Allowed, None, true)
+        _         <- AppReconciler.retireSupersededRows(appRepo, templates)
+        asgn      <- appRepo.listAssignmentsForApp(survivor.id)
+      } yield assertTrue(
+        asgn.map(_.profileId) == List(kidsId),
+        // documented "survivor wins" conflict policy, logged as a WARN before the merge
+        asgn.head.mode == AppMode.Allowed,
+      )
+    },
     test("reconcileTemplates is a no-op on already-clean state") {
       for {
         _       <- cleanDb
