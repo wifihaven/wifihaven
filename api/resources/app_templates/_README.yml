@@ -118,6 +118,44 @@
 # S2-S5 land. See `docs/design/shared-host-allocation.md` (#1888) for the full
 # allocation rule.
 #
+# THE TEMPLATE OWNS ITS ROW'S NAME (#2820)
+#
+# `name:` is not just the value a row is born with. The seeder pushes a renamed
+# template onto the row it already seeded, so editing `name:` here changes the
+# display name on every deployment at its next boot. That is deliberate: there
+# is no app-create or app-rename route (apps are template-authored only,
+# #1798), so a row's name differing from its template's is drift, not an
+# operator's choice. It applies to a row ADOPTED by a template as well as one
+# created by it — once a row carries this template's `template_id`, this file
+# names it. Hosts are unaffected; they stay on their additive merge path, and
+# `name` is the only field the seeder re-pushes.
+#
+# MERGING TWO TEMPLATES INTO ONE — `retires:` (#2820)
+#
+# Deleting a `.yml` does NOT remove the `apps` row it seeded. The seeder and
+# `AppReconciler` both walk the templates that EXIST, so a deleted template's
+# row survives, still carrying its `template_id`, hosts, per-profile
+# assignments and usage history — managed by no template, and invisible to the
+# "reset to template" path.
+#
+# When two entries turn out to be the same app, keep ONE EXISTING slug (a
+# brand-new slug orphans both current rows), union the host sets onto it,
+# change the operator-visible `name:` if the old one no longer covers both, and
+# list the deleted template's id under `retires:`. At boot — and on the admin
+# reconcile pass — the retired row is merged INTO the surviving row via the
+# same `mergeAppInto` machinery that collapses a `<slug>-template` duplicate:
+# hosts unioned, assignments and usage reattached (the survivor wins on a
+# per-profile assignment conflict, `app_used_daily` sums on overlap), retired
+# row deleted. Idempotent; safe to drop the `retires:` entry once every
+# deployment has booted once with it.
+#
+# `retires:` is OPTIONAL and defaults to empty. Two rules are enforced at load
+# (a bad entry is destructive, so the catalog is rejected rather than merged):
+#   1. a retired id must NOT be a live template slug;
+#   2. exactly one template may retire a given id.
+# Only a row whose `template_id` matches the retired id is absorbed — an
+# operator app that merely occupies the slug is left alone.
+#
 # File names beginning with `_` are reserved for documentation (this file) and
 # the manifest (`_index.yml`) and are ignored by the template loader.
 
@@ -131,3 +169,5 @@ hosts:                  # distinctive — uniquely identify this app's use
 # shared_hosts:         # optional — multi-tenant backends; credited only while a
 #   - elevenlabs.io     #   distinctive host above is active (#1888). Stored but
 #   - launchdarkly.com  #   ignored until S2-S5.
+# retires:              # optional — template ids this entry supersedes; their
+#   - old-slug          #   seeded app rows are merged into this one (#2820).
