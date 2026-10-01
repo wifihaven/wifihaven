@@ -84,10 +84,11 @@ object HostMatch {
    * claimed the host. Specificity is [[patternSpecificity]], the same measure the background class
    * uses, so the two are directly comparable.
    *
-   * Only the #2077 anchor gate needs the ordering. [[matchesAny]] deliberately stays a
-   * short-circuiting `exists` rather than delegating here: it runs per row from
-   * `Presence.isHeartbeat` / `isExempt` across every counting surface, so paying for a full scan
-   * plus an intermediate list to answer a Boolean is a hot-path regression.
+   * Two callers need the ordering: the #2077 anchor gate and, since #2815,
+   * `Presence.suppressedAsBackground`. [[matchesAny]] deliberately stays a short-circuiting
+   * `exists` rather than delegating here — it still answers a plain Boolean for `isExempt` and the
+   * byte-floor branch of `isHeartbeat` on every row, so paying for a full scan plus an intermediate
+   * list there is a hot-path regression.
    */
   def matchedPatternIn(host: HostId, patterns: List[String]): Option[String] =
     if patterns.isEmpty then None

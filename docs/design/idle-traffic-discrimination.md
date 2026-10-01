@@ -140,8 +140,9 @@ of `client-log-forwarder.1password.com` log shipping anchored an overnight span
 under the `1password.com` app assignment, and every ambient row inside it,
 `api.wifihaven.net` included, then counted in full. This changes anchor
 eligibility ONLY; row suppression (`Presence.isHeartbeat` /
-`suppressedAsBackground`, over `canonical ++ suppressOnly`) still lets any app
-pattern win outright — see the tier-divergence note below.
+`suppressedAsBackground`, over `canonical ++ suppressOnly`) is a separate
+predicate, which #2815 brought onto this same comparison — see the
+tier-convergence note below.
 
 Results on the 14-day sample (in-sample):
 
@@ -354,16 +355,49 @@ is what let a brand-apex template anchor a background lane), and everything ride
 the existing `ambient_gate_enabled` kill-switch (off ⇒ identity). The gate
 remains only-ever-removes, so the #1446/#2068 undercount class stays closed.
 
-**Tier divergence (#2813).** The specificity comparison applies to the ANCHOR
-decision only. The suppression decision (`Presence.suppressedAsBackground` →
-`isHeartbeat`, keyed on `canonical ++ suppressOnly`) still lets any app pattern
-win outright, so a brand-apex template un-suppresses an enumerated background
-lane on that tier — `brave.com` over `collector.bsg.brave.com` /
-`star-randsrv.bsg.brave.com`, and `plex.tv` over `pubsub.plex.tv`, are the live
-instances. That is deliberately left alone here: suppression REMOVES a row
-outright, so extending the comparison to it can only ever subtract minutes and
-re-opens the #1446/#2068 undercount risk that the anchor tier is structurally
-immune to. Tracked separately in #2815.
+**Tier convergence (#2813 → #2815).** #2813 applied the specificity comparison
+to the ANCHOR decision only and deliberately left the suppression decision
+(`Presence.suppressedAsBackground` → `isHeartbeat`, keyed on
+`canonical ++ suppressOnly`) on the old unconditional "any app pattern wins"
+rule, on the reasoning that suppression REMOVES a row outright and so could only
+ever subtract minutes.
+
+**#2815 closed that divergence: ONE precedence rule now governs both predicates.**
+Attribution beats suppression only when the app claimed the host at least as
+specifically as the background list did. The deferral's premise held up, but the
+blast radius turned out to be enumerable rather than open-ended — the whole
+catalog contains exactly four apex-over-lane pairs:
+
+| app pattern | background entry | labels | assigned on prod? |
+|---|---|---|---|
+| `brave.com` | `collector.bsg.brave.com`, `star-randsrv.bsg.brave.com` | 2 < 4 | no |
+| `plex.tv` | `pubsub.plex.tv` | 2 < 3 | no |
+| `wifihaven.net` | `api.wifihaven.net` | 2 < 3 | no (pair created by #2813) |
+| `launchdarkly.com` | `events.launchdarkly.com` | 2 < 3 | **yes** — a shared host of "Feeling Great" |
+
+The LaunchDarkly pair is the one that justified the change. `launchdarkly.com`
+reaches `appHostPatterns` as a **shared** host (`shared_hosts:`) of an assigned,
+time-limited app. The #1897 shared-host work already guarantees a shared backend
+cannot inflate that app's OWN engaged minutes — that path reads
+`distinctiveHosts` — but `appHostPatterns` is built from `hosts` (all of them),
+so a shared vendor backend still overrode suppression and its seconds reached the
+profile's DAILY total. #2815 closes that residual inflation path.
+
+The no-undercount guarantee rests on the EQUAL-specificity half: an app that
+genuinely depends on an infra host and names it exactly keeps attributing, which
+is the #1506 seam's actual purpose. Only a brand apex sweeping in a
+specifically-enumerated lane loses, and a lane is on this list precisely because
+it is not engagement.
+
+**Residual, not closed by #2815 (tracked in #2818):** `appHostPatterns` still
+uses `hosts` rather than `distinctiveHosts`, so a shared vendor backend counts
+toward the profile's daily total on the strength of another app's assignment.
+Where the backend is also on the background list, #2815's comparison now settles
+it; where it is not — `elevenlabs.io`, say — there is no suppression to compare
+against and the traffic simply counts as that app's. Closing that is a wider
+change than the specificity comparison, since it touches every shared host on
+every assigned app rather than an enumerable pair set, so it wants its own
+evidence pass.
 
 Replay of the shipped rule set on the same window:
 

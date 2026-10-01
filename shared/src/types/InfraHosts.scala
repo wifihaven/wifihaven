@@ -30,10 +30,15 @@ package wifihaven.shared.types
  * nel.goog/app-analytics/safebrowsing beacons, from [[canonical]] to [[suppressOnly]] — see the TWO
  * TIERS note — but they remain enumerated as specific subdomains on the background set.)
  *
- * #1506 enforces this boundary at runtime: even if an entry here also appears in an ACTIVE app's
- * host-set, [[wifihaven.api.presence.Presence.isHeartbeat]] treats app attribution as winning over
- * suppression, so that host counts toward the app instead of being dropped as infra. This list is
- * therefore the *fallback* — it suppresses a host only when no active app claims it.
+ * #1506 enforces this boundary at runtime, NARROWED BY #2815: when an entry here also appears in an
+ * ACTIVE app's host-set, [[wifihaven.api.presence.Presence.isHeartbeat]] treats app attribution as
+ * winning over suppression only if the app claimed the host at least as SPECIFICALLY as this list
+ * did, measured in dot-separated labels ([[patternSpecificity]]). So this list is the *fallback*
+ * against an equally-or-more specific claim — it suppresses a host when no active app claims it,
+ * AND when the only app claiming it does so via a broader apex than the entry here. That second
+ * case is the point of enumerating background lanes as exact subdomains rather than apexes:
+ * `brave.yml` claiming `brave.com` does not rescue `collector.bsg.brave.com`.
+ * `BackgroundApexShadowSpec` derives and pins every such pair in the catalog.
  *
  * Entries are apex- or exact-host patterns (no `*.` prefix, lowercased). An apex such as `gvt2.com`
  * matches every subdomain via [[HostMatch.matchesPattern]] (and the router's trailing-suffix match
@@ -176,7 +181,10 @@ object InfraHosts {
     //    `beta.icloud.com`, etc.). Pinned as accepted collateral in the spec.
     //    When an iCloud-anything template lands, #1506 makes app attribution
     //    win over suppression here — same way `ess.apple.com` already coexists
-    //    between this list and the iMessage template.
+    //    between this list and the iMessage template. Post-#2815 that holds
+    //    because this entry is the bare 2-label apex, so a template claiming
+    //    `icloud.com` is an EQUAL-specificity claim and still wins. A template
+    //    claiming only a subdomain would not match this apex at all.
     "icloud.com",
     // ── #1629 iCloud Private Relay second hop. The first hop is the `icloud.com`
     //    apex above; the second hop runs on Cloudflare under
@@ -232,9 +240,10 @@ object InfraHosts {
     // operator-authored 1Password app already covers it as a member host, so
     // it attributes to that app (which is `allowed` + `exemptFromDaily` for
     // every assigned profile) instead of being suppressed. Putting it here
-    // would be redundant given #1506 (app attribution wins over suppression),
-    // and the app-attribution path is the canonical model when a user-allowed
-    // app exists.
+    // would be redundant given #1506 (app attribution wins over suppression at
+    // equal-or-greater specificity, post-#2815 — and it would be equal here, an
+    // app apex against the same apex), and the app-attribution path is the
+    // canonical model when a user-allowed app exists.
     "sentry.io",
     "bugsnag.com",
     // Plex pubsub keepalive — the long-poll notification channel runs
@@ -249,9 +258,15 @@ object InfraHosts {
     //    (Quintus), 6 in the 2026-06-10..06-11 prod orphan window. Each
     //    sub-section is suppress-only (no allow-carve role); specific
     //    subdomains rather than apexes where the apex would absorb legitimate
-    //    per-app traffic on sibling subdomains. Per #1506 `Presence.isAppAttributed`,
-    //    if a future app template claims one of these hosts, app attribution wins
-    //    over suppression — the entries are a fallback.
+    //    per-app traffic on sibling subdomains.
+    //
+    //    FALLBACK, but only against an EQUALLY-SPECIFIC claim (#2815). Per #1506 a future app
+    //    template claiming one of these hosts wins over suppression — provided it names the host
+    //    as specifically as this list does. A template claiming a broader brand APEX does NOT:
+    //    `brave.yml` claims `brave.com` while `collector.bsg.brave.com` and
+    //    `star-randsrv.bsg.brave.com` below are 4-label entries, so those two stay suppressed even
+    //    with Brave assigned. That is deliberate — they are Shields telemetry, not engagement —
+    //    and `BackgroundApexShadowSpec` pins both as known apex-over-lane pairs.
     //
     //    Note: `clients4.google.com` and `android.clients.google.com` from the
     //    original #1672 evidence list are already covered by the #1694
@@ -333,11 +348,15 @@ object InfraHosts {
     //    The agent reaches the API over the WAN, which household forward-drop rules never touch.
     //
     //    Exact host, NOT the `wifihaven.net` apex: the SPA and the marketing site are user-facing
-    //    surfaces. Per #1506 the `wifihaven` app template — which claims this host via its
-    //    `wifihaven.net` apex (`wifihaven.yml` lists that apex and nothing else; the apex
-    //    suffix-matches this subdomain) and is unassigned today — still wins over suppression if
-    //    an operator assigns it, which is the right outcome: assigning it is an explicit request
-    //    to see that activity.
+    //    surfaces, and only the control plane is unambiguously background.
+    //
+    //    #2815 UPDATE: assigning the `wifihaven` app no longer restores counting for this host.
+    //    That template claims the `wifihaven.net` apex (2 labels) and nothing else, so it is now
+    //    strictly LESS specific than this entry (3) and loses the suppression comparison. An
+    //    earlier revision of this comment promised the opposite, on the pre-#2815 rule where any
+    //    app pattern won outright. To surface WifiHaven traffic as an app again, the template
+    //    would have to name `api.wifihaven.net` itself — an equal-specificity claim, which still
+    //    wins.
     //
     //    SCOPE OF THAT RESCUE: it reaches the COUNTING path only, and structurally so.
     //    `Presence.hostMinutes` has no `appHostPatterns` parameter at all — it calls `isHeartbeat`
@@ -365,6 +384,39 @@ object InfraHosts {
   /** The first background (allow+suppress or suppress-only) pattern this FQDN matches, if any. */
   def matchedBackgroundPattern(fqdn: String): Option[String] =
     background.find(p => HostMatch.matchesPattern(fqdn, p))
+
+  /**
+   * #2815: the most SPECIFIC background (allow+suppress or suppress-only) pattern this FQDN
+   * matches, if any — the suppression-tier analogue of [[matchedCloudBackgroundPattern]].
+   *
+   * Separate from [[matchedBackgroundPattern]], which returns the FIRST match in list order and is
+   * kept for the explain surfaces that want "which rule named this host". Suppression precedence
+   * needs the most specific match instead, so it can be compared against the app pattern that also
+   * claimed the host (`Presence.suppressedAsBackground`).
+   */
+  def matchedBackgroundPatternSpecific(fqdn: String): Option[String] =
+    // Single fold, no intermediate List: this runs on EVERY row of every counting and ranking
+    // surface via `Presence.suppressedAsBackground`, and the overwhelmingly common case is a host
+    // on no background list at all. `HostMatch.matchedPatternIn`'s docstring states this rule for
+    // the app-pattern side; it applies at least as strongly here, where the list is ~78 entries.
+    //
+    // Strictly-greater keeps the FIRST maximal entry in list order, matching the `maxByOption` this
+    // replaced, so ties resolve identically.
+    background
+      .foldLeft(Option.empty[(String, Int)]) { (best, p) =>
+        if (!HostMatch.matchesPattern(fqdn, p)) best
+        else {
+          val sp = patternSpecificity(p)
+          if (best.exists(_._2 >= sp)) best else Some((p, sp))
+        }
+      }
+      .map(_._1)
+
+  /**
+   * #2815: host-keyed [[matchedBackgroundPatternSpecific]]. IP-literal / label hosts never match.
+   */
+  def matchedBackgroundPatternSpecific(host: HostId): Option[String] =
+    host.asFqdn.flatMap(fqdn => matchedBackgroundPatternSpecific(fqdn.value))
 
   /**
    * Whether `fqdn` is device-level background infra — the presence/dashboard suppression predicate.
@@ -398,8 +450,10 @@ object InfraHosts {
   // IP-literals) drops. A row here still COUNTS when its span is anchored by a real
   // engagement host (a co-present non-background FQDN, or an app-attributed row), so
   // real sessions that merely touch these are never shaved (#1446/#2068 undercount
-  // stays closed), and #1506 app-attribution still wins (a template claiming one of
-  // these makes it a real anchor). Because it only ever removes an ANCHOR (never
+  // stays closed), and #1506 app-attribution still wins at equal-or-greater specificity
+  // (a template NAMING one of these makes it a real anchor; one claiming a broader brand
+  // apex does not — #2813's comparison, pinned per-pair in BackgroundApexShadowSpec).
+  // Because it only ever removes an ANCHOR (never
   // suppresses a row outright) and rides the operator-gated, inspectable
   // `ambient_gate_enabled` switch, it may safely key on class-level apexes that
   // [[canonical]] deliberately avoids.

@@ -261,7 +261,8 @@ object Presence {
       appHostPatterns: List[String] = Nil,
   ): List[PresenceRow] = {
     def isExempt(h: HostId) = HostMatch.matchesAny(h, exemptPatterns)
-    // #1506: app attribution beats background/byte suppression; exempt-from-daily filtering is a
+    // #1506/#2815: app attribution beats byte suppression unconditionally, and background
+    // suppression when claimed at least as specifically; exempt-from-daily filtering is a
     // separate concern and still applies afterward (an exempt app's host is still excluded from the
     // daily total even though it is no longer suppressed as a heartbeat).
     rows.filterNot(r => isHeartbeat(r, filter, appHostPatterns)).filterNot(r => isExempt(r.host))
@@ -423,19 +424,28 @@ object Presence {
    * low-byte requests are not on the list, so they still count. The `bytesThreshold` keepalive
    * floor is unchanged and still gated on `filter.enabled`.
    *
-   * #1506: ATTRIBUTION BEATS SUPPRESSION. `appHostPatterns` is the union of the host-sets of the
-   * apps active for the profile/MAC being counted (from #1505
-   * [[TimeStatusService.groupAppLimits]]). A row whose host matches any of those patterns is
-   * attributed to a real app, so it can NEVER be dropped as background infra OR as a
-   * sub-threshold-byte keepalive — it must count toward that app. This is the runtime guard for the
-   * boundary [[InfraHosts]] documents (device-level infra only; per-app asset hosts must attribute
-   * and count) and closes the #1499 over-suppression seam: an asset/CDN host an app genuinely
-   * depends on that happens to match a background pattern is rescued by its app membership. Only
-   * hosts attributed to NO active app fall through to background/byte suppression, so device infra
-   * with nothing behind it stays suppressed exactly as before. Callers that have no app context
-   * pass `Nil` (the default), preserving prior behavior. This is the single app-aware predicate
-   * every counting surface routes through — do not re-derive suppression elsewhere (the #1532
-   * divergence lesson).
+   * #1506: ATTRIBUTION BEATS SUPPRESSION — since #2815, when claimed at least as SPECIFICALLY.
+   * `appHostPatterns` is the union of the host-sets of the apps active for the profile/MAC being
+   * counted (from #1505 [[TimeStatusService.groupAppLimits]]). A row whose host matches one of
+   * those patterns is attributed to a real app and must count toward it, which is the runtime guard
+   * for the boundary [[InfraHosts]] documents (device-level infra only; per-app asset hosts must
+   * attribute and count) and closes the #1499 over-suppression seam.
+   *
+   * The two branches below now apply that rescue differently, deliberately:
+   *
+   *   - BACKGROUND branch ([[suppressedAsBackground]]): the app wins only if its pattern is at
+   *     least as specific as the background entry that also matched (#2815). A brand APEX no longer
+   *     rescues a background lane [[InfraHosts]] enumerates by exact host.
+   *   - BYTE-FLOOR branch ([[isAppAttributed]]): ANY app claim still rescues the row,
+   *     unconditionally. This asymmetry is intentional. The byte floor is a keepalive HEURISTIC —
+   *     "this row is too small to be real activity" — not a judgement about the host's identity,
+   *     and a genuine app's traffic can legitimately be small. Specificity answers "whose host is
+   *     this", which is the background question, not the size question. Tightening this branch too
+   *     would shave real low-byte app traffic and re-open #1446/#2068 for no stated benefit.
+   *
+   * Only hosts attributed to NO active app fall through both. Callers with no app context pass
+   * `Nil` (the default). This is the single app-aware predicate every counting surface routes
+   * through — do not re-derive suppression elsewhere (the #1532 divergence lesson).
    */
   def isHeartbeat(
       row: PresenceRow,
@@ -450,23 +460,65 @@ object Presence {
 
   /**
    * #1559: host-keyed "drop unless app-attributed" predicate — the ranking-side analogue of
-   * [[isHeartbeat]]'s suppression branch, without the PresenceRow byte-floor. A host is suppressed
-   * as device-level background iff it is on the [[InfraHosts.isBackground]] list AND no active
-   * app's host-set claims it (attribution beats suppression, same #1506 contract every counting
-   * surface routes through). The SINGLE host-keyed entry point: `isHeartbeat` reuses this for its
-   * suppression branch and `DashboardNowRoutes.dropBackground` calls it directly, so the rule
-   * cannot diverge between counting and ranking (#1532).
+   * [[isHeartbeat]]'s suppression branch, without the PresenceRow byte-floor. The SINGLE host-keyed
+   * entry point: `isHeartbeat` reuses this for its suppression branch and
+   * `DashboardNowRoutes.dropBackground` calls it directly, so the rule cannot diverge between
+   * counting and ranking (#1532).
    *
-   * An empty `appHostPatterns` (no app context) reduces to plain `InfraHosts.isBackground` —
+   * THE RULE (#2815). A host is suppressed as device-level background iff it is on the
+   * [[InfraHosts.isBackground]] list AND no active app's host-set claims it AT LEAST AS
+   * SPECIFICALLY as the background list did, measured in dot-separated labels
+   * ([[InfraHosts.patternSpecificity]]).
+   *
+   * Before #2815 any app claim won outright. That let a brand APEX un-suppress a background lane
+   * enumerated here by exact host — `brave.com` over `collector.bsg.brave.com`, `launchdarkly.com`
+   * over `events.launchdarkly.com` — and those rows reached the profile's daily total. #2813 had
+   * already made this comparison for the ANCHOR decision; #2815 brought this predicate onto the
+   * same rule, so ONE precedence rule now governs both.
+   *
+   * EQUAL specificity still gives the app the win, and that is what keeps #1506 intact: an app that
+   * genuinely depends on an infra host and names it exactly (`ess.apple.com` on the iMessage
+   * template is the live instance) keeps attributing, so the #1446/#2068 undercount class stays
+   * closed.
+   *
+   * An empty `appHostPatterns` (no app context) reduces to plain [[InfraHosts.isBackground]] —
    * preserves prior behavior for callers without app-attribution data.
    */
   def suppressedAsBackground(host: HostId, appHostPatterns: List[String]): Boolean =
-    InfraHosts.isBackground(host) && !HostMatch.matchesAny(host, appHostPatterns)
+    InfraHosts.matchedBackgroundPatternSpecific(host) match {
+      case None        => false
+      case Some(bgPat) =>
+        // #2815: attribution beats suppression only when the app claimed the host at least as
+        // SPECIFICALLY as the background list did — the same comparison #2813 shipped for the
+        // anchor decision, applied to the second predicate so one precedence rule governs both.
+        //
+        // At EQUAL specificity the app still wins, which is the whole #1506 seam: an app that
+        // genuinely depends on an infra host and names it exactly (`ess.apple.com` on the iMessage
+        // template) keeps attributing, and the #1446/#2068 undercount class stays closed. What no
+        // longer wins is a BRAND APEX sweeping in a background lane this list enumerates by exact
+        // host — `brave.com` over `collector.bsg.brave.com`, `plex.tv` over `pubsub.plex.tv`,
+        // `launchdarkly.com` over `events.launchdarkly.com`.
+        //
+        // The LaunchDarkly pair is why this matters beyond tidiness. `launchdarkly.com` reaches
+        // `appHostPatterns` as a SHARED host (`shared_hosts:`) of an assigned, time-limited app.
+        // #1897 already stops a shared backend inflating that app's OWN engaged minutes — that
+        // path reads `distinctiveHosts` — but `appHostPatterns` is built from `hosts` (all of
+        // them), so before this change a shared vendor backend still overrode suppression and its
+        // seconds reached the profile's DAILY total. This closes that residual path.
+        HostMatch
+          .matchedPatternIn(host, appHostPatterns)
+          .forall(appPat =>
+            InfraHosts.patternSpecificity(appPat) < InfraHosts.patternSpecificity(bgPat),
+          )
+    }
 
   /**
-   * #1506: whether the row's FQDN is attributed to one of the active apps' host-sets — the
-   * predicate that lets attribution win over suppression in [[isHeartbeat]]. Keyed on host identity
-   * via the shared [[matchesPattern]] (so apex patterns match subdomains, same as the app-presence
+   * #1506: whether the row's FQDN is attributed to one of the active apps' host-sets — ANY app
+   * claim, unconditionally. Post-#2815 this is no longer the whole of
+   * attribution-beats-suppression: it governs [[isHeartbeat]]'s byte-floor branch and
+   * [[isolatedSpanHosts]]'s span-has-an-app check, both unconditional, while the background branch
+   * compares SPECIFICITY instead ([[suppressedAsBackground]]). Keyed on host identity via the
+   * shared [[matchesPattern]] (so apex patterns match subdomains, same as the app-presence
    * surfaces); IP-literal hosts never match patterns. An empty `appHostPatterns` (no app context)
    * is never attributed.
    */
@@ -489,9 +541,10 @@ object Presence {
    * suppresses — the same rows excluded from session-stitch counting. Lets the dashboard surface
    * "background / infra (no engaged time)" without re-implementing the predicate (the
    * single-source-of-truth lesson; see AGENTS.md §1532). `appHostPatterns` flows straight into
-   * [[isHeartbeat]] so app-attributed hosts (after #1506) are NOT reported as suppressed — they're
-   * counted as engagement. IP-literal hosts never appear because the suppression list keys on
-   * FQDNs.
+   * [[isHeartbeat]], so a host an app claims at least as SPECIFICALLY as the background list does
+   * (#1506, narrowed by #2815) is not reported as suppressed — it is counted as engagement. A host
+   * claimed only by a BROADER app pattern than the background entry IS reported here, because it is
+   * genuinely suppressed. IP-literal hosts never appear because the suppression list keys on FQDNs.
    *
    * #1560 will collapse the per-device span and suppression-list call sites into one entry point;
    * until then, callers should pass the same `appHostPatterns` they pass to [[deviceSessionSpans]]
@@ -723,9 +776,11 @@ object Presence {
       filter: HeartbeatFilter = HeartbeatFilter.Off,
       continuationSeconds: Int = DefaultContinuationSeconds,
   ): (Map[String, List[Span]], Int) = {
-    // #1506: the active apps ARE these groups, so their union host-set is the app-attribution set —
-    // a host on an app's host-set that also matches a background pattern (an off-domain asset / CDN
-    // host, #1505) attributes to the app and counts here instead of being suppressed as infra.
+    // #1506: the active apps ARE these groups, so their union host-set is the app-attribution set.
+    // A host on an app's host-set that also matches a background pattern (an off-domain asset / CDN
+    // host, #1505) attributes to the app and counts here instead of being suppressed as infra —
+    // post-#2815, when the app claims it at least as SPECIFICALLY as the background list does. The
+    // suppression decision itself is `isHeartbeat`'s; this comment only names the set fed to it.
     val appHostPatterns = groups.flatMap(_._2)
     val active          = rows.filterNot(r => isHeartbeat(r, filter, appHostPatterns))
     val gap             = effectiveGap(active, continuationSeconds)
@@ -1016,10 +1071,11 @@ object Presence {
    * #2077: the engagement-anchor gate over the isolation-learned ambient-host baseline
    * (docs/design/idle-traffic-discrimination.md). A device-level merged presence span counts toward
    * screen time iff it contains at least one ANCHOR row: app-attributed (the #1506 seam — an active
-   * app's traffic is engagement by definition) or a host NOT in the learned ambient set. Rows whose
-   * every containing span is unanchored are removed; anchored spans keep ALL their rows — ambient
-   * rows inside a real session still contribute their seconds, so the gate can only ever REMOVE
-   * minutes, never shave an anchored session (the #1446/#2068 undercount class stays closed).
+   * app's traffic is engagement by definition — unless the #2177 class claimed the host more
+   * specifically, per #2813) or a host NOT in the learned ambient set. Rows whose every containing
+   * span is unanchored are removed; anchored spans keep ALL their rows — ambient rows inside a real
+   * session still contribute their seconds, so the gate can only ever REMOVE minutes, never shave
+   * an anchored session (the #1446/#2068 undercount class stays closed).
    *
    * #2177 extends the anchor predicate with two class-level tiers, because the isolation learner
    * alone left a residual phantom (~45–75 min/day on prod): first-party-cloud wakeup-burst hosts
@@ -1061,8 +1117,9 @@ object Presence {
       if (active.isEmpty) (rows, 0)
       else {
         val gap                                        = effectiveGap(active, continuationSeconds)
-        // #2177: three anchor tiers. App attribution always anchors (#1506 — an active app's
-        // traffic is engagement by definition). A resolved FQDN anchors unless it is learned-
+        // #2177: three anchor tiers. App attribution anchors (#1506 — an active app's traffic is
+        // engagement by definition) unless the class claimed the host MORE specifically, per the
+        // #2813 comparison spelled out below. A resolved FQDN anchors unless it is learned-
         // ambient OR on the device-cloud background CLASS ([[InfraHosts.cloudBackground]] — the
         // wakeup-burst hosts the isolation learner structurally cannot learn, because they only
         // ever fire in dense co-occurring bursts and thus never accrue isolated days). A non-FQDN
@@ -1072,16 +1129,20 @@ object Presence {
         //
         // #2813: the class beats app attribution when it claimed the host MORE SPECIFICALLY.
         //
-        // TIER DIVERGENCE, deliberate: this comparison governs the ANCHOR decision only. The
-        // SUPPRESSION decision ([[suppressedAsBackground]] → [[isHeartbeat]], keyed on
-        // `canonical ++ suppressOnly`) still lets any app pattern win outright, so a brand-apex
-        // template does still un-suppress an enumerated background lane there (`brave.com` over
-        // `collector.bsg.brave.com`, `plex.tv` over `pubsub.plex.tv`). Not an oversight and not
-        // drift: suppression REMOVES a row outright, so extending the comparison to it can only
-        // subtract minutes and re-opens the #1446/#2068 undercount risk this tier is structurally
-        // immune to (it only ever declines to START a span; the row still counts inside an anchored
-        // one). That needs its own evidence pass over real Brave/Plex use — tracked in #2815, and
-        // written up as "Tier divergence (#2813)" in docs/design/idle-traffic-discrimination.md.
+        // TIER CONVERGENCE (#2813 → #2815): the SAME comparison now governs the SUPPRESSION
+        // decision ([[suppressedAsBackground]] → [[isHeartbeat]], keyed on
+        // `canonical ++ suppressOnly`), so one precedence rule spans both predicates. #2813 shipped
+        // this tier alone and deferred the other on the reasoning that suppression REMOVES a row
+        // outright and so can only subtract minutes; #2815 took it up once the blast radius proved
+        // enumerable: four app patterns over five background lanes in the whole catalog,
+        // derived and pinned by `BackgroundApexShadowSpec`, with zero rows flipping on a
+        // 7-day prod replay. Written up as "Tier convergence (#2813 → #2815)" in
+        // docs/design/idle-traffic-discrimination.md.
+        //
+        // The two tiers still differ in CONSEQUENCE, which is why they were staged: this one only
+        // declines to START a span and the row still counts inside an anchored one, whereas
+        // suppression drops the row. Both share the equal-specificity carve-out that keeps
+        // #1446/#2068 closed.
         // An app template that claims a brand APEX (the operator's 1Password app claims
         // `1password.com`) otherwise launders an anchor onto a background LANE of that brand
         // that this file enumerates by exact host (`client-log-forwarder.1password.com`) — which

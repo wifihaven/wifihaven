@@ -37,8 +37,9 @@ final case class ProfileAppDispositions(
 
   /**
    * Hosts of every assignment. Consumed by `Presence.isHeartbeat` for attribution-beats-
-   * suppression (#1506): a row whose host matches any of these patterns is never silently dropped
-   * as background infra. Mode-agnostic for the same reason as `exemptPatterns` — attribution is a
+   * suppression (#1506, narrowed by #2815 to claims at least as SPECIFIC as the background entry
+   * that also matched): a row whose host matches one of these patterns is not silently dropped as
+   * background infra. Mode-agnostic for the same reason as `exemptPatterns` — attribution is a
    * structural relationship, not an enforcement one.
    */
   lazy val appHostPatterns: List[String] =
