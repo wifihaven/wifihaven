@@ -118,6 +118,18 @@
 # S2-S5 land. See `docs/design/shared-host-allocation.md` (#1888) for the full
 # allocation rule.
 #
+# THE TEMPLATE OWNS ITS ROW'S NAME (#2820)
+#
+# `name:` is not just the value a row is born with. The seeder pushes a renamed
+# template onto the row it already seeded, so editing `name:` here changes the
+# display name on every deployment at its next boot. That is deliberate: there
+# is no app-create or app-rename route (apps are template-authored only,
+# #1798), so a row's name differing from its template's is drift, not an
+# operator's choice. It applies to a row ADOPTED by a template as well as one
+# created by it — once a row carries this template's `template_id`, this file
+# names it. Hosts are unaffected; they stay on their additive merge path, and
+# `name` is the only field the seeder re-pushes.
+#
 # MERGING TWO TEMPLATES INTO ONE — `retires:` (#2820)
 #
 # Deleting a `.yml` does NOT remove the `apps` row it seeded. The seeder and

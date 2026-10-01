@@ -93,9 +93,6 @@ object AppTemplates {
   /** Manifest location for a given catalog directory. */
   private def manifestFor(resourcePrefix: String): String = s"$resourcePrefix/_index.yml"
 
-  /** Default location of the manifest. */
-  val DefaultManifestResource: String = manifestFor(ResourcePrefix)
-
   /** Load and parse all templates listed in the manifest. Fails fast on any malformed file. */
   def loadAll(resourcePrefix: String = ResourcePrefix): Task[List[AppTemplate]] = {
     // One parameter, so the manifest and the templates can never point at different directories.

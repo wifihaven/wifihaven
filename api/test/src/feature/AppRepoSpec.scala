@@ -237,5 +237,27 @@ object AppRepoSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Tr
         rows <- repo.listAll
       } yield assertTrue(rows.map(_.id) == List(a, b))
     },
+    test("#2820 findByTemplateId resolves a canonical + -template duplicate pair") {
+      // apps.template_id has no UNIQUE constraint and findFreeSlug can park a second
+      // row at `<slug>-template`, so the resolver must pick deterministically rather
+      // than raising — every caller that wants "the template's row" depends on it.
+      for {
+        _    <- cleanDb
+        repo <- ZIO.service[AppRepo]
+        tid = AppTemplateId.unsafe("youtube")
+        // created suffixed-first so "oldest" and "canonical slug" disagree
+        suffixedId  <- repo.create("YouTube", "youtube-template", Some(tid), None, IconType.Url)
+        canonicalId <- repo.create("YouTube", "youtube", Some(tid), None, IconType.Url)
+        resolved    <- repo.findByTemplateId(tid)
+        all         <- repo.listByTemplateId(tid)
+        // and the single-row case still resolves to that row
+        _           <- repo.delete(canonicalId)
+        soleLeft    <- repo.findByTemplateId(tid)
+      } yield assertTrue(
+        resolved.map(_.id).contains(canonicalId),
+        all.map(_.id) == List(suffixedId, canonicalId),
+        soleLeft.map(_.id).contains(suffixedId),
+      )
+    },
   ) @@ TestAspect.sequential
 }

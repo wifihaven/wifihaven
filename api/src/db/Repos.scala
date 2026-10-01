@@ -4277,13 +4277,19 @@ trait AppRepo {
   def listAll: Task[List[App]]
   def findById(id: AppId): Task[Option[App]]
   def findBySlug(slug: String): Task[Option[App]]
+
+  /**
+   * The one row this template manages. `apps.template_id` carries no UNIQUE constraint
+   * (`V28__apps.sql:17`) and `AppTemplates.findFreeSlug` can park a second row at `<slug>-template`
+   * / `<slug>-template-N`, so this RESOLVES the duplicate state rather than raising on it (#2820):
+   * the row on the canonical slug wins, else the oldest. Every caller that wants "the template's
+   * row" goes through this, so they all agree on which row that is.
+   */
   def findByTemplateId(templateId: AppTemplateId): Task[Option[App]]
 
   /**
-   * #2820: every row carrying this `template_id`, ordered by id. `apps.template_id` has no UNIQUE
-   * constraint (`V28__apps.sql:17`) and `AppTemplates.findFreeSlug` can park a second row at
-   * `<slug>-template` or `<slug>-template-N`, so a caller that must handle the duplicate state uses
-   * this rather than the single-row [[findByTemplateId]], whose `.option` raises on two rows.
+   * #2820: every row carrying this `template_id`, ordered by id — for the callers that must act on
+   * all of them (the retirement merge) rather than on the resolved one.
    */
   def listByTemplateId(templateId: AppTemplateId): Task[List[App]]
   def create(
@@ -4428,12 +4434,12 @@ class AppRepoLive(xa: Transactor[Task]) extends AppRepo {
       .option
       .transact(xa)
 
+  // Resolves the canonical-slug row first, then the oldest, so a canonical + `<slug>-template`
+  // pair yields the canonical one deterministically instead of raising (#2820).
   def findByTemplateId(templateId: AppTemplateId) =
-    sql"SELECT id,name,slug,template_id,icon,icon_type,created_at FROM apps WHERE template_id=$templateId"
-      .query[R]
-      .map(toApp)
-      .option
-      .transact(xa)
+    listByTemplateId(templateId).map(rows =>
+      rows.find(_.slug == templateId.value).orElse(rows.headOption),
+    )
 
   def listByTemplateId(templateId: AppTemplateId) =
     sql"""SELECT id,name,slug,template_id,icon,icon_type,created_at
