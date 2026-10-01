@@ -30,10 +30,15 @@ package wifihaven.shared.types
  * nel.goog/app-analytics/safebrowsing beacons, from [[canonical]] to [[suppressOnly]] — see the TWO
  * TIERS note — but they remain enumerated as specific subdomains on the background set.)
  *
- * #1506 enforces this boundary at runtime: even if an entry here also appears in an ACTIVE app's
- * host-set, [[wifihaven.api.presence.Presence.isHeartbeat]] treats app attribution as winning over
- * suppression, so that host counts toward the app instead of being dropped as infra. This list is
- * therefore the *fallback* — it suppresses a host only when no active app claims it.
+ * #1506 enforces this boundary at runtime, NARROWED BY #2815: when an entry here also appears in an
+ * ACTIVE app's host-set, [[wifihaven.api.presence.Presence.isHeartbeat]] treats app attribution as
+ * winning over suppression only if the app claimed the host at least as SPECIFICALLY as this list
+ * did, measured in dot-separated labels ([[patternSpecificity]]). So this list is the *fallback*
+ * against an equally-or-more specific claim — it suppresses a host when no active app claims it,
+ * AND when the only app claiming it does so via a broader apex than the entry here. That second
+ * case is the point of enumerating background lanes as exact subdomains rather than apexes:
+ * `brave.yml` claiming `brave.com` does not rescue `collector.bsg.brave.com`.
+ * `BackgroundApexShadowSpec` derives and pins every such pair in the catalog.
  *
  * Entries are apex- or exact-host patterns (no `*.` prefix, lowercased). An apex such as `gvt2.com`
  * matches every subdomain via [[HostMatch.matchesPattern]] (and the router's trailing-suffix match
@@ -176,7 +181,10 @@ object InfraHosts {
     //    `beta.icloud.com`, etc.). Pinned as accepted collateral in the spec.
     //    When an iCloud-anything template lands, #1506 makes app attribution
     //    win over suppression here — same way `ess.apple.com` already coexists
-    //    between this list and the iMessage template.
+    //    between this list and the iMessage template. Post-#2815 that holds
+    //    because this entry is the bare 2-label apex, so a template claiming
+    //    `icloud.com` is an EQUAL-specificity claim and still wins. A template
+    //    claiming only a subdomain would not match this apex at all.
     "icloud.com",
     // ── #1629 iCloud Private Relay second hop. The first hop is the `icloud.com`
     //    apex above; the second hop runs on Cloudflare under
@@ -442,8 +450,10 @@ object InfraHosts {
   // IP-literals) drops. A row here still COUNTS when its span is anchored by a real
   // engagement host (a co-present non-background FQDN, or an app-attributed row), so
   // real sessions that merely touch these are never shaved (#1446/#2068 undercount
-  // stays closed), and #1506 app-attribution still wins (a template claiming one of
-  // these makes it a real anchor). Because it only ever removes an ANCHOR (never
+  // stays closed), and #1506 app-attribution still wins at equal-or-greater specificity
+  // (a template NAMING one of these makes it a real anchor; one claiming a broader brand
+  // apex does not — #2813's comparison, pinned per-pair in BackgroundApexShadowSpec).
+  // Because it only ever removes an ANCHOR (never
   // suppresses a row outright) and rides the operator-gated, inspectable
   // `ambient_gate_enabled` switch, it may safely key on class-level apexes that
   // [[canonical]] deliberately avoids.

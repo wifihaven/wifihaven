@@ -261,7 +261,8 @@ object Presence {
       appHostPatterns: List[String] = Nil,
   ): List[PresenceRow] = {
     def isExempt(h: HostId) = HostMatch.matchesAny(h, exemptPatterns)
-    // #1506: app attribution beats background/byte suppression; exempt-from-daily filtering is a
+    // #1506/#2815: app attribution beats byte suppression unconditionally, and background
+    // suppression when claimed at least as specifically; exempt-from-daily filtering is a
     // separate concern and still applies afterward (an exempt app's host is still excluded from the
     // daily total even though it is no longer suppressed as a heartbeat).
     rows.filterNot(r => isHeartbeat(r, filter, appHostPatterns)).filterNot(r => isExempt(r.host))
@@ -512,11 +513,13 @@ object Presence {
     }
 
   /**
-   * #1506: whether the row's FQDN is attributed to one of the active apps' host-sets — the
-   * predicate that lets attribution win over suppression in [[isHeartbeat]]. Keyed on host identity
-   * via the shared [[matchesPattern]] (so apex patterns match subdomains, same as the app-presence
-   * surfaces); IP-literal hosts never match patterns. An empty `appHostPatterns` (no app context)
-   * is never attributed.
+   * #1506: whether the row's FQDN is attributed to one of the active apps' host-sets. Post-#2815
+   * this governs ONLY [[isHeartbeat]]'s byte-floor branch, where any app claim still rescues the
+   * row unconditionally; the background branch compares SPECIFICITY instead
+   * ([[suppressedAsBackground]]), so this predicate is no longer the whole of
+   * attribution-beats-suppression. Keyed on host identity via the shared [[matchesPattern]] (so
+   * apex patterns match subdomains, same as the app-presence surfaces); IP-literal hosts never
+   * match patterns. An empty `appHostPatterns` (no app context) is never attributed.
    */
   def isAppAttributed(row: PresenceRow, appHostPatterns: List[String]): Boolean =
     HostMatch.matchesAny(row.host, appHostPatterns)

@@ -190,8 +190,12 @@ object OvernightBackgroundPhantomSpec extends ZIOSpec[TestDatabase.AllRepos & Em
       // (operator call on #2813). Suppression carries no enforcement effect: `suppressOnly` is
       // absent from `canonical` / `PolicyService.infraAllowHosts`, so reachability is unchanged.
       //
-      // Per #1506 the unassigned `wifihaven` app template would still win over suppression if an
-      // operator assigned it — deliberately, since assigning it asks to see that activity.
+      // #2815 UPDATE: an earlier revision of this comment said assigning the `wifihaven` app
+      // template would restore counting via #1506. It no longer would. That template claims the
+      // `wifihaven.net` apex (2 labels) and this entry is `api.wifihaven.net` (3), so the app is
+      // strictly less specific and loses the suppression comparison —
+      // `BackgroundApexShadowSpec` pins that exact pair. To surface WifiHaven as an app again the
+      // template would have to name `api.wifihaven.net` itself.
       for {
         _   <- cleanDb
         hsr <- ZIO.service[HouseholdSettingsRepo]

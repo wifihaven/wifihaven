@@ -247,8 +247,10 @@ object InfraHostsSpec extends ZIOSpecDefault {
       // these user-facing iCloud surfaces ARE suppressed from presence counting, and
       // that's the trade-off — when an app template lands, #1506
       // (`Presence.isAppAttributed`) makes app attribution win over suppression for
-      // hosts the template claims, identical to how `ess.apple.com` already coexists
-      // between this list and the iMessage template.
+      // hosts the template claims AT LEAST AS SPECIFICALLY as this list does (#2815).
+      // This entry is the bare `icloud.com` apex, so a template claiming that apex is
+      // an EQUAL-specificity claim and wins, identical to how `ess.apple.com` already
+      // coexists between this list and the iMessage template.
       val collateral = List(
         "www.icloud.com",  // iCloud webmail
         "beta.icloud.com", // iCloud beta surfaces
@@ -523,8 +525,11 @@ object InfraHostsSpec extends ZIOSpecDefault {
       // overlap with Apple/iCloud at all). The `ess.apple.com` co-listing with the
       // iMessage template is intentional and predates this change: #1506
       // (`Presence.isAppAttributed`) lets app attribution win over suppression at
-      // runtime, so iMessage traffic keeps counting for profiles that have the
-      // iMessage app configured — this PR's additions are no different in shape.
+      // runtime — post-#2815, at equal-or-greater specificity, and the iMessage
+      // template names `ess.apple.com` exactly, so it qualifies and is in fact the
+      // only such overlap in the catalog. iMessage traffic keeps counting for
+      // profiles that have the app configured; this PR's additions are no different
+      // in shape.
       val unrelatedAppHosts = List(
         "khanacademy.org", // Khan Academy template
         "kastatic.org",
@@ -544,7 +549,9 @@ object InfraHostsSpec extends ZIOSpecDefault {
       // of the 31-min phantom over-count (offline replay, docs/design/idle-traffic-
       // discrimination.md §2274). Class membership removes only ANCHOR eligibility: a row
       // here still counts inside a genuinely engagement-anchored span (#1446/#2068 undercount
-      // stays closed), and #1506 app-attribution still wins.
+      // stays closed), and #1506 app-attribution still wins at equal-or-greater
+      // specificity — a template naming one of these anchors, one claiming a broader
+      // brand apex does not (the pairs BackgroundApexShadowSpec pins).
       val cls = List(
         // Serato DJ telemetry / update (insights. / id. / static. subdomains) — apex
         "serato.com",
