@@ -183,11 +183,12 @@ object AppTemplatesSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
           // #2790: orphan-driven catalog pass — BrickLink marketplace + Studio
           "bricklink",
           "hamstudy",
+          // #2820: the merged public-IP-lookup app keeps icanhazip's slug; the
+          // retired `ipify` template is gone from the catalog.
           "icanhazip",
-          // #2811: weather + ipify display-cleanup apps, OneNote for the web
+          // #2811: weather display-cleanup app, OneNote for the web
           "weather",
           "onenote",
-          "ipify",
         )
         val slugs    = templates.map(_.slug.value).toSet
         assertTrue(slugs == expected) &&
@@ -217,6 +218,31 @@ object AppTemplatesSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
         "/app_templates/youtube.yml",
       )
       assertTrue(r.isLeft)
+    },
+    test("#2820 one public-IP-lookup template covers both brands' host sets") {
+      // Display-cleanup consolidation: icanhazip (#2805) and ipify (#2811) are the
+      // same class of background public-IP lookup. One template now carries all
+      // three hosts, and no second template claims any of them.
+      for {
+        templates <- AppTemplates.loadAll()
+        bySlug        = templates.map(t => t.slug.value -> t).toMap
+        merged        = bySlug("icanhazip")
+        ipLookupHosts = Set(
+          Hostname.unsafe("icanhazip.com"),
+          Hostname.unsafe("api.ipify.org"),
+          Hostname.unsafe("api64.ipify.org"),
+        )
+      } yield assertTrue(
+        merged.hosts.toSet == ipLookupHosts,
+        // attribution-only: the hosts stay distinctive, none promoted to shared,
+        // and nothing else in the catalog lists them.
+        merged.sharedHosts.isEmpty,
+        templates.filter(t => t.hosts.exists(ipLookupHosts.contains)).map(_.slug.value) ==
+          List("icanhazip"),
+        !bySlug.contains("ipify"),
+        // operator-visible name is brand-neutral now that it covers both
+        merged.name.toLowerCase.contains("public ip"),
+      )
     },
     test("#1896 catalog satisfies the shared-host invariants") {
       for {

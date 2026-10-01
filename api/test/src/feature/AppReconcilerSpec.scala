@@ -153,6 +153,119 @@ object AppReconcilerSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgre
         assertTrue(summary.renamedSlugs == List("youtube")) &&
         assertTrue(summary.mergedSlugs.isEmpty)
     },
+    // #2820: retiring a template file leaves its seeded `apps` row behind — still
+    // carrying its template_id, hosts, per-profile assignments and usage history,
+    // managed by no template. These pin that the surviving template absorbs it.
+    test("#2820 reconcileTemplates merges a retired template's orphan row into the survivor") {
+      for {
+        _          <- cleanDb
+        appRepo    <- ZIO.service[AppRepo]
+        profileR   <- ZIO.service[ProfileRepo]
+        rollupRepo <- ZIO.service[AppUsedRollupRepo]
+        profiles   <- profileR.listAllForHousehold(HouseholdId.Default)
+        kidsId   = profiles.find(_.name == "Kids").get.id
+        adultsId = profiles.find(_.name == "Adults").get.id
+        templates  <- wifihaven.api.AppTemplates.loadAll()
+        // Pre-#2820 state: both rows seeded from the two templates that used to exist.
+        survivorId <- appRepo.create(
+          "icanhazip",
+          "icanhazip",
+          Some(AppTemplateId.unsafe("icanhazip")),
+          None,
+          IconType.Url,
+        )
+        _          <- appRepo.setHosts(survivorId, List(Hostname.unsafe("icanhazip.com")))
+        retiredId  <- appRepo.create(
+          "ipify",
+          "ipify",
+          Some(AppTemplateId.unsafe("ipify")),
+          None,
+          IconType.Url,
+        )
+        _          <- appRepo.setHosts(
+          retiredId,
+          List(Hostname.unsafe("api.ipify.org"), Hostname.unsafe("api64.ipify.org")),
+        )
+        // The retired row carries a per-profile assignment and usage history.
+        _          <- appRepo.upsertAssignment(retiredId, kidsId, AppMode.Allowed, None, true)
+        usageDate     = java.time.LocalDate.parse("2026-09-15")
+        rolledThrough = java.time.Instant.parse("2026-09-15T23:59:00Z")
+        _ <- rollupRepo.upsertDay(kidsId, retiredId, usageDate, RolledAppDay(300L, rolledThrough))
+        _ <- rollupRepo.upsertDay(adultsId, retiredId, usageDate, RolledAppDay(60L, rolledThrough))
+        // Seed + reconcile with the post-#2820 catalog.
+        _ <- wifihaven.api.AppTemplates.seed(appRepo, templates)
+        _ <- AppReconciler.reconcileTemplates(appRepo, templates)
+        after       <- appRepo.listAll
+        survivor    <- appRepo.findBySlug("icanhazip").someOrFailException
+        hosts       <- appRepo.getHosts(survivor.id)
+        asgn        <- appRepo.listAssignmentsForApp(survivor.id)
+        kidsUsage   <- rollupRepo.getDayForProfile(kidsId, usageDate)
+        adultsUsage <- rollupRepo.getDayForProfile(adultsId, usageDate)
+      } yield assertTrue(
+        // no orphan row left behind, under either the slug or the template id
+        after.count(_.slug == "ipify") == 0,
+        after.count(_.templateId.contains(AppTemplateId.unsafe("ipify"))) == 0,
+        survivor.id == survivorId,
+        // the survivor carries the union of both host sets
+        hosts.toSet == Set(
+          Hostname.unsafe("icanhazip.com"),
+          Hostname.unsafe("api.ipify.org"),
+          Hostname.unsafe("api64.ipify.org"),
+        ),
+        // the retired row's assignment moved rather than being silently dropped
+        asgn.map(_.profileId) == List(kidsId),
+        asgn.head.mode == AppMode.Allowed,
+        // ...as did its usage history, now attributed to the survivor
+        kidsUsage.get(survivor.id).map(_.engagedSeconds).contains(300L),
+        adultsUsage.get(survivor.id).map(_.engagedSeconds).contains(60L),
+        !kidsUsage.contains(retiredId),
+      )
+    },
+    test("#2820 retirement is idempotent — a second reconcile changes nothing") {
+      for {
+        _           <- cleanDb
+        appRepo     <- ZIO.service[AppRepo]
+        templates   <- wifihaven.api.AppTemplates.loadAll()
+        retiredId   <- appRepo.create(
+          "ipify",
+          "ipify",
+          Some(AppTemplateId.unsafe("ipify")),
+          None,
+          IconType.Url,
+        )
+        _           <- appRepo.setHosts(retiredId, List(Hostname.unsafe("api.ipify.org")))
+        _           <- wifihaven.api.AppTemplates.seed(appRepo, templates)
+        _           <- AppReconciler.reconcileTemplates(appRepo, templates)
+        first       <- appRepo.listAll
+        firstHosts  <- ZIO.foreach(first)(a => appRepo.getHosts(a.id).map(a.slug -> _.toSet))
+        _           <- AppReconciler.reconcileTemplates(appRepo, templates)
+        second      <- appRepo.listAll
+        secondHosts <- ZIO.foreach(second)(a => appRepo.getHosts(a.id).map(a.slug -> _.toSet))
+      } yield assertTrue(
+        first.map(_.id).toSet == second.map(_.id).toSet,
+        firstHosts.toSet == secondHosts.toSet,
+        second.count(_.slug == "ipify") == 0,
+      )
+    },
+    test("#2820 retirement leaves an unrelated app squatting the retired slug alone") {
+      // Only a row carrying the retired TEMPLATE id is absorbed. An operator row that
+      // merely happens to use the slug is not ours to delete.
+      for {
+        _         <- cleanDb
+        appRepo   <- ZIO.service[AppRepo]
+        templates <- wifihaven.api.AppTemplates.loadAll()
+        squatId   <- appRepo.create("Operator ipify", "ipify", None, Some("📶"), IconType.Emoji)
+        _         <- appRepo.setHosts(squatId, List(Hostname.unsafe("example.com")))
+        _         <- wifihaven.api.AppTemplates.seed(appRepo, templates)
+        _         <- AppReconciler.reconcileTemplates(appRepo, templates)
+        still     <- appRepo.findById(squatId)
+        hosts     <- appRepo.getHosts(squatId)
+      } yield assertTrue(
+        still.isDefined,
+        still.get.slug == "ipify",
+        hosts == List(Hostname.unsafe("example.com")),
+      )
+    },
     test("reconcileTemplates is a no-op on already-clean state") {
       for {
         _       <- cleanDb
