@@ -2731,3 +2731,99 @@ describe('ProfilesPage — two-list app management (#2764)', () => {
     )
   })
 })
+
+// #2824 — the operator believed `adult` was blocked on their own profile. It was
+// not, and the only feedback was adult pop-ups appearing (#2823). Category
+// assignment lived exclusively inside the EXPANDED card, and cards are
+// collapse-by-default (#972), so a profile blocking nothing looked exactly like a
+// protected one. The collapsed summary row now carries coverage.
+describe('ProfilesPage — category coverage on the collapsed summary (#2824)', () => {
+  function httpError(status: number, message: string): Error {
+    const e = new Error(message) as Error & { status?: number }
+    e.status = status
+    return e
+  }
+
+  it('shows coverage on every collapsed card, without expanding anything', async () => {
+    renderPage()
+    await screen.findByTestId('profile-card-1')
+    // Nothing is expanded: the inline category EDITOR is not mounted…
+    expect(screen.queryByTestId('profile-categories-subsection-1')).not.toBeInTheDocument()
+    // …yet coverage is already legible for both profiles.
+    expect(screen.getByTestId('profile-coverage-1')).toHaveAttribute('data-coverage', 'covered')
+    expect(screen.getByTestId('profile-coverage-2')).toHaveAttribute('data-coverage', 'none')
+  })
+
+  it('makes "blocks nothing" an explicit state, not an empty space', async () => {
+    renderPage()
+    const chip = await screen.findByTestId('profile-coverage-2')
+    expect(chip).toHaveTextContent(/blocks nothing/i)
+  })
+
+  it('counts the profile\'s own categories', async () => {
+    renderPage()
+    // kidsProfile blocks adult + gambling.
+    expect(await screen.findByTestId('profile-coverage-1')).toHaveTextContent('2')
+  })
+
+  // PolicyService.scala:769-771 (#1771) unions the household-global sentinel's
+  // categories into every non-default-deny profile, so a profile covered only
+  // by the global layer is protected and must not be flagged.
+  it('credits coverage inherited from the household-global sentinel', async () => {
+    (api.profiles.getGlobal as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+      profile: {
+        id: 99, name: 'Household', blockedCategories: ['adult'], paused: false,
+        failureMode: 'last-known-good', crossDeviceOverlapMode: 'sum', pauseMode: 'soft',
+        defaultDeny: false, isGlobal: true,
+      },
+      scheduleIds: [], timeLimit: null,
+    })
+    renderPage()
+    await waitFor(() => {
+      expect(screen.getByTestId('profile-coverage-2')).toHaveAttribute('data-coverage', 'covered')
+    })
+    expect(screen.getByTestId('profile-coverage-2')).not.toHaveTextContent(/blocks nothing/i)
+  })
+
+  // A household provisioned between V65 and V73 has no sentinel row and the
+  // route 404s (see V73__profiles_is_global_per_household.sql). That is an ABSENT
+  // global layer, not an unknown one — coverage is still computable.
+  it('treats a 404 from the global sentinel as "no global layer", not as unknown', async () => {
+    (api.profiles.getGlobal as unknown as ReturnType<typeof vi.fn>)
+      .mockRejectedValue(httpError(404, 'Global profile not seeded'))
+    renderPage()
+    await waitFor(() => {
+      expect(screen.getByTestId('profile-coverage-2')).toHaveAttribute('data-coverage', 'none')
+    })
+  })
+
+  // …but a genuine failure to read the global layer makes coverage UNKNOWABLE,
+  // and an unknown must not render as "blocks nothing" (AGENTS.md#loading-states).
+  it('renders an explicit unknown state when the global layer cannot be read', async () => {
+    (api.profiles.getGlobal as unknown as ReturnType<typeof vi.fn>)
+      .mockRejectedValue(httpError(500, 'boom'))
+    renderPage()
+    await waitFor(() => {
+      expect(screen.getByTestId('profile-coverage-2')).toHaveAttribute('data-coverage', 'unknown')
+    })
+    expect(screen.queryByText(/blocks nothing/i)).not.toBeInTheDocument()
+  })
+
+  it('never renders "blocks nothing" while the profile list is still loading', () => {
+    (api.profiles.list as unknown as ReturnType<typeof vi.fn>).mockReturnValue(new Promise(() => {}))
+    renderPage()
+    expect(screen.queryByText(/blocks nothing/i)).not.toBeInTheDocument()
+    expect(screen.queryByTestId('profile-coverage-1')).not.toBeInTheDocument()
+  })
+
+  it('does not flag a default-deny profile, which blocks strictly more', async () => {
+    (api.profiles.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([
+      kidsProfile,
+      { ...adultsProfile, profile: { ...adultsProfile.profile, defaultDeny: true } },
+    ])
+    renderPage()
+    const chip = await screen.findByTestId('profile-coverage-2')
+    expect(chip).toHaveAttribute('data-coverage', 'default-deny')
+    expect(chip).not.toHaveTextContent(/blocks nothing/i)
+  })
+})
