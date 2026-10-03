@@ -438,6 +438,37 @@ object BundledBlocklistsSpec
         // traffic-driven addition pinned for presence (#2756)
         assertTrue(social.contains(Hostname.unsafe("truthsocial.com")))
     },
+    // #2823: the adult + ads additions from the CAM4 pop-under chain pass.
+    // `cam4tracking.com` is pinned specifically because it is a SEPARATE
+    // registrable domain from the already-curated `cam4.com` — the whole point
+    // of the entry is that `cam4.com` does not suffix-match it, so a later
+    // cleanup that "dedupes" the two would silently reopen the gap.
+    test("adult + ads: the CAM4 pop-under chain additions are present (#2823)") {
+      for {
+        bundled <- BundledBlocklists.loadAll()
+        hostsOf = (id: String) =>
+          bundled
+            .find(_.id == BlocklistId.unsafe(id))
+            .toList
+            .flatMap(_.content match {
+              case BundledBlocklistContent.Inline(hs) => hs
+              case _                                  => Nil
+            })
+        adult   = hostsOf("adult")
+        ads     = hostsOf("ads")
+      } yield
+      // the tracking apex, and the content apex it is distinct from
+      assertTrue(adult.contains(Hostname.unsafe("cam4tracking.com"))) &&
+        assertTrue(adult.contains(Hostname.unsafe("cam4.com"))) &&
+        // the redirect-chain hops belong in `ads`, NOT in `adult` — pinned on
+        // both sides so a future pass cannot quietly relocate them
+        assertTrue(ads.contains(Hostname.unsafe("unhappyweakness.com"))) &&
+        assertTrue(ads.contains(Hostname.unsafe("realizationnewestfangs.com"))) &&
+        assertTrue(ads.contains(Hostname.unsafe("clickpathworks.com"))) &&
+        assertTrue(!adult.contains(Hostname.unsafe("unhappyweakness.com"))) &&
+        assertTrue(!adult.contains(Hostname.unsafe("realizationnewestfangs.com"))) &&
+        assertTrue(!adult.contains(Hostname.unsafe("clickpathworks.com")))
+    },
     test("ai: bundled list is loaded and includes the major AI services (#1890)") {
       for {
         bundled <- BundledBlocklists.loadAll()

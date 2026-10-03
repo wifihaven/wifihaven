@@ -30,3 +30,25 @@ hosts:
   - bangbros.com
   - realitykings.com
   - naughtyamerica.com
+  # traffic-driven additions (#2823): observed but unblocked adult infra.
+  # Evidence: evidence/adult-classification-2823.md
+  #
+  # CAM4's affiliate/redirect tracking apex — the pop-under vector. Separate
+  # registrable domain from the already-curated `cam4.com` above, so that entry
+  # does not suffix-match it. Single-purpose: the apex is registered to "Domain
+  # Trading" and hosted on MojoHost (208.122.213.154, AS MOJOHOST /19 — adult-
+  # industry hosting), and the only host observed in prod traffic is
+  # `track.cam4tracking.com`. Absent from the StevenBlack porn-only feed
+  # entirely, so `adult-extended` does not cover it either.
+  #
+  # RESIDUAL IP-LAYER EXPOSURE, accepted deliberately (#2826): the observed
+  # `track.` host is a CloudFront CNAME (dw5ee7oih1tmy.cloudfront.net), so this
+  # entry can put shared CloudFront edge addresses into `bl_adult`. This is NOT
+  # the #2601 shared-GFE case — those were a fixed anycast pool where collateral
+  # was total and permanent. Here the blast radius is bounded: a collision needs
+  # an innocent distribution's current addresses to overlap cam4tracking's within
+  # the same edge /24, and `bl_<id>` is `flags dynamic,timeout` / `timeout 1h`
+  # (openwrt/files/usr/lib/lua/wifihaven/render.lua:1107-1118), so any collision
+  # ages out within the hour. The trade was taken because the domain carries zero
+  # legitimate traffic.
+  - cam4tracking.com

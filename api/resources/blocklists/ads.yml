@@ -696,3 +696,47 @@ hosts:
   - rtbedge.com
   - bidgust.com
   - impression.link
+  # traffic-driven additions (#2823): the pop-under REDIRECT CHAIN behind the
+  # CAM4 pop-unders reported on Sameer Mac. Found by enumerating every host the
+  # device resolved in the burst windows around each cam4 hit — these are
+  # ad/redirect infra, so they belong here and NOT in `adult` even though the
+  # chain lands on an adult site. Evidence:
+  # evidence/adult-classification-2823.md
+  #
+  # Chain, measured 2026-09-12 01:24-01:26Z and again 2026-10-03 02:27-02:30Z:
+  #   thepiratebay.org / torrindex.net (lure)
+  #     -> clickpathworks.com, unhappyweakness.com (TDS hop)
+  #     -> track.cam4tracking.com -> ws./static./api.cam4.com (landing)
+  # The chain's terminal ad network, `mgid.com`, is already curated above
+  # (line ~166) and confirmed `blocked:true` on prod — no action needed there.
+  #
+  # unhappyweakness.com + realizationnewestfangs.com are ONE operator: both
+  # resolve to the identical 9-address set on Servers.com (172.240.108.x /
+  # 172.240.127.x / 172.255.141.4), share nameservers NS1/NS2.PUBLICDNSSERVICE.COM,
+  # and are both eNom + privacy-proxy + registrant country CZ. Augur Security's
+  # fast-flux-TDS writeup names `realizationnewestfangs.com` explicitly and
+  # lists 172.240.x.x among the pool's ranges — an independent fingerprint
+  # match to what was measured here. unhappyweakness.com carries a 1/100
+  # Gridinsoft trust score with multiple malware/phishing blacklist hits.
+  # A malvertising flag does not disqualify an ads-category add (#2122
+  # gamaibids.com precedent), and `malware` is URL-sourced (URLhaus) so it
+  # cannot be hand-curated anyway.
+  #
+  # NOTE this fleet is FAST-FLUX by design — ~300 auto-generated compound-word
+  # domains that rotate. These two entries block the two members actually
+  # observed here; they are not a durable fix for the fleet. All 13 of the
+  # other hops in the measured chain sit behind shared Cloudflare (8) or
+  # CloudFront (5) frontends and were NOT added — an address-level drop there
+  # is #2601-class collateral (one of them, itefullofeedshen.com, was measured
+  # sharing an exact address with a household CloudFront distribution). That
+  # question is
+  # #2826; the reason the chain was invisible to prior sweeps is #2827.
+  - unhappyweakness.com
+  - realizationnewestfangs.com
+  # clickpathworks.com — branded front for the `ak-is2.net` ad-serving network
+  # (that domain's own subdomains are `cpm.`, `rtb-as.`, `*.xml.` ad feeds).
+  # Both observed hosts CNAME into it: filter.clickpathworks.com ->
+  # giantpanda.fs.ak-is2.net, xml.clickpathworks.com -> giantpanda.xml.ak-is2.net,
+  # on one dedicated Webair address (173.239.53.20) that the household's
+  # traffic does not otherwise touch.
+  - clickpathworks.com
