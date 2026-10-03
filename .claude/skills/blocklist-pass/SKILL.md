@@ -94,8 +94,17 @@ rather than trusting this line.
 >   is uncapped, and rows carry `mac` / `profileId` / `profileName` / `blocked`,
 >   so "which profile is hitting this" is answered in the same call. Response
 >   rows are under **`.rows`** (not `.logs`/`.items`).
-> - **`recent-apexes` is for RANKING only** — "how much traffic does this
->   candidate carry", once you already have the name.
+> - **`recent-apexes` is for RANKING, and is NOT redundant** — sweep BOTH.
+>   **Neither surface is complete, and #2823 measured the disagreement in both
+>   directions.** `recent-apexes` reads `traffic_reports`; `/api/logs` reads
+>   `connection_events`. The chain hops were in `/api/logs` and absent from
+>   `recent-apexes` (byte truncation) — but `track.cam4tracking.com` on Rachel
+>   iPhone was the reverse: 77,198 bytes / 2 hits in `recent-apexes` over 30
+>   days, and **zero** rows from
+>   `/api/logs?mac=1e:45:b6:68:24:b3&domain=cam4&hours=2160`. Cause not
+>   established (differing retention is the likely explanation, unverified —
+>   do not assert it). Treat a hit on EITHER surface as real and a miss on
+>   either as uninformative.
 >
 > **Run `/api/logs` SERIALLY.** That `domain` filter is a leading-wildcard
 > `ILIKE` no index can serve. Ten concurrent `hours=720` requests took prod to
@@ -279,8 +288,8 @@ that edit in the same PR.** If a step above is now wrong, fix the step too.
   written up as a named technique in Step 1.
 - **2026-10-02** (#2823) — **THE BIG ONE: a shared-CDN frontend disqualifies
   most of what a pop-under/malvertising pass would otherwise add, and the
-  Google-only `SharedGfeHosts` guard does not catch it.** ALL 13 held-out
-  chain hops resolved onto Cloudflare (`104.18.x`, `104.21.x`, `104.26.x`, `172.66.x`,
+  Google-only `SharedGfeHosts` guard does not catch it.** ALL 14 held-out
+  chain hosts (including `cam4tracking.com`) resolved onto Cloudflare (`104.18.x`, `104.21.x`, `104.26.x`, `172.66.x`,
   `172.67.x`) or CloudFront (`13.226.x`, `18.238.x`, `99.84.x`). One —
   `itefullofeedshen.com` — was **measured sharing the exact address
   `18.238.176.120` with one of the household's own CloudFront distributions**,
@@ -291,18 +300,31 @@ that edit in the same PR.** If a step above is now wrong, fix the step too.
   a judgement about the domain. Corollary for the operator conversation: for
   this whole class, curated entries are **not** the fix; #2377 (SNI
   disambiguation) is. Say so rather than shipping a list that cannot work.
-- **2026-10-02** (#2823) — **A dedicated-vs-shared split can run *within* one
-  brand, so decide per host and prefer the dedicated one.** `cam4tracking.com`'s
-  apex is MojoHost (dedicated adult hosting, safe) while its only observed host
-  `track.cam4tracking.com` is a CloudFront CNAME. It was added anyway, but the
-  reasoning had to be explicit about *why* that differs from #2601: there the
-  pool was fixed anycast (collateral total and permanent), here a collision
-  needs same-/24 exact-address overlap and `bl_<id>` is
+- **2026-10-02** (#2823) — **A per-set nftables `timeout` is NOT a reason to
+  accept shared-pool collateral — it is a property of the enforcement plane
+  that every member of every `bl_` set shares equally.** This pass initially
+  added `cam4tracking.com` (a real, uncovered gap: separate apex from the
+  curated `cam4.com`, absent from the porn-only feed, `blocked:false` on every
+  MAC) and justified the CloudFront exposure by citing `bl_<id>`'s
   `flags dynamic,timeout` / `timeout 1h`
-  (`openwrt/files/usr/lib/lua/wifihaven/render.lua:1107-1118`), so it ages out
-  and self-heals. **Cite that timeout when taking this trade** — it is the
-  whole difference between "bounded, self-healing blip" and "#2601 again".
-  Residual tracked in #2826.
+  (`openwrt/files/usr/lib/lua/wifihaven/render.lua:1107-1118`). The independent
+  review correctly killed it: that timeout applies verbatim to the 13
+  Cloudflare/CloudFront hops the same pass *refused* to add, so it cannot
+  discriminate — and the entry was dropped. Two further traps the same finding
+  exposed:
+  - **"The apex is on dedicated hosting" is irrelevant if nothing resolves the
+    apex.** Only `track.cam4tracking.com` was ever observed, so the set would
+    have been armed with CloudFront edges and the apex's dedicated MojoHost
+    address would never have entered it. **Check which host actually appears in
+    traffic, not which address the apex happens to answer on.**
+  - **"The domain carries zero legitimate traffic" is also irrelevant.** The
+    #2601 harm is to *other tenants of the pool*; the blocked domain's own
+    legitimacy has no bearing on it.
+  So: a Cloudflare/CloudFront answer on the OBSERVED host is an unconditional
+  skip, and the repo's established handling is to **pin the absence in
+  `BundledBlocklistsSpec`** (as #2601 did) rather than add with a risk note.
+  `SharedGfeHosts` is Google-only, so nothing mechanical catches a CDN case —
+  it is a review-time decision every time. #2377 is the unblock.
 - **2026-10-02** (#2823) — **Classify a redirect/TDS hop by what it serves in
   general, not by where the chain happened to land.** The CAM4 pop-under chain
   ends on an adult site, but its hops are a fast-flux TDS and an RTB ad-feed

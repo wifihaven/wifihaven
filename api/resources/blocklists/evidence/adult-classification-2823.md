@@ -1,5 +1,39 @@
 # Adult/ads pass — the CAM4 pop-under chain, and the sweep's byte-rank blind spot (#2823)
 
+> **REVISED after independent review. Read this first — it supersedes the
+> "Addition 1" and "Shared-IP check" sections below, which are kept for the
+> measurements but whose CONCLUSION was wrong.**
+>
+> 1. **`cam4tracking.com` was NOT added.** It is a genuine, uncovered gap (all
+>    three checks below stand), but it is not blockable at the IP layer. The
+>    reasoning that originally justified adding it does not survive:
+>    - The `bl_<id>` `timeout 1h` is a property of the enforcement plane that
+>      **every member of every `bl_` set shares**, so it cannot distinguish
+>      this host from the 13 Cloudflare/CloudFront hops this same pass refused
+>      to add.
+>    - "The apex is dedicated (MojoHost)" is irrelevant, because **nothing in
+>      the household resolves the bare apex.** Only `track.cam4tracking.com` is
+>      ever observed, so the set would be armed with shared CloudFront edges
+>      and the dedicated address would never enter it.
+>    - "The domain carries no legitimate traffic" is also irrelevant: the #2601
+>      harm is to *other tenants of the pool*.
+>    Its absence is now pinned in `BundledBlocklistsSpec`, which is how #2601
+>    handled the same situation. #2377 is the unblock.
+> 2. **`clickpathworks.com` was NOT added** — one self-derived signal (a CNAME
+>    into `ak-is2.net` plus an inference from that domain's subdomain naming),
+>    below the two-independent-signals bar.
+> 3. **Added: `unhappyweakness.com`, `realizationnewestfangs.com` → `ads`**,
+>    the only two chain hosts on dedicated hosting.
+> 4. **Neither traffic surface is complete.** `recent-apexes` missed the chain
+>    (byte truncation, below) — but `/api/logs` missed
+>    `track.cam4tracking.com` on Rachel iPhone, which `recent-apexes` reports
+>    at 77,198 bytes / 2 hits over the same 30 days while
+>    `/api/logs?mac=1e:45:b6:68:24:b3&domain=cam4&hours=2160` returns **zero**
+>    rows. They read different tables (`traffic_reports` vs
+>    `connection_events`); the cause of the disagreement is **not established**
+>    — differing retention is plausible but unverified. Sweep both; treat a hit
+>    on either as real.
+
 Prod, 2026-10-02/03, read-only. Four additions: `cam4tracking.com` → `adult`,
 and `unhappyweakness.com` / `realizationnewestfangs.com` / `clickpathworks.com`
 → `ads`. Two findings matter more than the entries:
@@ -192,7 +226,7 @@ apart — persistent infrastructure, not a one-off.
 
 ### What the fleet is
 
-`realizationnewestfangs.com` is named explicitly in Augur Security's write-up of
+`realizationnewestfangs.com` is named explicitly in [Augur Security's write-up](https://www.augursecurity.com/post/multi-hop-malvertising-infrastructure-exposed) of
 a **fast-flux TDS (traffic distribution system) malvertising network**: ~300
 auto-generated compound-word domains over 18 IPs in six /24 subnets, serving
 obfuscated JavaScript through multi-hop redirect chains and terminating at the
@@ -332,7 +366,7 @@ Two secondary contributors, both real but not the cause here:
 - `windowDays` is clamped to **30 max** (`UsageRoutes.scala:102-107`), so the
   apex surface cannot look back further than a month however the caller asks.
 - `recent-apexes` requires `(bytes_in + bytes_out) > 0` from `traffic_reports`
-  (`api/src/db/Repos.scala:3294-3300`), so a host that is **already blocked**
+  (`api/src/db/Repos.scala:3303`), so a host that is **already blocked**
   contributes no bytes and vanishes from the sweep. Harmless for finding gaps
   (a blocked host is not a gap), but it means the sweep cannot be used to
   confirm that a previously-added entry is still being hit.
@@ -352,8 +386,9 @@ not subject to any of the above:
 - it returns the per-row `mac` / `profileId` / `profileName` / `reason`, which
   is what answers "which profile is hitting this" directly.
 
-Run against this host it returns the whole picture immediately — 72 rows, all
-one device:
+Run against this host it returns 72 rows — 70 on Sameer Mac, 2 on Test
+OpenWRT. Note it returns NO Rachel iPhone row, although `recent-apexes`
+reports `track.cam4tracking.com` there; see correction 4 above:
 
 | host | device | profile | blocked | n | first | last |
 |---|---|---|---|---|---|---|
