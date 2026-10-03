@@ -696,3 +696,17 @@ hosts:
   - rtbedge.com
   - bidgust.com
   - impression.link
+  # traffic-driven additions (#2816): 30-day prod recent-apexes sweep (30
+  # devices, 2026-09-29). al-ad.com has no public company page but its
+  # observed subdomains (ortb-us22/us32/.../us69.al-ad.com — literally "open
+  # RTB") are a direct RTB-bidder signal, same "name is the function"
+  # reasoning as rtbedge.com/bidgust.com above; absent from the ads-extended
+  # feed entirely. ebayadservices.com is eBay's own dedicated ad-services
+  # apex (confirmed via Netify + eBay's own registration) — the
+  # ads-extended feed lists only its www. subdomain, not the apex, so our
+  # apex entry is the stronger block (same pattern as amazon-ads-
+  # attestation.com, #2729: a major platform's dedicated ad subsidiary
+  # domain, not shared product infra like googleadservices.com's
+  # SharedGfeHosts case).
+  - al-ad.com
+  - ebayadservices.com

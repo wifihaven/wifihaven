@@ -203,6 +203,34 @@ that edit in the same PR.** If a step above is now wrong, fix the step too.
 
 ## Learnings log (newest first)
 
+- **2026-09-29** (#2816) — **A major platform's own dedicated ad-services
+  apex is not automatically a dual-use skip — the deciding factor is whether
+  it shares an IP/infra pool with unrelated product traffic, not whether the
+  owner is a household-name company.** `ebayadservices.com` (eBay's own
+  ad-services domain, confirmed via Netify/host.io/MarkMonitor) looked at
+  first glance like it might belong in the same skip bucket as
+  `googleadservices.com` — but that one is banned specifically because it
+  sits on Google's *shared* GFE IP pool alongside Drive/Docs/other product
+  traffic (`SharedGfeHosts`), not merely because it's ad-related. eBay's ad
+  apex is not shared infra — same reasoning that let `amazon-ads-
+  attestation.com` (#2729) in. Check for actual IP/infra sharing, not just
+  "is this a big company's ad domain."
+- **2026-09-29** (#2816) — **Two more `track`-substring consumer/SaaS false
+  positives: `sail-track.com`** (a legitimate marine GPS-tracking app family,
+  unrelated "Sail Track"/SailTrack products) **and `synctrack.io`** (a
+  legitimate Shopify post-purchase order-tracking SaaS, founded 2019, 20K+
+  merchants) — neither is ad-tech despite matching the `track`/`sync`
+  keyword sweep. Low hit-counts (19 and 6 respectively) with legitimate,
+  confirmable identities; verify before guessing from the substring.
+- **2026-09-29** (#2816) — **A brand's own affiliate/payment-tracking domain
+  for content that is ALREADY blocked at the main apex is low marginal value
+  even when confirmed genuine — check whether the parent brand is already
+  curated before adding the tracking sibling.** `cam4tracking.com` (confirmed
+  via urlscan/semrush to redirect to CAM4's affiliate payment portal,
+  cam4pays.com) carries no independent adult content of its own; `cam4.com`
+  is already in `adult.yml`. Given this list's explicit "conservative starter
+  set of top apex domains" scope (not comprehensive infra coverage), the
+  tracking-only sibling was held out rather than added.
 - **2026-09-15** (#2792) — **A "track"-substring apex whose subdomains
   are marketing-site-shaped (`info.`/`www.`) rather than redirect/pixel-shaped
   (`go-us.`/`sync.`/`bid.`) is a strong signal of a false-positive consumer
