@@ -21,6 +21,7 @@ import { AppBlocklistWarningBadge } from '@/components/AppBlocklistWarning'
 import { ProfileTimelineChart } from '@/components/usage/ProfileTimelineChart'
 import { ProfileUsageBreakdown } from '@/components/usage/ProfileUsageBreakdown'
 import { EmptyState } from '@/components/EmptyState'
+import { ProfileCoverageChip, globalLayerFrom, type GlobalLayer } from '@/components/CategoryCoverage'
 import { Skeleton } from '@/components/Skeleton'
 import { PageLoader } from './DashboardPage'
 import { formatMins } from '@/lib/timeFormat'
@@ -153,6 +154,17 @@ export function ProfilesPage() {
   }, [profilesQuery.data, globalProfileQuery.data])
   const devices   = devicesQuery.data   ?? []
   const summaries = summariesQuery.data ?? []
+  // #2824 — half of every profile's category coverage lives on the household-global
+  // sentinel: PolicyService unions its `blockedCategories` into every
+  // non-default-deny profile's enforced `blocklistIds` (PolicyService.scala:769-771,
+  // #1771). Resolved ONCE here and threaded into each card's coverage chip, so no
+  // card can decide on its own that an unread global layer means "nothing blocked".
+  // A child (`!isWriter`) never fetches it, which leaves the layer pending — and a
+  // pending layer renders a skeleton, not a false all-clear.
+  const globalLayer: GlobalLayer = useMemo(
+    () => globalLayerFrom(globalProfileQuery),
+    [globalProfileQuery.isPending, globalProfileQuery.isError, globalProfileQuery.error, globalProfileQuery.data],
+  )
   const [allUsers, setAllUsers] = useState<User[]>([])
   const [auxLoading, setAuxLoading] = useState(true)
   const loading = profilesQuery.isPending || devicesQuery.isPending || auxLoading
@@ -477,6 +489,7 @@ export function ProfilesPage() {
             pd={pd}
             summary={summaryByProfile.get(pd.profile.id)}
             summaryLoading={summariesPending}
+            globalLayer={globalLayer}
             devices={devicesByProfile.get(pd.profile.id) ?? []}
             allDevices={devices}
             users={usersByProfile.get(pd.profile.id) ?? []}
@@ -570,7 +583,7 @@ export function ProfilesPage() {
 // Expanded body holds the inline subsections (#973-#977) that replaced the
 // old per-profile modal, plus the read-only devices listing.
 function ProfileShellRow({
-  pd, summary, summaryLoading, devices, allDevices, users, apps, allUsers, isWriter, isAdmin, expanded, highlight,
+  pd, summary, summaryLoading, globalLayer, devices, allDevices, users, apps, allUsers, isWriter, isAdmin, expanded, highlight,
   onToggle, onDelete, onTogglePause, onGrantTime,
   onAppsChanged, onProfileChanged, updateProfile,
   onToggleUserLink, pendingUserLinks, userLinkError,
@@ -578,6 +591,7 @@ function ProfileShellRow({
   pd: ProfileDetail
   summary: ProfileTimeSummary | undefined
   summaryLoading: boolean
+  globalLayer: GlobalLayer
   devices: Device[]
   allDevices: Device[]
   users: User[]
@@ -753,6 +767,14 @@ function ProfileShellRow({
             )}
           </div>
           )}
+
+          {/* #2824 — blocked-category coverage, visible on the COLLAPSED row. Before
+              this, coverage lived only inside the expanded card (CategoriesSubsection)
+              and cards are collapse-by-default (#972), so a profile blocking NOTHING
+              looked exactly like a protected one — which is how #2823 went unnoticed
+              until adult pop-ups appeared. Same chip geometry as the pause chip beside
+              it, so #2764's row density is unchanged. */}
+          <ProfileCoverageChip profile={pd.profile} global={globalLayer} />
 
           {!isGlobal && (
           <span

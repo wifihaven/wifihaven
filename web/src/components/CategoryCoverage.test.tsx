@@ -12,14 +12,14 @@ vi.mock('@/api/client', () => ({
 }))
 
 import { api } from '@/api/client'
-import { CategoryCoverageOverview, ProfileCoverageChip } from './CategoryCoverage'
+import { CategoryCoverageOverview, ProfileCoverageChip, type GlobalLayer } from './CategoryCoverage'
 
 const mock = (f: unknown) => f as unknown as ReturnType<typeof vi.fn>
 
 function profile(over: Partial<Profile> = {}): Profile {
   return {
     id: 1, name: 'Kids', blockedCategories: [], paused: false,
-    failureMode: 'LastKnownGood', crossDeviceOverlapMode: 'Sum', pauseMode: 'soft',
+    failureMode: 'last-known-good', crossDeviceOverlapMode: 'sum', pauseMode: 'soft',
     defaultDeny: false, ...over,
   }
 }
@@ -38,10 +38,11 @@ const cat = (id: string, name: string): BlocklistSummary => ({
 // that "blocks nothing" is an explicit, visually distinct state rather than the
 // absence of chips.
 describe('ProfileCoverageChip (#2824)', () => {
-  function renderChip(p: Profile, globalCategories: string[], status: 'pending' | 'error' | 'ready' = 'ready') {
-    return render(
-      <ProfileCoverageChip profile={p} globalCategories={globalCategories} globalStatus={status} />,
-    )
+  function renderChip(p: Profile, globalCategories: string[], state: 'pending' | 'error' | 'ready' = 'ready') {
+    const global: GlobalLayer = state === 'ready'
+      ? { state: 'ready', categories: globalCategories }
+      : { state }
+    return render(<ProfileCoverageChip profile={p} global={global} />)
   }
 
   it('renders an explicit "blocks nothing" state, not empty space', () => {

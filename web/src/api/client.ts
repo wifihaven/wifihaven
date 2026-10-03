@@ -1,4 +1,5 @@
 import { apiHealth } from '@/api/apiHealth'
+import { HttpError } from '@/api/httpError'
 import { setMustChangePassword } from '@/api/mustChangePassword'
 import { ACCOUNT_PATH } from '@/routes'
 import type {
@@ -71,6 +72,11 @@ export class ForbiddenError extends Error {
 export function isForbiddenError(e: unknown): boolean {
   return e instanceof ForbiddenError
 }
+
+// #2824: re-exported so `@/api/client` stays the one import site for API error
+// types. The definitions live in the leaf `api/httpError` module, which page
+// tests that mock this module whole can still import for real.
+export { HttpError, httpStatusOf } from './httpError'
 
 // #2492: the server's must_change_password 403. A ForbiddenError subclass so the existing
 // React Query retry policy already skips it — retrying is pointless (only POST
@@ -229,13 +235,17 @@ async function req<T>(
   if (res.status >= 500) {
     apiHealth.reportFailure('5xx')
     const text = await res.text().catch(() => res.statusText)
-    throw new Error(text || `HTTP ${res.status}`)
+    // #2824: HttpError instead of a bare Error so callers can branch on the
+    // status without string-matching the body. Purely additive — `message` and
+    // `instanceof Error` are unchanged, so every existing catch keeps behaving
+    // exactly as before.
+    throw new HttpError(res.status, text || `HTTP ${res.status}`)
   }
 
   if (!res.ok) {
     apiHealth.reportSuccess()
     const text = await res.text().catch(() => res.statusText)
-    throw new Error(text || `HTTP ${res.status}`)
+    throw new HttpError(res.status, text || `HTTP ${res.status}`)
   }
 
   apiHealth.reportSuccess()

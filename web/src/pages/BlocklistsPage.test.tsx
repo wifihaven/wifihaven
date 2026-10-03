@@ -157,7 +157,9 @@ describe('BlocklistsPage — no per-profile assignment matrix (#1473)', () => {
     await screen.findByTestId('blocklist-adult')
     expect(screen.queryByText(/Enabled for/i)).not.toBeInTheDocument()
     // The description routes operators to the profile card for assignment.
-    expect(screen.getByText(/profile/i)).toBeInTheDocument()
+    // (#2824 added a read-only coverage section that also says "profile", so
+    // match the page description itself rather than any mention of the word.)
+    expect(screen.getByText(/Assign a category to a profile from/i)).toBeInTheDocument()
   })
 
   // #2824 added a read-only coverage view here. #1473's boundary is that this
