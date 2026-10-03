@@ -24,7 +24,7 @@
 import { Link } from 'react-router-dom'
 import { useBlocklists, useGlobalProfile, useProfiles } from '@/api/queries'
 import { httpStatusOf } from '@/api/httpError'
-import { profileCoverage, type CoverageKind, type ProfileCoverage } from '@/lib/categoryCoverage'
+import { globalContribution, profileCoverage, type CoverageKind, type ProfileCoverage } from '@/lib/categoryCoverage'
 import { EmptyState } from '@/components/EmptyState'
 import { Skeleton } from '@/components/Skeleton'
 import type { Profile } from '@/types/api'
@@ -59,7 +59,11 @@ export function globalLayerFrom(q: {
     return httpStatusOf(q.error) === 404 ? { state: 'ready', categories: [] } : { state: 'error' }
   }
   if (q.isPending) return { state: 'pending' }
-  return { state: 'ready', categories: q.data?.profile.blockedCategories ?? [] }
+  // `globalContribution`, not the raw list: a default-deny sentinel contributes
+  // NOTHING to other profiles (PolicyService.scala:737-741 + :1518-1526), and
+  // that state is reachable from the sentinel's own card. Crediting its
+  // categories would be a false all-clear.
+  return { state: 'ready', categories: globalContribution(q.data?.profile) }
 }
 
 // Deliberately the same chip geometry as the pause chip in the summary row
@@ -67,11 +71,15 @@ export function globalLayerFrom(q: {
 // unchanged — this adds a sibling chip, not a second line.
 const CHIP_BASE = 'text-xs px-2 py-1 rounded-lg border whitespace-nowrap'
 
-const KIND_CLASS: Record<CoverageKind | 'unknown' | 'none-global', string> = {
+// The "blocks nothing" alarm styling, named once — the chip's filled variant and
+// the grid's text-only cell must not drift apart.
+const TEXT_ALARM = 'text-red-700 font-semibold'
+
+const KIND_CLASS: Record<CoverageTone | 'unknown', string> = {
   // The point of the whole issue: "blocks nothing" is a loud, distinct state, not
   // the absence of chips. Red matches the other "this needs attention now" chip
   // on this row (time-exceeded).
-  'none':         'bg-red-500/10 text-red-700 border-red-500/40 font-semibold',
+  'none':         `bg-red-500/10 border-red-500/40 ${TEXT_ALARM}`,
   'covered':      'bg-brand-alt text-brand-text border-brand-border-strong',
   'default-deny': 'bg-brand-accent/10 text-brand-accent border-brand-accent/20',
   // The sentinel IS the household-wide layer; carrying no categories there is the
@@ -80,13 +88,42 @@ const KIND_CLASS: Record<CoverageKind | 'unknown' | 'none-global', string> = {
   'unknown':      'bg-amber-500/10 text-amber-700 border-amber-500/20',
 }
 
+/**
+ * The ONE place a coverage result becomes something an operator reads. Both
+ * surfaces call it, so the chip and the grid cannot disagree about which state a
+ * profile is in — the computation being single-sourced is not enough if the
+ * presentation re-derives the same four branches twice.
+ */
+export type CoverageTone = CoverageKind | 'none-global'
+
+export function coverageTone(c: ProfileCoverage, isGlobal: boolean): CoverageTone {
+  return c.kind === 'none' && isGlobal ? 'none-global' : c.kind
+}
+
+/**
+ * `total` (the catalog size) switches the covered label between the chip's
+ * "9 categories" and the grid's "9 of 10"; everything else is identical.
+ */
+export function coverageLabel(
+  c: ProfileCoverage,
+  isGlobal: boolean,
+  total?: number,
+): string {
+  if (c.kind === 'default-deny') return 'Blocks all'
+  if (c.effective.length === 0) return isGlobal ? 'No categories' : '⚠ Blocks nothing'
+  if (total != null) return `${c.effective.length} of ${total}`
+  return `${c.effective.length} ${c.effective.length === 1 ? 'category' : 'categories'}`
+}
+
 function coverageTitle(c: ProfileCoverage, isGlobal: boolean): string {
   if (c.kind === 'default-deny') {
     return 'Default-deny: everything is blocked except this profile’s allowed apps and hosts.'
   }
   if (c.effective.length === 0) {
     return isGlobal
-      ? 'No categories are blocked household-wide. Profiles can still block categories of their own.'
+      ? 'Nothing is blocked household-wide. (Default-deny on this profile does not apply ' +
+        'household-wide either — it contributes no categories to other profiles.) ' +
+        'Profiles can still block categories of their own.'
       : 'This profile blocks no content categories. Expand the card to assign some.'
   }
   const own = c.own.length > 0 ? `On this profile: ${c.own.join(', ')}.` : ''
@@ -137,11 +174,8 @@ export function ProfileCoverageChip({
   }
 
   const c = profileCoverage(profile, layer.categories)
-  const tone = c.kind === 'none' && isGlobal ? 'none-global' : c.kind
-  const label =
-    c.kind === 'default-deny' ? 'Blocks all'
-      : c.effective.length === 0 ? (isGlobal ? 'No categories' : '⚠ Blocks nothing')
-        : `${c.effective.length} ${c.effective.length === 1 ? 'category' : 'categories'}`
+  const tone = coverageTone(c, isGlobal)
+  const label = coverageLabel(c, isGlobal)
   // At phone width the summary row cannot carry the full label alongside the
   // pause chip, the pause button and Delete — it overlaps the profile name. Drop
   // to a glyph/number there; the colour still carries the alarm, and the full
@@ -156,6 +190,7 @@ export function ProfileCoverageChip({
       data-testid={`profile-coverage-${profile.id}`}
       data-coverage={tone}
       title={coverageTitle(c, isGlobal)}
+      role="img"
       aria-label={`Blocked categories: ${label}`}
       className={`${CHIP_BASE} ${KIND_CLASS[tone]}`}
     >
@@ -197,11 +232,8 @@ function CoverageRow({ profile, global, categoryIds, isGlobalRow }: {
   const c = profileCoverage(profile, global)
   const ownSet = new Set(c.own)
   const inheritedSet = new Set(c.inherited)
-  const countTone = c.kind === 'none' && isGlobalRow ? 'none-global' : c.kind
-  const countLabel =
-    c.kind === 'default-deny' ? 'Blocks all'
-      : c.effective.length === 0 ? (isGlobalRow ? 'None' : '⚠ Blocks nothing')
-        : `${c.effective.length} of ${categoryIds.length}`
+  const countTone = coverageTone(c, isGlobalRow)
+  const countLabel = coverageLabel(c, isGlobalRow, categoryIds.length)
 
   return (
     <tr
@@ -225,7 +257,7 @@ function CoverageRow({ profile, global, categoryIds, isGlobalRow }: {
         data-testid={isGlobalRow ? 'category-coverage-count-global' : `category-coverage-count-${profile.id}`}
         data-coverage={countTone}
         className={`px-3 py-1.5 whitespace-nowrap text-xs ${
-          countTone === 'none' ? 'text-red-700 font-semibold' : 'text-brand-text-muted'
+          countTone === 'none' ? TEXT_ALARM : 'text-brand-text-muted'
         }`}
       >
         {countLabel}

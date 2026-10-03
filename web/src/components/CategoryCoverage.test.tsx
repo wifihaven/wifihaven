@@ -13,6 +13,7 @@ vi.mock('@/api/client', () => ({
 
 import { api } from '@/api/client'
 import { CategoryCoverageOverview, ProfileCoverageChip, type GlobalLayer } from './CategoryCoverage'
+import { globalContribution } from '@/lib/categoryCoverage'
 
 const mock = (f: unknown) => f as unknown as ReturnType<typeof vi.fn>
 
@@ -172,5 +173,77 @@ describe('CategoryCoverageOverview (#2824)', () => {
     expect(within(table).queryAllByRole('checkbox')).toHaveLength(0)
     expect(within(table).queryAllByRole('button')).toHaveLength(0)
     expect(table.querySelectorAll('input, select, textarea')).toHaveLength(0)
+  })
+})
+
+// #2824 review BLOCKER — end-to-end through the component, not just the helper:
+// a default-deny household-global sentinel must not hand anyone coverage, and
+// must not claim to block everything household-wide.
+describe('CategoryCoverage — a default-deny sentinel contributes nothing (#2824)', () => {
+  const kids   = profile({ id: 1, name: 'Kids', blockedCategories: ['ads'] })
+  const sameer = profile({ id: 2, name: 'Sameer', blockedCategories: [] })
+  const ddGlobal = profile({
+    id: 99, name: 'Household', isGlobal: true, defaultDeny: true, blockedCategories: ['adult', 'malware'],
+  })
+
+  beforeEach(() => {
+    vi.resetAllMocks()
+    mock(api.blocklists.list).mockResolvedValue([cat('ads', 'Ads'), cat('adult', 'Adult'), cat('malware', 'Malware')])
+    mock(api.profiles.list).mockResolvedValue([detail(kids), detail(sameer)])
+    mock(api.profiles.getGlobal).mockResolvedValue(detail(ddGlobal))
+  })
+
+  it('still flags the profile whose only coverage would have been inherited', async () => {
+    render(withQuery(<MemoryRouter><CategoryCoverageOverview /></MemoryRouter>))
+    await screen.findByTestId('category-coverage-table')
+    expect(screen.getByTestId('category-coverage-count-2')).toHaveAttribute('data-coverage', 'none')
+    expect(screen.getByTestId('category-coverage-cell-2-adult')).toHaveAttribute('data-coverage', 'none')
+    // …and Kids keeps only what it owns.
+    expect(screen.getByTestId('category-coverage-cell-1-ads')).toHaveAttribute('data-coverage', 'own')
+    expect(screen.getByTestId('category-coverage-cell-1-malware')).toHaveAttribute('data-coverage', 'none')
+  })
+
+  it('does not render the sentinel row as blocking everything household-wide', async () => {
+    render(withQuery(<MemoryRouter><CategoryCoverageOverview /></MemoryRouter>))
+    await screen.findByTestId('category-coverage-table')
+    const count = screen.getByTestId('category-coverage-count-global')
+    expect(count).toHaveAttribute('data-coverage', 'none-global')
+    expect(count).not.toHaveTextContent(/blocks all/i)
+    expect(screen.getByTestId('category-coverage-cell-global-adult')).toHaveAttribute('data-coverage', 'none')
+  })
+
+  it('does not credit the chip either', () => {
+    render(<ProfileCoverageChip
+      profile={sameer}
+      global={{ state: 'ready', categories: globalContribution(ddGlobal) }}
+    />)
+    const chip = screen.getByTestId('profile-coverage-2')
+    expect(chip).toHaveAttribute('data-coverage', 'none')
+    expect(chip).toHaveTextContent(/blocks nothing/i)
+  })
+})
+
+// #2824 review — a 404 from GET /api/profiles/global means the household has no
+// sentinel row (V65..V73 provisioning gap); the grid still renders, as an absent
+// global layer rather than an unreadable one.
+describe('CategoryCoverageOverview — absent global sentinel (#2824)', () => {
+  beforeEach(() => {
+    vi.resetAllMocks()
+    mock(api.blocklists.list).mockResolvedValue([cat('ads', 'Ads'), cat('adult', 'Adult')])
+    mock(api.profiles.list).mockResolvedValue([
+      detail(profile({ id: 1, name: 'Kids', blockedCategories: ['adult'] })),
+      detail(profile({ id: 2, name: 'Sameer', blockedCategories: [] })),
+    ])
+    mock(api.profiles.getGlobal).mockRejectedValue(
+      Object.assign(new Error('Global profile not seeded'), { status: 404 }),
+    )
+  })
+
+  it('renders the grid rather than an error, and omits the household-wide row', async () => {
+    render(withQuery(<MemoryRouter><CategoryCoverageOverview /></MemoryRouter>))
+    const table = await screen.findByTestId('category-coverage-table')
+    expect(screen.queryByTestId('category-coverage-error')).not.toBeInTheDocument()
+    expect(within(table).queryByTestId('category-coverage-row-global')).not.toBeInTheDocument()
+    expect(screen.getByTestId('category-coverage-count-2')).toHaveTextContent(/blocks nothing/i)
   })
 })

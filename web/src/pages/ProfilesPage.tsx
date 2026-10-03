@@ -155,16 +155,18 @@ export function ProfilesPage() {
   const devices   = devicesQuery.data   ?? []
   const summaries = summariesQuery.data ?? []
   // #2824 — half of every profile's category coverage lives on the household-global
-  // sentinel: PolicyService unions its `blockedCategories` into every
-  // non-default-deny profile's enforced `blocklistIds` (PolicyService.scala:769-771,
-  // #1771). Resolved ONCE here and threaded into each card's coverage chip, so no
-  // card can decide on its own that an unread global layer means "nothing blocked".
-  // A child (`!isWriter`) never fetches it, which leaves the layer pending — and a
-  // pending layer renders a skeleton, not a false all-clear.
-  const globalLayer: GlobalLayer = useMemo(
-    () => globalLayerFrom(globalProfileQuery),
-    [globalProfileQuery.isPending, globalProfileQuery.isError, globalProfileQuery.error, globalProfileQuery.data],
-  )
+  // sentinel: PolicyService unions its contribution into every non-default-deny
+  // profile's enforced `blocklistIds` (PolicyService.scala:769-771, #1771). Resolved
+  // ONCE here and threaded into each card's coverage chip, so no card can decide on
+  // its own that an unread global layer means "nothing blocked". Cheap and derived
+  // from the query's own state, so it is recomputed each render rather than memoized
+  // against a hand-listed set of query fields that a later reader could out-grow.
+  //
+  // `useGlobalProfile` is gated on `isWriter`, and a DISABLED react-query stays
+  // `isPending` forever — so for a child this would be a skeleton that never
+  // resolves. Coverage is a parenting signal; the chip is writer-only (below) and
+  // this is never consulted for a child.
+  const globalLayer: GlobalLayer = globalLayerFrom(globalProfileQuery)
   const [allUsers, setAllUsers] = useState<User[]>([])
   const [auxLoading, setAuxLoading] = useState(true)
   const loading = profilesQuery.isPending || devicesQuery.isPending || auxLoading
@@ -777,7 +779,7 @@ function ProfileShellRow({
               looked exactly like a protected one — which is how #2823 went unnoticed
               until adult pop-ups appeared. Same chip geometry as the pause chip beside
               it, so #2764's row density is unchanged. */}
-          <ProfileCoverageChip profile={pd.profile} global={globalLayer} />
+          {isWriter && <ProfileCoverageChip profile={pd.profile} global={globalLayer} />}
 
           {!isGlobal && (
           <span

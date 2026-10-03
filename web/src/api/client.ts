@@ -1,4 +1,7 @@
 import { apiHealth } from '@/api/apiHealth'
+// #2824: HttpError lives in the leaf `api/httpError` module, NOT here, so a
+// component can import it without pulling in this module — which most page tests
+// mock wholesale, and a mocked module cannot supply a helper the component calls.
 import { HttpError } from '@/api/httpError'
 import { setMustChangePassword } from '@/api/mustChangePassword'
 import { ACCOUNT_PATH } from '@/routes'
@@ -72,11 +75,6 @@ export class ForbiddenError extends Error {
 export function isForbiddenError(e: unknown): boolean {
   return e instanceof ForbiddenError
 }
-
-// #2824: re-exported so `@/api/client` stays the one import site for API error
-// types. The definitions live in the leaf `api/httpError` module, which page
-// tests that mock this module whole can still import for real.
-export { HttpError, httpStatusOf } from './httpError'
 
 // #2492: the server's must_change_password 403. A ForbiddenError subclass so the existing
 // React Query retry policy already skips it — retrying is pointless (only POST

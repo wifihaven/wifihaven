@@ -4,6 +4,7 @@
 // the first occurrence), plus pass-through of date/tz/topN/groupBy.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { api, isCanceledError } from './client'
+import { httpStatusOf } from './httpError'
 import { apiHealth } from './apiHealth'
 import type { UsageSeriesBatchResponse } from '@/types/api'
 
@@ -164,5 +165,47 @@ describe('req caller-cancellation is not an API-down signal (#2047)', () => {
     expect(apiHealth.snapshot().unreachable).toBe(true)
     expect(apiHealth.snapshot().reason).toBe('timeout')
     vi.useRealTimers()
+  })
+})
+
+// #2824 — the production behaviour behind the category-coverage view's "is this
+// household's global layer ABSENT, or did the read FAIL?" distinction. A 404 from
+// `GET /api/profiles/global` is an absent sentinel (true for households
+// provisioned between V65 and V73) and resolves to an empty, computable layer;
+// anything else makes coverage unknowable. Without a status on the thrown error
+// that distinction has to string-match a response body. Asserted here because
+// every OTHER test duck-types `status` onto a plain Error, so reverting this to
+// `throw new Error(...)` would leave the whole suite green while regressing every
+// such household to "Coverage unknown".
+describe('req carries the HTTP status on a rejected response (#2824)', () => {
+  function errorResponse(status: number, body: string): Response {
+    return {
+      ok: false,
+      status,
+      statusText: `HTTP ${status}`,
+      headers: new Headers(),
+      text: () => Promise.resolve(body),
+    } as unknown as Response
+  }
+
+  it('rejects a 404 with the status and the body as the message', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(errorResponse(404, 'Global profile not seeded')))
+    const err = await api.profiles.getGlobal().then(() => null, (e: unknown) => e)
+    expect(err).toBeInstanceOf(Error)
+    expect(httpStatusOf(err)).toBe(404)
+    expect((err as Error).message).toBe('Global profile not seeded')
+  })
+
+  it('carries the status on a 5xx too, so it is distinguishable from the 404', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(errorResponse(500, 'boom')))
+    const err = await api.profiles.getGlobal().then(() => null, (e: unknown) => e)
+    expect(httpStatusOf(err)).toBe(500)
+  })
+
+  it('falls back to a status-derived message when the body is empty', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(errorResponse(409, '')))
+    const err = await api.profiles.getGlobal().then(() => null, (e: unknown) => e)
+    expect(httpStatusOf(err)).toBe(409)
+    expect((err as Error).message).toBe('HTTP 409')
   })
 })

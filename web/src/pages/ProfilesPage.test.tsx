@@ -2824,6 +2824,20 @@ describe('ProfilesPage — category coverage on the collapsed summary (#2824)', 
     expect(screen.queryByTestId('profile-coverage-1')).not.toBeInTheDocument()
   })
 
+  // #2824 review — `useGlobalProfile` is gated on `isWriter` (#1773/#2522), and a
+  // DISABLED react-query stays `isPending` forever. Rendering the chip for a child
+  // would therefore pin a skeleton that never resolves on every card, for the whole
+  // session. Coverage is a parenting signal; the chip is writer-only.
+  it('renders no coverage chip — and no stuck skeleton — for a child', async () => {
+    mockAuth = { isAdmin: false, isWriter: false }
+    renderPage()
+    await screen.findByTestId('profile-card-1')
+    expect(screen.queryByTestId('profile-coverage-1')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('profile-coverage-loading-1')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('profile-coverage-2')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('profile-coverage-loading-2')).not.toBeInTheDocument()
+  })
+
   it('does not flag a default-deny profile, which blocks strictly more', async () => {
     (api.profiles.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([
       kidsProfile,

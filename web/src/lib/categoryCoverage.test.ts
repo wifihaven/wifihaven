@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { profileCoverage } from './categoryCoverage'
+import { globalContribution, profileCoverage } from './categoryCoverage'
 
 // #2824 — the operator believed `adult` was on their profile; it was not, and
 // nothing in the UI said so (#2823). Coverage is computed here ONCE so the
@@ -60,5 +60,47 @@ describe('profileCoverage (#2824)', () => {
     expect(c.own).toEqual(['adult'])
     expect(c.inherited).toEqual([])
     expect(c.effective).toEqual(['adult'])
+  })
+})
+
+// #2824 review BLOCKER — the sentinel's CONTRIBUTION is not its category list.
+// `globalRulesResolved` is `computeRulesFor(sentinel)` with `blocked` /
+// `blockReason` stripped (api/src/policy/PolicyService.scala:737-741, #1771), and
+// `computeBlockRules` returns `blocklistIds = Nil` for a default-deny profile
+// (:1518-1526, #1318). So a sentinel switched to default-deny contributes NOTHING:
+// its categories reach no profile, and the stripped `blocked` means it cannot
+// block the household either. That state is reachable — PATCH rejects only
+// paused/pauseMode/timeLimit on the sentinel (Routes.scala:802-815) and
+// ProfilesPage renders DefaultDenySubsection on its card with no isGlobal gate.
+describe('globalContribution — a default-deny sentinel contributes nothing (#2824)', () => {
+  it('is the sentinel\'s categories when it is not default-deny', () => {
+    expect(globalContribution({ blockedCategories: ['malware', 'ads'], defaultDeny: false }))
+      .toEqual(['ads', 'malware'])
+  })
+
+  it('is EMPTY when the sentinel is default-deny', () => {
+    expect(globalContribution({ blockedCategories: ['adult'], defaultDeny: true })).toEqual([])
+  })
+
+  it('is empty when there is no sentinel at all', () => {
+    expect(globalContribution(undefined)).toEqual([])
+  })
+
+  // The false all-clear this surface exists to prevent: a profile whose only
+  // coverage came from a now-default-deny sentinel must read as unprotected.
+  it('leaves a profile covered only by a default-deny sentinel reading "blocks nothing"', () => {
+    const sentinel = { blockedCategories: ['adult'], defaultDeny: true }
+    const c = profileCoverage(p([]), globalContribution(sentinel))
+    expect(c.kind).toBe('none')
+    expect(c.effective).toEqual([])
+  })
+
+  // …and the sentinel's own row must not claim to block everything household-wide,
+  // because PolicyService refuses to fold its `blocked` into anything.
+  it('never scores the sentinel itself as default-deny/block-all', () => {
+    const c = profileCoverage(p(['adult'], { isGlobal: true, defaultDeny: true }), [])
+    expect(c.kind).toBe('none')
+    expect(c.own).toEqual([])
+    expect(c.effective).toEqual([])
   })
 })
