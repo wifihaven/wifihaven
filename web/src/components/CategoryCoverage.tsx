@@ -115,16 +115,19 @@ export function coverageLabel(
   return `${c.effective.length} ${c.effective.length === 1 ? 'category' : 'categories'}`
 }
 
-function coverageTitle(c: ProfileCoverage, isGlobal: boolean): string {
+function coverageTitle(c: ProfileCoverage, isGlobal: boolean, defaultDeny: boolean): string {
   if (c.kind === 'default-deny') {
     return 'Default-deny: everything is blocked except this profile’s allowed apps and hosts.'
   }
   if (c.effective.length === 0) {
-    return isGlobal
-      ? 'Nothing is blocked household-wide. (Default-deny on this profile does not apply ' +
-        'household-wide either — it contributes no categories to other profiles.) ' +
-        'Profiles can still block categories of their own.'
-      : 'This profile blocks no content categories. Expand the card to assign some.'
+    if (!isGlobal) return 'This profile blocks no content categories. Expand the card to assign some.'
+    // TODO(#2830): default-deny on the sentinel is a control that enforces nothing
+    // — PolicyService strips its `blocked` and zeroes its `blocklistIds`. Until the
+    // API refuses that write and the UI stops offering it, say so when it is on.
+    return defaultDeny
+      ? 'Nothing is blocked household-wide. Default-deny is set on this profile but does not ' +
+        'apply household-wide — it contributes no categories to other profiles (#2830).'
+      : 'Nothing is blocked household-wide. Profiles can still block categories of their own.'
   }
   const own = c.own.length > 0 ? `On this profile: ${c.own.join(', ')}.` : ''
   const inh = c.inherited.length > 0 ? ` Household-wide: ${c.inherited.join(', ')}.` : ''
@@ -189,7 +192,7 @@ export function ProfileCoverageChip({
     <span
       data-testid={`profile-coverage-${profile.id}`}
       data-coverage={tone}
-      title={coverageTitle(c, isGlobal)}
+      title={coverageTitle(c, isGlobal, profile.defaultDeny)}
       role="img"
       aria-label={`Blocked categories: ${label}`}
       className={`${CHIP_BASE} ${KIND_CLASS[tone]}`}
@@ -210,7 +213,7 @@ const CELL_GLYPH: Record<'own' | 'inherited' | 'default-deny' | 'none', string> 
 }
 
 const CELL_CLASS: Record<'own' | 'inherited' | 'default-deny' | 'none', string> = {
-  'own':          'text-red-700 font-semibold',
+  'own':          TEXT_ALARM,
   'inherited':    'text-brand-text-muted',
   'default-deny': 'text-brand-accent',
   'none':         'text-brand-border-strong',
@@ -223,12 +226,15 @@ const CELL_TITLE: Record<'own' | 'inherited' | 'default-deny' | 'none', string> 
   'none':         'Not blocked',
 }
 
-function CoverageRow({ profile, global, categoryIds, isGlobalRow }: {
+function CoverageRow({ profile, global, categoryIds }: {
   profile: Profile
   global: readonly string[]
   categoryIds: string[]
-  isGlobalRow: boolean
 }) {
+  // ONE source for "is this the sentinel": `profileCoverage` keys its early return
+  // off `profile.isGlobal`, so tone/label must too. A disagreement between the two
+  // would resurrect the "Blocks all" sentinel row the #2824 review blocked on.
+  const isGlobalRow = profile.isGlobal === true
   const c = profileCoverage(profile, global)
   const ownSet = new Set(c.own)
   const inheritedSet = new Set(c.inherited)
@@ -391,7 +397,6 @@ export function CategoryCoverageOverview() {
                 profile={globalProfile}
                 global={globalCategories}
                 categoryIds={categoryIds}
-                isGlobalRow
               />
             )}
             {profiles.map(p => (
@@ -400,7 +405,6 @@ export function CategoryCoverageOverview() {
                 profile={p}
                 global={globalCategories}
                 categoryIds={categoryIds}
-                isGlobalRow={false}
               />
             ))}
           </tbody>

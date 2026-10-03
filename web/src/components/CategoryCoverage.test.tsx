@@ -209,6 +209,9 @@ describe('CategoryCoverage — a default-deny sentinel contributes nothing (#282
     const count = screen.getByTestId('category-coverage-count-global')
     expect(count).toHaveAttribute('data-coverage', 'none-global')
     expect(count).not.toHaveTextContent(/blocks all/i)
+    // Pinned because the chip/grid label collapse quietly changed this string once
+    // and 850 tests stayed green through a user-visible change.
+    expect(count).toHaveTextContent('No categories')
     expect(screen.getByTestId('category-coverage-cell-global-adult')).toHaveAttribute('data-coverage', 'none')
   })
 

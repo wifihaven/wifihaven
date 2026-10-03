@@ -182,7 +182,9 @@ describe('req carries the HTTP status on a rejected response (#2824)', () => {
     return {
       ok: false,
       status,
-      statusText: `HTTP ${status}`,
+      // Distinct from the `HTTP <status>` fallback under test, so the assertion
+      // can tell the two apart.
+      statusText: 'Server-supplied status text',
       headers: new Headers(),
       text: () => Promise.resolve(body),
     } as unknown as Response
