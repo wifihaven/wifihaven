@@ -9,12 +9,20 @@
 // you configure a profile's policy on the profile page. This page is the
 // read-only catalog: what categories exist and what's in them.
 //
+// #2824: and who they apply to. `CategoryCoverageOverview` is a READ-ONLY
+// profiles × categories grid at the top of the page — it answers "which profiles
+// block adult?", which previously meant expanding all seven profile cards one at a
+// time. It is not the matrix #1473 removed: it carries no toggles and writes
+// nothing; each row links to the profile card, which remains the only editing
+// surface.
+//
 // Admin-only — gated at the router (RequireAdmin). The underlying API
 // (`GET /api/blocklists`) also requires admin.
 
 import { useEffect, useMemo, useState } from 'react'
 import { api } from '@/api/client'
 import type { BlocklistSummary } from '@/types/api'
+import { CategoryCoverageOverview } from '@/components/CategoryCoverage'
 import { PageLoader } from './DashboardPage'
 
 const HOSTS_PER_PAGE = 50
@@ -87,6 +95,12 @@ export function BlocklistsPage() {
           {error}
         </div>
       )}
+
+      {/* #2824 — coverage before the catalog: "who is protected" is the question an
+          operator comes here with, and it used to have no answer anywhere. Carries
+          its own loading / error states; a pending or failed read never renders as
+          an empty grid, which would read as "nothing is blocked". */}
+      <CategoryCoverageOverview />
 
       {sortedLists.length === 0 && (
         <p className="text-sm text-brand-text-muted">No blocklists available.</p>

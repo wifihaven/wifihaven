@@ -1,4 +1,8 @@
 import { apiHealth } from '@/api/apiHealth'
+// #2824: HttpError lives in the leaf `api/httpError` module, NOT here, so a
+// component can import it without pulling in this module — which most page tests
+// mock wholesale, and a mocked module cannot supply a helper the component calls.
+import { HttpError } from '@/api/httpError'
 import { setMustChangePassword } from '@/api/mustChangePassword'
 import { ACCOUNT_PATH } from '@/routes'
 import type {
@@ -229,13 +233,17 @@ async function req<T>(
   if (res.status >= 500) {
     apiHealth.reportFailure('5xx')
     const text = await res.text().catch(() => res.statusText)
-    throw new Error(text || `HTTP ${res.status}`)
+    // #2824: HttpError instead of a bare Error so callers can branch on the
+    // status without string-matching the body. Purely additive — `message` and
+    // `instanceof Error` are unchanged, so every existing catch keeps behaving
+    // exactly as before.
+    throw new HttpError(res.status, text || `HTTP ${res.status}`)
   }
 
   if (!res.ok) {
     apiHealth.reportSuccess()
     const text = await res.text().catch(() => res.statusText)
-    throw new Error(text || `HTTP ${res.status}`)
+    throw new HttpError(res.status, text || `HTTP ${res.status}`)
   }
 
   apiHealth.reportSuccess()
