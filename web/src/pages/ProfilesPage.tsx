@@ -721,7 +721,10 @@ function ProfileShellRow({
             onClick={onToggle}
             className="flex-1 text-left min-w-0"
           >
-            <span className="font-semibold text-brand-ink text-lg truncate">{pd.profile.name}</span>
+            {/* #2824: `block` so `truncate` actually clips — an inline span inside
+                the button never shrank, so a long name pushed the summary chips
+                off the row at phone width instead of ellipsing. */}
+            <span className="block font-semibold text-brand-ink text-lg truncate">{pd.profile.name}</span>
           </button>
         )}
 

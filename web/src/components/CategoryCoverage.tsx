@@ -142,15 +142,25 @@ export function ProfileCoverageChip({
     c.kind === 'default-deny' ? 'Blocks all'
       : c.effective.length === 0 ? (isGlobal ? 'No categories' : '⚠ Blocks nothing')
         : `${c.effective.length} ${c.effective.length === 1 ? 'category' : 'categories'}`
+  // At phone width the summary row cannot carry the full label alongside the
+  // pause chip, the pause button and Delete — it overlaps the profile name. Drop
+  // to a glyph/number there; the colour still carries the alarm, and the full
+  // label stays the accessible name (the short form is aria-hidden).
+  const short =
+    c.kind === 'default-deny' ? 'All'
+      : c.effective.length === 0 ? (isGlobal ? '0' : '⚠')
+        : String(c.effective.length)
 
   return (
     <span
       data-testid={`profile-coverage-${profile.id}`}
       data-coverage={tone}
       title={coverageTitle(c, isGlobal)}
+      aria-label={`Blocked categories: ${label}`}
       className={`${CHIP_BASE} ${KIND_CLASS[tone]}`}
     >
-      {label}
+      <span className="sm:hidden" aria-hidden="true">{short}</span>
+      <span className="hidden sm:inline">{label}</span>
     </span>
   )
 }
