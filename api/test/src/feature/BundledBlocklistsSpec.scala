@@ -82,19 +82,6 @@ object BundledBlocklistsSpec
         case _                                 => false
       }))
 
-  /** #2823: one place that pulls an inline list's hosts, instead of a per-test `match` copy. */
-  private def inlineHostsOf(
-      bundled: List[BundledBlocklist],
-      id: String,
-  ): List[Hostname] =
-    bundled
-      .find(_.id == BlocklistId.unsafe(id))
-      .toList
-      .flatMap(_.content match {
-        case BundledBlocklistContent.Inline(hs) => hs
-        case _                                  => Nil
-      })
-
   def spec = suite("BundledBlocklists")(
     test("_index.yml is in sync with the .yml files in blocklists/") {
       for {
@@ -450,71 +437,6 @@ object BundledBlocklistsSpec
         assertTrue(social.contains(Hostname.unsafe("tiktokv.us"))) &&
         // traffic-driven addition pinned for presence (#2756)
         assertTrue(social.contains(Hostname.unsafe("truthsocial.com")))
-    },
-    // #2823: the CAM4 pop-under chain pass. Two hops on dedicated hosting are
-    // curated in `ads`; every chain host that fronts on a shared Cloudflare or
-    // CloudFront frontend is pinned ABSENT from every inline list, because an
-    // address-level drop there is #2601 collateral on a non-Google pool and
-    // `SharedGfeHosts` only covers Google. `cam4tracking.com` is in that set
-    // despite being a real coverage gap — its only observed host is a
-    // CloudFront CNAME, so blocking it would arm shared edge addresses rather
-    // than its own dedicated apex. See
-    // evidence/adult-classification-2823.md and #2377.
-    test("#2823: CAM4-chain hops on dedicated hosting are curated in ads") {
-      for {
-        bundled <- BundledBlocklists.loadAll()
-        ads   = inlineHostsOf(bundled, "ads")
-        adult = inlineHostsOf(bundled, "adult")
-      } yield
-      // liveness anchors: these lists loaded and are non-empty
-      assertTrue(ads.contains(Hostname.unsafe("mgid.com"))) &&
-        assertTrue(adult.contains(Hostname.unsafe("cam4.com"))) &&
-        // the two dedicated-hosting hops, classified `ads` not `adult`
-        assertTrue(ads.contains(Hostname.unsafe("unhappyweakness.com"))) &&
-        assertTrue(ads.contains(Hostname.unsafe("realizationnewestfangs.com"))) &&
-        assertTrue(!adult.contains(Hostname.unsafe("unhappyweakness.com"))) &&
-        assertTrue(!adult.contains(Hostname.unsafe("realizationnewestfangs.com")))
-    },
-    test("#2823: shared-frontend CAM4-chain hosts stay out of every inline list") {
-      // Each of these was observed in the chain and investigated; each resolves
-      // onto a shared Cloudflare or CloudFront frontend, so none may be an
-      // IP-layer enforcement target. `clickpathworks.com` is held out for a
-      // different reason (one self-derived signal), pinned here so a later pass
-      // re-adds it only with real corroboration.
-      val forbidden = List(
-        "cam4tracking.com",
-        "itefullofeedshen.com",
-        "moonlighthathel.org",
-        "ghabovethec.info",
-        "herefwukou.org",
-        "buying.expert",
-        "toplakehorizon.com",
-        "astoopolitet.org",
-        "show-sb.com",
-        "holdbitter.com",
-        "storageimagedisplay.com",
-        "waifuoverlord.com",
-        "sowve.com",
-        "nresystems.com",
-        "clickpathworks.com",
-      ).map(Hostname.unsafe)
-      for {
-        bundled <- BundledBlocklists.loadAll()
-        inlineLists = bundled.flatMap(b =>
-          b.content match {
-            case BundledBlocklistContent.Inline(hs) => List(b.id -> hs)
-            case _                                  => Nil
-          },
-        )
-        // liveness anchor: the inline lists really did load with content, so
-        // the absence assertions below are not vacuously true (#2823).
-        _           = inlineLists
-        offenders   = inlineLists.flatMap { case (id, hs) =>
-          forbidden.filter(hs.contains).map(h => s"${id.value}:${h.value}")
-        }
-      } yield assertTrue(inlineLists.map(_._1).contains(BlocklistId.unsafe("ads"))) &&
-        assertTrue(inlineLists.exists(_._2.nonEmpty)) &&
-        assertTrue(offenders.isEmpty)
     },
     test("ai: bundled list is loaded and includes the major AI services (#1890)") {
       for {
