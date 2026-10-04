@@ -251,7 +251,7 @@ covered; it was the hops that were not.
 
 | apex | category | observed | hosting | why it is safe to add |
 |---|---|---|---|---|
-| `unhappyweakness.com` | `ads` | 2026-09-12 (x3) and 2026-10-03 | Servers.com `172.240.108.x` / `172.240.127.x` + `172.255.141.4` (9 addresses) | Dedicated bulk hosting, **not** a shared CDN frontend; none of its 9 addresses appear in the 785 CDN addresses this household resolves. Gridinsoft 1/100 trust score, multiple malware/phishing blacklist detections. |
+| `unhappyweakness.com` | `ads` | 2026-09-12 (x3) and 2026-10-03 | Servers.com `172.240.108.x` / `172.240.127.x` + `172.255.141.4` (9 addresses) | Dedicated bulk hosting, **not** a shared CDN frontend — these are the apex's own A records on bulk VPS hosting, not a CNAME onto a shared CDN edge, and that is the load-bearing discriminator. (None of its 9 addresses appear in the 785 CDN addresses this household resolves either, but **that check alone is retired as insufficient**: the #2601 harm is to *other tenants* of the pool, which a household-scoped sample cannot measure. See `ads.yml`'s note.) Gridinsoft 1/100 trust score, multiple malware/phishing blacklist detections. |
 | `realizationnewestfangs.com` | `ads` | 2026-10-03 | **identical 9-address set** to the above | Same operator as `unhappyweakness.com`: identical address set, shared nameservers `NS1/NS2.PUBLICDNSSERVICE.COM`, both eNom + privacy proxy + registrant country CZ. Named in the Augur Security fast-flux write-up. Also present in StevenBlack `ads-extended` (exact apex match) — an independent second curator. |
 
 **Held out, despite dedicated hosting:** `clickpathworks.com` (2026-09-12, via
@@ -368,8 +368,9 @@ pull across all 30 devices entirely** — not ranked low, absent. The single
 exception is `waifuoverlord.com` (915,928 bytes), the only hop big enough to
 clear Sameer Mac's 506 KB cut. So the surface every prior pass used could not
 have found `clickpathworks.com`, `unhappyweakness.com`,
-`realizationnewestfangs.com`, or any of the other CDN-fronted hops — at any
-keyword list, however good. (`waifuoverlord.com` is the one it *could* have
+`realizationnewestfangs.com`, or any CDN-fronted hop *other than*
+`waifuoverlord.com` — at any keyword list, however good.
+(`waifuoverlord.com` is the one it *could* have
 found, and `cam4tracking.com` surfaced only because Rachel iPhone's floor
 happens to be 26,497 bytes, putting it at rank 401/500 there.)
 
