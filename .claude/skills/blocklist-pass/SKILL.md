@@ -76,6 +76,20 @@ rather than trusting this line.
 
 ## Step 0 — Pull active traffic (READ-ONLY prod)
 
+> **Run `GET /api/logs` SERIALLY — never in parallel.** Its `domain` filter is
+> a leading-wildcard `ILIKE` that no index can serve
+> (`api/src/db/Repos.scala:3579-3583`), and `hours` is uncapped
+> (`api/src/routes/Routes.scala:2039`), so each request is a sequential scan
+> over that window of `connection_events`. Ten concurrent `hours=720` requests
+> took **prod to HTTP 502 for roughly two minutes** on 2026-10-03; it recovered
+> on its own ~15s after the load stopped. One keyword at a time. Endpoint-side
+> fix options are in
+> [#2828](https://github.com/wifihaven/wifihaven/issues/2828).
+>
+> This warning is about a **pre-existing** endpoint, not about any blocklist
+> entry, which is why it is kept here rather than reverted with the rest of the
+> #2823 pass (#2831).
+
 Same source + auth as `app-catalog-pass` Step 0. Prod `https://api.wifihaven.net`;
 admin password in local memory (`prod_api_admin_password.md`) — read, never
 echo/commit. Pull per-apex bytes/hits across **all** devices (category traffic is
