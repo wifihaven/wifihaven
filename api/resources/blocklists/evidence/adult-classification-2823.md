@@ -117,7 +117,7 @@ trap (#2599/#2742/#2756/#2759), where an AI-branded TLD hid an ad network. Here
 an ad-shaped word (`tracking`) hides a single-brand adult domain. The test is
 the same in both directions: classify on what the apex does, not on the string.
 
-### Shared-IP check (#2369/#2601) — the measurement, and why the "accepted residual" conclusion was wrong
+### Shared-IP check (#2369/#2601) — measurement kept, conclusion retracted
 
 `cam4tracking.com`'s apex is dedicated (MojoHost, above). Its observed host is
 not:
@@ -163,7 +163,8 @@ list. Here:
 at all, so the only thing the block can cost is an intermittent, self-healing
 CloudFront blip.~~ **Struck — this reasoning is wrong and the entry was not
 added.** The #2601 harm is to *other tenants of the pool*, so the blocked
-domain's own legitimacy has no bearing on it. See the revision banner. Residual exposure tracked in
+domain's own legitimacy has no bearing on it. See the revision banner at the
+top of this note. Residual exposure tracked in
 [#2826](https://github.com/wifihaven/wifihaven/issues/2826).
 
 Deliberately **not** added, for the same shared-pool reason plus redundancy:
@@ -361,15 +362,16 @@ landed at **rank 401 of 500**. Had that device been slightly busier, this pass
 would have reported "adult: 0 gaps" for the eighth time.
 
 **The decisive measurement: the truncation hid the entire chain, not one host.**
-Of the **16** chain hops enumerated across the sections above (17 apexes counting `cam4tracking.com`), **15 are absent
-from the 30-day `recent-apexes` pull across all 30 devices entirely** — not
-ranked low, absent. The single exception is `waifuoverlord.com` (915,928 bytes),
-the only one big enough to clear Sameer Mac's 506 KB cut. So the surface every
-prior pass used could not have found `clickpathworks.com`,
-`unhappyweakness.com`, `realizationnewestfangs.com` or the
-Cloudflare/CloudFront-fronted hops at any keyword list, however good. `cam4tracking.com`
-surfaced at all only because Rachel iPhone's floor happens to be 26,497 bytes
-and it landed at rank 401/500 there.
+Of the **16** chain hops enumerated across the sections above (17 apexes
+counting `cam4tracking.com`), **15 are absent from the 30-day `recent-apexes`
+pull across all 30 devices entirely** — not ranked low, absent. The single
+exception is `waifuoverlord.com` (915,928 bytes), the only hop big enough to
+clear Sameer Mac's 506 KB cut. So the surface every prior pass used could not
+have found `clickpathworks.com`, `unhappyweakness.com`,
+`realizationnewestfangs.com`, or any of the other CDN-fronted hops — at any
+keyword list, however good. (`waifuoverlord.com` is the one it *could* have
+found, and `cam4tracking.com` surfaced only because Rachel iPhone's floor
+happens to be 26,497 bytes, putting it at rank 401/500 there.)
 
 **This is structural, and it is worst exactly where it matters.** Pop-unders,
 redirect hops and tracking pixels are low-byte by construction, and the

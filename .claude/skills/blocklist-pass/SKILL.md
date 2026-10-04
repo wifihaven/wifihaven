@@ -303,8 +303,9 @@ that edit in the same PR.** If a step above is now wrong, fix the step too.
   written up as a named technique in Step 1.
 - **2026-10-02** (#2823) — **THE BIG ONE: a shared-CDN frontend disqualifies
   most of what a pop-under/malvertising pass would otherwise add, and the
-  Google-only `SharedGfeHosts` guard does not catch it.** 14 of the 15 held-out
-  chain hosts (including `cam4tracking.com`) resolved onto Cloudflare (`104.18.x`, `104.21.x`, `104.26.x`, `172.66.x`,
+  Google-only `SharedGfeHosts` guard does not catch it.** 14 of the 15
+  held-out chain hosts (`cam4tracking.com` among them) resolved onto
+  Cloudflare (`104.18.x`, `104.21.x`, `104.26.x`, `172.66.x`,
   `172.67.x`) or CloudFront (`13.226.x`, `18.238.x`, `99.84.x`). One —
   `itefullofeedshen.com` — was **measured sharing the exact address
   `18.238.176.120` with one of the household's own CloudFront distributions**,

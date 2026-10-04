@@ -486,7 +486,7 @@ object BundledBlocklistsSpec
       // pass re-adds it only with real corroboration.
       //
       // Covers `devTestBlocklists` as well as the shipped YAML, for the same reason
-      // the #2601 test below (`:579`) does: `test_ads` is a real inline list that reaches
+      // the #2601 test below (`:620`) does: `test_ads` is a real inline list that reaches
       // `blocklistIds` -> `bl_test_ads` whenever WIFIHAVEN_SEED_TEST_BLOCKLISTS is
       // set, so it would reproduce the same collateral on a dev router, and
       // `loadAll()` only sees the YAML resources — hence the explicit `++`.
@@ -518,7 +518,7 @@ object BundledBlocklistsSpec
           }
           // SUFFIX match, not equality — mirrors `SharedGfeHosts.isBanned`
           // (`shared/src/types/SharedGfeHosts.scala:110-113`), the matcher shape the
-          // #2601 sibling test below uses. Exact-apex equality would miss
+          // #2601 sibling test below (`:620`) uses. Exact-apex equality would miss
           // `track.cam4tracking.com`, and that is the ONLY host ever observed for
           // that apex — so the subdomain is the likelier form a future pass would
           // reach for, and its CloudFront edges are the identical harm. Host-scoped
