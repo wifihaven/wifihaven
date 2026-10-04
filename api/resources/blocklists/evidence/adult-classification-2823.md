@@ -34,14 +34,16 @@
 >    — differing retention is plausible but unverified. Sweep both; treat a hit
 >    on either as real.
 
-Prod, 2026-10-02/03, read-only. Four additions: `cam4tracking.com` → `adult`,
-and `unhappyweakness.com` / `realizationnewestfangs.com` / `clickpathworks.com`
-→ `ads`. Two findings matter more than the entries:
+Prod, 2026-10-02/03, read-only. **Two** additions, both to `ads`:
+`unhappyweakness.com` and `realizationnewestfangs.com`. `cam4tracking.com` and
+`clickpathworks.com` were investigated and **held out** — see the revision
+banner above for why. Two findings matter more than the entries:
 
 1. **Why seven prior passes reported the adult sweep empty.** Not because the
    host was new — because the sweep surface truncates by bytes, and this whole
-   class of host is low-byte by construction. 15 of the 16 chain apexes below
-   are invisible to it.
+   class of host is low-byte by construction. Of the 16 chain hops below
+   (17 apexes in all, counting `cam4tracking.com`), **15 are invisible to
+   it** — only `waifuoverlord.com` cleared a byte floor.
 2. **Most of the pop-under chain cannot be blocked at all** with IP-layer
    enforcement: it hides behind shared Cloudflare and CloudFront frontends, so
    blocking it would reproduce #2601. That is the honest answer to "make the
@@ -157,9 +159,11 @@ list. Here:
   the prod snapshot), so there is no allow-carve silently neutering the block
   either way — the trade is the one described here and nothing else.
 
-The trade was taken because `cam4tracking.com` carries no legitimate traffic
+~~The trade was taken because `cam4tracking.com` carries no legitimate traffic
 at all, so the only thing the block can cost is an intermittent, self-healing
-CloudFront blip. Residual exposure tracked in
+CloudFront blip.~~ **Struck — this reasoning is wrong and the entry was not
+added.** The #2601 harm is to *other tenants of the pool*, so the blocked
+domain's own legitimacy has no bearing on it. See the revision banner. Residual exposure tracked in
 [#2826](https://github.com/wifihaven/wifihaven/issues/2826).
 
 Deliberately **not** added, for the same shared-pool reason plus redundancy:
@@ -242,13 +246,25 @@ The chain's terminal network, **`mgid.com`, is already curated** (`ads.yml:166`)
 and confirmed `blocked:true` on prod — so the end of the chain was already
 covered; it was the hops that were not.
 
-### Added — 3 apexes
+### Added — 2 apexes (and one held out)
 
 | apex | category | observed | hosting | why it is safe to add |
 |---|---|---|---|---|
 | `unhappyweakness.com` | `ads` | 2026-09-12 (x3) and 2026-10-03 | Servers.com `172.240.108.x` / `172.240.127.x` + `172.255.141.4` (9 addresses) | Dedicated bulk hosting, **not** a shared CDN frontend; none of its 9 addresses appear in the 785 CDN addresses this household resolves. Gridinsoft 1/100 trust score, multiple malware/phishing blacklist detections. |
 | `realizationnewestfangs.com` | `ads` | 2026-10-03 | **identical 9-address set** to the above | Same operator as `unhappyweakness.com`: identical address set, shared nameservers `NS1/NS2.PUBLICDNSSERVICE.COM`, both eNom + privacy proxy + registrant country CZ. Named in the Augur Security fast-flux write-up. Also present in StevenBlack `ads-extended` (exact apex match) — an independent second curator. |
-| `clickpathworks.com` | `ads` | 2026-09-12 (`filter.`, `xml.`) | one dedicated Webair address `173.239.53.20` | Branded front for the `ak-is2.net` ad-serving network — both observed hosts CNAME into it (`giantpanda.fs.ak-is2.net`, `giantpanda.xml.ak-is2.net`), and that domain's own subdomains are `cpm.`, `rtb-as.`, `*.xml.` ad feeds. Single dedicated address the household's traffic does not otherwise touch. |
+
+**Held out, despite dedicated hosting:** `clickpathworks.com` (2026-09-12, via
+`filter.` and `xml.`; one dedicated Webair address `173.239.53.20` the
+household's traffic does not otherwise touch). It is a branded front for the
+`ak-is2.net` ad-serving network — both observed hosts CNAME into it
+(`giantpanda.fs.ak-is2.net`, `giantpanda.xml.ak-is2.net`), and that domain's
+own subdomains are `cpm.`, `rtb-as.`, `*.xml.` ad feeds. But that is **one**
+self-derived signal: a DNS observation plus an inference from subdomain naming,
+with no independent curator and no reputation datum. Below the
+two-independent-signals bar the `axon.ai` / `trygravity.ai` false positives
+established, so it is pinned absent rather than added. It is therefore the one
+held-out host that is **not** CDN-fronted: 14 of the 15 held out are, it is
+not.
 
 **Classified `ads`, not `adult`, deliberately.** These are a redirect/TDS
 network and an RTB ad-feed network. They happen to land on an adult site in this
@@ -288,8 +304,8 @@ them is indefensible collateral. None of these were added on any confidence
 level — the skip is structural, not a judgement about what the domains are.
 
 **Consequence the operator should know: the pop-unders will keep arriving.**
-All 13 held-out hops sit behind Cloudflare (8) or CloudFront (5), so the three
-entries added here break three hops of a chain that has many more, drawn from a
+Fourteen of the 15 held-out hosts sit behind Cloudflare or CloudFront, so the two
+entries added here break two hops of a chain that has many more, drawn from a
 fleet of ~300 rotating domains. Curated entries are not the fix for this class.
 [#2377](https://github.com/wifihaven/wifihaven/issues/2377) (SNI-level
 disambiguation) is what makes a Cloudflare-fronted host blockable at all;

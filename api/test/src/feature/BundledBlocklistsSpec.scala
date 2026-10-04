@@ -475,13 +475,23 @@ object BundledBlocklistsSpec
         assertTrue(!adult.contains(Hostname.unsafe("unhappyweakness.com"))) &&
         assertTrue(!adult.contains(Hostname.unsafe("realizationnewestfangs.com")))
     },
-    test("#2823: shared-frontend CAM4-chain hosts stay out of every inline list") {
-      // Each of these was observed in the chain and investigated; each resolves
-      // onto a shared Cloudflare or CloudFront frontend, so none may be an
-      // IP-layer enforcement target. `clickpathworks.com` is held out for a
-      // different reason (one self-derived signal), pinned here so a later pass
-      // re-adds it only with real corroboration.
-      val forbidden = List(
+    test("#2823: held-out CAM4-chain hosts stay out of every inline list") {
+      // Each of these was observed in the measured chain and investigated, and each
+      // is held out. Fourteen are held out because they resolve onto a shared
+      // Cloudflare or CloudFront frontend, so they can never be an IP-layer
+      // enforcement target (#2601 on a non-Google pool, which `SharedGfeHosts`
+      // does not cover — it is Google-only). `clickpathworks.com` is the one
+      // exception: it is on a dedicated Webair address, and is held out for a
+      // different reason — a single self-derived signal — pinned here so a later
+      // pass re-adds it only with real corroboration.
+      //
+      // Covers `devTestBlocklists` as well as the shipped YAML, for the same reason
+      // the #2601 test above does: `test_ads` is a real inline list that reaches
+      // `blocklistIds` -> `bl_test_ads` whenever WIFIHAVEN_SEED_TEST_BLOCKLISTS is
+      // set, so it would reproduce the same collateral on a dev router, and
+      // `loadAll()` only sees the YAML resources — hence the explicit `++`.
+      val heldOut = List(
+        // CDN-fronted (14) — unblockable at the IP layer
         "cam4tracking.com",
         "itefullofeedshen.com",
         "moonlighthathel.org",
@@ -496,24 +506,34 @@ object BundledBlocklistsSpec
         "waifuoverlord.com",
         "sowve.com",
         "nresystems.com",
+        // dedicated hosting, held out for insufficient corroboration (1)
         "clickpathworks.com",
       ).map(Hostname.unsafe)
       for {
-        bundled <- BundledBlocklists.loadAll()
-        inlineLists = bundled.flatMap(b =>
-          b.content match {
-            case BundledBlocklistContent.Inline(hs) => List(b.id -> hs)
+        inlineLists <- loadInlineOnly
+        offenders = (inlineLists ++ BundledBlocklists.devTestBlocklists).flatMap { bl =>
+          val hosts = bl.content match {
+            case BundledBlocklistContent.Inline(hs) => hs
             case _                                  => Nil
-          },
-        )
-        // liveness anchor: the inline lists really did load with content, so
-        // the absence assertions below are not vacuously true (#2823).
-        _           = inlineLists
-        offenders   = inlineLists.flatMap { case (id, hs) =>
-          forbidden.filter(hs.contains).map(h => s"${id.value}:${h.value}")
+          }
+          heldOut.filter(hosts.contains).map(h => s"${bl.id.value}:${h.value}")
         }
-      } yield assertTrue(inlineLists.map(_._1).contains(BlocklistId.unsafe("ads"))) &&
-        assertTrue(inlineLists.exists(_._2.nonEmpty)) &&
+      } yield
+      // Liveness anchors FIRST: without these the absence check below passes for
+      // free if the catalogs fail to load or load empty (#2823). `forall` rather
+      // than `exists` so a single empty list cannot hide behind a populated one.
+      assertTrue(inlineLists.map(_.id).contains(BlocklistId.unsafe("adult"))) &&
+        assertTrue(inlineLists.map(_.id).contains(BlocklistId.unsafe("ads"))) &&
+        assertTrue(inlineHostsOf(inlineLists, "adult").contains(Hostname.unsafe("cam4.com"))) &&
+        assertTrue(inlineHostsOf(inlineLists, "ads").contains(Hostname.unsafe("mgid.com"))) &&
+        assertTrue(
+          inlineLists.forall(bl =>
+            bl.content match {
+              case BundledBlocklistContent.Inline(hs) => hs.nonEmpty
+              case _                                  => true
+            },
+          ),
+        ) &&
         assertTrue(offenders.isEmpty)
     },
     test("ai: bundled list is loaded and includes the major AI services (#1890)") {

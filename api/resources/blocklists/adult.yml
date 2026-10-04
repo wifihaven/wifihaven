@@ -55,3 +55,5 @@ hosts:
   # #2377 (SNI-level disambiguation) is what would make it addable. Do not
   # re-add from the hostname alone before then.
   # Evidence: evidence/adult-classification-2823.md
+  # (no host entries below this line — the block above is a do-not-re-add note,
+  #  not an endorsement of anything appended after it.)

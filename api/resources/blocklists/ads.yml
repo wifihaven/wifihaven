@@ -727,13 +727,21 @@ hosts:
   # gamaibids.com precedent), and `malware` is URL-sourced (URLhaus) so it
   # cannot be hand-curated anyway.
   #
-  # Both are on DEDICATED hosting — none of their 9 addresses appears among the
-  # 785 CDN addresses this household resolves. That is the discriminator; all
-  # 14 other hops in the measured chain (including cam4tracking.com) sit behind
-  # shared Cloudflare or CloudFront frontends and were NOT added, because an
-  # address-level drop there is #2601-class collateral. One of them,
-  # itefullofeedshen.com, was measured sharing an exact address with a
-  # household CloudFront distribution.
+  # The discriminator is WHAT KIND OF ADDRESS these answer on, not a
+  # household-scoped lookup. Both resolve to their own A records on bulk VPS
+  # hosting (Servers.com), which is categorically unlike a CNAME onto a CDN
+  # edge that fronts thousands of unrelated distributions: an address-level
+  # drop here cannot take out an unrelated tenant the way #2601 did. (They are
+  # also absent from the 785 CDN addresses this household resolves, but that
+  # check alone would NOT be sufficient — the #2601 harm is to other tenants of
+  # the pool, which a household-scoped sample cannot measure.)
+  #
+  # Of the 15 held-out chain hosts, 14 sit behind shared Cloudflare or
+  # CloudFront frontends (including cam4tracking.com) and were not added for
+  # exactly that reason — one of them, itefullofeedshen.com, was measured
+  # sharing an exact address with a household CloudFront distribution. The
+  # 15th, clickpathworks.com, IS on a dedicated address and is held out for a
+  # different reason: a single self-derived signal.
   #
   # NOTE this fleet is FAST-FLUX by design — ~300 auto-generated compound-word
   # domains that rotate. These two entries block the two members observed here;

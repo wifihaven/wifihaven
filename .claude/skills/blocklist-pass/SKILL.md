@@ -117,8 +117,8 @@ rather than trusting this line.
 > [#2828](https://github.com/wifihaven/wifihaven/issues/2828).
 >
 > This warning is about a **pre-existing** endpoint, not about any blocklist
-> entry, which is why it is kept here rather than reverted with the rest of the
-> #2823 pass (#2831).
+> entry — which is why it was carved out of the #2831 revert and kept on `main`
+> independently of this pass.
 
 Same source + auth as `app-catalog-pass` Step 0. Prod `https://api.wifihaven.net`;
 admin password in local memory (`prod_api_admin_password.md`) — read, never
@@ -280,26 +280,31 @@ that edit in the same PR.** If a step above is now wrong, fix the step too.
   connection events** — under that device's 506 KB floor, by how much the
   surface cannot say, because the row is gone. It surfaced only by luck, via a
   quieter device (26 KB floor) where it landed rank 401/500. Worse: of the 16
-  apexes in the pop-under chain it belonged to, **15 were absent from the pull
-  across all 30 devices entirely**. The truncation is an anti-filter for
-  exactly the low-byte classes a blocklist pass wants — and the floor *rises* with device busyness, so it
-  is blindest on the devices that browse enough to attract this traffic. Fix:
+  *other* apexes in the pop-under chain it belonged to (17 in all, counting
+  `cam4tracking.com` itself), **15 were absent from the pull across all 30
+  devices entirely** — only `waifuoverlord.com`, at ~916 KB, cleared a floor.
+  The truncation is an anti-filter for exactly the low-byte classes a blocklist
+  pass wants — and the floor *rises* with device busyness, so it is blindest on
+  the devices that browse enough to attract this traffic. Fix:
   keyword-sweep through `/api/logs?domain=` (see Step 0), rank with
   `recent-apexes`. Endpoint-side options in #2827.
 - **2026-10-02** (#2823) — **For a reported *behaviour* rather than a named
   site, anchor-and-enumerate beats any keyword sweep.** Pop-under hops are
   randomly-named compound words precisely so no keyword matches them. Pulling
   every host the affected device resolved in a ±5min window around each known
-  `cam4` hit produced the whole chain in order — lure (`thepiratebay.org`,
-  `torrindex.net`) → TDS hops (`clickpathworks.com`, `unhappyweakness.com`) →
-  landing (`track.cam4tracking.com` → `cam4.com`) — at one query per burst.
+  `cam4` hit produced the whole chain in timestamp order — lure
+  (`piratebay.com` at 01:24:11; `torrindex.net` 01:24:22 and
+  `thepiratebay.org` 01:24:23 land *after* the first hops, so within that
+  second the ordering is not strictly resolved) → TDS hops
+  (`clickpathworks.com` 01:24:11, `unhappyweakness.com` 01:24:19) → landing
+  (`track.cam4tracking.com` 01:25:04 → `cam4.com`) — at one query per burst.
   Comparing two bursts three weeks apart separated persistent infrastructure
   (`unhappyweakness.com`, `show-sb.com` in both) from one-off rotation. Now
   written up as a named technique in Step 1.
 - **2026-10-02** (#2823) — **THE BIG ONE: a shared-CDN frontend disqualifies
   most of what a pop-under/malvertising pass would otherwise add, and the
-  Google-only `SharedGfeHosts` guard does not catch it.** ALL 14 held-out
-  chain hosts (including `cam4tracking.com`) resolved onto Cloudflare (`104.18.x`, `104.21.x`, `104.26.x`, `172.66.x`,
+  Google-only `SharedGfeHosts` guard does not catch it.** 14 of the 15
+  held-out chain hosts (including `cam4tracking.com`) resolved onto Cloudflare (`104.18.x`, `104.21.x`, `104.26.x`, `172.66.x`,
   `172.67.x`) or CloudFront (`13.226.x`, `18.238.x`, `99.84.x`). One —
   `itefullofeedshen.com` — was **measured sharing the exact address
   `18.238.176.120` with one of the household's own CloudFront distributions**,
@@ -338,14 +343,16 @@ that edit in the same PR.** If a step above is now wrong, fix the step too.
 - **2026-10-02** (#2823) — **Classify a redirect/TDS hop by what it serves in
   general, not by where the chain happened to land.** The CAM4 pop-under chain
   ends on an adult site, but its hops are a fast-flux TDS and an RTB ad-feed
-  network — so `clickpathworks.com` / `unhappyweakness.com` /
-  `realizationnewestfangs.com` went to `ads.yml`, not `adult.yml`. Filing them
-  under `adult` would make the category mean "things that led to porn once",
-  and would leave them unblocked on a profile running `ads` but not `adult`.
-  The #2823 spec pins them present in `ads` **and absent from `adult`**, so a
-  later pass cannot quietly relocate them. This is the mirror of the
-  `axon.ai`/`mediayo.ai` trap: there an AI-branded TLD hid an ad network, here
-  an adult *destination* hid ad infra. Classify on function, both directions.
+  network — so `unhappyweakness.com` and `realizationnewestfangs.com` went to
+  `ads.yml`, not `adult.yml`. Filing them under `adult` would make the category
+  mean "things that led to porn once", and would leave them unblocked on a
+  profile running `ads` but not `adult`. The spec pins them present in `ads`
+  **and absent from `adult`**, so a later pass cannot quietly relocate them.
+  This is the mirror of the `axon.ai`/`mediayo.ai` trap: there an AI-branded
+  TLD hid an ad network, here an adult *destination* hid ad infra. Classify on
+  function, both directions. (`clickpathworks.com` is the same ad-infra class
+  but was **held out**, not filed — one self-derived signal; see the
+  two-signals learning below. Do not read it as curated.)
 - **2026-10-02** (#2823) — **A fast-flux fleet cannot be hand-curated, and the
   evidence note should say so instead of implying the pass fixed it.**
   `realizationnewestfangs.com` is named in Augur Security's write-up of a TDS
