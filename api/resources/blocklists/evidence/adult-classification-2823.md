@@ -49,7 +49,7 @@ banner above for why. Two findings matter more than the entries:
    blocking it would reproduce #2601. That is the honest answer to "make the
    pop-ups stop," and it is a product gap (#2377), not a list gap.
 
-## Addition 1 — `cam4tracking.com` → `adult`
+## `cam4tracking.com` → investigated, HELD OUT (originally filed here as "Addition 1")
 
 | apex | category | bytes (30d) | hits | what it is |
 |---|---|---|---|---|
@@ -117,7 +117,7 @@ trap (#2599/#2742/#2756/#2759), where an AI-branded TLD hid an ad network. Here
 an ad-shaped word (`tracking`) hides a single-brand adult domain. The test is
 the same in both directions: classify on what the apex does, not on the string.
 
-### Shared-IP check (#2369/#2601) — residual exposure, accepted
+### Shared-IP check (#2369/#2601) — the measurement, and why the "accepted residual" conclusion was wrong
 
 `cam4tracking.com`'s apex is dedicated (MojoHost, above). Its observed host is
 not:
@@ -177,7 +177,7 @@ Clean. No app template or prod app references `cam4` or `xcdnpro`:
 53 prod apps from `GET /api/apps` carry no matching host. So the addition
 cannot collide with an Allowed-mode app's `extraAllowed` carve.
 
-## Additions 2-4 — the redirect chain → `ads`
+## The redirect chain → `ads` — 2 added, 1 held out
 
 The issue asked for "more of the same class — pop-up / pop-under sites the
 operator does not want appearing." Those are not adult sites at all. Enumerating
@@ -275,7 +275,7 @@ running `ads` but not `adult`. A malvertising flag does not disqualify an
 ads-category add (the #2122 `gamaibids.com` precedent); and `malware.yml` is
 URL-sourced from URLhaus, so it cannot be hand-curated regardless.
 
-### Held out — 13 apexes, almost all on shared frontends
+### Held out — 13 apexes, all on shared frontends
 
 This is the substantive finding. **Most of the chain is unblockable** under
 IP-layer enforcement, for the #2601 reason: the nftables set holds the
@@ -361,13 +361,13 @@ landed at **rank 401 of 500**. Had that device been slightly busier, this pass
 would have reported "adult: 0 gaps" for the eighth time.
 
 **The decisive measurement: the truncation hid the entire chain, not one host.**
-Of the **16** chain apexes enumerated in the previous section, **15 are absent
+Of the **16** chain hops enumerated across the sections above (17 apexes counting `cam4tracking.com`), **15 are absent
 from the 30-day `recent-apexes` pull across all 30 devices entirely** — not
 ranked low, absent. The single exception is `waifuoverlord.com` (915,928 bytes),
 the only one big enough to clear Sameer Mac's 506 KB cut. So the surface every
 prior pass used could not have found `clickpathworks.com`,
-`unhappyweakness.com`, `realizationnewestfangs.com` or any of the ten
-Cloudflare-fronted hops at any keyword list, however good. `cam4tracking.com`
+`unhappyweakness.com`, `realizationnewestfangs.com` or the
+Cloudflare/CloudFront-fronted hops at any keyword list, however good. `cam4tracking.com`
 surfaced at all only because Rachel iPhone's floor happens to be 26,497 bytes
 and it landed at rank 401/500 there.
 

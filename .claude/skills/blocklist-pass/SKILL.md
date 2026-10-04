@@ -117,8 +117,8 @@ rather than trusting this line.
 > [#2828](https://github.com/wifihaven/wifihaven/issues/2828).
 >
 > This warning is about a **pre-existing** endpoint, not about any blocklist
-> entry — which is why it was carved out of the #2831 revert and kept on `main`
-> independently of this pass.
+> entry, which is why it is kept here rather than reverted with the rest of the
+> #2823 pass (#2831).
 
 Same source + auth as `app-catalog-pass` Step 0. Prod `https://api.wifihaven.net`;
 admin password in local memory (`prod_api_admin_password.md`) — read, never
@@ -303,8 +303,8 @@ that edit in the same PR.** If a step above is now wrong, fix the step too.
   written up as a named technique in Step 1.
 - **2026-10-02** (#2823) — **THE BIG ONE: a shared-CDN frontend disqualifies
   most of what a pop-under/malvertising pass would otherwise add, and the
-  Google-only `SharedGfeHosts` guard does not catch it.** 14 of the 15
-  held-out chain hosts (including `cam4tracking.com`) resolved onto Cloudflare (`104.18.x`, `104.21.x`, `104.26.x`, `172.66.x`,
+  Google-only `SharedGfeHosts` guard does not catch it.** 14 of the 15 held-out
+  chain hosts (including `cam4tracking.com`) resolved onto Cloudflare (`104.18.x`, `104.21.x`, `104.26.x`, `172.66.x`,
   `172.67.x`) or CloudFront (`13.226.x`, `18.238.x`, `99.84.x`). One —
   `itefullofeedshen.com` — was **measured sharing the exact address
   `18.238.176.120` with one of the household's own CloudFront distributions**,

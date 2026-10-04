@@ -486,7 +486,7 @@ object BundledBlocklistsSpec
       // pass re-adds it only with real corroboration.
       //
       // Covers `devTestBlocklists` as well as the shipped YAML, for the same reason
-      // the #2601 test above does: `test_ads` is a real inline list that reaches
+      // the #2601 test below (`:579`) does: `test_ads` is a real inline list that reaches
       // `blocklistIds` -> `bl_test_ads` whenever WIFIHAVEN_SEED_TEST_BLOCKLISTS is
       // set, so it would reproduce the same collateral on a dev router, and
       // `loadAll()` only sees the YAML resources — hence the explicit `++`.
@@ -516,12 +516,34 @@ object BundledBlocklistsSpec
             case BundledBlocklistContent.Inline(hs) => hs
             case _                                  => Nil
           }
-          heldOut.filter(hosts.contains).map(h => s"${bl.id.value}:${h.value}")
+          // SUFFIX match, not equality — mirrors `SharedGfeHosts.isBanned`
+          // (`shared/src/types/SharedGfeHosts.scala:110-113`), the matcher shape the
+          // #2601 sibling test below uses. Exact-apex equality would miss
+          // `track.cam4tracking.com`, and that is the ONLY host ever observed for
+          // that apex — so the subdomain is the likelier form a future pass would
+          // reach for, and its CloudFront edges are the identical harm. Host-scoped
+          // entries are already normal in these catalogs (`ai.yml` carries
+          // `gemini.google.com`; `games.yml` carries `store.steampowered.com`), so
+          // this is a realistic evasion. Case-folded: `Hostname.unsafe` does not
+          // normalize.
+          hosts
+            .filter { x =>
+              val xv = x.value.toLowerCase
+              heldOut.exists { h =>
+                val hv = h.value.toLowerCase
+                xv == hv || xv.endsWith("." + hv)
+              }
+            }
+            .map(x => s"${bl.id.value}:${x.value}")
         }
       } yield
       // Liveness anchors FIRST: without these the absence check below passes for
-      // free if the catalogs fail to load or load empty (#2823). `forall` rather
-      // than `exists` so a single empty list cannot hide behind a populated one.
+      // free if the catalogs fail to load (#2823). The four `contains` assertions
+      // are the falsifiable ones — they fail if `loadAll()` returns nothing or
+      // drops a list. The trailing `forall(hs.nonEmpty)` cannot actually fail
+      // today (the loader rejects an empty `hosts:` outright,
+      // `BundledBlocklists.scala:157`); it is kept as a cheap guard in case that
+      // validation is ever relaxed.
       assertTrue(inlineLists.map(_.id).contains(BlocklistId.unsafe("adult"))) &&
         assertTrue(inlineLists.map(_.id).contains(BlocklistId.unsafe("ads"))) &&
         assertTrue(inlineHostsOf(inlineLists, "adult").contains(Hostname.unsafe("cam4.com"))) &&
