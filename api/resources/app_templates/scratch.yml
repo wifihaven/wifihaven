@@ -93,7 +93,8 @@ icon_type: url
 # lane — to `b.sni.global.fastly.net`. Per `_README.yml` Class 2 that is
 # LATENT risk, and NOT a reason to strip them: branded asset domains are where
 # the app's own bytes live, and stripping them would defeat the block and
-# under-count the time. Equally, no `*.fastly.net` artifact is pinned here — those rotate.
+# under-count the time. Equally, no `*.fastly.net` artifact is pinned here —
+# those rotate.
 # Covering them via the delegated-zone entry gets both halves right: the
 # Scratch-branded names are in the set, the shared Fastly names are not.
 #

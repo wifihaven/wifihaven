@@ -258,8 +258,9 @@ above is now wrong, fix the step too — don't just log around it.
   first "no answer", then "HTTPS presents a self-signed cert, so no page
   served". The self-signed cert was `CN=block.wifihaven.local`, and
   `curl -k` returned our own block page redirecting to
-  `app.wifihaven.net/blocked?host=scratchfoundation.org&mac=…`. The site is
-  fine; this household is dropping it. **Before writing anything about a
+  `app.wifihaven.net/blocked?host=scratchfoundation.org&mac=…`. The site was
+  fine; this household was dropping it (and had stopped hours later — see the
+  timestamp rule in Step 2). **Before writing anything about a
   candidate's HTTP/TLS behaviour, check the cert subject** — one
   `openssl s_client … | openssl x509 -noout -subject -issuer` — and run a
   control host from the same machine to tell host-specific interception from a

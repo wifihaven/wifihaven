@@ -175,7 +175,8 @@ reads it as a fixed incident.
 Six hosts sit behind Fastly's shared edge: the five asset / CDN lanes, plus
 `backpack`, which is the sprite carrier rather than a CDN lane. Class 2 treats
 that as latent risk and **not** a reason to strip them. They are where the
-app's own bytes live, and stripping them would both defeat the block and under-count the time:
+app's own bytes live, and stripping them would both defeat the block and
+under-count the time:
 those six are 7,720 of the 14,544 proportional seconds, 53% of the app's
 time. Equally, no `*.fastly.net`
 artifact is pinned, since those rotate. The delegated-zone entry gets both
@@ -257,14 +258,16 @@ It also makes the standing point — a block observation is a snapshot, so date
 it. The disposition is unaffected either way: zero traffic on all 30 devices,
 so `scratchfoundation.org` stays excluded on volume, not on reachability.
 
-**The curated-list grep does not cover whatever is dropping it.**
-`grep -rniE 'mit\.edu|scratch'` over `api/resources/blocklists/` is clean
-(re-confirmed), so the drop comes from a *fetched* blocklist, an `extraBlocked`
-entry, or `blockIpOnly` — none of which a repo grep sees. **No host this PR
-ships is affected**: `scratch.mit.edu` completes its TLS handshake against its
-own cert from this machine, so it is not being dropped for this MAC, and there
-is no app-blocklist conflict in the diff. Worth knowing because
-`scratchfoundation.org` and `scratchjr.org` are both recorded as future
+**The curated-list grep did not cover whatever was dropping it.**
+`grep -rniE 'mit\.edu|scratch'` over `api/resources/blocklists/` was clean
+throughout (re-confirmed), so the drop came from a *fetched* blocklist, an
+`extraBlocked` entry, or `blockIpOnly` — none of which a repo grep sees. The
+block clearing within hours with no repo change points at the fetched list.
+
+**No host this PR ships is affected**: `scratch.mit.edu` completes its TLS
+handshake against its own cert from this machine, so it is not being dropped
+for this MAC, and there is no app-blocklist conflict in the diff. Worth knowing
+because `scratchfoundation.org` and `scratchjr.org` are both recorded as future
 candidates, and a later pass measuring them from inside the enforcement plane
 would reach the same wrong conclusion.
 
@@ -281,10 +284,11 @@ list.
 
 Scope of that check: it covers the **curated, repo-authored** lists only. A
 fetched blocklist, an `extraBlocked` entry or `blockIpOnly` is invisible to it
-— see the `scratchfoundation.org` note below for a host that is in fact being
-dropped on this household despite a clean grep. `scratch.mit.edu` itself is
-confirmed reachable from the measurement host (its own TLS cert, not the block
-page), so the shipped host is unaffected.
+— see the dated `scratchfoundation.org` note below for a host that was
+demonstrably being dropped on this household while this grep was clean (it is
+no longer blocked as of 2026-10-05 ~16:30Z, which does not change the point).
+`scratch.mit.edu` itself is confirmed reachable from the measurement host (its
+own TLS cert, not the block page), so the shipped host is unaffected.
 
 ## Icon
 
