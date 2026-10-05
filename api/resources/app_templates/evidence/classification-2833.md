@@ -55,6 +55,15 @@ minutes from `orphanHosts`, which is per-host.
 **242 proportional minutes over 30 days, all of it orphaned** — attributed to
 no app before this template. Profile 7 (Octavius) had none.
 
+Two notes on reading that table, because the figures do not add up naively.
+Each cell is floored to whole minutes, so the cells sum to 236 while the total
+is computed from raw seconds (14,544 s = 242.4 min). And each cell is one
+profile's share, not a host total: across profiles, from raw seconds, the
+per-host figures are `assets` 72.4, `projects` 54.9, `scratch` 45.1, `uploads`
+31.9, `cdn.assets` 14.7, `clouddata` 11.0, `cdn2` 5.7, `backpack` 3.4, `api`
+2.7, `cdn` 0.7. So the largest single host is `assets.scratch.mit.edu`, not the
+54-minute profile-5 `projects` cell.
+
 ## Disposition: new app template, anchoring presence
 
 A kid building, remixing or playing a Scratch project is genuine engagement and
@@ -138,10 +147,12 @@ reads it as a fixed incident.
 | `scratch`, `api`, `projects` `.scratch.mit.edu` | no CNAME (A records direct) |
 | `clouddata.scratch.mit.edu` | no CNAME; generic AWS EC2 addresses |
 
-The asset lanes sit behind Fastly's shared edge. Class 2 says that is latent
+Six hosts sit behind Fastly's shared edge — the five asset lanes plus
+`backpack`. Class 2 says that is latent
 risk and **not** a reason to strip them — they are where the app's own bytes
-live, and stripping them would both defeat the block and under-count the time
-(they are 129 of the 242 proportional minutes). Equally, no `*.fastly.net`
+live, and stripping them would both defeat the block and under-count the time:
+those six are 7,720 of the 14,544 proportional seconds, 53% of the app's
+time. Equally, no `*.fastly.net`
 artifact is pinned, since those rotate. The delegated-zone entry gets both
 halves right in one line: the Scratch-branded names are in the set, the shared
 Fastly names are not.
@@ -165,7 +176,7 @@ The issue asked for this to be decided explicitly rather than defaulted.
 | `packager.turbowarp.org` | 200 "TurboWarp Packager" | none | exclude |
 | `penguinmod.com` | 200 "PenguinMod - Home" | none | exclude |
 | `scratchjr.org` | 200 "ScratchJr - Home" | none | watch-item |
-| `scratchfoundation.org` | no answer | none | exclude |
+| `scratchfoundation.org` | resolves (Fastly `151.101.x.132`), own delegated Route 53 zone; HTTPS presents a self-signed cert, so no page served | none | exclude |
 
 TurboWarp and PenguinMod are third-party Scratch MODS run by different
 operators on different sites. They play Scratch projects, but folding them into
@@ -192,6 +203,13 @@ list.
 ## Icon
 
 `https://icons.duckduckgo.com/ip3/scratch.mit.edu.ico` returns HTTP 200 with a
-real 4,286-byte `image/x-icon` — not the generic placeholder the service serves
-on 404 (`mit.edu` itself 404s with a 1,478-byte PNG placeholder, so the
-subdomain is the right lookup key here).
+real 4,286-byte `image/x-icon` (`file` reports a 32x32 32-bpp icon), so it is
+not the generic placeholder the service serves for domains it does not know.
+
+The `mit.edu` key is **not** used, and not because it fails — checked, it
+returns HTTP 200 with a real 15,406-byte `image/x-icon`, MIT's own
+institutional mark. That is the reason to avoid it: it would label this app
+with the university instead of the product, the same call
+`amazon-telemetry.yml` records when it declines the AWS logo. (An earlier draft
+of this doc claimed the apex 404s with a 1,478-byte PNG placeholder; that was
+one cold-cache response from the favicon service and it is wrong.)

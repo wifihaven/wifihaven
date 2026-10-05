@@ -971,8 +971,12 @@ object AppTemplatesSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
       // construction. `ocw.mit.edu` is a second, independently delegated zone — which is
       // what makes the apex a present multi-service parent rather than a hypothetical.
       //
-      // The positive half is a liveness anchor, not decoration: without it, deleting
-      // `scratch.yml` outright would satisfy the absence assertion for free.
+      // The positive half pins the exact FQDN, which nothing else in this file does —
+      // the pinned slug set above would catch `scratch.yml` being deleted, but not its
+      // host being edited to anything that merely avoids the literal `mit.edu`. So an
+      // absence assertion alone would pass on `www.scratch.mit.edu`, which is why both
+      // halves are here. Verified: each fails on its own (apex entry fails the first,
+      // `www.scratch.mit.edu` the second).
       for {
         templates <- AppTemplates.loadAll()
         offenders = templates.flatMap(t =>
@@ -982,7 +986,6 @@ object AppTemplatesSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
         )
         scratch   = templates.find(_.slug.value == "scratch")
       } yield assertTrue(offenders.isEmpty) &&
-        assertTrue(scratch.isDefined) &&
         assertTrue(scratch.exists(_.hosts.exists(_.value == "scratch.mit.edu")))
     },
   ) @@ TestAspect.sequential

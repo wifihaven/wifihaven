@@ -221,16 +221,39 @@ above is now wrong, fix the step too — don't just log around it.
   them adds zero coverage and rots as the brand adds subdomains. It also resolves
   the Class-2 shared-CDN tension in one line rather than per host: five of those
   lanes CNAME to `d.sni.global.fastly.net`, so an enumerated set would have
-  tempted someone to either strip them (defeating the block, losing 129 of 242
-  proportional minutes) or pin the Fastly target (which rots). The delegated-zone
+  tempted someone to either strip them (defeating the block, losing 53% of the
+  app's proportional time) or pin the Fastly target (which rots). The delegated-zone
   entry keeps the branded names in and the shared names out by construction.
   Check the attribution bound before relying on this: `apexTails(maxHops = 5)`
   found the entry on the 3rd tail of the deepest observed host, so there is
   headroom here — a deeper anchor would need the `amazon-telemetry.yml` warning.
+- **2026-10-05 (#2833)** — **The favicon service's 404 is not durable, so a
+  cold-cache miss reads as "this domain has no icon" when it does.** The #2762
+  entry warns that `icons.duckduckgo.com/ip3/<d>.ico` answers 404 with a generic
+  placeholder for domains it does not know. The inverse bit it: `mit.edu` came
+  back 404 with a 1,478-byte PNG on the first request and HTTP 200 with a real
+  15,406-byte icon minutes later, and a template comment had already been
+  written around the 404. **Request a 404 a second time before writing anything
+  about it**, and never let an icon's availability carry an argument a reader
+  cannot re-check. The independent review caught this one.
+- **2026-10-05 (#2833)** — **A per-profile orphan table does not sum the way a
+  reader assumes, and three published figures in this pass were wrong because of
+  it.** `orphanHosts` rows are per-(profile, host) and the minutes come out of
+  `proportionalSeconds`, so flooring each cell loses up to a minute per row (236
+  vs the true 242 here) and a cell is one profile's share, not a host total — a
+  54-minute cell got written up as "the largest single orphan host" when another
+  host totalled 72 across profiles. **Compute every headline figure from raw
+  seconds, state the per-host totals separately from the per-profile cells, and
+  prefer a share (53% of the app's time) over a derived minute count that a
+  reader will try to add up.** All three slips landed in the PR body, the
+  template comment AND this log before review found them, which is the real
+  lesson: a figure copied into three artifacts is wrong in three places.
 - **2026-10-05 (#2833)** — **State the scope of an exclusion honestly: a
-  structural trap is not an observed one.** Across all 30 devices and 90 days,
-  every single byte under `mit.edu` was `*.scratch.mit.edu` — no other MIT
-  hostname appeared at all. So the apex exclusion prevents a LATENT collateral
+  structural trap is not an observed one.** Swept all 30 devices on the roster
+  over 90 days: every byte under `mit.edu` was `*.scratch.mit.edu`, on the five
+  devices that had any — no other MIT hostname appeared anywhere. (Sweep the
+  WHOLE roster before writing a claim like that; the kid-device sample the rest
+  of the pass is built on cannot support it.) So the apex exclusion prevents a LATENT collateral
   trap; it does not fix something that was happening. Writing it as an observed
   incident would have been the overclaim this log keeps catching. The structural
   argument (both matchers are pure suffix tests, enforcement is IP-layer) is
