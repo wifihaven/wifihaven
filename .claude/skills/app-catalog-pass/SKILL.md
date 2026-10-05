@@ -333,8 +333,8 @@ above is now wrong, fix the step too — don't just log around it.
   over 90 days: every byte under `mit.edu` was `*.scratch.mit.edu`, on the five
   devices that had any — no other MIT hostname appeared anywhere. (Sweep the
   WHOLE roster before writing a claim like that; the kid-device sample the rest
-  of the pass is built on cannot support it.) So the apex exclusion prevents a LATENT collateral
-  trap; it does not fix something that was happening. Writing it as an observed
+  of the pass is built on cannot support it.) So the apex exclusion prevents a
+  LATENT collateral trap; it does not fix something that was happening. Writing it as an observed
   incident would have been the overclaim this log keeps catching. The structural
   argument (both matchers are pure suffix tests, enforcement is IP-layer) is
   enough on its own and does not need inflating.
