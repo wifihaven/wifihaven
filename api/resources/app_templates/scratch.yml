@@ -85,9 +85,11 @@ icon_type: url
 #                                what makes a multiplayer / high-score Scratch
 #                                project work.
 #
-# The six asset / CDN lanes all CNAME to Fastly's shared edge: `assets`,
-# `cdn.assets`, `cdn`, `cdn2` and `uploads` to `d.sni.global.fastly.net`, and
-# `backpack` to `b.sni.global.fastly.net`. Per `_README.yml` Class 2 that is a LATENT risk
+# Six hosts CNAME to Fastly's shared edge: the five asset / CDN lanes
+# (`assets`, `cdn.assets`, `cdn`, `cdn2`, `uploads`) to
+# `d.sni.global.fastly.net`, and `backpack` — the sprite carrier, not a CDN
+# lane — to `b.sni.global.fastly.net`. Per `_README.yml` Class 2 that is a
+# LATENT risk
 # and NOT a reason to strip them: branded asset domains are where the app's own
 # bytes live, and stripping them would defeat the block and under-count the
 # time. Equally, no `*.fastly.net` artifact is pinned here — those rotate.

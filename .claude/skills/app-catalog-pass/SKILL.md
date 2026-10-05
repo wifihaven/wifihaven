@@ -199,6 +199,26 @@ above is now wrong, fix the step too — don't just log around it.
 
 ## Learnings log (newest first)
 
+- **2026-10-05 (#2833)** — **The measurement host sits INSIDE the enforcement
+  plane, so a `curl` that fails is evidence about US before it is evidence about
+  the site.** `scratchfoundation.org` was written up twice and wrong twice —
+  first "no answer", then "HTTPS presents a self-signed cert, so no page
+  served". The self-signed cert was `CN=block.wifihaven.local`, and
+  `curl -k` returned our own block page redirecting to
+  `app.wifihaven.net/blocked?host=scratchfoundation.org&mac=…`. The site is
+  fine; this household is dropping it. **Before writing anything about a
+  candidate's HTTP/TLS behaviour, check the cert subject** — one
+  `openssl s_client … | openssl x509 -noout -subject -issuer` — and run a
+  control host from the same machine to tell host-specific interception from a
+  blanket proxy. A bare HTTP status is not trustworthy from inside the plane;
+  this is the AGENTS.md anti-pattern wearing new clothes, and the whole Step-2
+  `curl`-the-title check inherits the flaw.
+  **Corollary the same finding exposed: the #1983 overlap grep is narrower than
+  it reads.** `grep` over `api/resources/blocklists/` covers the curated,
+  repo-authored lists ONLY — a FETCHED blocklist, an `extraBlocked` entry or
+  `blockIpOnly` is invisible to it. A clean grep plus a host that is demonstrably
+  being dropped is not a contradiction. Say which check you ran, and when a
+  candidate looks dead, suspect our own drop before the site.
 - **2026-10-05 (#2833)** — **An NS DELEGATION is the strongest
   apex-vs-FQDN argument available, and it is the one test no prior pass had
   run.** Scratch lives at `scratch.mit.edu`, under a shared university apex, so
@@ -233,9 +253,13 @@ above is now wrong, fix the step too — don't just log around it.
   placeholder for domains it does not know. The inverse bit it: `mit.edu` came
   back 404 with a 1,478-byte PNG on the first request and HTTP 200 with a real
   15,406-byte icon minutes later, and a template comment had already been
-  written around the 404. **Request a 404 a second time before writing anything
-  about it**, and never let an icon's availability carry an argument a reader
-  cannot re-check. The independent review caught this one.
+  written around the 404. The 404 did not reproduce in five subsequent
+  requests, and **why it happened is unexplained** — "cold-cache miss" was a
+  guess and is not established, so do not repeat it as the mechanism. The
+  prescription stands on the observation alone: **request a 404 a second time
+  before writing anything about it**, and never let an icon's availability
+  carry an argument a reader cannot re-check. The independent review caught
+  this one.
 - **2026-10-05 (#2833)** — **A per-profile orphan table does not sum the way a
   reader assumes, and three published figures in this pass were wrong because of
   it.** `orphanHosts` rows are per-(profile, host) and the minutes come out of

@@ -17,8 +17,15 @@ Kid devices sampled: Kid Laptop (`ca:ef:a1:72:6a:a3`), Kid Mac (2)
 (`b0:de:28:25:93:89`, no rows in window), Octavius iPad
 (`a6:05:9a:63:83:af`), Prima iPad (`8a:8a:0b:86:5a:63`), Prima iPad (3)
 (`ae:2f:81:30:53:6a`), Quintus Chromebook (`c4:13:75:68:a1:01`), Quintus iPad
-(`26:74:fc:f9:4e:9e`). Adult devices swept separately to confirm the host set
-is complete, not to drive the classification.
+(`26:74:fc:f9:4e:9e`). These drove the classification.
+
+**The whole roster was then swept** — `GET /api/devices` returns **30**
+devices, and all 30 were queried over the same 90d window for `mit.edu`,
+`turbowarp`, `penguinmod`, `scratchjr` and `scratchfoundation`. Only the five
+devices in the table below returned anything, every hit was under
+`scratch.mit.edu`, and no device returned a single byte for any of the four
+sibling brands. That sweep is what licenses the "no other MIT hostname
+appeared" claim; the kid-device sample alone could not.
 
 ## Observed traffic
 
@@ -30,8 +37,8 @@ on every device:
 | Quintus Chromebook | 215,904,583 (215.9 MB) | 162 |
 | Kid Laptop | 85,839,730 (85.8 MB) | 98 |
 | Prima iPad | 74,417 (74 KB) | 2 |
-| Sameer Mac (adult) | 168,662,266 (168.7 MB) | 98 |
-| Sameer iPhone (adult) | 1,764,970 (1.8 MB) | — |
+| Sameer Mac (adult) | 168,663,045 (168.7 MB) | 161 |
+| Sameer iPhone (adult) | 1,764,970 (1.8 MB) | 3 |
 
 `recent-apexes` reports bytes per APEX, not per subdomain, so those totals
 cannot be split per host. The per-host figures below are 30d proportional
@@ -147,8 +154,8 @@ reads it as a fixed incident.
 | `scratch`, `api`, `projects` `.scratch.mit.edu` | no CNAME (A records direct) |
 | `clouddata.scratch.mit.edu` | no CNAME; generic AWS EC2 addresses |
 
-Six hosts sit behind Fastly's shared edge — the five asset lanes plus
-`backpack`. Class 2 says that is latent
+Six hosts sit behind Fastly's shared edge: the five asset / CDN lanes, plus
+`backpack`, which is the sprite carrier rather than a CDN lane. Class 2 says that is latent
 risk and **not** a reason to strip them — they are where the app's own bytes
 live, and stripping them would both defeat the block and under-count the time:
 those six are 7,720 of the 14,544 proportional seconds, 53% of the app's
@@ -176,7 +183,7 @@ The issue asked for this to be decided explicitly rather than defaulted.
 | `packager.turbowarp.org` | 200 "TurboWarp Packager" | none | exclude |
 | `penguinmod.com` | 200 "PenguinMod - Home" | none | exclude |
 | `scratchjr.org` | 200 "ScratchJr - Home" | none | watch-item |
-| `scratchfoundation.org` | resolves (Fastly `151.101.x.132`), own delegated Route 53 zone; HTTPS presents a self-signed cert, so no page served | none | exclude |
+| `scratchfoundation.org` | resolves (Fastly `151.101.{2,66,130,194}.132`), own delegated Route 53 zone; not fetchable from the measurement host, see below | none | exclude |
 
 TurboWarp and PenguinMod are third-party Scratch MODS run by different
 operators on different sites. They play Scratch projects, but folding them into
@@ -189,6 +196,41 @@ ScratchJr is the Scratch Foundation's own tablet product for younger kids —
 same family, separate apex, zero observed traffic. Watch-item, add only with
 its own evidence.
 
+`scratchfoundation.org` could not be fetched from the measurement host, and the
+reason is **this deployment's own enforcement**, not anything at the Scratch
+Foundation. Two earlier drafts of this row got that wrong — first "no answer",
+then "HTTPS presents a self-signed cert" — and the self-signed cert is the
+tell:
+
+```
+$ echo | openssl s_client -connect scratchfoundation.org:443     -servername scratchfoundation.org | openssl x509 -noout -subject -issuer
+subject=CN=block.wifihaven.local
+issuer=CN=block.wifihaven.local
+
+$ curl -k https://scratchfoundation.org          # 200, our own page
+<title>Blocked</title>
+<meta http-equiv="refresh" content="0;url=https://app.wifihaven.net/blocked?host=scratchfoundation.org&mac=52%3A1a%3A60%3Ad8%3A4e%3A32">
+```
+
+That is our block page arriving via our own HTTPS DNAT. Controls from the same
+machine — `scratch.mit.edu` (`CN=scratch.mit.edu`), `turbowarp.org`
+(`CN=turbowarp.org`), `penguinmod.com` — each present their own valid cert, so
+this is host-specific interception rather than a blanket MITM of the
+measurement host. Reading an enforcement artifact as a property of the
+destination is the inference `AGENTS.md` is most emphatic about, and it is
+recorded here because it happened.
+
+**The curated-list grep does not cover whatever is dropping it.**
+`grep -rniE 'mit\.edu|scratch'` over `api/resources/blocklists/` is clean
+(re-confirmed), so the drop comes from a *fetched* blocklist, an `extraBlocked`
+entry, or `blockIpOnly` — none of which a repo grep sees. **No host this PR
+ships is affected**: `scratch.mit.edu` completes its TLS handshake against its
+own cert from this machine, so it is not being dropped for this MAC, and there
+is no app-blocklist conflict in the diff. Worth knowing because
+`scratchfoundation.org` and `scratchjr.org` are both recorded as future
+candidates, and a later pass measuring them from inside the enforcement plane
+would reach the same wrong conclusion.
+
 The only off-domain host either Scratch page references is
 `www.googletagmanager.com` (checked by fetching `scratch.mit.edu/` and
 `scratch.mit.edu/projects/editor/` and grepping the HTML for hostnames). Shared
@@ -199,6 +241,13 @@ Google tag infrastructure, not Scratch's bytes — excluded.
 Re-verified this run: `grep -rniE 'mit\.edu|scratch'` over
 `api/resources/blocklists/` returns nothing. No chosen host sits on a curated
 list.
+
+Scope of that check: it covers the **curated, repo-authored** lists only. A
+fetched blocklist, an `extraBlocked` entry or `blockIpOnly` is invisible to it
+— see the `scratchfoundation.org` note below for a host that is in fact being
+dropped on this household despite a clean grep. `scratch.mit.edu` itself is
+confirmed reachable from the measurement host (its own TLS cert, not the block
+page), so the shipped host is unaffected.
 
 ## Icon
 
