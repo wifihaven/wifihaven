@@ -189,6 +189,8 @@ object AppTemplatesSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
           // #2811: weather display-cleanup app, OneNote for the web
           "weather",
           "onenote",
+          // #2833: Scratch, scoped to the delegated `scratch.mit.edu` zone
+          "scratch",
         )
         val slugs    = templates.map(_.slug.value).toSet
         assertTrue(slugs == expected) &&
@@ -952,6 +954,39 @@ object AppTemplatesSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
             .map(h => s"${t.slug.value}:${h.value}"),
         )
       } yield assertTrue(offenders.isEmpty)
+    },
+    test(
+      "#2833 — Scratch is scoped to the delegated scratch.mit.edu zone, never the mit.edu apex",
+    ) {
+      // `mit.edu` is a shared multi-service university apex. Both matchers on the path
+      // are pure suffix tests — dnsmasq against the verbatim `nftset=/<host>/` the agent
+      // emits, and `HostMatch.matchesApex` (`host == x || host.endsWith("." + x)`) — so a
+      // `mit.edu` entry would pull EVERY MIT hostname into this app: into the
+      // per-(MAC, host) `eb_` drop set when Scratch is blocked, and into its time budget
+      // when it is not. Enforcement is IP-layer, so the block half is the #1636 shape.
+      //
+      // `scratch.mit.edu` is safe to carry alone because it is a DELEGATED zone: MIT's
+      // own `mit.edu` zone (Akamai nameservers) hands the subtree to a separate Route 53
+      // nameserver set, so everything under it is the Scratch Foundation's by
+      // construction. `ocw.mit.edu` is a second, independently delegated zone — which is
+      // what makes the apex a present multi-service parent rather than a hypothetical.
+      //
+      // The positive half pins the exact FQDN, which nothing else in this file does —
+      // the pinned slug set above would catch `scratch.yml` being deleted, but not its
+      // host being edited to anything that merely avoids the literal `mit.edu`. So an
+      // absence assertion alone would pass on `www.scratch.mit.edu`, which is why both
+      // halves are here. Verified: each fails on its own (apex entry fails the first,
+      // `www.scratch.mit.edu` the second).
+      for {
+        templates <- AppTemplates.loadAll()
+        offenders = templates.flatMap(t =>
+          (t.hosts ++ t.sharedHosts)
+            .filter(_.value == "mit.edu")
+            .map(h => s"${t.slug.value}:${h.value}"),
+        )
+        scratch   = templates.find(_.slug.value == "scratch")
+      } yield assertTrue(offenders.isEmpty) &&
+        assertTrue(scratch.exists(_.hosts.exists(_.value == "scratch.mit.edu")))
     },
   ) @@ TestAspect.sequential
 }
