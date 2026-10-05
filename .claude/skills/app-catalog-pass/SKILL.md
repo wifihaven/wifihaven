@@ -136,24 +136,46 @@ evidence about US before it is evidence about the site. Run the cert check on
 every candidate you intend to write anything about:
 
 ```bash
-# 1. who actually answered? CN=block.wifihaven.local means WE are dropping it
-echo | openssl s_client -connect <candidate>:443 -servername <candidate> 2>/dev/null \
+# 1. who actually answered? CN=block.wifihaven.local means WE are DNAT'ing it.
+#    stderr is NOT discarded on purpose — see the forward-drop note below.
+echo | openssl s_client -connect <candidate>:443 -servername <candidate> \
   | openssl x509 -noout -subject -issuer
-# 2. if it looks intercepted, confirm by asking for the body
-curl -sk "https://<candidate>" | head -5        # our /blocked redirect?
+# 2. confirm from the body. grep the marker; do NOT `head` it — an unblocked
+#    page is often ONE minified line, so `head -5` dumps the whole document
+#    (12,725 bytes when #2833 ran it). Empty output = not our block page.
+curl -sk "https://<candidate>" \
+  | grep -o 'block\.wifihaven\.local\|/blocked?host=[^"]*' | head -2
 # 3. control: a host you know is NOT blocked, from the SAME machine
 echo | openssl s_client -connect example.com:443 -servername example.com 2>/dev/null \
   | openssl x509 -noout -subject
 ```
 
+**Two ways a candidate gets blocked, and only one of them shows a cert.** The
+check above catches the HTTP/80 + HTTPS DNAT path, where our block page answers
+and names itself. A connection-layer forward-drop looks different: the
+handshake never completes, so `openssl` prints nothing on stdout and the reason
+is only on stderr. That is why step 1 keeps stderr — **empty stdout plus an
+error means the connection never completed, so suspect a drop** (a typo or a
+host with no TLS looks the same, which is what the control is for).
+
 A control is what separates host-specific interception from a blanket proxy —
-without one you cannot tell them apart. And note what the #1983 overlap grep
+without one you cannot tell them apart. Prefer `example.com` plus one sibling
+of the candidate: if several hosts of the same brand are blocked together,
+`example.com` alone will not show it. And note what the #1983 overlap grep
 does NOT cover: `grep` over `api/resources/blocklists/` sees the curated,
 repo-authored lists only, so a FETCHED blocklist, an `extraBlocked` entry or
 `blockIpOnly` is invisible to it. A clean grep next to a host that is
 demonstrably being dropped is not a contradiction. **When a candidate looks
 dead, suspect our own drop before the site.** (#2833 wrote the same row wrong
 twice for exactly this reason.)
+
+**And timestamp whatever you conclude.** What is blocked changes under you. The
+host that drove all of this, `scratchfoundation.org`, was serving our block
+page during #2833's review and was serving its own cert and real page a few
+hours later, with no repo change in between — a fetched blocklist had rotated.
+Write the observation in the past tense with an as-of date, or the next pass
+re-runs your command, gets the opposite answer, and concludes the whole section
+is wrong.
 
 ## Step 3 — Author tight, correct host-sets
 
