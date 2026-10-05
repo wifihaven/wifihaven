@@ -1,0 +1,138 @@
+slug: scratch
+name: Scratch
+icon: "https://icons.duckduckgo.com/ip3/scratch.mit.edu.ico"
+icon_type: url
+# Scratch — MIT's block-based programming environment (#2833). A kid building,
+# remixing or playing a Scratch project is GENUINE ENGAGEMENT, and this app
+# exists so that time lands in a budget.
+#
+# THIS APP ANCHORS PRESENCE ON PURPOSE. It is NOT a display-cleanup app and it
+# is NOT attribution-only. Do not move any host here into a background class
+# (`InfraHosts.cloudBackground` or similar) and do not reclassify it the way the
+# `icanhazip` / `weather` templates are documented — those exist to de-orphan
+# traffic nobody is "using", and this is the opposite case. The whole point of
+# the app is that Scratch time shows up in the daily total and can be
+# time-limited like any other app the kid chooses to open.
+#
+# ──────────────────────────────────────────────────────────────────────
+# THE HOST SET IS ONE FQDN, AND `mit.edu` IS DELIBERATELY ABSENT
+# ──────────────────────────────────────────────────────────────────────
+#
+# `mit.edu` must never appear in this host set. The router emits one verbatim
+# `nftset=/<host>/` line per entry (`render.lua`) and dnsmasq matches by pure
+# suffix, and `HostMatch.matchesApex` is the same suffix test
+# (`host == x || host.endsWith("." + x)`), so a `mit.edu` entry would sweep
+# EVERY MIT hostname into this app — both into the per-(MAC, host) `eb_` drop
+# set when Scratch is blocked and into its time budget when it is not. That is
+# the #1636 failure shape: enforcement is IP-layer, so a block of a shared
+# parent collateral-drops the resolved IPs of everything underneath it.
+#
+# `scratch.mit.edu` is not merely "a subdomain we picked" — it is a DELEGATED
+# DNS ZONE, which is the stable, checkable reason one entry is both sufficient
+# and tight. MIT's own `mit.edu` zone (Akamai nameservers: `use5.akam.net`,
+# `eur5.akam.net`, …) hands the whole subtree off to a separate Route 53
+# nameserver set:
+#
+#   $ dig +short NS mit.edu           -> *.akam.net (8 Akamai nameservers)
+#   $ dig +short NS scratch.mit.edu   -> ns-275.awsdns-34.com, ns-583.awsdns-08.net,
+#                                        ns-1316.awsdns-36.org, ns-1587.awsdns-06.co.uk
+#
+# and MIT's own authoritative servers return exactly that delegation when asked
+# for `NS scratch.mit.edu`. So everything under `scratch.mit.edu` is
+# administered by the Scratch Foundation by construction, and nothing else in
+# `mit.edu` is reachable through this entry.
+#
+# `mit.edu` is a multi-service parent, demonstrably so right now and not just
+# in principle: `www.mit.edu` / `web.mit.edu` are Akamai-fronted
+# (`www.mit.edu.edgekey.net`), while `ocw.mit.edu` (MIT OpenCourseWare) is a
+# SECOND independently delegated zone on its own distinct Route 53 nameserver
+# set (`ns-293.awsdns-36.com`, `ns-620.awsdns-13.net`, …). An apex entry here
+# would put all of it in one drop set and one budget.
+#
+# Honest scope of that claim: no non-Scratch MIT hostname was observed in this
+# household's traffic at all (see below), so the exclusion is STRUCTURAL and
+# precautionary — it prevents a latent collateral trap, it does not fix an
+# observed one.
+#
+# ──────────────────────────────────────────────────────────────────────
+# WHAT THE ONE ENTRY COVERS — observed hosts, and what each serves
+# ──────────────────────────────────────────────────────────────────────
+#
+# Every Scratch host seen in 90 days of prod traffic is a child of
+# `scratch.mit.edu`, so the single entry suffix-matches all of them, for both
+# enforcement and attribution. None needed listing separately; enumerating them
+# would add no coverage and would rot as Scratch adds subdomains.
+#
+#   scratch.mit.edu             the site itself — project pages, the editor
+#                                shell, the "explore" / studio browsing surface.
+#   projects.scratch.mit.edu    project JSON (the saved program); the largest
+#                                single orphan host at 54 proportional min.
+#   assets.scratch.mit.edu      sprite / sound / costume assets.
+#   cdn.assets.scratch.mit.edu  the asset CDN lane.
+#   cdn.scratch.mit.edu         static site assets.
+#   cdn2.scratch.mit.edu        second static lane.
+#   uploads.scratch.mit.edu     user-uploaded media (30 proportional min).
+#   api.scratch.mit.edu         the Scratch REST API the editor calls.
+#   backpack.scratch.mit.edu    the "backpack" — sprites a user carries between
+#                                their own projects.
+#   clouddata.scratch.mit.edu   the cloud-variable websocket backend, which is
+#                                what makes a multiplayer / high-score Scratch
+#                                project work.
+#
+# The asset / CDN lanes (`assets`, `cdn.assets`, `cdn`, `cdn2`, `uploads`) all
+# CNAME to Fastly's shared edge (`d.sni.global.fastly.net`; `backpack` to
+# `b.sni.global.fastly.net`). Per `_README.yml` Class 2 that is a LATENT risk
+# and NOT a reason to strip them: branded asset domains are where the app's own
+# bytes live, and stripping them would defeat the block and under-count the
+# time. Equally, no `*.fastly.net` artifact is pinned here — those rotate.
+# Covering them via the delegated-zone entry gets both halves right: the
+# Scratch-branded names are in the set, the shared Fastly names are not.
+#
+# `clouddata.scratch.mit.edu` resolves to generic AWS EC2 addresses rather than
+# a CDN edge, so (as `amazon-telemetry.yml` records for its own hosts) an
+# address that enters an `eb_` set can be reassigned to an unrelated AWS tenant
+# later. The exposure is bounded by the same mechanism: `eb_`/`eb6_` sets are
+# declared `flags dynamic,timeout` with `timeout 1h`
+# (openwrt/files/usr/lib/lua/wifihaven/render.lua:1009-1018), and
+# `eb_refresh.lua` re-resolves every `eb_` host on `eb_refresh_interval`,
+# default 1800s (openwrt/files/usr/sbin/wifihaven-agent:143) — strictly below
+# that 1h timeout, so every live entry sees at least one refresh per ageing
+# window. A recycled address can therefore be wrongly dropped for at most the
+# residual of one ageing window. Nothing here argues for dropping the host.
+#
+# ──────────────────────────────────────────────────────────────────────
+# PROD EVIDENCE (see evidence/classification-2833.md)
+# ──────────────────────────────────────────────────────────────────────
+#
+# 90d per-device bytes under `mit.edu`, all of it `*.scratch.mit.edu`:
+# Quintus Chromebook 215.9 MB / 162 hits, Kid Laptop 85.8 MB / 98 hits,
+# Prima iPad 74 KB / 2 hits (and 168.7 MB on an adult Mac). 242 proportional
+# minutes over 30 days across the kid profiles, every minute of it in
+# `orphanHosts` — attributed to no app at all before this template.
+#
+# ──────────────────────────────────────────────────────────────────────
+# DELIBERATELY EXCLUDED
+# ──────────────────────────────────────────────────────────────────────
+#
+#   mit.edu                 see above. Never add it.
+#   turbowarp.org           TurboWarp, and `packager.turbowarp.org`. A
+#                            third-party Scratch MOD run by a different
+#                            operator on a different site — it plays Scratch
+#                            projects faster and packages them as executables.
+#                            Zero traffic in the 90d sample on any device.
+#                            Folding it in would bill a different site's time
+#                            to this app's budget, so it stays out; if it ever
+#                            shows traffic it gets its OWN template, not an
+#                            entry here.
+#   penguinmod.com          another third-party Scratch mod, same reasoning,
+#                            also zero observed traffic.
+#   scratchjr.org           ScratchJr, the Scratch Foundation's own tablet app
+#                            for younger kids. Same family, but a separate
+#                            product on a separate apex and zero observed
+#                            traffic — a watch-item, not a member. Add it only
+#                            with its own evidence.
+#   www.googletagmanager.com the only off-domain host the Scratch pages
+#                            reference. Shared Google tag infrastructure, not
+#                            Scratch's bytes.
+hosts:
+  - scratch.mit.edu

@@ -87,3 +87,7 @@ slugs:
   # display-cleanup app, and OneNote for the web
   - weather
   - onenote
+  # #2833: Scratch — MIT's block-based programming environment. Scoped to the
+  # DELEGATED `scratch.mit.edu` zone; the shared `mit.edu` apex is deliberately
+  # absent (see scratch.yml). Anchors presence — not a display-cleanup app.
+  - scratch

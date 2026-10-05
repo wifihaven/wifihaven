@@ -199,6 +199,64 @@ above is now wrong, fix the step too — don't just log around it.
 
 ## Learnings log (newest first)
 
+- **2026-10-05 (#2833)** — **An NS DELEGATION is the strongest
+  apex-vs-FQDN argument available, and it is the one test no prior pass had
+  run.** Scratch lives at `scratch.mit.edu`, under a shared university apex, so
+  the issue's whole concern was the #1636 over-drop shape. What settled it was
+  not traffic and not an IP comparison but `dig +short NS`: MIT's `mit.edu` zone
+  is on Akamai nameservers and delegates `scratch.mit.edu` to its own Route 53
+  set, which MIT's own authoritative server confirms. That makes the whole
+  subtree administratively the app's by construction — so ONE FQDN entry is both
+  sufficient (suffix matching covers every child) and tight (nothing else in the
+  parent is reachable). **Add `dig +short NS <candidate>` and `dig +short NS
+  <parent>` to the per-candidate checks.** It is stable, checkable, and
+  satisfies the `youtube.yml` standard where a pool-overlap claim cannot. The
+  same command also found `ocw.mit.edu` is a SECOND independently delegated zone
+  on a different Route 53 set — a present demonstration that the parent is
+  multi-service, not a hypothetical.
+- **2026-10-05 (#2833)** — **When every observed host of a brand is a child of
+  one FQDN, list that FQDN alone and do not enumerate.** All ten observed Scratch
+  hosts (`scratch`, `api`, `projects`, `assets`, `cdn.assets`, `cdn`, `cdn2`,
+  `uploads`, `backpack`, `clouddata`) sit under `scratch.mit.edu`; enumerating
+  them adds zero coverage and rots as the brand adds subdomains. It also resolves
+  the Class-2 shared-CDN tension in one line rather than per host: five of those
+  lanes CNAME to `d.sni.global.fastly.net`, so an enumerated set would have
+  tempted someone to either strip them (defeating the block, losing 129 of 242
+  proportional minutes) or pin the Fastly target (which rots). The delegated-zone
+  entry keeps the branded names in and the shared names out by construction.
+  Check the attribution bound before relying on this: `apexTails(maxHops = 5)`
+  found the entry on the 3rd tail of the deepest observed host, so there is
+  headroom here — a deeper anchor would need the `amazon-telemetry.yml` warning.
+- **2026-10-05 (#2833)** — **State the scope of an exclusion honestly: a
+  structural trap is not an observed one.** Across all 30 devices and 90 days,
+  every single byte under `mit.edu` was `*.scratch.mit.edu` — no other MIT
+  hostname appeared at all. So the apex exclusion prevents a LATENT collateral
+  trap; it does not fix something that was happening. Writing it as an observed
+  incident would have been the overclaim this log keeps catching. The structural
+  argument (both matchers are pure suffix tests, enforcement is IP-layer) is
+  enough on its own and does not need inflating.
+- **2026-10-05 (#2833)** — **"Is this app background or engagement?" is now a
+  question a template must answer in prose, because the catalog has both kinds
+  and they look alike in YAML.** After `icanhazip`/`ipify`/`weather`, a
+  single-host template with a utility-ish name reads as display-cleanup by
+  default. Scratch is the opposite — a kid building a project is engagement whose
+  time belongs in a budget — so the template says so explicitly, names the
+  background classes it must NOT be added to (`InfraHosts.cloudBackground`), and
+  says not to re-document it the way those three are. **Write that paragraph into
+  every new template from here on, in whichever direction applies**; a later pass
+  reading only the host set cannot tell.
+- **2026-10-05 (#2833)** — **Decide third-party mods of a brand explicitly, and
+  let zero traffic be the deciding evidence rather than a reason to skip the
+  question.** TurboWarp (+ `packager.`) and PenguinMod are live sites
+  (HTTP 200, confirmed titles) that run Scratch projects, but they are other
+  operators' sites; `scratchjr.org` is the same foundation's separate tablet
+  product. None had a single byte in the 90d sample across all devices, so all
+  three stayed out — mods excluded outright (they would bill another site's time
+  to this budget; each gets its own template if it ever shows traffic), ScratchJr
+  recorded as a watch-item. `curl` the title of each candidate even when you
+  intend to exclude it: it costs one command and it is what distinguishes "other
+  people's business" from "a lane of this app".
+
 - **2026-09-28 (#2811)** — Delivered the two display-cleanup candidates #2805
   left (`weather`, `ipify`) plus a real gap the byte table would have hidden:
   **OneNote for the web** (~2.7k orphan min, no app). Things this pass taught:
