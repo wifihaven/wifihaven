@@ -38,9 +38,11 @@ icon_type: url
 # `eur5.akam.net`, …) hands the whole subtree off to a separate Route 53
 # nameserver set:
 #
-#   $ dig +short NS mit.edu           -> *.akam.net (8 Akamai nameservers)
-#   $ dig +short NS scratch.mit.edu   -> ns-275.awsdns-34.com, ns-583.awsdns-08.net,
-#                                        ns-1316.awsdns-36.org, ns-1587.awsdns-06.co.uk
+#   $ dig +short NS mit.edu
+#   -> *.akam.net  (8 Akamai nameservers)
+#   $ dig +short NS scratch.mit.edu
+#   -> ns-275.awsdns-34.com,   ns-583.awsdns-08.net,
+#      ns-1316.awsdns-36.org,  ns-1587.awsdns-06.co.uk
 #
 # and MIT's own authoritative servers return exactly that delegation when asked
 # for `NS scratch.mit.edu`. So everything under `scratch.mit.edu` is
@@ -88,8 +90,8 @@ icon_type: url
 # Six hosts CNAME to Fastly's shared edge: the five asset / CDN lanes
 # (`assets`, `cdn.assets`, `cdn`, `cdn2`, `uploads`) to
 # `d.sni.global.fastly.net`, and `backpack` — the sprite carrier, not a CDN
-# lane — to `b.sni.global.fastly.net`. Per `_README.yml` Class 2 that is a
-# LATENT risk
+# lane — to `b.sni.global.fastly.net`. Per `_README.yml` Class 2 that is LATENT
+# risk
 # and NOT a reason to strip them: branded asset domains are where the app's own
 # bytes live, and stripping them would defeat the block and under-count the
 # time. Equally, no `*.fastly.net` artifact is pinned here — those rotate.

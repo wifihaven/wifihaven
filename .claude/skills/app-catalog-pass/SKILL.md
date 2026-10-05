@@ -127,6 +127,34 @@ returns `subdomains[]`.
   shared corporate infra (adobe.com, autodesk.com), and below-engagement-bar
   incidental hosts. When in doubt, skip and say so.
 
+### Verifying a candidate — you are INSIDE the enforcement plane
+
+Checking what a candidate serves (`curl` its `<title>`, resolve it, look at its
+TLS) is how most of the calls above get settled. **The machine you run those
+from is behind this deployment's own enforcement**, so a fetch that fails is
+evidence about US before it is evidence about the site. Run the cert check on
+every candidate you intend to write anything about:
+
+```bash
+# 1. who actually answered? CN=block.wifihaven.local means WE are dropping it
+echo | openssl s_client -connect <candidate>:443 -servername <candidate> 2>/dev/null \
+  | openssl x509 -noout -subject -issuer
+# 2. if it looks intercepted, confirm by asking for the body
+curl -sk "https://<candidate>" | head -5        # our /blocked redirect?
+# 3. control: a host you know is NOT blocked, from the SAME machine
+echo | openssl s_client -connect example.com:443 -servername example.com 2>/dev/null \
+  | openssl x509 -noout -subject
+```
+
+A control is what separates host-specific interception from a blanket proxy —
+without one you cannot tell them apart. And note what the #1983 overlap grep
+does NOT cover: `grep` over `api/resources/blocklists/` sees the curated,
+repo-authored lists only, so a FETCHED blocklist, an `extraBlocked` entry or
+`blockIpOnly` is invisible to it. A clean grep next to a host that is
+demonstrably being dropped is not a contradiction. **When a candidate looks
+dead, suspect our own drop before the site.** (#2833 wrote the same row wrong
+twice for exactly this reason.)
+
 ## Step 3 — Author tight, correct host-sets
 
 Follow `_README.yml`. Key discipline:
@@ -211,8 +239,10 @@ above is now wrong, fix the step too — don't just log around it.
   `openssl s_client … | openssl x509 -noout -subject -issuer` — and run a
   control host from the same machine to tell host-specific interception from a
   blanket proxy. A bare HTTP status is not trustworthy from inside the plane;
-  this is the AGENTS.md anti-pattern wearing new clothes, and the whole Step-2
-  `curl`-the-title check inherits the flaw.
+  this is the AGENTS.md anti-pattern wearing new clothes, and every
+  `curl`-the-title check in this skill inherited the flaw. **Fixed in the step,
+  not just logged**: Step 2 now ends with a *Verifying a candidate* block
+  carrying the cert check, the body check and the control.
   **Corollary the same finding exposed: the #1983 overlap grep is narrower than
   it reads.** `grep` over `api/resources/blocklists/` covers the curated,
   repo-authored lists ONLY — a FETCHED blocklist, an `extraBlocked` entry or
@@ -247,15 +277,15 @@ above is now wrong, fix the step too — don't just log around it.
   Check the attribution bound before relying on this: `apexTails(maxHops = 5)`
   found the entry on the 3rd tail of the deepest observed host, so there is
   headroom here — a deeper anchor would need the `amazon-telemetry.yml` warning.
-- **2026-10-05 (#2833)** — **The favicon service's 404 is not durable, so a
-  cold-cache miss reads as "this domain has no icon" when it does.** The #2762
+- **2026-10-05 (#2833)** — **A 404 from the favicon service is not durable, so
+  one reads as "this domain has no icon" when it has one.** The #2762
   entry warns that `icons.duckduckgo.com/ip3/<d>.ico` answers 404 with a generic
   placeholder for domains it does not know. The inverse bit it: `mit.edu` came
   back 404 with a 1,478-byte PNG on the first request and HTTP 200 with a real
   15,406-byte icon minutes later, and a template comment had already been
   written around the 404. The 404 did not reproduce in five subsequent
-  requests, and **why it happened is unexplained** — "cold-cache miss" was a
-  guess and is not established, so do not repeat it as the mechanism. The
+  requests and **the cause is unknown** — resist naming one; an earlier draft
+  guessed "cold-cache miss" and that guess is not established. The
   prescription stands on the observation alone: **request a 404 a second time
   before writing anything about it**, and never let an icon's availability
   carry an argument a reader cannot re-check. The independent review caught

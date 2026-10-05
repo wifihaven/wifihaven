@@ -40,6 +40,13 @@ on every device:
 | Sameer Mac (adult) | 168,663,045 (168.7 MB) | 161 |
 | Sameer iPhone (adult) | 1,764,970 (1.8 MB) | 3 |
 
+The two adult rows are the values from the 30-device roster sweep on
+2026-10-05. An earlier revision of this table carried `168,662,266` / 98 hits
+and a blank hit count, taken from a partial adult sweep run earlier the same
+day; the window advanced between the two pulls, which is why the byte count
+moved by 779 as well as the hit counts. The sweep values are the ones to
+trust.
+
 `recent-apexes` reports bytes per APEX, not per subdomain, so those totals
 cannot be split per host. The per-host figures below are 30d proportional
 minutes from `orphanHosts`, which is per-host.
@@ -155,8 +162,8 @@ reads it as a fixed incident.
 | `clouddata.scratch.mit.edu` | no CNAME; generic AWS EC2 addresses |
 
 Six hosts sit behind Fastly's shared edge: the five asset / CDN lanes, plus
-`backpack`, which is the sprite carrier rather than a CDN lane. Class 2 says that is latent
-risk and **not** a reason to strip them — they are where the app's own bytes
+`backpack`, which is the sprite carrier rather than a CDN lane. Class 2 treats
+that as latent risk and **not** a reason to strip them — they are where the app's own bytes
 live, and stripping them would both defeat the block and under-count the time:
 those six are 7,720 of the 14,544 proportional seconds, 53% of the app's
 time. Equally, no `*.fastly.net`
@@ -203,7 +210,9 @@ then "HTTPS presents a self-signed cert" — and the self-signed cert is the
 tell:
 
 ```
-$ echo | openssl s_client -connect scratchfoundation.org:443     -servername scratchfoundation.org | openssl x509 -noout -subject -issuer
+$ echo | openssl s_client -connect scratchfoundation.org:443 \
+      -servername scratchfoundation.org 2>/dev/null \
+  | openssl x509 -noout -subject -issuer
 subject=CN=block.wifihaven.local
 issuer=CN=block.wifihaven.local
 
@@ -259,6 +268,9 @@ The `mit.edu` key is **not** used, and not because it fails — checked, it
 returns HTTP 200 with a real 15,406-byte `image/x-icon`, MIT's own
 institutional mark. That is the reason to avoid it: it would label this app
 with the university instead of the product, the same call
-`amazon-telemetry.yml` records when it declines the AWS logo. (An earlier draft
-of this doc claimed the apex 404s with a 1,478-byte PNG placeholder; that was
-one cold-cache response from the favicon service and it is wrong.)
+`amazon-telemetry.yml` records when it declines the AWS logo.
+
+(An earlier draft of this doc claimed the apex 404s with a 1,478-byte PNG
+placeholder. The first request did return that, but it has not reproduced in
+five subsequent requests and the cause is unknown — so the 404 is recorded as
+an observation, not explained.)
