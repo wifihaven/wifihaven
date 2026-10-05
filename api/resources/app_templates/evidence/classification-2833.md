@@ -41,11 +41,22 @@ on every device:
 | Sameer iPhone (adult) | 1,764,970 (1.8 MB) | 3 |
 
 The two adult rows are the values from the 30-device roster sweep on
-2026-10-05. An earlier revision of this table carried `168,662,266` / 98 hits
-and a blank hit count, taken from a partial adult sweep run earlier the same
-day; the window advanced between the two pulls, which is why the byte count
-moved by 779 as well as the hit counts. The sweep values are the ones to
-trust.
+2026-10-05; an earlier revision carried `168,662,266` / 98 hits for the Mac and
+a blank hit count for the iPhone, from a partial adult sweep run earlier the
+same day. **Two separate things changed and only one of them has an
+explanation**, so both are stated rather than folded into one cause:
+
+- The Mac's **byte** delta (+779) is consistent with the window advancing
+  between the two pulls.
+- The **hit** counts are not. +63 hits for +779 bytes is ~12 B/hit against this
+  row's own ~1.05 MB/hit, and the iPhone gained 3 hits against a byte-identical
+  count, which no window advance can produce. The likeliest reading is that the
+  partial sweep did not populate the hit column the same way — the blank iPhone
+  cell is the tell — but **that is not established and the cause is
+  unexplained.**
+
+The sweep values are the ones to trust: they come from the complete run, and
+the byte counts are what the classification rests on.
 
 `recent-apexes` reports bytes per APEX, not per subdomain, so those totals
 cannot be split per host. The per-host figures below are 30d proportional
@@ -163,8 +174,8 @@ reads it as a fixed incident.
 
 Six hosts sit behind Fastly's shared edge: the five asset / CDN lanes, plus
 `backpack`, which is the sprite carrier rather than a CDN lane. Class 2 treats
-that as latent risk and **not** a reason to strip them — they are where the app's own bytes
-live, and stripping them would both defeat the block and under-count the time:
+that as latent risk and **not** a reason to strip them. They are where the
+app's own bytes live, and stripping them would both defeat the block and under-count the time:
 those six are 7,720 of the 14,544 proportional seconds, 53% of the app's
 time. Equally, no `*.fastly.net`
 artifact is pinned, since those rotate. The delegated-zone entry gets both
@@ -190,7 +201,7 @@ The issue asked for this to be decided explicitly rather than defaulted.
 | `packager.turbowarp.org` | 200 "TurboWarp Packager" | none | exclude |
 | `penguinmod.com` | 200 "PenguinMod - Home" | none | exclude |
 | `scratchjr.org` | 200 "ScratchJr - Home" | none | watch-item |
-| `scratchfoundation.org` | resolves (Fastly `151.101.{2,66,130,194}.132`), own delegated Route 53 zone; not fetchable from the measurement host, see below | none | exclude |
+| `scratchfoundation.org` | resolves (Fastly `151.101.{2,66,130,194}.132`), own delegated Route 53 zone; live site, see the dated note below | none | exclude |
 
 TurboWarp and PenguinMod are third-party Scratch MODS run by different
 operators on different sites. They play Scratch projects, but folding them into
@@ -203,10 +214,19 @@ ScratchJr is the Scratch Foundation's own tablet product for younger kids —
 same family, separate apex, zero observed traffic. Watch-item, add only with
 its own evidence.
 
+### `scratchfoundation.org` — a dated note, because the answer moved twice
+
+**As of 2026-10-05 ~16:30Z this host is NOT blocked.** It presents its own cert
+(`subject=CN=scratchfoundation.org`, issuer `C=US, O=Certainly, CN=Certainly
+Intermediate R1`) and serves the real Scratch Foundation site. Re-running the
+commands below today shows that, not what they showed earlier. The history is
+kept because the lesson is the point, not the host.
+
+**Earlier the same day** — ~14:40Z and ~15:40Z, during two review passes —
 `scratchfoundation.org` could not be fetched from the measurement host, and the
-reason is **this deployment's own enforcement**, not anything at the Scratch
+reason was **this deployment's own enforcement**, not anything at the Scratch
 Foundation. Two earlier drafts of this row got that wrong — first "no answer",
-then "HTTPS presents a self-signed cert" — and the self-signed cert is the
+then "HTTPS presents a self-signed cert" — and the self-signed cert was the
 tell:
 
 ```
@@ -221,13 +241,21 @@ $ curl -k https://scratchfoundation.org          # 200, our own page
 <meta http-equiv="refresh" content="0;url=https://app.wifihaven.net/blocked?host=scratchfoundation.org&mac=52%3A1a%3A60%3Ad8%3A4e%3A32">
 ```
 
-That is our block page arriving via our own HTTPS DNAT. Controls from the same
+That was our block page arriving via our own HTTPS DNAT — `render.lua:1462-1463`
+emits a TCP/80 and a TCP/443 rule per predicate, which is why a self-signed
+`CN=block.wifihaven.local` answers on 443 at all. Controls from the same
 machine — `scratch.mit.edu` (`CN=scratch.mit.edu`), `turbowarp.org`
-(`CN=turbowarp.org`), `penguinmod.com` — each present their own valid cert, so
-this is host-specific interception rather than a blanket MITM of the
-measurement host. Reading an enforcement artifact as a property of the
-destination is the inference `AGENTS.md` is most emphatic about, and it is
-recorded here because it happened.
+(`CN=turbowarp.org`), `penguinmod.com` — each presented their own valid cert, so
+it was host-specific interception rather than a blanket MITM of the measurement
+host. Reading an enforcement artifact as a property of the destination is the
+inference `AGENTS.md` is most emphatic about, and it is recorded here because it
+happened.
+
+**That it cleared within hours with no repo change is itself evidence for the
+hypothesis below**: a fetched blocklist was dropping it and has since rotated.
+It also makes the standing point — a block observation is a snapshot, so date
+it. The disposition is unaffected either way: zero traffic on all 30 devices,
+so `scratchfoundation.org` stays excluded on volume, not on reachability.
 
 **The curated-list grep does not cover whatever is dropping it.**
 `grep -rniE 'mit\.edu|scratch'` over `api/resources/blocklists/` is clean

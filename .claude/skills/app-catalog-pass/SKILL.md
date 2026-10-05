@@ -143,6 +143,9 @@ echo | openssl s_client -connect <candidate>:443 -servername <candidate> \
 # 2. confirm from the body. grep the marker; do NOT `head` it — an unblocked
 #    page is often ONE minified line, so `head -5` dumps the whole document
 #    (12,725 bytes when #2833 ran it). Empty output = not our block page.
+#    The `/blocked?host=` branch is the one that matches today; the
+#    `block.wifihaven.local` branch is for a future page that names the host
+#    in its body (today that string is only in the cert).
 curl -sk "https://<candidate>" \
   | grep -o 'block\.wifihaven\.local\|/blocked?host=[^"]*' | head -2
 # 3. control: a host you know is NOT blocked, from the SAME machine
