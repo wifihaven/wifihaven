@@ -122,6 +122,18 @@ hosts:
   - delphi.ai
   - deepai.org
   #
+  # traffic-driven addition (#2836): 30-day prod recent-apexes sweep across
+  # all 30 devices, 2026-10-06. hellohaven.ai is Hello Haven, a confirmed
+  # consumer personal-AI "digital twin" assistant app ($15M pre-seed,
+  # launched Sept 2026) — a persistent personal AI that triages inbox,
+  # places orders, and makes calls on the user's behalf; squarely a
+  # consumer AI-assistant product. typesafe.ai (also matched this pass) is
+  # B2B developer-facing model-API infra, out of scope same as opencode.ai
+  # (#2729). nexverse.ai moved to ads.yml (confirmed AI-ad-network, not an
+  # AI product — see that file). verysane.ai/loudecho.ai held out
+  # unverified/CDN-fronted. See evidence/multi-category-classification-2836.md.
+  - hellohaven.ai
+  #
   # ── preemptive hardening (#2768), 2026-09-10 ────────────────────────────
   #
   # DEPARTURE FROM THE TRAFFIC-DRIVEN DEFAULT, and why it is justified here.
