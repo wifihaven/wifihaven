@@ -181,6 +181,8 @@ object BundledBlocklistsSpec
         assertTrue(ads.contains(Hostname.unsafe("adpushup.com"))) &&
         // traffic-driven addition pinned for presence (#2759)
         assertTrue(ads.contains(Hostname.unsafe("adspostx.com"))) &&
+        // traffic-driven addition pinned for presence (#2836)
+        assertTrue(ads.contains(Hostname.unsafe("adnami.io"))) &&
         assertTrue(meta.isDefined) &&
         assertTrue(meta.exists(m => m.bundled && m.name == "Ads & Trackers"))
     },
@@ -419,7 +421,9 @@ object BundledBlocklistsSpec
         // traffic-driven addition pinned for presence (#2348)
         assertTrue(hosts.contains(Hostname.unsafe("saygames.io"))) &&
         // traffic-driven addition pinned for presence (#2756)
-        assertTrue(hosts.contains(Hostname.unsafe("wordplays.com")))
+        assertTrue(hosts.contains(Hostname.unsafe("wordplays.com"))) &&
+        // traffic-driven addition pinned for presence (#2836)
+        assertTrue(hosts.contains(Hostname.unsafe("teamwoodgames.com")))
     },
     test("gambling + social-media: traffic-driven additions are present (#2212)") {
       for {
@@ -578,6 +582,8 @@ object BundledBlocklistsSpec
         assertTrue(hosts.contains(Hostname.unsafe("midjourney.com"))) &&
         // traffic-driven addition pinned for presence (#2348)
         assertTrue(hosts.contains(Hostname.unsafe("gemini.google"))) &&
+        // traffic-driven addition pinned for presence (#2836)
+        assertTrue(hosts.contains(Hostname.unsafe("hellohaven.ai"))) &&
         // #2768 preemptive hardening, one pin per group so a bad merge that drops
         // the block is caught. These are NOT traffic-driven — see the ai.yml
         // rationale block and evidence/ai-classification-2768.md.

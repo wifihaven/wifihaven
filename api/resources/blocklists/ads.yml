@@ -756,3 +756,39 @@ hosts:
   # established.
   - unhappyweakness.com
   - realizationnewestfangs.com
+  #
+  # traffic-driven additions (#2836): 30-day prod recent-apexes sweep across
+  # all 30 devices, 2026-10-06. adnami.io (confirmed: Adnami ApS, a Danish
+  # display/high-impact ad-tech vendor) and adition.com (confirmed: ADITION
+  # technologies / Virtual Minds, a German programmatic ad-serving platform)
+  # both have named-company confirmation. adnpbs.com/adxflyer.com/
+  # adxvalidation.com have no confirmed company page but maximally
+  # self-descriptive ad-exchange + prebid-server-shaped names (same bar as
+  # the inhousedsp.com precedent, #2212) and resolve to dedicated AWS/Tencent
+  # Cloud addresses, not a shared CDN pool — adxflyer.com is additionally
+  # corroborated by an independent hagezi/dns-blocklists ads listing.
+  # nexverse.ai is a confirmed "AI-native AdTech platform" (VerSe
+  # Innovation subsidiary) — another instance of the `.ai`-TLD-hides-an-
+  # ad-network trap (axon.ai/programmaticx.ai/trygravity.ai/koah.ai/
+  # mediayo.ai), filed here not in ai.yml.
+  #
+  # Held out this pass (no action, recorded so a later pass does not
+  # re-guess): adncdn.net (CloudFront-fronted), admbucket.com (Tencent Cloud
+  # CDN-fronted), synctrack.io/addtoany.com (Cloudflare-fronted) — all
+  # structural CDN skips per the #2823 rule regardless of name. ad-score.com
+  # (multiple unrelated companies share the name, re-confirmed ambiguous),
+  # advolve.io/syncingbridge.com/verysane.ai (no confirmed identity).
+  # adtrafficquality.google resolves onto Google's own shared GFE anycast
+  # pool (173.194.x, same range as gstatic.com/google.com) — structural skip,
+  # not a new SharedGfeHosts entry (see docs/architecture.md on why that list
+  # isn't where this kind of skip is recorded). google-analytics.com/
+  # app-ads-services.com/app-analytics-services.com/merchant-center-
+  # analytics.goog/adobe.com/adobe.io/adobedc.net/adobedtm.com/
+  # adobelogin.com/adoberesources.net/popcorn-tracker.org/tagsrvcs.com are
+  # standing dual-use/BT-tracker skips, re-confirmed.
+  - adnami.io
+  - adition.com
+  - adnpbs.com
+  - adxflyer.com
+  - adxvalidation.com
+  - nexverse.ai

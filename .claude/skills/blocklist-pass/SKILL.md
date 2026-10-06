@@ -272,6 +272,35 @@ that edit in the same PR.** If a step above is now wrong, fix the step too.
 
 ## Learnings log (newest first)
 
+- **2026-10-06** (#2836) — **A GCP customer load-balancer IP (`34.117.x` /
+  similar single-tenant App Engine/GLB ranges) is NOT the same collateral risk
+  as Google's own product shared-GFE pool (`173.194.x`, the range
+  `gstatic.com`/`google.com`/`adtrafficquality.google` answer on) — don't
+  apply the #2823 CDN-skip rule to every Google-Cloud-hosted IP indiscriminately.**
+  `nexverse.ai` (a confirmed third-party AdTech SaaS company) resolved to a
+  GCP load-balancer address; that's a normal customer deployment, not Google's
+  own multi-tenant product frontend, so it was added. Contrast with
+  `adtrafficquality.google`, which resolved into the *same* 173.194.x block
+  `google.com` and `gstatic.com` use — that one was skipped. The test is
+  "does this address front Google's OWN products," not "is this hosted on
+  Google infrastructure at all."
+- **2026-10-06** (#2836) — **Two apexes with near-identical byte/hit counts
+  and the same naming convention (`adxflyer.com` / `adxvalidation.com`, both
+  "ADX"-prefixed, both ~33KB/4 hits) are reasonable to treat as a sibling pair
+  from the same vendor even when only one has independent corroboration**
+  (`adxflyer.com` was listed in hagezi/dns-blocklists; `adxvalidation.com` had
+  no hits anywhere). This is the same "one vendor fronts multiple apexes"
+  reasoning as the Verve Group / Vidazoo / AppLovin precedent (#1923) applied
+  to a pair with no confirmed company name at all — the traffic-shape
+  similarity is standing in for the usual "shared vendor" signal.
+- **2026-10-06** (#2836) — **`hellohaven.ai` is a reminder to re-run the
+  "is this our own thing" check even on an apex that sounds company-adjacent**
+  (the project is itself called WifiHaven; the candidate was `hellohaven.ai`).
+  A quick `whois`/`dig` plus a name search cleared it immediately (Anguilla
+  .ai registry boilerplate, then a confirmed unrelated "Hello Haven" personal-AI
+  startup) — cheap enough to do as a reflex whenever a candidate's name
+  overlaps the operator's own product/company name, rather than assuming
+  coincidence either way.
 - **2026-10-02** (#2823) — **The sweep surface, not the keyword list, is why a
   category can report empty for seven passes running.** `recent-apexes` is
   top-500-BY-BYTES per device with a `.min(500)` hard cap; on prod 6 of 30
