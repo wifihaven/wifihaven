@@ -13,7 +13,7 @@ Every candidate was checked against `evidence/*.md` history (not just the
 current `.yml`) and against every curated category's host set before being
 treated as a new gap.
 
-## ads.yml — 6 additions
+## ads.yml — 5 additions
 
 | apex | bytes | hits | what it is |
 |---|---|---|---|
@@ -21,7 +21,6 @@ treated as a new gap.
 | `adition.com` | 9,788 | 2 | ADITION technologies AG / Virtual Minds — German programmatic ad-serving/targeting platform, founded 2001, Düsseldorf (own site + Crunchbase confirmed). |
 | `adnpbs.com` | 2,239,510 | 11 | No public company page; self-descriptive "ad network prebid server" name shape, same bar as `inhousedsp.com` (#2212). Resolves to dedicated AWS EC2 addresses (us-east-1), not a shared CDN pool — not disqualified by the #2823 CDN rule. |
 | `adxflyer.com` | 32,975 | 4 | No public company page; self-descriptive "ADX" (ad-exchange) name, dedicated Tencent Cloud address. Independently corroborated: listed in hagezi/dns-blocklists as an ads/tracking domain (GitHub issue #6965). |
-| `adxvalidation.com` | 33,783 | 4 | No public company page; same "ADX" naming + traffic-shape pair as `adxflyer.com` (near-identical byte/hit counts), dedicated Tencent Cloud address — treated as a sibling apex of the same vendor's validation subsystem. |
 | `nexverse.ai` | 1,132 | 6 | Nexverse.ai — confirmed "AI-native AdTech platform" (VerSe Innovation subsidiary, Dubai), programmatic ad delivery. Another instance of the `.ai`-TLD-hides-an-ad-network trap (`axon.ai`/`programmaticx.ai`/`trygravity.ai`/`koah.ai`/`mediayo.ai`) — filed in `ads.yml`, not `ai.yml`, despite matching the `ai` sweep on TLD. Resolves to a GCP customer load-balancer IP (dedicated per-tenant LB, not Google's own shared-GFE product pool), so not disqualified by the CDN rule. |
 
 ### Held out / skipped this pass (ads)
@@ -33,7 +32,8 @@ treated as a new gap.
 - `ad-score.com` (6,011,578B/176 hits) — re-confirmed ambiguous: at least three unrelated companies share the "AdScore" name (held out since #2742), no new evidence to resolve which owns this apex.
 - `advolve.io` (9,151B/1 hit) — AI-marketing platform, ambiguous identity, held out since #2064, re-confirmed.
 - `syncingbridge.com` (548,459B/41 hits) — search surfaced several unrelated "SyncBridge"-named companies (multi-device sync platform, employee-data integration tool) with no confirmation any is ad-tech; held out unverified.
-- `adtrafficquality.google` (141,091,605B/3,022 hits) — resolves to `173.194.193.x`, the same Google anycast GFE range as `gstatic.com`/`google.com`. Structural skip: blocking it risks dropping unrelated Google product traffic, same reasoning as the `SharedGfeHosts` guard (though this specific apex isn't in that list — it's a `.google` gTLD product domain, not a `.com` one the guard enumerates).
+- `adxvalidation.com` (33,783B/4 hits) — same self-descriptive "ADX" naming and dedicated Tencent Cloud hosting as `adxflyer.com`, but no independent corroborating source of its own; its only signal is a traffic shape similar to `adxflyer.com`'s, which comes from the same unconfirmed pull, not a second independent signal. Held out pending stronger confirmation (does not meet the two-independent-signals bar used for `axon.ai`/`trygravity.ai`-class additions).
+- `adtrafficquality.google` (141,091,605B/3,022 hits) — resolves to `173.194.193.x`, the same Google anycast GFE range as `gstatic.com`/`google.com`. Structural skip: blocking it risks dropping unrelated Google product traffic, the same IP-layer-collateral reason `SharedGfeHosts` (`shared/src/types/SharedGfeHosts.scala`) exists — though this specific `.google` gTLD apex isn't itself in that hostname list.
 - `google-analytics.com`, `app-ads-services.com`, `app-analytics-services.com`, `merchant-center-analytics.goog`, `adobe.com`/`adobe.io`/`adobedc.net`/`adobedtm.com`/`adobelogin.com`/`adoberesources.net`, `popcorn-tracker.org` (BT tracker), `tagsrvcs.com` (HUMAN Security) — standing dual-use/false-positive skips, re-confirmed, no change.
 
 ## ai.yml — 1 addition
