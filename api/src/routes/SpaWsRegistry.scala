@@ -553,7 +553,8 @@ private final case class LogSubParams(
    * collapse point). It MUST stay byte-aligned with that SQL's clauses:
    *   - `blocked` ↔ `ce.allowed = !b` (QueryLog.blocked = NOT allowed)
    *   - `macs` ↔ `ce.mac IN (...)` (exact match on the mac string)
-   *   - `profileIds` ↔ `d.profile_id IN (...)` (exact match on the joined profile)
+   *   - `profileIds` ↔ `SqlFragments.labelProfileId IN (...)` (exact match on the joined event-time
+   *     profile, which is also what `row.profileId` carries)
    *   - `domain` ↔ `COALESCE(resolved_host_value, host_value) ILIKE '%d%'` (case-insensitive
    *     substring; `QueryLog.host` is already the coalesced resolved-or-host value, so matching on
    *     `row.host.value` is equivalent).
