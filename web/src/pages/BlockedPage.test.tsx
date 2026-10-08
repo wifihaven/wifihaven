@@ -91,6 +91,20 @@ describe('BlockedPage — API-driven reason copy (#1615)', () => {
   })
 })
 
+describe('BlockedPage — unrecognised reasonClass (#2846)', () => {
+  // The API can ship a reasonClass this SPA build predates. It must still render the generic
+  // blocked copy and every ask-a-parent option, not a blank body or the raw class string.
+  it('renders generic blocked copy and all CTAs for a reasonClass it does not know', async () => {
+    mockBlockedInfo({ blocked: true, reasonClass: 'not_yet_known_reason' })
+    renderBlocked({ mac: 'aa:bb:cc:11:22:33', host: 'example.com' })
+    await waitFor(() => expect(screen.getByText('Access blocked.')).toBeInTheDocument())
+    expect(screen.queryByText(/not_yet_known_reason/)).not.toBeInTheDocument()
+    expect(screen.getByTestId('ask-parent-extension')).toBeInTheDocument()
+    expect(screen.getByTestId('ask-parent-exemption')).toBeInTheDocument()
+    expect(screen.getByTestId('ask-parent-unpause')).toBeInTheDocument()
+  })
+})
+
 describe('BlockedPage — URL reason param is ignored (#1615)', () => {
   it('IGNORES URL ?reason=Paused when API returns reasonClass=category', async () => {
     mockBlockedInfo({ blocked: true, reasonClass: 'category', categoryName: 'Ads' })
