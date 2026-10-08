@@ -16,6 +16,13 @@ describe('blockReasonText', () => {
     ).toBe('blocked: matched youtubei.googleapis.com')
   })
 
+  // #2846 review: `defaultDeny` is a kind the API already emits (MacBlockReason.DefaultDeny,
+  // #1316) for a default-deny profile's per-MAC drops, so it gets its own label rather than
+  // falling through to the generic one.
+  it('renders defaultDeny with its own label', () => {
+    expect(blockReasonText({ kind: 'defaultDeny' })).toBe('default deny')
+  })
+
   // #2846: the SPA deploys separately from the API, so the API can emit a reason kind this build
   // has never heard of. It must render the generic label, never undefined (a blank cell) or the
   // raw kind string.
