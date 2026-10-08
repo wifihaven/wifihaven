@@ -513,7 +513,6 @@ object UsageRoutes {
       settings: HouseholdSettings,
       ambientRepo: AmbientHostsRepo,
   ): IO[ApiError, ProfileUsageByApp] = {
-    val filter              = settings.heartbeatFilter
     val continuationSeconds = settings.presenceContinuationSeconds
     for {
       profile <- profileRepo
@@ -546,7 +545,6 @@ object UsageRoutes {
         mappings,
         appLimits,
         settings,
-        filter,
         continuationSeconds,
       )
       (resp, counts) = built
@@ -574,12 +572,14 @@ object UsageRoutes {
       mappings: List[AppHost],
       appLimits: List[AppTimeLimit],
       settings: HouseholdSettings,
-      filter: HeartbeatFilter,
       continuationSeconds: Int,
   ): (ProfileUsageByApp, wifihaven.api.presence.Presence.SharedHostAttributionCounts) = {
     import wifihaven.api.presence.Presence
     val appById = appList.iterator.map(a => a.id -> a).toMap
     val overlap = profile.crossDeviceOverlapMode
+    // #2863: the heartbeat filter is read from `settings` only, the same source the daily total and
+    // `distinctiveSpansByApp` use, so the counting rule cannot diverge by being handed another one.
+    val filter  = settings.heartbeatFilter
 
     // #2863: ONE suppression rule for every number in this response. A row counts iff it is not a
     // heartbeat under the profile's own app-attribution context — `TimeStatusService.appHostPatterns`
@@ -601,9 +601,7 @@ object UsageRoutes {
     // host-set no longer un-suppresses device background — which the daily total never let it do.
     val attributionPatterns = wifihaven.api.policy.TimeStatusService.appHostPatterns(appLimits)
     val counted             =
-      presence.filterNot(r =>
-        Presence.isHeartbeat(r, settings.heartbeatFilter, attributionPatterns),
-      )
+      presence.filterNot(r => Presence.isHeartbeat(r, filter, attributionPatterns))
 
     // Distinctive host → owning-app: lowest appId wins when a host is in multiple apps (#1061),
     // apex-aware so subdomain traffic attributes to the apex-form entry (#1161). #1898: SHARED rows
@@ -688,7 +686,8 @@ object UsageRoutes {
     // both filters, so it can still differ from the assigned apps' gap; that asymmetry is the price
     // of not letting catalog traffic reach the assigned apps' gap, and it is the right way round.
     // The residual mismatch only runs "hosts without headline" (a host the profile rule keeps but
-    // the catalog groups suppress shows in `hosts`), never a headline with no hosts behind it.
+    // the catalog groups suppress shows in `hosts`), never a headline with no hosts behind it (outside the #1061
+    // tiebreak case noted below).
     //
     // The membership gate uses `HostMatch.matchesAny`, the same predicate the primitive itself
     // applies, so an app the primitive would match is never gated out by a weaker matcher. Cost is
