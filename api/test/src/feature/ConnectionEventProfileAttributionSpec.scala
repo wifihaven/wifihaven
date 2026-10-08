@@ -136,6 +136,25 @@ object ConnectionEventProfileAttributionSpec
         adults.map(_._1) == List(After),
       )
     },
+    // Intervals are half-open: an event at exactly a transition instant belongs to the row that
+    // opens there, and only to it. An inclusive upper bound would join the closing row as well and
+    // return the event twice.
+    test("an event at exactly the reassignment instant is labelled once, by the new holder") {
+      for {
+        f   <- fixture(List(Reassign))
+        _   <- reassign(f, Some(f.adults))
+        all <- logLabels(f)
+      } yield assertTrue(all == List((Reassign, Some(f.adults), Some("Adults"))))
+    },
+    test("two transitions at one instant leave an empty interval that labels nothing") {
+      for {
+        f   <- fixture(List(Reassign))
+        _   <- reassign(f, Some(f.adults))
+        // Back to Kids at the same instant: Adults' row becomes the zero-length [Reassign, Reassign).
+        _   <- reassign(f, Some(f.kids))
+        all <- logLabels(f)
+      } yield assertTrue(all == List((Reassign, Some(f.kids), Some("Kids"))))
+    },
     test("an event before the device's first assignment, or after it is unassigned, has no label") {
       for {
         f   <- fixture(List(Before, After))
@@ -190,7 +209,7 @@ object ConnectionEventProfileAttributionSpec
           BucketGrain.Daily,
         )
         // Profile and count only: the re-binned `windowStart` follows date_bin's origin in the session
-        // time zone, which is not what this test is about.
+        // time zone (#2872). TODO(#2872): assert `windowStart` once the origin is pinned to UTC.
       } yield assertTrue(seriesByProfile(rows).map(r => (r._2, r._3)) == List(("Kids", 2)))
     },
   ) @@ TestAspect.sequential

@@ -3718,9 +3718,11 @@ class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo 
     val fromJoins = fr"FROM " ++ table ++ fr"""
            LEFT JOIN routers r  ON r.id  = cer.router_id """ ++
       // #2845: a rollup row carries no per-event timestamp, so it is labelled with the profile
-      // that held the device at the BUCKET START (`tsBin`). A bucket that straddles a reassignment
-      // or check-in is attributed whole to the earlier holder: off by at most one bucket on the
-      // series chart. Daily-limit math does not read these tables (it uses presence, §6.1).
+      // that held the device at the start of its STORED bucket (`tsBin`: the hour for hourly, the
+      // UTC day for daily). A bucket that straddles a reassignment or check-in is attributed whole
+      // to the earlier holder: off by at most one stored bucket on the series chart. For a shared
+      // device on the daily grain that miss recurs every day it has no holder at 00:00 UTC, which
+      // #2873 tracks. Daily-limit math does not read these tables (it uses presence, §6.1).
       SqlFragments.deviceLabelJoin("cer.mac", tsBin)
     val anchor    = f.until.fold(fr"NOW()")(u => fr"$u::TIMESTAMPTZ")
     val window    =
