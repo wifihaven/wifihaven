@@ -170,10 +170,7 @@ class AppUsedRollupServiceLive(
             case atls =>
               for {
                 // #2844: only the rows of the devices this profile held, while it held them.
-                scope   <- {
-                  val (from, until) = AttributionScope.dayWindow(date, settings)
-                  deviceRepo.attributionScope(household, from, until)
-                }
+                scope <- AttributionScope.forDay(deviceRepo, household, date, settings)
                 spans = scope.spansFor(profileId)
                 raw     <- rolled.values.iterator.map(_.rolledThrough).minOption match {
                   case Some(watermark) => trafficRepo.listPresenceRowsSince(spans, date, watermark)

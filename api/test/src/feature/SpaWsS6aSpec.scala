@@ -222,24 +222,24 @@ object SpaWsS6aSpec
     def listForDevice(household: HouseholdId, mac: MacAddress, date: java.time.LocalDate) =
       underlying.listForDevice(household, mac, date)
     def listForRouter(routerId: RouterId, limit: Int) = underlying.listForRouter(routerId, limit)
-    def listTrafficRollupRows(household: HouseholdId, f: TrafficRollupFilter)                 =
+    def listTrafficRollupRows(household: HouseholdId, f: TrafficRollupFilter)              =
       underlying.listTrafficRollupRows(household, f)
-    def listPresenceRows(spans: wifihaven.api.usage.PresenceSpans, date: java.time.LocalDate) =
+    def listPresenceRows(spans: wifihaven.api.db.PresenceSpans, date: java.time.LocalDate) =
       dayLoads.update(_ + 1) *> underlying.listPresenceRows(spans, date)
     def listPresenceRows(
-        spans: wifihaven.api.usage.PresenceSpans,
+        spans: wifihaven.api.db.PresenceSpans,
         from: java.time.LocalDate,
         to: java.time.LocalDate,
     ) =
       underlying.listPresenceRows(spans, from, to)
     def listPresenceRowsSince(
-        spans: wifihaven.api.usage.PresenceSpans,
+        spans: wifihaven.api.db.PresenceSpans,
         date: java.time.LocalDate,
         since: java.time.Instant,
     ) =
       underlying.listPresenceRowsSince(spans, date, since)
     def listPresenceRowsInWindow(
-        spans: wifihaven.api.usage.PresenceSpans,
+        spans: wifihaven.api.db.PresenceSpans,
         fromInstant: java.time.Instant,
         toInstant: java.time.Instant,
     ) =
@@ -264,7 +264,7 @@ object SpaWsS6aSpec
         toInstant: java.time.Instant,
         cursor: Option[wifihaven.api.usage.RawTrafficCursorKey],
         limit: Option[Int],
-        spans: Option[wifihaven.api.usage.PresenceSpans],
+        spans: Option[wifihaven.api.db.PresenceSpans],
     ) = underlying.listRawInRange(household, macs, fromInstant, toInstant, cursor, limit, spans)
     def listRawAggregatedInRange(
         household: HouseholdId,
@@ -272,7 +272,7 @@ object SpaWsS6aSpec
         fromInstant: java.time.Instant,
         toInstant: java.time.Instant,
         stepSeconds: Long,
-        spans: Option[wifihaven.api.usage.PresenceSpans],
+        spans: Option[wifihaven.api.db.PresenceSpans],
     ) = underlying.listRawAggregatedInRange(
       household,
       macs,

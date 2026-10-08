@@ -162,8 +162,12 @@ object UsageSeriesPerfSpec
           localMid,
           nextMid,
         )
+        // #2844: the per-profile read the series route actually issues (scope spans, same window).
+        scope    <- deviceRepo.attributionScope(HouseholdId.Default, localMid, nextMid)
+        viaScope <- trafficRepo.listPresenceRowsInWindow(scope.spansFor(kidsId), localMid, nextMid)
       } yield assertTrue(
         windowed.toSet == legacy.toSet,
+        viaScope.toSet == legacy.toSet,
         windowed.map(_.host.value).toSet == Set("youtube.com", "google.com"),
         windowed.size == 2,
       )

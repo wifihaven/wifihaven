@@ -148,7 +148,7 @@ trait RollupRepo {
       // #2844: a profile filter's spans (`MacScope.Only`). A bucket is kept when a span covers its
       // START, so a bucket straddling a reassignment is attributed whole to the profile that held
       // the device when it began (off by at most one bucket, design §6.3).
-      spans: Option[wifihaven.api.usage.PresenceSpans] = None,
+      spans: Option[wifihaven.api.db.PresenceSpans] = None,
   ): Task[List[RollupRow]]
 
   /**
@@ -162,7 +162,7 @@ trait RollupRepo {
       from: Instant,
       to: Instant,
       // #2844: as [[listHourlyInRange]]; the bucket start is the row's midnight UTC.
-      spans: Option[wifihaven.api.usage.PresenceSpans] = None,
+      spans: Option[wifihaven.api.db.PresenceSpans] = None,
   ): Task[List[RollupRow]]
 
   /**
@@ -419,7 +419,7 @@ class RollupRepoLive(xa: Transactor[Task]) extends RollupRepo {
       macs: List[MacAddress],
       from: Instant,
       to: Instant,
-      spans: Option[wifihaven.api.usage.PresenceSpans] = None,
+      spans: Option[wifihaven.api.db.PresenceSpans] = None,
   ): Task[List[RollupRow]] = {
     // #2708: the tenancy predicate below. `traffic_hourly` carries no `household_id` of its own, so
     // the scope is TRANSITIVE through `routers.household_id` (NOT NULL, V65) via the same shared
@@ -489,7 +489,7 @@ class RollupRepoLive(xa: Transactor[Task]) extends RollupRepo {
       macs: List[MacAddress],
       from: Instant,
       to: Instant,
-      spans: Option[wifihaven.api.usage.PresenceSpans] = None,
+      spans: Option[wifihaven.api.db.PresenceSpans] = None,
   ): Task[List[RollupRow]] = {
     type Row = (MacAddress, String, LocalDate, Int, Long, Long)
     // `date` is a calendar day with no zone; widen the band by one day on each

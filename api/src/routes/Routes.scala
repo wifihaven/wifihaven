@@ -5,7 +5,6 @@ import wifihaven.api.cache.TimeStatusCache
 import wifihaven.api.db.*
 import wifihaven.api.metrics.AppMetrics
 import wifihaven.api.observability.LogContext
-import wifihaven.api.usage.AttributionScope
 import wifihaven.shared.*
 import wifihaven.shared.types.*
 import zio.{Clock as _, *}
@@ -1204,10 +1203,9 @@ object TimeRoutes {
               visible    <- visibleProfiles(claims, allProfiles, userProfileRepo)
               appLimsByPid = allAppLims.groupBy(_.profileId)
               // #2844: each profile is credited the rows of the devices it held, while it held them.
-              scope    <- {
-                val (f, u) = AttributionScope.rangeWindow(from, to, settings)
-                deviceRepo.attributionScope(claims.hh, f, u).mapError(ApiError.Db(_))
-              }
+              scope    <- AttributionScope
+                .forRange(deviceRepo, claims.hh, from, to, settings)
+                .mapError(ApiError.Db(_))
               presence <- trafficRepo
                 .listPresenceRows(scope.spansForProfiles(visible.map(_.id)), from, to)
                 .mapError(ApiError.Db(_))
@@ -1624,10 +1622,7 @@ object TimeRoutes {
       )
       // #2844: the devices the profile held on `date` and only their in-interval rows, the same
       // attribution `state.usedMinutes` was computed under.
-      scope     <- {
-        val (f, u) = AttributionScope.dayWindow(date, settings)
-        deviceRepo.attributionScope(household, f, u)
-      }
+      scope <- AttributionScope.forDay(deviceRepo, household, date, settings)
       devices = scope.devicesFor(profile.id, allDevices)
       raw       <- trafficRepo.listPresenceRows(scope.spansFor(profile.id), date)
       appLimits <- appTimeLimitRepo.listForProfile(profile.id)
@@ -1668,12 +1663,9 @@ object TimeRoutes {
       ambient: wifihaven.api.presence.AmbientGate,
   ): Task[ProfileTimeStatusWeek] =
     for {
-      tl        <- tlRepo.findForProfile(profile.id)
+      tl    <- tlRepo.findForProfile(profile.id)
       // #2844: the devices the profile held during the range, and only their in-interval rows.
-      scope     <- {
-        val (f, u) = AttributionScope.rangeWindow(from, to, settings)
-        deviceRepo.attributionScope(household, f, u)
-      }
+      scope <- AttributionScope.forRange(deviceRepo, household, from, to, settings)
       devices = scope.devicesFor(profile.id, allDevices)
       raw       <- trafficRepo.listPresenceRows(scope.spansFor(profile.id), from, to)
       appLimits <- appTimeLimitRepo.listForProfile(profile.id)

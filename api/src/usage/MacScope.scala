@@ -1,5 +1,6 @@
 package wifihaven.api.usage
 
+import wifihaven.api.db.PresenceSpans
 import wifihaven.shared.types.MacAddress
 
 /**
@@ -30,9 +31,10 @@ enum MacScope {
    * A filter was supplied and selected these devices. Non-empty by construction.
    *
    * #2844: `spans` is `Some` when the filter named profiles. It then carries those profiles'
-   * [[AttributionScope]] spans over the read's window, and a row is kept only when it falls in one
-   * of them, so a device moved between profiles contributes to each only its in-interval traffic.
-   * `None` is a device-only filter (`?mac=` without `?profileId=`): every row of those devices.
+   * [[wifihaven.api.db.AttributionScope]] spans over the read's window, and a row is kept only when
+   * it falls in one of them, so a device moved between profiles contributes to each only its
+   * in-interval traffic. `None` is a device-only filter (`?mac=` without `?profileId=`): every row
+   * of those devices.
    */
   case Only(macs: ::[MacAddress], spans: Option[PresenceSpans])
 

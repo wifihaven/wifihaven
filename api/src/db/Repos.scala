@@ -721,7 +721,7 @@ trait DeviceRepo {
   /**
    * #2844 (design `docs/design/shared-devices.md` §6.1): every `device_profile_assignments`
    * interval in `household` that overlaps `[from, until)`, grouped by profile. The one read
-   * per-profile usage attribution is built from; see [[wifihaven.api.usage.AttributionScope]].
+   * per-profile usage attribution is built from; see [[wifihaven.api.db.AttributionScope]].
    *
    * Overlap is half-open on both sides, and a NULL bound is unbounded (design §5.1): a row with
    * `started_at IS NULL` overlaps every window that starts before its `ended_at`. Zero-length rows
@@ -732,7 +732,7 @@ trait DeviceRepo {
       household: HouseholdId,
       from: Instant,
       until: Instant,
-  ): Task[wifihaven.api.usage.AttributionScope]
+  ): Task[AttributionScope]
 
   /**
    * #2312: household-scoped. The old global `findByMac` (WHERE d.mac=$mac + `.option`) THREW ("more
@@ -1278,14 +1278,13 @@ trait TrafficReportRepo {
    * date; the caller deduplicates by `(mac, period_start)` so per-hostname rows in a single bucket
    * don't inflate total screen time.
    *
-   * #2844: takes the spans of an [[wifihaven.api.usage.AttributionScope]], not a MAC list, so the
-   * rows are the ones the scope's profile(s) held the device for (by `period_start`), never a
-   * device's whole day under whatever profile it is on now. `spans.household` scopes the
-   * `traffic_reports` read (#2313). A device's own presence, regardless of profile, is
-   * [[listDevicePresenceRows]].
+   * #2844: takes the spans of an [[wifihaven.api.db.AttributionScope]], not a MAC list, so the rows
+   * are the ones the scope's profile(s) held the device for (by `period_start`), never a device's
+   * whole day under whatever profile it is on now. `spans.household` scopes the `traffic_reports`
+   * read (#2313). A device's own presence, regardless of profile, is [[listDevicePresenceRows]].
    */
   def listPresenceRows(
-      spans: wifihaven.api.usage.PresenceSpans,
+      spans: wifihaven.api.db.PresenceSpans,
       date: LocalDate,
   ): Task[List[wifihaven.api.presence.PresenceRow]]
 
@@ -1296,7 +1295,7 @@ trait TrafficReportRepo {
    * re-bucketing for the chart happens in the SPA against the UTC `periodStart` instants (#794).
    */
   def listPresenceRows(
-      spans: wifihaven.api.usage.PresenceSpans,
+      spans: wifihaven.api.db.PresenceSpans,
       from: LocalDate,
       to: LocalDate,
   ): Task[List[wifihaven.api.presence.PresenceRow]]
@@ -1307,7 +1306,7 @@ trait TrafficReportRepo {
    * rollup hasn't yet absorbed.
    */
   def listPresenceRowsSince(
-      spans: wifihaven.api.usage.PresenceSpans,
+      spans: wifihaven.api.db.PresenceSpans,
       date: LocalDate,
       since: Instant,
   ): Task[List[wifihaven.api.presence.PresenceRow]]
@@ -1323,7 +1322,7 @@ trait TrafficReportRepo {
    * [[listPresenceRows]]; callers compute the window from the requested local day + zone.
    */
   def listPresenceRowsInWindow(
-      spans: wifihaven.api.usage.PresenceSpans,
+      spans: wifihaven.api.db.PresenceSpans,
       fromInstant: Instant,
       toInstant: Instant,
   ): Task[List[wifihaven.api.presence.PresenceRow]]
@@ -1362,7 +1361,7 @@ trait TrafficReportRepo {
       cursor: Option[wifihaven.api.usage.RawTrafficCursorKey] = None,
       limit: Option[Int] = None,
       // #2844: a profile filter's spans (`MacScope.Only`); rows outside them are excluded.
-      spans: Option[wifihaven.api.usage.PresenceSpans] = None,
+      spans: Option[wifihaven.api.db.PresenceSpans] = None,
   ): Task[List[wifihaven.api.usage.TrafficUsageDbRow]]
 
   /**
@@ -1391,7 +1390,7 @@ trait TrafficReportRepo {
       toInstant: Instant,
       stepSeconds: Long,
       // #2844: as [[listRawInRange]]; applied to each raw row before the GROUP BY.
-      spans: Option[wifihaven.api.usage.PresenceSpans] = None,
+      spans: Option[wifihaven.api.db.PresenceSpans] = None,
   ): Task[List[wifihaven.api.usage.TrafficUsageDbRow]]
 
   /**
@@ -2230,12 +2229,10 @@ class DeviceRepoLive(xa: Transactor[Task], clock: wifihaven.shared.Clock) extend
         .to[List]
         .transact(xa)
         .map { rows =>
-          wifihaven.api.usage.AttributionScope(
+          AttributionScope(
             household,
-            from,
-            until,
             rows.groupMap(_._1) { case (_, dev, mac, f, u) =>
-              wifihaven.api.usage.AttributionSpan(mac, dev, f, u)
+              AttributionSpan(mac, dev, f, u)
             },
           )
         },
@@ -3088,14 +3085,14 @@ class TrafficReportRepoLive(xa: Transactor[Task]) extends TrafficReportRepo {
       .to[List]
       .transact(xa)
 
-  def listPresenceRows(spans: wifihaven.api.usage.PresenceSpans, date: LocalDate) =
+  def listPresenceRows(spans: wifihaven.api.db.PresenceSpans, date: LocalDate) =
     listPresenceRowsBetween(spans.household, spans.macs, spanFilterOf(spans), date, date, None)
 
-  def listPresenceRows(spans: wifihaven.api.usage.PresenceSpans, from: LocalDate, to: LocalDate) =
+  def listPresenceRows(spans: wifihaven.api.db.PresenceSpans, from: LocalDate, to: LocalDate) =
     listPresenceRowsBetween(spans.household, spans.macs, spanFilterOf(spans), from, to, None)
 
   def listPresenceRowsSince(
-      spans: wifihaven.api.usage.PresenceSpans,
+      spans: wifihaven.api.db.PresenceSpans,
       date: LocalDate,
       since: Instant,
   ) =
@@ -3109,7 +3106,7 @@ class TrafficReportRepoLive(xa: Transactor[Task]) extends TrafficReportRepo {
     )
 
   def listPresenceRowsInWindow(
-      spans: wifihaven.api.usage.PresenceSpans,
+      spans: wifihaven.api.db.PresenceSpans,
       fromInstant: Instant,
       toInstant: Instant,
   ) =
@@ -3132,7 +3129,7 @@ class TrafficReportRepoLive(xa: Transactor[Task]) extends TrafficReportRepo {
     presenceRowsInWindow(household, macs, Fragment.empty, fromInstant, toInstant)
 
   // #2844: the attribution predicate for the presence reads below (`tr` is `traffic_reports`).
-  private def spanFilterOf(spans: wifihaven.api.usage.PresenceSpans): Fragment =
+  private def spanFilterOf(spans: wifihaven.api.db.PresenceSpans): Fragment =
     SqlFragments.spanFilter(spans, "tr.mac", "tr.period_start")
 
   private def presenceRowsInWindow(
@@ -3257,7 +3254,7 @@ class TrafficReportRepoLive(xa: Transactor[Task]) extends TrafficReportRepo {
       toInstant: Instant,
       cursor: Option[wifihaven.api.usage.RawTrafficCursorKey] = None,
       limit: Option[Int] = None,
-      spans: Option[wifihaven.api.usage.PresenceSpans] = None,
+      spans: Option[wifihaven.api.db.PresenceSpans] = None,
   ) = {
     type Row =
       (MacAddress, HostId, Instant, Instant, Int, Long, Long)
@@ -3318,7 +3315,7 @@ class TrafficReportRepoLive(xa: Transactor[Task]) extends TrafficReportRepo {
       fromInstant: Instant,
       toInstant: Instant,
       stepSeconds: Long,
-      spans: Option[wifihaven.api.usage.PresenceSpans] = None,
+      spans: Option[wifihaven.api.db.PresenceSpans] = None,
   ) = {
     type Row = (MacAddress, HostId, Instant, Instant, Int, Long, Long)
     val step      = math.max(1L, stepSeconds)

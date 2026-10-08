@@ -4,6 +4,7 @@ import wifihaven.api.db.{
   AmbientHostsRepo,
   AppTimeLimitRepo,
   AppUsedRollupRepo,
+  AttributionScope,
   DeviceRepo,
   HouseholdSettingsRepo,
   NoopAmbientHostsRepo,
@@ -275,10 +276,7 @@ object TimeUsedRollupJob {
                 appTimeLimitRepo.listForProfile(p.id).map(p.id -> _),
               )
               // #2844: each profile rolls only the rows of the devices it held, while it held them.
-              scope    <- {
-                val (from, until) = AttributionScope.dayWindow(today, settings)
-                deviceRepo.attributionScope(hh, from, until)
-              }
+              scope    <- AttributionScope.forDay(deviceRepo, hh, today, settings)
               presence <- trafficRepo.listPresenceRows(scope.allProfiles, today)
               rolls = computeRolls(
                 profiles,

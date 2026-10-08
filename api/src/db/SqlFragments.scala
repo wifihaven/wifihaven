@@ -112,24 +112,28 @@ object SqlFragments {
   // #2844 (design `docs/design/shared-devices.md` §6.1): restrict a usage read to the device
   // intervals of an attribution scope — a row is kept when one of its MAC's spans covers its
   // timestamp, half-open `[from, until)`, `None` meaning unbounded. Composes AFTER the read's own
-  // `mac IN (...)` predicate (which stays the index condition); this is a row filter on top of it.
-  // Empty when no span has a bound, which is every read whose window contains no assignment change,
-  // so the steady-state query is unchanged. `macColumn` / `tsColumn` are trusted compile-time
-  // literals spliced via `Fragment.const`, like [[householdEq]]'s `column`.
-  def spanFilter(
-      spans: wifihaven.api.usage.PresenceSpans,
-      macColumn: String,
-      tsColumn: String,
-  ): Fragment =
+  // `mac IN (...)` predicate, which stays the index condition; this is a row filter on top of it.
+  //
+  // Empty when every span is unbounded — every device still on its V90 backfill row, i.e. never
+  // reassigned — so that read is the pre-#2844 query. Otherwise the never-reassigned devices
+  // collapse into one `mac IN (...)` disjunct and only devices with a bounded span get a per-span
+  // time term, so the OR chain grows with reassigned devices, not household size. `macColumn` /
+  // `tsColumn` are trusted compile-time literals spliced via `Fragment.const`, like
+  // [[householdEq]]'s `column`.
+  def spanFilter(spans: PresenceSpans, macColumn: String, tsColumn: String): Fragment =
     if (spans.unbounded) Fragment.empty
     else {
-      val mac = Fragment.const(macColumn)
-      val ts  = Fragment.const(tsColumn)
-      val one = spans.spans.map { s =>
+      val mac             = Fragment.const(macColumn)
+      val ts              = Fragment.const(tsColumn)
+      val (open, bounded) = spans.spans.partition(_.unbounded)
+      val openTerm        = cats.data.NonEmptyList
+        .fromList(open.map(_.mac.value).distinct)
+        .map(nel => fr"(" ++ Fragments.in(mac, nel) ++ fr")")
+      val boundedTerms    = bounded.map { s =>
         fr"(" ++ mac ++ fr"= ${s.mac}" ++
           s.from.fold(Fragment.empty)(f => fr"AND" ++ ts ++ fr">= $f") ++
           s.until.fold(Fragment.empty)(u => fr"AND" ++ ts ++ fr"< $u") ++ fr")"
       }
-      fr"AND (" ++ one.reduce(_ ++ fr"OR" ++ _) ++ fr")"
+      fr"AND (" ++ (openTerm.toList ++ boundedTerms).reduce(_ ++ fr"OR" ++ _) ++ fr")"
     }
 }

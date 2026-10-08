@@ -3,6 +3,7 @@ package wifihaven.api.usage
 import wifihaven.api.db.{
   AmbientHostsRepo,
   AppTimeLimitRepo,
+  AttributionScope,
   DeviceRepo,
   HouseholdSettingsRepo,
   ProfileRepo,
@@ -276,10 +277,7 @@ object AmbientLearnJob {
                 // #2844: a row learns under the profile that held its device at the row's
                 // `period_start`. The scope's rows plus the household's unattributed remainder
                 // (a device with no profile for part or all of the day) cover every row once.
-                scope    <- {
-                  val (from, until) = AttributionScope.dayWindow(yesterday, settings)
-                  deviceRepo.attributionScope(hh, from, until)
-                }
+                scope    <- AttributionScope.forDay(deviceRepo, hh, yesterday, settings)
                 presence <- trafficRepo
                   .listDevicePresenceRows(hh, devices.map(_.mac), yesterday, yesterday)
               } yield {

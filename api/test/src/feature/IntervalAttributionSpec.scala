@@ -1,14 +1,15 @@
 package wifihaven.api.feature
 
 import doobie.*
+import wifihaven.api.JwtConfig
+import wifihaven.api.auth.AuthServiceLive
+import wifihaven.api.routes.{TimeRoutes, UsageRoutes}
 import doobie.implicits.*
 import wifihaven.api.db.*
 import wifihaven.api.db.TypeMeta.given
 import wifihaven.api.policy.*
 import wifihaven.api.usage.{
   AppUsedRollupServiceLive,
-  AttributionScope,
-  AttributionSpan,
   TimeUsedRollupJob,
   UsageTraffic,
   UsageTrafficQuery,
@@ -20,6 +21,8 @@ import io.zonky.test.db.postgres.embedded.EmbeddedPostgres
 import zio.{Clock as _, *}
 import zio.interop.catz.*
 import zio.test.*
+import zio.http.*
+import zio.json.*
 
 import java.time.{Instant, LocalDate, LocalDateTime, LocalTime, ZoneOffset}
 
@@ -38,9 +41,11 @@ import java.time.{Instant, LocalDate, LocalDateTime, LocalTime, ZoneOffset}
  * returned nothing cannot pass.
  */
 object IntervalAttributionSpec
-    extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Transactor[Task]] {
+    extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Transactor[Task] & Clock] {
 
-  override val bootstrap = TestDatabase.layer
+  // The routes read "today" from the injected clock: 16:00 on the move day.
+  override val bootstrap =
+    TestDatabase.layer ++ TestLayers.withClock(LocalDateTime.of(2025, 1, 8, 16, 0))
 
   private val cleanDb = TestDatabase.cleanAndMigrate
 
@@ -178,6 +183,39 @@ object IntervalAttributionSpec
     } yield (raw.map(_.activeSeconds.toLong).sum, agg.map(_.totalSeconds).sum)
   }
 
+  // GET `path` through the real TimeRoutes + UsageRoutes as the default admin, decoded as `A`.
+  private def getJson[A: JsonDecoder](path: String) =
+    for {
+      clock <- ZIO.service[Clock]
+      auth  <- ZIO.serviceWith[UserRepo](ur =>
+        AuthServiceLive(ur, JwtConfig("test-secret-at-least-32-chars!!x", 1), clock),
+      )
+      svc   <- fullService
+      dr    <- ZIO.service[DeviceRepo]
+      trr   <- ZIO.service[TrafficReportRepo]
+      tlr   <- ZIO.service[TimeLimitRepo]
+      atl   <- ZIO.service[AppTimeLimitRepo]
+      er    <- ZIO.service[TimeExtensionRepo]
+      pr    <- ZIO.service[ProfileRepo]
+      upr   <- ZIO.service[UserProfileRepo]
+      hsr   <- ZIO.service[HouseholdSettingsRepo]
+      ar    <- ZIO.service[AppRepo]
+      rr    <- ZIO.service[RollupRepo]
+      aru   <- ZIO.service[AppUsedRollupRepo]
+      routes = TimeRoutes.routes(auth, dr, tlr, atl, trr, er, pr, upr, hsr, svc, clock) ++
+        UsageRoutes.routes(auth, dr, trr, upr, pr, ar, rr, hsr, atl, aru, clock)
+      token <- auth.login("admin", "changeme").mapError(e => new RuntimeException(s"login: $e"))
+      resp  <- routes.runZIO(
+        Request
+          .get(URL.decode(path).toOption.get)
+          .addHeader(Header.Authorization.Bearer(token.token.value)),
+      )
+      body  <- resp.body.asString
+      out   <- ZIO
+        .fromEither(body.fromJson[A])
+        .mapError(e => new RuntimeException(s"$path -> ${resp.status}: $e: $body"))
+    } yield out
+
   private def appMins(s: ProfileDayState): Int = s.perApp.map(_.usedMinutes).sum
 
   def spec = suite("IntervalAttributionSpec (#2844)")(
@@ -202,20 +240,6 @@ object IntervalAttributionSpec
         prev.byProfile(f.a).map(_.deviceId).toSet == Set(f.moved, f.stay),
         next.byProfile(f.a).map(_.deviceId) == List(f.stay),
         next.byProfile(f.b).map(_.deviceId) == List(f.moved),
-        // A window with no assignment change inside it adds no predicate: the presence query is
-        // the pre-#2844 MAC-list query. The move day does add one.
-        prev.allProfiles.unbounded,
-        SqlFragments
-          .spanFilter(prev.allProfiles, "tr.mac", "tr.period_start")
-          .update
-          .sql
-          .isEmpty,
-        !scope.allProfiles.unbounded,
-        SqlFragments
-          .spanFilter(scope.allProfiles, "tr.mac", "tr.period_start")
-          .update
-          .sql
-          .contains("tr.period_start <"),
       )
     },
     test("live path: pre-move usage stays with A, post-move usage goes to B") {
@@ -306,6 +330,44 @@ object IntervalAttributionSpec
         b     <- trafficSecondsFor(f.b, devs, scope, from, to)
       } yield assertTrue(a == (2700L, 2700L), b == (1200L, 1200L))
     },
+    test("every per-profile usage route splits the moved device's usage") {
+      for {
+        f <- seed
+        a = f.a.value
+        b = f.b.value
+        week <- ZIO.foreach(List(a, b))(p =>
+          getJson[List[ProfileTimeStatusWeek]](s"/api/time/status/week?to=$day&profileId=$p"),
+        )
+        sum  <- getJson[List[ProfileTimeSummaryWeek]](s"/api/time/status/summary/week?to=$day")
+        ser  <- ZIO.foreach(List(a, b))(p =>
+          getJson[UsageSeriesResponse](s"/api/usage/series?profileId=$p&date=$day&tz=UTC"),
+        )
+        bat  <- getJson[UsageSeriesBatchResponse](
+          s"/api/usage/series/batch?profileId=$a,$b&date=$day&tz=UTC",
+        )
+        uba  <- ZIO.foreach(List(a, b))(p =>
+          getJson[ProfileUsageByApp](s"/api/profiles/$p/usage-by-app?from=$day&to=$day"),
+        )
+        trf  <- ZIO.foreach(List(a, b))(p =>
+          getJson[TrafficUsageResponse](
+            s"/api/usage/traffic?profileId=$p&from=${at(0)}&to=${at(0).plusSeconds(86400)}" +
+              "&bucket=1h",
+          ),
+        )
+        sumBy = sum.map(s => s.profileId -> s.totalMins).toMap
+      } yield assertTrue(
+        week.map(_.map(_.totalMins)) == List(List(45), List(20)),
+        sumBy(f.a) == 45,
+        sumBy(f.b) == 20,
+        ser.map(_.presenceTotalMins) == List(45, 20),
+        bat.series.map(s => s.profileId -> s.presenceTotalMins) == List(
+          Some(f.a) -> 45,
+          Some(f.b) -> 20,
+        ),
+        uba.map(_.apps.map(_.presenceSeconds).sum) == List(2700L, 1200L),
+        trf.map(_.aggregateRows.map(_.totalSeconds).sum) == List(2700L, 1200L),
+      )
+    },
     test("a backfilled open-ended row (NULL started_at) still attributes the whole day") {
       for {
         f   <- seed
@@ -316,6 +378,29 @@ object IntervalAttributionSpec
         svc <- fullService
         all <- svc.dayStateAllLive(HouseholdId.Default, at(16), day, f.settings)
       } yield assertTrue(n == 1, all(f.a).usedMinutes == 45, all(f.b).usedMinutes == 20)
+    },
+    test("only reassigned devices add a time predicate to the presence query") {
+      def sqlOf(spans: PresenceSpans) =
+        SqlFragments.spanFilter(spans, "tr.mac", "tr.period_start").update.sql
+      for {
+        f     <- seed
+        xa    <- ZIO.service[Transactor[Task]]
+        dr    <- ZIO.service[DeviceRepo]
+        // `stay` in the V90 backfill shape: never reassigned, so its span is unbounded.
+        _     <- sql"""UPDATE device_profile_assignments SET started_at = NULL
+                        WHERE device_id = ${f.stay} AND ended_at IS NULL""".update.run.transact(xa)
+        scope <- AttributionScope.forDay(dr, HouseholdId.Default, day, f.settings)
+        // Devices that were never reassigned issue the pre-#2844 query.
+        steady = scope.allProfiles.restrictTo(Set(stayMac))
+      } yield assertTrue(
+        !steady.isEmpty,
+        steady.unbounded,
+        sqlOf(steady).isEmpty,
+        // `stay` rides one IN disjunct; only `moved` gets per-span time terms (one per profile).
+        sqlOf(scope.allProfiles).contains(" IN ("),
+        sqlOf(scope.allProfiles).split("tr.period_start <", -1).length - 1 == 1,
+        sqlOf(scope.allProfiles).split("tr.period_start >=", -1).length - 1 == 2,
+      )
     },
   ) @@ TestAspect.sequential
 }

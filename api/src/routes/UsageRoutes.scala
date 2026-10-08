@@ -5,7 +5,6 @@ import wifihaven.api.db.*
 import wifihaven.api.metrics.AppMetrics
 import wifihaven.api.usage.{
   AppMembership,
-  AttributionScope,
   RawTrafficCursorKey,
   RetentionSweepJob,
   UsageSeries,
@@ -522,10 +521,9 @@ object UsageRoutes {
         .mapError(ApiError.Db(_))
         .flatMap(ZIO.fromOption(_).orElseFail(ApiError.NotFound("Profile not found")))
       // #2844: the rows of the devices this profile held, while it held them.
-      scope     <- {
-        val (f, u) = AttributionScope.rangeWindow(from, to, settings)
-        deviceRepo.attributionScope(household, f, u).mapError(ApiError.Db(_))
-      }
+      scope     <- AttributionScope
+        .forRange(deviceRepo, household, from, to, settings)
+        .mapError(ApiError.Db(_))
       raw       <- trafficRepo
         .listPresenceRows(scope.spansFor(pid), from, to)
         .mapError(ApiError.Db(_))
@@ -1227,7 +1225,7 @@ object UsageRoutes {
       // the case those guards missed.
       // #2844: a profile filter selects what the profiles held during `[fromI, toI)`, by interval.
       attribution <-
-        if (profileIds.isEmpty) ZIO.succeed(AttributionScope.empty(claims.hh, fromI, toI))
+        if (profileIds.isEmpty) ZIO.succeed(AttributionScope.empty(claims.hh))
         else deviceRepo.attributionScope(claims.hh, fromI, toI).mapError(ApiError.Db(_))
       macScope    <- (macsRaw, profileIds) match {
         case (ms, _) if ms.nonEmpty     =>

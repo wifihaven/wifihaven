@@ -1,6 +1,6 @@
 package wifihaven.api.usage
 
-import wifihaven.api.db.{RollupRepo, RollupRow, TrafficReportRepo}
+import wifihaven.api.db.{AttributionScope, PresenceSpans, RollupRepo, RollupRow, TrafficReportRepo}
 import wifihaven.shared.*
 import wifihaven.shared.types.*
 import zio.*

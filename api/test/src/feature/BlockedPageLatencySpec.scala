@@ -75,20 +75,20 @@ object BlockedPageLatencySpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPo
     def listForDevice(household: HouseholdId, mac: MacAddress, date: LocalDate) =
       underlying.listForDevice(household, mac, date)
     def listForRouter(routerId: RouterId, limit: Int) = underlying.listForRouter(routerId, limit)
-    def listTrafficRollupRows(household: HouseholdId, f: TrafficRollupFilter)                      =
+    def listTrafficRollupRows(household: HouseholdId, f: TrafficRollupFilter)                   =
       underlying.listTrafficRollupRows(household, f)
-    def listPresenceRows(spans: wifihaven.api.usage.PresenceSpans, date: LocalDate)                =
+    def listPresenceRows(spans: wifihaven.api.db.PresenceSpans, date: LocalDate)                =
       dayLoads.update(_ + 1) *> underlying.listPresenceRows(spans, date)
-    def listPresenceRows(spans: wifihaven.api.usage.PresenceSpans, from: LocalDate, to: LocalDate) =
+    def listPresenceRows(spans: wifihaven.api.db.PresenceSpans, from: LocalDate, to: LocalDate) =
       underlying.listPresenceRows(spans, from, to)
     def listPresenceRowsSince(
-        spans: wifihaven.api.usage.PresenceSpans,
+        spans: wifihaven.api.db.PresenceSpans,
         date: LocalDate,
         since: Instant,
     ) =
       underlying.listPresenceRowsSince(spans, date, since)
     def listPresenceRowsInWindow(
-        spans: wifihaven.api.usage.PresenceSpans,
+        spans: wifihaven.api.db.PresenceSpans,
         fromInstant: Instant,
         toInstant: Instant,
     ) =
@@ -113,7 +113,7 @@ object BlockedPageLatencySpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPo
         toInstant: Instant,
         cursor: Option[wifihaven.api.usage.RawTrafficCursorKey],
         limit: Option[Int],
-        spans: Option[wifihaven.api.usage.PresenceSpans],
+        spans: Option[wifihaven.api.db.PresenceSpans],
     ) = underlying.listRawInRange(household, macs, fromInstant, toInstant, cursor, limit, spans)
     def listRawAggregatedInRange(
         household: HouseholdId,
@@ -121,7 +121,7 @@ object BlockedPageLatencySpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPo
         fromInstant: Instant,
         toInstant: Instant,
         stepSeconds: Long,
-        spans: Option[wifihaven.api.usage.PresenceSpans],
+        spans: Option[wifihaven.api.db.PresenceSpans],
     ) = underlying.listRawAggregatedInRange(
       household,
       macs,

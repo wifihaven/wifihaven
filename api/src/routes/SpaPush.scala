@@ -3,7 +3,7 @@ package wifihaven.api.routes
 import wifihaven.api.db.*
 import wifihaven.api.observability.LogContext
 import wifihaven.api.policy.{PolicyService, TimeStatusService}
-import wifihaven.api.usage.{AppMembership, AttributionScope, UsageTraffic, UsageTrafficQuery}
+import wifihaven.api.usage.{AppMembership, UsageTraffic, UsageTrafficQuery}
 import wifihaven.shared.{Clock, Device, Profile, ProfileTimeStatus, TrafficUsageResponse, UserRole}
 import wifihaven.shared.types.{HouseholdId, MacAddress, ProfileId}
 import zio.{Clock as _, *}
@@ -472,7 +472,7 @@ object SpaPush {
         // interval — the same resolution the GET makes over its window.
         val attributionZ         =
           if (parsed.profileIds.isEmpty)
-            ZIO.succeed(AttributionScope.empty(household, headStart, headEnd))
+            ZIO.succeed(AttributionScope.empty(household))
           else deviceRepo.attributionScope(household, headStart, headEnd)
         attributionZ.flatMap { attribution =>
           val scope          =
@@ -599,10 +599,7 @@ object SpaPush {
                 devices       <- deviceRepo.listAllForHousehold(household)
                 // #2844: which profile held which device today, so each profile's body counts only
                 // the rows of the devices it held, while it held them (the GET's attribution).
-                scope         <- {
-                  val (from, until) = AttributionScope.dayWindow(date, settings)
-                  deviceRepo.attributionScope(household, from, until)
-                }
+                scope         <- AttributionScope.forDay(deviceRepo, household, date, settings)
                 // ONE full-day presence load across this household's spans, sliced per profile
                 // below — the per-profile re-scan was the #2167 pool-starvation amplifier.
                 allPresence   <- trafficRepo.listPresenceRows(scope.allProfiles, date)

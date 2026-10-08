@@ -2,7 +2,7 @@ package wifihaven.api.policy
 
 import wifihaven.api.db.*
 import wifihaven.api.presence.{AmbientGate, Presence, PresenceRow}
-import wifihaven.api.usage.{AppUsedRollupService, AttributionScope, NoopAppUsedRollupService}
+import wifihaven.api.usage.{AppUsedRollupService, NoopAppUsedRollupService}
 import wifihaven.shared.{Schedule as DbSchedule, *}
 import wifihaven.shared.types.*
 import zio.{Clock as _, *}
@@ -191,10 +191,7 @@ class TimeStatusServiceLive(
       household: HouseholdId,
       date: LocalDate,
       settings: HouseholdSettings,
-  ): Task[AttributionScope] = {
-    val (from, until) = AttributionScope.dayWindow(date, settings)
-    deviceRepo.attributionScope(household, from, until)
-  }
+  ): Task[AttributionScope] = AttributionScope.forDay(deviceRepo, household, date, settings)
 
   // #2313: `household` scopes the `traffic_reports` presence reads to the caller's tenant — a MAC can
   // exist in more than one household (post-V74), so without it a profile's used-minutes would be
