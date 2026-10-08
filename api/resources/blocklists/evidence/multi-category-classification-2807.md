@@ -12,7 +12,8 @@ also cross-checked the StevenBlack `ads-extended` feed).
 |---|---|---|---|---|
 | ads | responsiveads.com | 713,507 | 7 | ResponsiveAds — display-ad creative/serving platform (NBCUniversal, Condé Nast among clients). Observed subdomains `publish.`/`video2.`/`analytics.` corroborate. |
 | ads | vdo.ai | 464,205 | 5 | VDO.AI — video-ad platform/adserver. Observed subdomain `ortb.vdo.ai` is a direct open-RTB signal. Another instance of the recurring ".ai TLD is not an AI-product signal" trap (#2599/#2742/#2756/#2759/#2792) — surfaced in the `ai.yml` sweep but is ad-tech. Also present in `ads-extended` (`a.vdo.ai`), corroborating. |
-| ai | hellohaven.ai | 1,365,942 | 4 | Hello Haven's "Haven" — a consumer personal-AI digital-twin assistant app (launched 2026-09-17, $15M pre-seed led by Mayfield, available on iOS/Android). Observed at its confirmed product subdomain `my.hellohaven.ai`. |
+
+Dropped when main was merged in (2026-10-08): `hellohaven.ai` (ai, 1,365,942 bytes / 4 hits, Hello Haven's consumer personal-AI assistant at `my.hellohaven.ai`) was already added to `ai.yml` by #2837 (the #2836 pass), so this PR no longer adds it.
 
 ## Investigated, already curated — corrected during independent review
 

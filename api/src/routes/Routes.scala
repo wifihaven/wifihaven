@@ -2257,8 +2257,22 @@ object BlocklistRoutes {
               .refresh(blRepo, cache, fetcher, b)
               .mapError(ApiError.Db(_))
           } yield n match {
-            case Some(count) => Response.json(s"""{"refreshedHosts":$count}""")
-            case None        =>
+            case wifihaven.api.IngestOutcome.Ingested(count)   =>
+              Response.json(s"""{"refreshedHosts":$count}""")
+            // #2809: a failed fetch no longer implies an unchanged table — the sweep removes
+            // shared-GFE rows an older unfiltered build seeded. Still 502 (the fetch DID fail,
+            // and the SPA keys off `error`), but the body says what actually happened, so the
+            // admin who hit this endpoint BECAUSE Google sign-in was broken can tell the repair
+            // from a no-op without reading server logs. `purgedHosts` is additive.
+            case wifihaven.api.IngestOutcome.SweptOnly(purged) =>
+              Response
+                .status(Status.BadGateway)
+                .copy(body =
+                  Body.fromString(
+                    s"""{"error":"upstream fetch failed; removed $purged shared-frontend host(s) already present","purgedHosts":$purged}""",
+                  ),
+                )
+            case wifihaven.api.IngestOutcome.Unchanged         =>
               Response
                 .status(Status.BadGateway)
                 .copy(body =

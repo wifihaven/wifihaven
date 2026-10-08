@@ -1,0 +1,51 @@
+slug: onenote
+name: Microsoft OneNote
+icon: "https://icons.duckduckgo.com/ip3/onenote.com.ico"
+icon_type: url
+# OneNote for the web (#2811). Kids-profile traffic showed
+# onenote.officeapps.live.com and usc-onenote.officeapps.live.com (~2.7k
+# proportional min / 30d combined, 190+ presence min each) alongside the Office
+# Online backing hosts below; cdn.onenote.net and onenote.com are the app's own
+# static/marketing edges, listed so the whole OneNote surface attributes together.
+#
+# `shared_hosts:` (#1888) are the Office Online hosts every Office web app leans
+# on, so they credit to OneNote only while a distinctive OneNote host is live on
+# the same device:
+#   * oauth.officeapps.live.com, common.online.office.com, ecs.office.com,
+#     augloop.office.com — Office Online auth/shell/config/collab services
+#   * res.public.onecdn.static.microsoft, res-1.cdn.office.net — Office static
+#     resources
+# Deliberately NOT listed: login.live.com / login.microsoftonline.com /
+# storage.live.com / onedrive.live.com (Microsoft identity and storage, used by
+# every Microsoft product), teams.microsoft.com (a different app), and
+# *.nel.measure.office.net (network-error telemetry).
+#
+# COLLATERAL (both directions), written down rather than avoided: the OneNote
+# hosts resolve through app-geo.wac.trafficmanager.net to 52.108.8.12 / 52.108.9.12,
+# the same addresses oauth.officeapps.live.com and common.online.office.com
+# return, i.e. the front door for ALL Office web apps (Word, Excel, PowerPoint
+# Online), not just OneNote. Blocking OneNote drops those addresses, so the other
+# Office web apps stop loading; allowing it carves them into `extraAllowed`,
+# which beats category drops, per-host drops and whole-device blocks (Paused,
+# Schedule, daily limit) on that MAC (#421). `shared_hosts` never enter a drop
+# set, but in Allowed mode they ARE carved into `extraAllowed` too, so an
+# Allowed OneNote also opens a multi-tenant Cloudflare edge
+# (res.public.onecdn.static.microsoft), Akamai (res-1.cdn.office.net) and the
+# ecs.office.com / augloop.office.com pools. They do not help on the block
+# side because the distinctive hosts are on the same WAC pool. There is no
+# OneNote-only host with meaningful bytes to fall back to (cdn.onenote.net and
+# onenote.com carry almost nothing), so the block half is inherently
+# compromised; the visibility half is not, because attribution is
+# hostname-based. Not observed in this household: Word/Excel/PowerPoint Online.
+hosts:
+  - onenote.officeapps.live.com
+  - usc-onenote.officeapps.live.com
+  - cdn.onenote.net
+  - onenote.com
+shared_hosts:
+  - oauth.officeapps.live.com
+  - common.online.office.com
+  - ecs.office.com
+  - augloop.office.com
+  - res.public.onecdn.static.microsoft
+  - res-1.cdn.office.net

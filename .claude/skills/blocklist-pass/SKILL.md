@@ -76,6 +76,50 @@ rather than trusting this line.
 
 ## Step 0 — Pull active traffic (READ-ONLY prod)
 
+> **TWO SURFACES, AND THE OBVIOUS ONE IS NOT THE KEYWORD SURFACE (#2823).**
+> `recent-apexes` returns only each device's **top 500 apexes BY BYTES**
+> (`limit` is clamped `.min(500)` and rows are `sortBy(-bytes).take(limit)`,
+> `api/src/routes/UsageRoutes.scala:108-134`), and `windowDays` is clamped
+> `.min(30)`. On a busy device the byte floor is high — measured 2026-10-02 on
+> prod, 6 of 30 devices were at the cap with floors of 12 KB … **518 KB**. So
+> **low-byte hosts are invisible there, and pop-unders / redirect hops /
+> tracking pixels / TDS nodes are low-byte by construction.** In #2823, 15 of
+> the 16 apexes in a live pop-under chain were absent from the pull entirely.
+> Seven adult passes in a row reported "nothing new" because of this, not
+> because of the keyword list.
+>
+> - **Keyword sweeps go through `GET /api/logs?domain=<substring>&hours=<n>`.**
+>   Server-side unanchored `ILIKE` over `connection_events`
+>   (`api/src/db/Repos.scala:3579-3583`) — matches *before* any limit, `hours`
+>   is uncapped, and rows carry `mac` / `profileId` / `profileName` / `blocked`,
+>   so "which profile is hitting this" is answered in the same call. Response
+>   rows are under **`.rows`** (not `.logs`/`.items`).
+> - **`recent-apexes` is for RANKING, and is NOT redundant** — sweep BOTH.
+>   **Neither surface is complete, and #2823 measured the disagreement in both
+>   directions.** `recent-apexes` reads `traffic_reports`; `/api/logs` reads
+>   `connection_events`. The chain hops were in `/api/logs` and absent from
+>   `recent-apexes` (byte truncation) — but `track.cam4tracking.com` on Rachel
+>   iPhone was the reverse: 77,198 bytes / 2 hits in `recent-apexes` over 30
+>   days, and **zero** rows from
+>   `/api/logs?mac=1e:45:b6:68:24:b3&domain=cam4&hours=2160`. Cause not
+>   established (differing retention is the likely explanation, unverified —
+>   do not assert it). Treat a hit on EITHER surface as real and a miss on
+>   either as uninformative.
+>
+> **Run `GET /api/logs` SERIALLY — never in parallel.** Its `domain` filter is
+> a leading-wildcard `ILIKE` that no index can serve
+> (`api/src/db/Repos.scala:3579-3583`), and `hours` is uncapped
+> (`api/src/routes/Routes.scala:2039`), so each request is a sequential scan
+> over that window of `connection_events`. Ten concurrent `hours=720` requests
+> took **prod to HTTP 502 for roughly two minutes** on 2026-10-03; it recovered
+> on its own ~15s after the load stopped. One keyword at a time. Endpoint-side
+> fix options are in
+> [#2828](https://github.com/wifihaven/wifihaven/issues/2828).
+>
+> This warning is about a **pre-existing** endpoint, not about any blocklist
+> entry, which is why it is kept here rather than reverted with the rest of the
+> #2823 pass (#2831).
+
 Same source + auth as `app-catalog-pass` Step 0. Prod `https://api.wifihaven.net`;
 admin password in local memory (`prod_api_admin_password.md`) — read, never
 echo/commit. Pull per-apex bytes/hits across **all** devices (category traffic is
@@ -116,6 +160,31 @@ never a verdict):
 - **gambling** — online casinos, poker, sportsbooks.
 - **games** — game titles, storefronts, gaming platforms.
 - **social-media** — consumer social networks, chat, dating.
+
+### The burst-window technique — for pop-unders and any redirect chain (#2823)
+
+A keyword sweep cannot find a chain hop, because the hops are randomly-named by
+design (`unhappyweakness.com`, `moonlighthathel.org`, `herefwukou.org`). Anchor
+on a host you already know and enumerate everything around it instead:
+
+```bash
+# 1. find the burst timestamps for the known host
+curl -sS -H "Authorization: Bearer $TOKEN" \
+  "https://api.wifihaven.net/api/logs?domain=<known-host>&hours=2160&limit=500" \
+  | jq -r '.rows[] | "\(.ts)\t\(.mac)\t\(.host.value)"' | sort
+# 2. for each burst, enumerate EVERY host that device resolved around it
+curl -sS -H "Authorization: Bearer $TOKEN" \
+  "https://api.wifihaven.net/api/logs?mac=<mac>&until=<burst+5min>&hours=1&limit=500" \
+  | jq -r '.rows[] | select(.host.type=="fqdn") | "\(.ts[11:19])  \(.host.value)"' | sort
+```
+
+One query per burst, and the whole chain falls out in timestamp order — lure
+site, TDS hops, landing. Two separate bursts weeks apart also tell you which
+hops are *persistent* infrastructure versus one-off rotation. This is far
+cheaper and higher-yield than a broad keyword sweep, so reach for it first
+whenever the operator reports a *behaviour* ("pop-ups keep appearing") rather
+than naming a site. Filter to `.host.type=="fqdn"` — IP-only rows (BitTorrent
+peer traffic, on this household) otherwise fill the 500-row page.
 
 An apex is a **candidate** for category `C` if it clearly belongs to `C` **and**
 is not already covered by `C`'s curated list (nor, as a lower-value signal, by
@@ -203,6 +272,154 @@ that edit in the same PR.** If a step above is now wrong, fix the step too.
 
 ## Learnings log (newest first)
 
+- **2026-10-06** (#2836) — **A GCP customer load-balancer IP (`34.117.x` /
+  similar single-tenant App Engine/GLB ranges) is NOT the same collateral risk
+  as Google's own product shared-GFE pool (`173.194.x`, the range
+  `gstatic.com`/`google.com`/`adtrafficquality.google` answer on) — don't
+  apply the #2823 CDN-skip rule to every Google-Cloud-hosted IP indiscriminately.**
+  `nexverse.ai` (a confirmed third-party AdTech SaaS company) resolved to a
+  GCP load-balancer address; that's a normal customer deployment, not Google's
+  own multi-tenant product frontend, so it was added. Contrast with
+  `adtrafficquality.google`, which resolved into the *same* 173.194.x block
+  `google.com` and `gstatic.com` use — that one was skipped. The test is
+  "does this address front Google's OWN products," not "is this hosted on
+  Google infrastructure at all."
+- **2026-10-06** (#2836) — **Two apexes with near-identical byte/hit counts
+  and the same naming convention (`adxflyer.com` / `adxvalidation.com`, both
+  "ADX"-prefixed, both ~33KB/4 hits) are reasonable to treat as a sibling pair
+  from the same vendor even when only one has independent corroboration**
+  (`adxflyer.com` was listed in hagezi/dns-blocklists; `adxvalidation.com` had
+  no hits anywhere). This is the same "one vendor fronts multiple apexes"
+  reasoning as the Verve Group / Vidazoo / AppLovin precedent (#1923) applied
+  to a pair with no confirmed company name at all — the traffic-shape
+  similarity is standing in for the usual "shared vendor" signal.
+- **2026-10-06** (#2836) — **`hellohaven.ai` is a reminder to re-run the
+  "is this our own thing" check even on an apex that sounds company-adjacent**
+  (the project is itself called WifiHaven; the candidate was `hellohaven.ai`).
+  A quick `whois`/`dig` plus a name search cleared it immediately (Anguilla
+  .ai registry boilerplate, then a confirmed unrelated "Hello Haven" personal-AI
+  startup) — cheap enough to do as a reflex whenever a candidate's name
+  overlaps the operator's own product/company name, rather than assuming
+  coincidence either way.
+- **2026-10-02** (#2823) — **The sweep surface, not the keyword list, is why a
+  category can report empty for seven passes running.** `recent-apexes` is
+  top-500-BY-BYTES per device with a `.min(500)` hard cap; on prod 6 of 30
+  devices were at that cap with byte floors up to 518 KB. `cam4tracking.com`
+  was **absent from the top-500 of the one device that generated 70 of its 72
+  connection events** — under that device's 506 KB floor, by how much the
+  surface cannot say, because the row is gone. It surfaced only by luck, via a
+  quieter device (26 KB floor) where it landed rank 401/500. Worse: of the 16
+  *other* apexes in the pop-under chain it belonged to (17 in all, counting
+  `cam4tracking.com` itself), **15 were absent from the pull across all 30
+  devices entirely** — only `waifuoverlord.com`, at ~916 KB, cleared a floor.
+  The truncation is an anti-filter for exactly the low-byte classes a blocklist
+  pass wants — and the floor *rises* with device busyness, so it is blindest on
+  the devices that browse enough to attract this traffic. Fix:
+  keyword-sweep through `/api/logs?domain=` (see Step 0), rank with
+  `recent-apexes`. Endpoint-side options in #2827.
+- **2026-10-02** (#2823) — **For a reported *behaviour* rather than a named
+  site, anchor-and-enumerate beats any keyword sweep.** Pop-under hops are
+  randomly-named compound words precisely so no keyword matches them. Pulling
+  every host the affected device resolved in a ±5min window around each known
+  `cam4` hit produced the whole chain in timestamp order — lure
+  (`piratebay.com` at 01:24:11; `torrindex.net` 01:24:22 and
+  `thepiratebay.org` 01:24:23 land *after* the first hops, so within that
+  second the ordering is not strictly resolved) → TDS hops
+  (`clickpathworks.com` 01:24:11, `unhappyweakness.com` 01:24:19) → landing
+  (`track.cam4tracking.com` 01:25:04 → `cam4.com`) — at one query per burst.
+  Comparing two bursts three weeks apart separated persistent infrastructure
+  (`unhappyweakness.com`, `show-sb.com` in both) from one-off rotation. Now
+  written up as a named technique in Step 1.
+- **2026-10-02** (#2823) — **THE BIG ONE: a shared-CDN frontend disqualifies
+  most of what a pop-under/malvertising pass would otherwise add, and the
+  Google-only `SharedGfeHosts` guard does not catch it.** 14 of the 15
+  held-out chain hosts (`cam4tracking.com` among them) resolved onto
+  Cloudflare (`104.18.x`, `104.21.x`, `104.26.x`, `172.66.x`,
+  `172.67.x`) or CloudFront (`13.226.x`, `18.238.x`, `99.84.x`). One —
+  `itefullofeedshen.com` — was **measured sharing the exact address
+  `18.238.176.120` with one of the household's own CloudFront distributions**,
+  i.e. #2601 reproduced on a non-Google pool. So: **resolve every candidate and
+  check it against the addresses the household's own CDN hosts resolve to
+  before adding.** A Cloudflare `104.x`/`172.6x.x` answer is an automatic skip
+  regardless of how well-identified the domain is — the skip is structural, not
+  a judgement about the domain. Corollary for the operator conversation: for
+  this whole class, curated entries are **not** the fix; #2377 (SNI
+  disambiguation) is. Say so rather than shipping a list that cannot work.
+- **2026-10-02** (#2823) — **A per-set nftables `timeout` is NOT a reason to
+  accept shared-pool collateral — it is a property of the enforcement plane
+  that every member of every `bl_` set shares equally.** This pass initially
+  added `cam4tracking.com` (a real, uncovered gap: separate apex from the
+  curated `cam4.com`, absent from the porn-only feed, `blocked:false` on every
+  MAC) and justified the CloudFront exposure by citing `bl_<id>`'s
+  `flags dynamic,timeout` / `timeout 1h`
+  (`openwrt/files/usr/lib/lua/wifihaven/render.lua:1107-1118`). The independent
+  review correctly killed it: that timeout applies verbatim to the 13
+  Cloudflare/CloudFront hops the same pass *refused* to add, so it cannot
+  discriminate — and the entry was dropped. Two further traps the same finding
+  exposed:
+  - **"The apex is on dedicated hosting" is irrelevant if nothing resolves the
+    apex.** Only `track.cam4tracking.com` was ever observed, so the set would
+    have been armed with CloudFront edges and the apex's dedicated MojoHost
+    address would never have entered it. **Check which host actually appears in
+    traffic, not which address the apex happens to answer on.**
+  - **"The domain carries zero legitimate traffic" is also irrelevant.** The
+    #2601 harm is to *other tenants of the pool*; the blocked domain's own
+    legitimacy has no bearing on it.
+  So: a Cloudflare/CloudFront answer on the OBSERVED host is an unconditional
+  skip, and the repo's established handling is to **pin the absence in
+  `BundledBlocklistsSpec`** (as #2601 did) rather than add with a risk note.
+  `SharedGfeHosts` is Google-only, so nothing mechanical catches a CDN case —
+  it is a review-time decision every time. #2377 is the unblock.
+- **2026-10-02** (#2823) — **Classify a redirect/TDS hop by what it serves in
+  general, not by where the chain happened to land.** The CAM4 pop-under chain
+  ends on an adult site, but its hops are a fast-flux TDS and an RTB ad-feed
+  network — so `unhappyweakness.com` and `realizationnewestfangs.com` went to
+  `ads.yml`, not `adult.yml`. Filing them under `adult` would make the category
+  mean "things that led to porn once", and would leave them unblocked on a
+  profile running `ads` but not `adult`. The spec pins them present in `ads`
+  **and absent from `adult`**, so a later pass cannot quietly relocate them.
+  This is the mirror of the `axon.ai`/`mediayo.ai` trap: there an AI-branded
+  TLD hid an ad network, here an adult *destination* hid ad infra. Classify on
+  function, both directions. (`clickpathworks.com` is the same ad-infra class
+  but was **held out**, not filed — one self-derived signal; see the
+  two-signals learning below. Do not read it as curated.)
+- **2026-10-02** (#2823) — **A fast-flux fleet cannot be hand-curated, and the
+  evidence note should say so instead of implying the pass fixed it.**
+  `realizationnewestfangs.com` is named in Augur Security's write-up of a TDS
+  network of **~300 auto-generated compound-word domains** rotating over 18 IPs
+  in six /24s — and that write-up's listed `172.240.x.x` range matched the
+  addresses measured here independently, which is what promoted two
+  no-public-page domains from held-out to added (shared NS + identical
+  9-address set + same registrar/privacy/country across the pair, plus one
+  present in `ads-extended`). Adding two observed members is honest; calling it
+  a fix is not.
+- **2026-10-02** (#2823) — **Smoke-test a JSON response's SHAPE, not just a
+  regex, before trusting a zero.** A first `/api/logs` sweep used
+  `.logs//.items//[]` where the key is `.rows`, so **every** keyword returned
+  `length 0` — a silent all-negative that reads exactly like "category is
+  clean". Same failure class as the #2122 macOS `\s` lesson and the #2742
+  inline-comment lesson, one layer up. Probe with a keyword you know is present
+  (`domain=google`) and confirm the shape before believing any empty sweep.
+- **2026-10-02** (#2823) — **Re-read profile policy from prod at the moment you
+  need it, and cross-check `/api/profiles` against the router snapshot.** The
+  issue's triage table (hours old) said profile 2 blocked *nothing* and profile
+  4 only `malware`; live prod had `adult` + `adult-extended` on both — and
+  profile 4 gained two categories *mid-session*, so an early read in this same
+  session was already stale. The operator edits policy while a pass runs,
+  typically *because* of the symptom being investigated. `GET /api/profiles`
+  and `GET /api/admin/snapshot` → `profiles.<id>.rules.blocklistIds` are the
+  two surfaces; agreement between them is the check. Also: `.blocklistIds` can
+  be `null` in the snapshot, so `jq` needs `// []` or `to_entries` dies with
+  "Cannot iterate over null".
+- **2026-10-02** (#2823) — **`/api/blocked` needs a control host per MAC before
+  its answers mean anything.** It returns `blocked:true` for a whole-MAC block
+  (paused / schedule / time limit) identically to a category hit, so a `true`
+  proves nothing on its own. Probe `example.com` + a nonsense apex on the same
+  MAC first; only if both come back `false` does a `true` on your candidate
+  isolate the category path. This caught a near-miss where profile 4 appeared
+  to block an apex that was in none of its categories — the real explanation
+  was a mid-session policy edit, not a whole-MAC block, but the control is what
+  made that distinguishable.
 - **2026-09-22** (#2807) — **The #2742 "check membership across every curated
   file, not just the one the sweep bucketed it into" lesson was only being
   applied to hosts already known from prior evidence docs — NOT to a host
@@ -237,8 +454,8 @@ that edit in the same PR.** If a step above is now wrong, fix the step too.
   gaps can be a company that didn't exist in traffic last week.** Confirmed
   via press coverage (funding announcement, App Store/Play Store listings)
   and the observed subdomain (`my.hellohaven.ai`) matching the product's own
-  stated URL exactly. Coincidental name collision with this project
-  ("Haven") — unrelated company, verify by product function not name vibes.
+  stated URL exactly. (The name-collision-with-our-own-product check is
+  covered by the 2026-10-06 entry above.)
 - **2026-09-22** (#2807) — **A `ssp`/`ads`/`track`/`analytic` keyword sweep
   will keep matching inside unrelated words — two new substring false
   positives this pass: `paperlesspost.com` (matched `ssp` inside

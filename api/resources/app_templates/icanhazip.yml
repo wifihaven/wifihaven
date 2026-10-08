@@ -1,0 +1,47 @@
+slug: icanhazip
+name: Public IP lookup
+icon: "https://icons.duckduckgo.com/ip3/one.one.one.one.ico"
+icon_type: url
+# Display-cleanup app (#2820, merging #2805 icanhazip and #2811 ipify): the
+# public-IP lookup endpoints that apps and scripts call in the background, not
+# something a kid "uses". Both brands are one class of background traffic, so
+# they are one app; the slug stays `icanhazip` so the existing seeded row (and
+# its usage history) survives the merge, and `retires:` below absorbs the ipify
+# row rather than orphaning it.
+#
+# ipv4.icanhazip.com was the single largest orphan host on the Kids profiles
+# (~18k proportional min / 30d) and buried the real gaps in the per-device list;
+# the apex suffix-matches ipv4./ipv6. too. api.ipify.org (~173 proportional min)
+# and api64.ipify.org (~8) were the same pattern on the Kids and Chromebook
+# profiles.
+#
+# Scoped to the two ipify API hosts rather than the `ipify.org` apex on purpose:
+# www.ipify.org CNAMEs to a CloudFront distribution on the 99.84.118.x pool that
+# arduino.yml already flags as shared, and no www traffic was observed.
+#
+# Icon is Cloudflare's 1.1.1.1 favicon (DuckDuckGo has none for icanhazip.com);
+# the name is what identifies the app.
+#
+# Attribution/visibility only, NOT blocking: icanhazip.com is Cloudflare-fronted
+# (104.16.184-185.241, `server: cloudflare`), api.ipify.org likewise
+# (104.26.12-13.205, 172.67.74.152), api64.ipify.org is on 173.231.16.77 /
+# 104.237.62.213. Whether those Cloudflare addresses are shared with unrelated
+# tenants was NOT verified, so do not promote this host set to a blocking
+# posture.
+#
+# These hosts anchor presence, and consolidating them does not change that —
+# this is a display merge. The suppression tier is #2815.
+hosts:
+  - icanhazip.com
+  - api.ipify.org
+  - api64.ipify.org
+# #2820: the `ipify` template (#2811) was folded into this one. Listing its id
+# here makes the reconciler merge its seeded `apps` row INTO this one instead of
+# leaving it orphaned — carrying its hosts, per-profile assignments and usage
+# history across.
+#
+# TODO(#2822): this entry is a one-shot migration instruction, not a standing
+# fact — remove it once every deployment has booted at least once with #2820.
+# The generic `retires:` mechanism stays.
+retires:
+  - ipify

@@ -114,10 +114,71 @@ returns `subdomains[]`.
   reason to give a kid a daily time *budget* for a filter-evasion tool; it's a
   block target, full stop (operator decision, #1815). Put it in `games.yml` and
   do NOT author an app template for it.
+- **Display-cleanup app** — a host that isn't really an "app" but carries
+  enough time to clutter the per-device / orphan list (IP-check utilities like
+  `icanhazip`, background weather polling, other ambient utilities). **Author an
+  app for it anyway** (operator decision, #2805): a named row is cleaner than a
+  loose orphan host and un-buries the real gaps. Note in the template comment
+  that it exists for display, and if it sits on a shared pool, that it is for
+  attribution not blocking. This overrides "skip" for ambient-utility hosts;
+  ad/RTB networks and shared CDN pools still skip.
 - **Skip** — ad/RTB networks (flashtalking, adsrvr, pubmatic…), shared
   service/CDN pools (icloud-content, apple-dns, fastly, akadns, googleapis),
   shared corporate infra (adobe.com, autodesk.com), and below-engagement-bar
   incidental hosts. When in doubt, skip and say so.
+
+### Verifying a candidate — you are INSIDE the enforcement plane
+
+Checking what a candidate serves (`curl` its `<title>`, resolve it, look at its
+TLS) is how most of the calls above get settled. **The machine you run those
+from is behind this deployment's own enforcement**, so a fetch that fails is
+evidence about US before it is evidence about the site. Run the cert check on
+every candidate you intend to write anything about:
+
+```bash
+# 1. who actually answered? CN=block.wifihaven.local means WE are DNAT'ing it.
+#    stderr is NOT discarded on purpose — see the forward-drop note below.
+echo | openssl s_client -connect <candidate>:443 -servername <candidate> \
+  | openssl x509 -noout -subject -issuer
+# 2. confirm from the body. grep the marker; do NOT `head` it — an unblocked
+#    page is often ONE minified line, so `head -5` dumps the whole document
+#    (12,725 bytes when #2833 ran it). Empty output = not our block page.
+#    The `/blocked?host=` branch is the one that matches today; the
+#    `block.wifihaven.local` branch is for a future page that names the host
+#    in its body (today that string is only in the cert).
+curl -sk "https://<candidate>" \
+  | grep -o 'block\.wifihaven\.local\|/blocked?host=[^"]*' | head -2
+# 3. control: a host you know is NOT blocked, from the SAME machine
+echo | openssl s_client -connect example.com:443 -servername example.com 2>/dev/null \
+  | openssl x509 -noout -subject
+```
+
+**Two ways a candidate gets blocked, and only one of them shows a cert.** The
+check above catches the HTTP/80 + HTTPS DNAT path, where our block page answers
+and names itself. A connection-layer forward-drop looks different: the
+handshake never completes, so `openssl` prints nothing on stdout and the reason
+is only on stderr. That is why step 1 keeps stderr — **empty stdout plus an
+error means the connection never completed, so suspect a drop** (a typo or a
+host with no TLS looks the same, which is what the control is for).
+
+A control is what separates host-specific interception from a blanket proxy —
+without one you cannot tell them apart. Prefer `example.com` plus one sibling
+of the candidate: if several hosts of the same brand are blocked together,
+`example.com` alone will not show it. And note what the #1983 overlap grep
+does NOT cover: `grep` over `api/resources/blocklists/` sees the curated,
+repo-authored lists only, so a FETCHED blocklist, an `extraBlocked` entry or
+`blockIpOnly` is invisible to it. A clean grep next to a host that is
+demonstrably being dropped is not a contradiction. **When a candidate looks
+dead, suspect our own drop before the site.** (#2833 wrote the same row wrong
+twice for exactly this reason.)
+
+**And timestamp whatever you conclude.** What is blocked changes under you. The
+host that drove all of this, `scratchfoundation.org`, was serving our block
+page during #2833's review and was serving its own cert and real page a few
+hours later, with no repo change in between — a fetched blocklist had rotated.
+Write the observation in the past tense with an as-of date, or the next pass
+re-runs your command, gets the opposite answer, and concludes the whole section
+is wrong.
 
 ## Step 3 — Author tight, correct host-sets
 
@@ -190,6 +251,157 @@ above is now wrong, fix the step too — don't just log around it.
 ---
 
 ## Learnings log (newest first)
+
+- **2026-10-05 (#2833)** — **The measurement host sits INSIDE the enforcement
+  plane, so a `curl` that fails is evidence about US before it is evidence about
+  the site.** `scratchfoundation.org` was written up twice and wrong twice —
+  first "no answer", then "HTTPS presents a self-signed cert, so no page
+  served". The self-signed cert was `CN=block.wifihaven.local`, and
+  `curl -k` returned our own block page redirecting to
+  `app.wifihaven.net/blocked?host=scratchfoundation.org&mac=…`. The site was
+  fine; this household was dropping it (and had stopped hours later — see the
+  timestamp rule in Step 2). **Before writing anything about a
+  candidate's HTTP/TLS behaviour, check the cert subject** — one
+  `openssl s_client … | openssl x509 -noout -subject -issuer` — and run a
+  control host from the same machine to tell host-specific interception from a
+  blanket proxy. A bare HTTP status is not trustworthy from inside the plane;
+  this is the AGENTS.md anti-pattern wearing new clothes, and every
+  `curl`-the-title check in this skill inherited the flaw. **Fixed in the step,
+  not just logged**: Step 2 now ends with a *Verifying a candidate* block
+  carrying the cert check, the body check and the control.
+  **Corollary the same finding exposed: the #1983 overlap grep is narrower than
+  it reads.** `grep` over `api/resources/blocklists/` covers the curated,
+  repo-authored lists ONLY — a FETCHED blocklist, an `extraBlocked` entry or
+  `blockIpOnly` is invisible to it. A clean grep plus a host that is demonstrably
+  being dropped is not a contradiction. Say which check you ran, and when a
+  candidate looks dead, suspect our own drop before the site.
+- **2026-10-05 (#2833)** — **An NS DELEGATION is the strongest
+  apex-vs-FQDN argument available, and it is the one test no prior pass had
+  run.** Scratch lives at `scratch.mit.edu`, under a shared university apex, so
+  the issue's whole concern was the #1636 over-drop shape. What settled it was
+  not traffic and not an IP comparison but `dig +short NS`: MIT's `mit.edu` zone
+  is on Akamai nameservers and delegates `scratch.mit.edu` to its own Route 53
+  set, which MIT's own authoritative server confirms. That makes the whole
+  subtree administratively the app's by construction — so ONE FQDN entry is both
+  sufficient (suffix matching covers every child) and tight (nothing else in the
+  parent is reachable). **Add `dig +short NS <candidate>` and `dig +short NS
+  <parent>` to the per-candidate checks.** It is stable, checkable, and
+  satisfies the `youtube.yml` standard where a pool-overlap claim cannot. The
+  same command also found `ocw.mit.edu` is a SECOND independently delegated zone
+  on a different Route 53 set — a present demonstration that the parent is
+  multi-service, not a hypothetical.
+- **2026-10-05 (#2833)** — **When every observed host of a brand is a child of
+  one FQDN, list that FQDN alone and do not enumerate.** All ten observed Scratch
+  hosts (`scratch`, `api`, `projects`, `assets`, `cdn.assets`, `cdn`, `cdn2`,
+  `uploads`, `backpack`, `clouddata`) sit under `scratch.mit.edu`; enumerating
+  them adds zero coverage and rots as the brand adds subdomains. It also resolves
+  the Class-2 shared-CDN tension in one line rather than per host: five of those
+  lanes CNAME to `d.sni.global.fastly.net`, so an enumerated set would have
+  tempted someone to either strip them (defeating the block, losing 53% of the
+  app's proportional time) or pin the Fastly target (which rots). The delegated-zone
+  entry keeps the branded names in and the shared names out by construction.
+  Check the attribution bound before relying on this: `apexTails(maxHops = 5)`
+  found the entry on the 3rd tail of the deepest observed host, so there is
+  headroom here — a deeper anchor would need the `amazon-telemetry.yml` warning.
+- **2026-10-05 (#2833)** — **A 404 from the favicon service is not durable, so
+  one reads as "this domain has no icon" when it has one.** The #2762
+  entry warns that `icons.duckduckgo.com/ip3/<d>.ico` answers 404 with a generic
+  placeholder for domains it does not know. The inverse bit it: `mit.edu` came
+  back 404 with a 1,478-byte PNG on the first request and HTTP 200 with a real
+  15,406-byte icon minutes later, and a template comment had already been
+  written around the 404. The 404 did not reproduce in five subsequent
+  requests and **the cause is unknown** — resist naming one; an earlier draft
+  guessed "cold-cache miss" and that guess is not established. The
+  prescription stands on the observation alone: **request a 404 a second time
+  before writing anything about it**, and never let an icon's availability
+  carry an argument a reader cannot re-check. The independent review caught
+  this one.
+- **2026-10-05 (#2833)** — **A per-profile orphan table does not sum the way a
+  reader assumes, and three published figures in this pass were wrong because of
+  it.** `orphanHosts` rows are per-(profile, host) and the minutes come out of
+  `proportionalSeconds`, so flooring each cell loses up to a minute per row (236
+  vs the true 242 here) and a cell is one profile's share, not a host total — a
+  54-minute cell got written up as "the largest single orphan host" when another
+  host totalled 72 across profiles. **Compute every headline figure from raw
+  seconds, state the per-host totals separately from the per-profile cells, and
+  prefer a share (53% of the app's time) over a derived minute count that a
+  reader will try to add up.** All three slips landed in the PR body, the
+  template comment AND this log before review found them, which is the real
+  lesson: a figure copied into three artifacts is wrong in three places.
+- **2026-10-05 (#2833)** — **State the scope of an exclusion honestly: a
+  structural trap is not an observed one.** Swept all 30 devices on the roster
+  over 90 days: every byte under `mit.edu` was `*.scratch.mit.edu`, on the five
+  devices that had any — no other MIT hostname appeared anywhere. (Sweep the
+  WHOLE roster before writing a claim like that; the kid-device sample the rest
+  of the pass is built on cannot support it.) So the apex exclusion prevents a
+  LATENT collateral trap; it does not fix something that was happening. Writing it as an observed
+  incident would have been the overclaim this log keeps catching. The structural
+  argument (both matchers are pure suffix tests, enforcement is IP-layer) is
+  enough on its own and does not need inflating.
+- **2026-10-05 (#2833)** — **"Is this app background or engagement?" is now a
+  question a template must answer in prose, because the catalog has both kinds
+  and they look alike in YAML.** After `icanhazip`/`ipify`/`weather`, a
+  single-host template with a utility-ish name reads as display-cleanup by
+  default. Scratch is the opposite — a kid building a project is engagement whose
+  time belongs in a budget — so the template says so explicitly, names the
+  background classes it must NOT be added to (`InfraHosts.cloudBackground`), and
+  says not to re-document it the way those three are. **Write that paragraph into
+  every new template from here on, in whichever direction applies**; a later pass
+  reading only the host set cannot tell.
+- **2026-10-05 (#2833)** — **Decide third-party mods of a brand explicitly, and
+  let zero traffic be the deciding evidence rather than a reason to skip the
+  question.** TurboWarp (+ `packager.`) and PenguinMod are live sites
+  (HTTP 200, confirmed titles) that run Scratch projects, but they are other
+  operators' sites; `scratchjr.org` is the same foundation's separate tablet
+  product. None had a single byte in the 90d sample across all devices, so all
+  three stayed out — mods excluded outright (they would bill another site's time
+  to this budget; each gets its own template if it ever shows traffic), ScratchJr
+  recorded as a watch-item. `curl` the title of each candidate even when you
+  intend to exclude it: it costs one command and it is what distinguishes "other
+  people's business" from "a lane of this app".
+
+- **2026-09-28 (#2811)** — Delivered the two display-cleanup candidates #2805
+  left (`weather`, `ipify`) plus a real gap the byte table would have hidden:
+  **OneNote for the web** (~2.7k orphan min, no app). Things this pass taught:
+  - `usage-by-app` orphans are `{host: {type: "fqdn"|"ip", value}, proportionalSeconds,
+    presenceSeconds}`, so filter literals with `select(.host.type=="fqdn")`
+    instead of the `:`/digit regex; aggregate the four kid profiles' files with
+    the same `jq | awk` shape as Step 0. `GET /api/profiles` rows are nested
+    under `.profile` (same trap as `/api/apps`), and `/api/devices` gives the
+    profile id but no kid flag: profiles 1 (Kids) and 5-7 held all the signal.
+  - **Office Online is one shared front door.** `onenote.officeapps.live.com`,
+    `oauth.officeapps.live.com` and `common.online.office.com` all resolve via
+    `app-geo.wac.trafficmanager.net` to the same 52.108.8.x addresses, which
+    front Word/Excel/PowerPoint Online too, so a OneNote block/allow has
+    collateral in both directions (`onenote.yml` documents it). Pattern used:
+    the app-specific hosts in `hosts:`, the Office backing hosts in
+    `shared_hosts:` (co-presence credit; never a drop-set member, but in
+    Allowed mode they ARE carved into `extraAllowed`), and the
+    identity hosts (`login.live.com`, `login.microsoftonline.com`,
+    `storage.live.com`) left out entirely.
+  - Scope a small-utility app to its `api.` hosts when the apex has a
+    `www` on a shared pool: `www.ipify.org` sits on the CloudFront 99.84.118.x
+    pool `arduino.yml` already flags, `api.ipify.org` does not.
+  - Display-cleanup weather: `api.weather.com` CNAMEs to Fastly's shared edge, so
+    it ships for attribution only (same wording as `icanhazip`). Apple
+    WeatherKit is platform infra, skip. Unity SDK analytics
+    (`collect.analytics.unity3d.com`, `cdp.cloud.unity3d.com`, ~5k min) is the
+    largest remaining non-platform orphan and is skipped as shared-SDK
+    telemetry; revisit only if a per-game scoping appears.
+  - macOS shell gotchas in Step 0/5: no `timeout` binary; BSD `sed -i` needs
+    `-i ''` and does not do `{a,b}` brace expansion in paths. Prior pass issues
+    (#2774/#2790/#2805) carry no board Epic, so none was set here.
+
+- **2026-09-21 (#2805)** — A no-cluster pass is still worth the `orphanHosts`
+  read: the top of the list was ~all platform infra, ad-tech and shared
+  IP-check utilities (`ipv4.icanhazip.com` is #1 at ~18k min; `api.ipify.org`
+  too) — not real apps, but per the operator they now get display-cleanup apps
+  (Step 2); `icanhazip` shipped, `ipify`/weather are candidates next pass
+  (`weather.com`/`weatherbug` show large bytes, 376 MB, but are background
+  widget polling). Dedicated-address check for a small brand: amateur
+  radio's `hamstudy.org` resolves into AMPRNet 44.x (dedicated, no collateral);
+  operator then asked for it as an app despite the sub-bar volume — an explicit
+  operator ask overrides the engagement bar.
 
 - **2026-09-13 (#2778)** — **A shared-pool host-set has TWO collateral
   directions, and every pass so far has only reasoned about one.** The

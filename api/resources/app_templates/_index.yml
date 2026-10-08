@@ -78,3 +78,16 @@ slugs:
   # BrickLink marketplace + Studio, a sibling LEGO property excluded from
   # lego.yml at #1815 for lack of traffic; now shows real recurring use
   - bricklink
+  # #2805: HamStudy amateur-radio exam study (operator request)
+  - hamstudy
+  # #2820: icanhazip and ipify merged into one public-IP-lookup display-cleanup
+  # app; the surviving template keeps this slug and retires `ipify`
+  - icanhazip
+  # #2811: traffic-driven catalog pass (see evidence/classification-2811.md): weather
+  # display-cleanup app, and OneNote for the web
+  - weather
+  - onenote
+  # #2833: Scratch — MIT's block-based programming environment. Scoped to the
+  # DELEGATED `scratch.mit.edu` zone; the shared `mit.edu` apex is deliberately
+  # absent (see scratch.yml). Anchors presence — not a display-cleanup app.
+  - scratch

@@ -1,7 +1,6 @@
 package wifihaven.api.unit
 
 import wifihaven.shared.types.*
-import wifihaven.testinfra.SharedGfeHosts
 import zio.test.*
 
 /**
@@ -42,6 +41,24 @@ object SharedGfeHostsSpec extends ZIOSpecDefault {
       assertTrue(!banned("criteo.com")) &&
       assertTrue(!banned("google.com")) &&
       assertTrue(!banned("drive.google.com"))
+    },
+    test("#2809: the whole googleapis.com frontend is banned, as a class") {
+      // Measured 2026-09-23: the login control plane and the ad/telemetry API surface answer
+      // from the SAME eight addresses (172.217.112.4 … 172.217.119.4). IP-layer enforcement on
+      // any of them blocks the pool, not the host — which is Google sign-in. The class entry is
+      // what keeps upstream minting a new `*-pa.googleapis.com` name from re-opening #2809.
+      assertTrue(banned("googleapis.com")) &&
+      assertTrue(banned("firebaselogging.googleapis.com")) &&
+      assertTrue(banned("firebaselogging-pa.googleapis.com")) &&
+      assertTrue(banned("clientmetrics-pa.googleapis.com")) &&
+      assertTrue(banned("ogads-pa.googleapis.com")) &&
+      assertTrue(banned("oauthaccountmanager.googleapis.com")) &&
+      assertTrue(banned("securetoken.googleapis.com")) &&
+      // a name upstream has not minted yet, to show the class rule is what is doing the work
+      assertTrue(banned("somethingnew-pa.googleapis.com")) &&
+      // still dot-anchored — a lookalike registration is not swept in
+      assertTrue(!banned("notgoogleapis.com")) &&
+      assertTrue(!banned("googleapis.com.evil.example"))
     },
     test("excludes the two load-bearing pool members #2605 tracks") {
       // play.google.com and ai.google.dev are on the pool but are deliberately NOT banned; a test

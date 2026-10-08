@@ -4,6 +4,27 @@ import zio.test.*
 
 object InfraHostsSpec extends ZIOSpecDefault {
 
+  /**
+   * The #2369 Google shared-frontend hosts, apexes and the subdomain forms that exercise suffix
+   * matching. Single-sourced because two tests assert the two halves of ONE rule about them — they
+   * are NOT allow-carved (#2369) and they ARE on the enforcement ban set (#2601/#2809) — and a
+   * second literal copy would let one half silently fall out of step with the other.
+   */
+  private val googleSharedFrontend = List(
+    "app-analytics-services.com",    // #2369 confirmed in youtube.com's pool
+    "v1.app-analytics-services.com",
+    "clientservices.googleapis.com", // #2369 resolved to youtube.com's exact IP
+    "gvt2.com",
+    "r3---sn-abc.gvt2.com",
+    "beacons3.gvt2.com",
+    "gvt3.com",
+    "beacons.gvt3.com",
+    "nel.goog",
+    "b1.nel.goog",
+    "safebrowsing.google.com",
+    "safebrowsingohttpgateway.googleapis.com",
+  )
+
   def spec = suite("InfraHosts")(
     test(
       "apex entries match every subdomain (ls.apple services; #2369-demoted gvt2 via background)",
@@ -226,8 +247,10 @@ object InfraHostsSpec extends ZIOSpecDefault {
       // these user-facing iCloud surfaces ARE suppressed from presence counting, and
       // that's the trade-off — when an app template lands, #1506
       // (`Presence.isAppAttributed`) makes app attribution win over suppression for
-      // hosts the template claims, identical to how `ess.apple.com` already coexists
-      // between this list and the iMessage template.
+      // hosts the template claims AT LEAST AS SPECIFICALLY as this list does (#2815).
+      // This entry is the bare `icloud.com` apex, so a template claiming that apex is
+      // an EQUAL-specificity claim and wins, identical to how `ess.apple.com` already
+      // coexists between this list and the iMessage template.
       val collateral = List(
         "www.icloud.com",  // iCloud webmail
         "beta.icloud.com", // iCloud beta surfaces
@@ -312,9 +335,11 @@ object InfraHostsSpec extends ZIOSpecDefault {
       // Specific subdomains (not apex `gstatic.com` / `googleusercontent.com`) so
       // real apps that use sibling subdomains keep attributing.
       //
-      // Safety w.r.t. real apps: #1506 (`Presence.isAppAttributed`) makes app
-      // attribution win over suppression — when an active app template claims
-      // one of these hosts, it counts toward the app, not the suppression list.
+      // Safety w.r.t. real apps: #1506 (`Presence.isAppAttributed`) makes app attribution win
+      // over suppression when an active app template claims one of these hosts AT LEAST AS
+      // SPECIFICALLY as this list does (#2815) — then it counts toward the app, not the
+      // suppression list. A template claiming a broader brand apex does not rescue them; that is
+      // the point of listing specific subdomains rather than apexes in the first place.
       // These are suppress-only and never allow-carved.
       val assetCdns = List(
         "use.fontawesome.com",
@@ -395,8 +420,12 @@ object InfraHostsSpec extends ZIOSpecDefault {
         // Suppress-only tier: these must NOT be allow-carved through the block.
         phantomBackground.forall(h => !InfraHosts.isInfra(h)),
         // Defensive: plex.tv apex is NOT background — the Plex client app needs it to
-        // attribute, and #1506 lets app attribution win over suppression even when entries
-        // overlap. Verifying the absence here prevents over-fitting to this incident.
+        // attribute. Note this is load-bearing POST-#2815 in a way it was not before: app
+        // attribution now wins only at equal-or-greater specificity, so if the `plex.tv` apex
+        // were ever added here, a `plex.tv`-claiming template could no longer rescue it, and
+        // `pubsub.plex.tv` already sits below it as a pinned apex-over-lane pair
+        // (BackgroundApexShadowSpec). Verifying the absence prevents over-fitting to this
+        // incident.
         !InfraHosts.isBackground("plex.tv"),
         !InfraHosts.isBackground("www.plex.tv"),
         // Defensive: kid-real-app apexes seen in the same window stay unsuppressed.
@@ -496,8 +525,11 @@ object InfraHostsSpec extends ZIOSpecDefault {
       // overlap with Apple/iCloud at all). The `ess.apple.com` co-listing with the
       // iMessage template is intentional and predates this change: #1506
       // (`Presence.isAppAttributed`) lets app attribution win over suppression at
-      // runtime, so iMessage traffic keeps counting for profiles that have the
-      // iMessage app configured — this PR's additions are no different in shape.
+      // runtime — post-#2815, at equal-or-greater specificity, and the iMessage
+      // template names `ess.apple.com` exactly, so it qualifies and is in fact the
+      // only such overlap in the catalog. iMessage traffic keeps counting for
+      // profiles that have the app configured; this PR's additions are no different
+      // in shape.
       val unrelatedAppHosts = List(
         "khanacademy.org", // Khan Academy template
         "kastatic.org",
@@ -517,7 +549,9 @@ object InfraHostsSpec extends ZIOSpecDefault {
       // of the 31-min phantom over-count (offline replay, docs/design/idle-traffic-
       // discrimination.md §2274). Class membership removes only ANCHOR eligibility: a row
       // here still counts inside a genuinely engagement-anchored span (#1446/#2068 undercount
-      // stays closed), and #1506 app-attribution still wins.
+      // stays closed), and #1506 app-attribution still wins at equal-or-greater
+      // specificity — a template naming one of these anchors, one claiming a broader
+      // brand apex does not (the pairs BackgroundApexShadowSpec pins).
       val cls = List(
         // Serato DJ telemetry / update (insights. / id. / static. subdomains) — apex
         "serato.com",
@@ -578,20 +612,6 @@ object InfraHostsSpec extends ZIOSpecDefault {
       // ~36% background share keeps being suppressed), but are no longer reachable through a
       // block — exactly the anti-tunnel reasoning `suppressOnly` was created for
       // (`mask*.icloud.com` Private Relay).
-      val googleSharedFrontend = List(
-        "app-analytics-services.com",    // #2369 confirmed in youtube.com's pool
-        "v1.app-analytics-services.com",
-        "clientservices.googleapis.com", // #2369 resolved to youtube.com's exact IP
-        "gvt2.com",
-        "r3---sn-abc.gvt2.com",
-        "beacons3.gvt2.com",
-        "gvt3.com",
-        "beacons.gvt3.com",
-        "nel.goog",
-        "b1.nel.goog",
-        "safebrowsing.google.com",
-        "safebrowsingohttpgateway.googleapis.com",
-      )
       assertTrue(
         // #1503/#1499 presence-suppression PRESERVED — they remain on the background set.
         googleSharedFrontend.forall(InfraHosts.isBackground),
@@ -600,6 +620,39 @@ object InfraHostsSpec extends ZIOSpecDefault {
         // matchedPattern (canonical-only) no longer resolves them either.
         InfraHosts.matchedPattern("r3---sn-abc.gvt2.com").isEmpty,
       )
+    },
+    test("#2809: no allow-carved host is on the shared-GFE ban set — mechanically") {
+      // The two sides of one fact. `SharedGfeHosts` says "never an IP-layer enforcement
+      // TARGET"; `InfraHosts.canonical` is the IP-layer allow-CARVE. A host on both would
+      // punch its whole shared pool out of every drop for every MAC (`extraAllowed` beats
+      // every block path, #421) — the #2369 leak. Until #2809 the two lists lived in
+      // different modules and could only be kept apart by hand, in three places: the
+      // `InfraHosts.suppressOnly` literal, the `googleAdApexes` list, and this spec's
+      // `googleSharedFrontend` fixture (now one val at the top of this file, not two copies). `SharedGfeHosts` now lives in `shared`, so the guard can be mechanical
+      // instead: whatever anyone adds to either list, this fails if they overlap.
+      //
+      // LIVENESS ANCHOR: the matcher must be live. An `isBanned` that returned false for
+      // everything would satisfy the emptiness check for free, and it is exactly the kind
+      // of thing a refactor breaks silently.
+      val carvedAndBanned =
+        InfraHosts.canonical.filter(h => SharedGfeHosts.isBanned(Hostname.unsafe(h)))
+      assertTrue(
+        carvedAndBanned.isEmpty,
+        SharedGfeHosts.isBanned(Hostname.unsafe("clientservices.googleapis.com")),
+        SharedGfeHosts.isBanned(Hostname.unsafe("static.doubleclick.net")),
+      )
+    },
+    test("#2809: every #2369 shared-frontend host is on the ban set, subdomains included") {
+      // The mirror-image assertion. #2369 demoted these OFF the allow-carve; #2601/#2809
+      // forbid them as enforcement targets. Same hosts, opposite sides of the same rule —
+      // so a future edit that drops one from `SharedGfeHosts` without saying why fails
+      // here rather than quietly re-opening one half.
+      //
+      // Includes the SUBDOMAIN forms deliberately: `SharedGfeHosts`'s scaladoc claims suffix
+      // matching reaches all twelve `googleSharedFrontend` entries, and the bare apexes alone
+      // would never exercise that claim. Shares the file-level fixture with the #2369
+      // suppress-but-not-carve test above, so the two halves of the rule cannot drift apart.
+      assertTrue(googleSharedFrontend.forall(h => SharedGfeHosts.isBanned(Hostname.unsafe(h))))
     },
     test("#2369 connectivity-critical infra stays allow-carved (the design boundary)") {
       // The design line the #2369 fix draws: allow-carve survives ONLY for connectivity-critical
@@ -620,6 +673,114 @@ object InfraHostsSpec extends ZIOSpecDefault {
       assertTrue(
         stillCarved.forall(InfraHosts.isInfra),
         stillCarved.forall(InfraHosts.isBackground),
+      )
+    },
+    test("#2813 patternSpecificity measures all three pattern forms in dot-separated labels") {
+      // Load-bearing for the anchor decision: the comparison in
+      // `Presence.ambientGatedRowsWithDropCount` is only meaningful if the three pattern forms
+      // this codebase uses are measured on ONE scale. The suffix-family case is the one a reader
+      // is most likely to get wrong — the leading `-` is stripped, so `-pa.googleapis.com` is 3.
+      assertTrue(
+        InfraHosts.patternSpecificity("client-log-forwarder.1password.com") == 3,
+        InfraHosts.patternSpecificity("1password.com") == 2,
+        InfraHosts.patternSpecificity("serato.com") == 2,
+        InfraHosts.patternSpecificity("*.example.com") == 2,
+        InfraHosts.patternSpecificity("-pa.googleapis.com") == 3,
+        // and the ordering the gate actually relies on
+        InfraHosts.patternSpecificity("client-log-forwarder.1password.com") >
+          InfraHosts.patternSpecificity("1password.com"),
+        InfraHosts.patternSpecificity("serato.com") == InfraHosts.patternSpecificity("serato.com"),
+      )
+    },
+    test(
+      "#2813 the background class claims each new entry, and the app-apex ties are as intended",
+    ) {
+      // The #2813 additions resolve as claimed, including the deliberate choice of exact host over
+      // apex where a shipped app template would otherwise TIE and win.
+      assertTrue(
+        InfraHosts
+          .matchedCloudBackgroundPattern("client-log-forwarder.1password.com")
+          .contains("client-log-forwarder.1password.com"),
+        InfraHosts.matchedCloudBackgroundPattern("bam.nr-data.net").contains("nr-data.net"),
+        InfraHosts
+          .matchedCloudBackgroundPattern("ipv4.icanhazip.com")
+          .contains("ipv4.icanhazip.com"),
+        // `icanhazip.yml` claims the APEX; the class entry must be STRICTLY more specific so the
+        // classification survives that template being assigned (#2805 added it to be assigned).
+        InfraHosts.patternSpecificity("ipv4.icanhazip.com") > InfraHosts.patternSpecificity(
+          "icanhazip.com",
+        ),
+        // `api.wifihaven.net` is on the STRONGER suppressOnly tier, not the class: the class would
+        // still let it count inside a span anchored by real browsing (operator call on #2813).
+        InfraHosts.isBackground("api.wifihaven.net"),
+        !InfraHosts.isCloudBackground("api.wifihaven.net"),
+        // the `wifihaven.net` apex is deliberately NOT swept in — the SPA and marketing site are
+        // user-facing surfaces, so only the exact control-plane host is classified.
+        !InfraHosts.isBackground("wifihaven.net"),
+        !InfraHosts.isBackground("www.wifihaven.net"),
+        !InfraHosts.isCloudBackground("wifihaven.net"),
+        !InfraHosts.isCloudBackground("www.wifihaven.net"),
+        // nor are the deliberate exclusions named in the file
+        !InfraHosts.isCloudBackground("www.google.com"),
+        !InfraHosts.isCloudBackground("accounts.google.com"),
+        !InfraHosts.isCloudBackground("ssl.gstatic.com"),
+        !InfraHosts.isCloudBackground("1password.com"),
+        // attribution-only: nothing new is allow-carved
+        !InfraHosts.isInfra("api.wifihaven.net"),
+        !InfraHosts.isInfra("client-log-forwarder.1password.com"),
+        !InfraHosts.isInfra("bam.nr-data.net"),
+      )
+    },
+    test("#2815 no background entry is shadowed by another, so the two matchers agree today") {
+      // THE PRECONDITION, pinned because everything else leans on it. `matchedBackgroundPattern`
+      // (first match in list order) and `matchedBackgroundPatternSpecific` (most specific match)
+      // can only disagree for a host that matches TWO background entries. No such pair exists
+      // today, which is why the explain surfaces (`suppressedHostUsage`, `classifyRows`) can keep
+      // using the first-match matcher and still name the pattern that actually drove the decision.
+      //
+      // Adding an apex alongside a lane already on the list — `brave.com` next to
+      // `collector.bsg.brave.com`, say — breaks that silently. This test is the tripwire: it fails
+      // on exactly that change, and the fix is to move the explain surfaces onto the specific
+      // matcher at the same time.
+      // Mirrors `InfraHosts.background` (`canonical ++ suppressOnly`), which is private. If that
+      // definition ever widens — folding in `cloudBackground`, say — the predicate's domain grows
+      // and this reconstruction silently keeps checking the old one. Keep the two in step.
+      val all      = InfraHosts.canonical ++ InfraHosts.suppressOnly
+      val shadowed = for {
+        outer <- all
+        inner <- all
+        if outer != inner
+        if HostMatch.matchesPattern(inner, outer)
+      } yield (outer, inner)
+      assertTrue(
+        // liveness: an empty list would satisfy the emptiness check for free
+        all.size > 50,
+        shadowed.isEmpty,
+      )
+    },
+    test("#2815 matchedBackgroundPatternSpecific resolves each host to its background entry") {
+      // Given the precondition above these agree with the first-match matcher by construction, so
+      // this is a resolution pin, NOT a demonstration that specificity is honoured — for that see
+      // the `patternSpecificity` ordering test and `SuppressionSpecificitySpec`, which exercise the
+      // comparison against APP patterns, where competing claims genuinely do exist.
+      assertTrue(
+        InfraHosts
+          .matchedBackgroundPatternSpecific("collector.bsg.brave.com")
+          .contains("collector.bsg.brave.com"),
+        InfraHosts.matchedBackgroundPatternSpecific("pubsub.plex.tv").contains("pubsub.plex.tv"),
+        InfraHosts
+          .matchedBackgroundPatternSpecific("events.launchdarkly.com")
+          .contains("events.launchdarkly.com"),
+        InfraHosts
+          .matchedBackgroundPatternSpecific("api.wifihaven.net")
+          .contains("api.wifihaven.net"),
+        // an apex entry still matches its subtree, and reports the apex
+        InfraHosts
+          .matchedBackgroundPatternSpecific("p9-buy.itunes.apple.com")
+          .contains("itunes.apple.com"),
+        // a host on no background list at all
+        InfraHosts.matchedBackgroundPatternSpecific("search.brave.com").isEmpty,
+        InfraHosts.matchedBackgroundPatternSpecific("app.feelinggreat.com").isEmpty,
       )
     },
   )

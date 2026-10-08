@@ -159,3 +159,13 @@ hosts:
   # shulgfea.com re-confirmed as standing exclusions, no new signal. See
   # evidence/multi-category-classification-2759.md.
   - wherewindsmeetgame.com # Where Winds Meet — NetEase wuxia action-RPG
+  #
+  # traffic-driven addition (#2836): 30-day prod recent-apexes sweep across
+  # all 30 devices, 2026-10-06. teamwoodgames.com / teamwood.games are both
+  # confirmed as Team Wood Games (Copenhagen, Denmark), the studio behind
+  # Super Auto Pets — a popular auto-battler with 4M+ installs across
+  # Steam/iOS/Android/macOS. livesteamstation.com (also matched the "steam"
+  # substring sweep) is an unrelated model-train hobby store, held out as a
+  # false positive. See evidence/multi-category-classification-2836.md.
+  - teamwoodgames.com # Team Wood Games — developer of Super Auto Pets
+  - teamwood.games # Team Wood Games — developer of Super Auto Pets

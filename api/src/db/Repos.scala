@@ -963,6 +963,17 @@ trait BlocklistRepo {
   def listCategories: Task[List[BlocklistId]]
   def countByCategory: Task[List[(BlocklistId, Int)]]
   def loadCategory(cat: BlocklistId): Task[Set[Hostname]]
+
+  /**
+   * #2809: delete exactly these domains from one category, in ONE statement.
+   *
+   * Used by the ingest sweep, which removes a handful of shared-GFE rows from a list that may hold
+   * ~76K. `clearCategory` + `insertBatch` would express the same intent as two separate
+   * transactions with a window in between where the category is EMPTY — and the sweep runs only
+   * when upstream is unreachable, i.e. exactly when the DB rows are the only surviving copy. A
+   * targeted delete has no such window and does not rewrite the rows that stay.
+   */
+  def deleteHosts(cat: BlocklistId, hosts: List[Hostname]): Task[Int]
   def loadAll: Task[Map[BlocklistId, Set[Hostname]]]
 
   // #1983: for each of the given EXACT domains, which category blocklists
@@ -2531,7 +2542,13 @@ class BlocklistRepoLive(xa: Transactor[Task]) extends BlocklistRepo {
       .query[(BlocklistId, Int)]
       .to[List]
       .transact(xa)
-  def loadCategory(cat: BlocklistId)          =
+  def deleteHosts(cat: BlocklistId, hosts: List[Hostname]) =
+    if hosts.isEmpty then ZIO.succeed(0)
+    else
+      Update[(String, String)](
+        "DELETE FROM blocklist_domains WHERE category=? AND domain=?",
+      ).updateMany(hosts.map(h => (cat.value, h.value))).transact(xa)
+  def loadCategory(cat: BlocklistId)                       =
     DbMetrics.timed("blocklist.loadCategory")(
       sql"SELECT domain FROM blocklist_domains WHERE category=${cat.value}"
         .query[Hostname]
@@ -2539,7 +2556,7 @@ class BlocklistRepoLive(xa: Transactor[Task]) extends BlocklistRepo {
         .transact(xa)
         .map(_.toSet),
     )
-  def loadAll                                 = sql"SELECT category,domain FROM blocklist_domains"
+  def loadAll = sql"SELECT category,domain FROM blocklist_domains"
     .query[(BlocklistId, Hostname)]
     .to[List]
     .transact(xa)
@@ -4260,7 +4277,21 @@ trait AppRepo {
   def listAll: Task[List[App]]
   def findById(id: AppId): Task[Option[App]]
   def findBySlug(slug: String): Task[Option[App]]
+
+  /**
+   * The one row this template manages. `apps.template_id` carries no UNIQUE constraint
+   * (`V28__apps.sql:17`) and `AppTemplates.findFreeSlug` can park a second row at `<slug>-template`
+   * / `<slug>-template-N`, so this RESOLVES the duplicate state rather than raising on it (#2820):
+   * the row on the canonical slug wins, else the lowest id. Every caller that wants "the template's
+   * row" goes through this, so they all agree on which row that is.
+   */
   def findByTemplateId(templateId: AppTemplateId): Task[Option[App]]
+
+  /**
+   * #2820: every row carrying this `template_id`, ordered by id — for the callers that must act on
+   * all of them (the retirement merge) rather than on the resolved one.
+   */
+  def listByTemplateId(templateId: AppTemplateId): Task[List[App]]
   def create(
       name: String,
       slug: String,
@@ -4403,11 +4434,36 @@ class AppRepoLive(xa: Transactor[Task]) extends AppRepo {
       .option
       .transact(xa)
 
+  // Resolves the canonical-slug row first, then the lowest id, so a canonical + `<slug>-template`
+  // pair yields the canonical one deterministically instead of raising (#2820). "Canonical slug ==
+  // the template id string" is the seeder's own rule — `AppTemplates.seedOne` creates the row with
+  // `slug = findFreeSlug(t.slug.value)` and `template_id = t.slug`, falling back to a suffix only
+  // when the base is taken.
+  //
+  // Resolving silently would hide a real inconsistency, so say so: duplicates are a state
+  // `reconcileOne` can create (it stamps a template_id onto a canonical row while a `-template-N`
+  // row already carries one) and nothing collapses, and the losing row keeps hosts and usage
+  // history nobody will look at again.
   def findByTemplateId(templateId: AppTemplateId) =
-    sql"SELECT id,name,slug,template_id,icon,icon_type,created_at FROM apps WHERE template_id=$templateId"
+    listByTemplateId(templateId).flatMap { rows =>
+      val resolved = rows.find(_.slug == templateId.value).orElse(rows.headOption)
+      ZIO
+        .logWarning(
+          s"apps: template_id=${templateId.value} is on ${rows.size} rows " +
+            rows.map(r => s"${r.id.value}:${r.slug}").mkString("[", ",", "]") +
+            s" — resolved to id=${resolved.map(_.id.value).getOrElse("none")}; " +
+            "the others keep hosts and usage that no template manages",
+        )
+        .when(rows.size > 1)
+        .as(resolved)
+    }
+
+  def listByTemplateId(templateId: AppTemplateId) =
+    sql"""SELECT id,name,slug,template_id,icon,icon_type,created_at
+          FROM apps WHERE template_id=$templateId ORDER BY id"""
       .query[R]
       .map(toApp)
-      .option
+      .to[List]
       .transact(xa)
 
   def create(

@@ -727,6 +727,44 @@ object PolicySnapshotAppsSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPo
         assertTrue(ga.contains("ocsp.pki.goog")) &&
         assertTrue(ga.contains("connectivitycheck.gstatic.com"))
     },
+    test("#2809: the Google login control plane is fixed by INGEST, never by an allow-carve") {
+      // #2809's hosts (`oauthaccountmanager.googleapis.com` and its siblings) are login-critical
+      // and were unreachable while `ads-extended` was enabled. The tempting fix — add them to
+      // `InfraHosts.canonical` so they ride `infraAllowHosts` into `@global_allow` — is exactly
+      // what #2369 reverted: measured 2026-09-23, all three resolve to the SAME eight addresses
+      // (172.217.112.4 … 172.217.119.4) as `firebaselogging.googleapis.com`,
+      // `clientmetrics-pa.googleapis.com` and `ogads-pa.googleapis.com`. `@global_allow` matches
+      // on resolved IP and beats every drop (#421), so carving any one of them would punch that
+      // whole shared pool out of every Google host-block for every MAC — silently defeating
+      // blocks the operator believes are in force. The fix lives at blocklist INGEST instead
+      // (pinned in BundledBlocklistsSpec); this pins that it did NOT also land here.
+      //
+      // LIVENESS ANCHOR: `ocsp.pki.goog` / `connectivitycheck.gstatic.com` must be PRESENT. A
+      // snapshot with an empty `global.extraAllowed` would satisfy the absence checks for free.
+      val loginControlPlane = Set(
+        "oauthaccountmanager.googleapis.com",
+        "oauth2.googleapis.com",
+        "securetoken.googleapis.com",
+      )
+      for {
+        _    <- cleanDb
+        pr   <- ZIO.service[ProfileRepo]
+        _    <- TestLayers.seedKidsProfile(pr)
+        svc  <- makePs
+        snap <- svc.snapshot
+        ga = snap.global.extraAllowed.map(_.value).toSet
+      } yield assertTrue(ga.intersect(loginControlPlane).isEmpty) &&
+        assertTrue(
+          PolicyService.infraAllowHosts.map(_.value).toSet.intersect(loginControlPlane).isEmpty,
+        ) &&
+        assertTrue(InfraHosts.canonical.toSet.intersect(loginControlPlane).isEmpty) &&
+        // …and they are still CLASSED as cloud background for attribution, which is the tier
+        // they legitimately belong to. Losing that would be a silent screen-time regression.
+        assertTrue(loginControlPlane.forall(InfraHosts.isCloudBackground)) &&
+        // liveness anchor — connectivity-critical infra is still carved
+        assertTrue(ga.contains("ocsp.pki.goog")) &&
+        assertTrue(ga.contains("connectivitycheck.gstatic.com"))
+    },
     test("#1418: profile round-trips pauseMode through the repo") {
       for {
         _   <- cleanDb

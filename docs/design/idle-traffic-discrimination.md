@@ -127,6 +127,23 @@ dropped whole; anchored spans count **in full** — ambient rows inside an
 anchored span still contribute their seconds, so a real session's total is
 never shaved (no re-opening of the #1446/#2068 undercount class).
 
+**#2813 amendment — the #1506 seam is a specificity comparison, not an
+unconditional win.** App attribution anchors a row *unless* the device-cloud
+background class ([[InfraHosts.cloudBackground]]) claimed the same host **more
+specifically**, measured in dot-separated labels
+([[InfraHosts.patternSpecificity]]). At EQUAL specificity the app still wins, so
+an app whose own host *is* the class entry keeps anchoring (`serato.yml` against
+the `serato.com` class apex is the live instance). A strictly-more-specific class
+entry wins, so a template claiming a brand APEX cannot launder an anchor onto a
+background LANE of that brand enumerated by exact host — which is how six hours
+of `client-log-forwarder.1password.com` log shipping anchored an overnight span
+under the `1password.com` app assignment, and every ambient row inside it,
+`api.wifihaven.net` included, then counted in full. This changes anchor
+eligibility ONLY; row suppression (`Presence.isHeartbeat` /
+`suppressedAsBackground`, over `canonical ++ suppressOnly`) is a separate
+predicate, which #2815 brought onto this same comparison — see the
+tier-convergence note below.
+
 Results on the 14-day sample (in-sample):
 
 | surface | before | after gate | casualties |
@@ -265,7 +282,10 @@ alone in a window is alone regardless of span width). The gate composes with
   shows essentially doesn't happen (real use lights up co-hosts). If it ever
   does: the host is visible in the explain surface, and the canonical remedy
   is authoring an app template for it — app attribution beats ambient
-  structurally (#1506).
+  structurally (#1506). **Caveat (#2813):** the template must claim the host at
+  least as specifically as any `cloudBackground` entry that also matches it. A
+  template claiming a brand apex will NOT restore the anchor for a background
+  lane this file enumerates by exact host; claim the exact host instead.
 - *Fleet-wide agent wedge* (the #2068 class): a wedged agent emitting
   single-host reports could teach false ambient entries. The learner keys on
   *distinct days*; a transient wedge contributes ≤ 1–2 days, below
@@ -329,9 +349,55 @@ it only erodes the safety margin on genuinely-isolated real use.
 
 Both tiers are **anchor-eligibility only** — never row suppression. A class
 row inside a genuinely-anchored span still counts in full, app attribution
-(#1506) still beats the class, and everything rides the existing
-`ambient_gate_enabled` kill-switch (off ⇒ identity). The gate remains
-only-ever-removes, so the #1446/#2068 undercount class stays closed.
+(#1506) beats the class **at equal-or-greater specificity** (#2813 — see the
+gate-rule amendment above; before #2813 it beat the class unconditionally, which
+is what let a brand-apex template anchor a background lane), and everything rides
+the existing `ambient_gate_enabled` kill-switch (off ⇒ identity). The gate
+remains only-ever-removes, so the #1446/#2068 undercount class stays closed.
+
+**Tier convergence (#2813 → #2815).** #2813 applied the specificity comparison
+to the ANCHOR decision only and deliberately left the suppression decision
+(`Presence.suppressedAsBackground` → `isHeartbeat`, keyed on
+`canonical ++ suppressOnly`) on the old unconditional "any app pattern wins"
+rule, on the reasoning that suppression REMOVES a row outright and so could only
+ever subtract minutes.
+
+**#2815 closed that divergence: ONE precedence rule now governs both predicates.**
+Attribution beats suppression only when the app claimed the host at least as
+specifically as the background list did. The deferral's premise held up, but the
+blast radius turned out to be enumerable rather than open-ended — the whole
+catalog contains exactly four apex-over-lane pairs:
+
+| app pattern | background entry | labels | assigned on prod? |
+|---|---|---|---|
+| `brave.com` | `collector.bsg.brave.com`, `star-randsrv.bsg.brave.com` | 2 < 4 | no |
+| `plex.tv` | `pubsub.plex.tv` | 2 < 3 | no |
+| `wifihaven.net` | `api.wifihaven.net` | 2 < 3 | no (pair created by #2813) |
+| `launchdarkly.com` | `events.launchdarkly.com` | 2 < 3 | **yes** — a shared host of "Feeling Great" |
+
+The LaunchDarkly pair is the one that justified the change. `launchdarkly.com`
+reaches `appHostPatterns` as a **shared** host (`shared_hosts:`) of an assigned,
+time-limited app. The #1897 shared-host work already guarantees a shared backend
+cannot inflate that app's OWN engaged minutes — that path reads
+`distinctiveHosts` — but `appHostPatterns` is built from `hosts` (all of them),
+so a shared vendor backend still overrode suppression and its seconds reached the
+profile's DAILY total. #2815 closes that residual inflation path.
+
+The no-undercount guarantee rests on the EQUAL-specificity half: an app that
+genuinely depends on an infra host and names it exactly keeps attributing, which
+is the #1506 seam's actual purpose. Only a brand apex sweeping in a
+specifically-enumerated lane loses, and a lane is on this list precisely because
+it is not engagement.
+
+**Residual, not closed by #2815 (tracked in #2818):** `appHostPatterns` still
+uses `hosts` rather than `distinctiveHosts`, so a shared vendor backend counts
+toward the profile's daily total on the strength of another app's assignment.
+Where the backend is also on the background list, #2815's comparison now settles
+it; where it is not — `elevenlabs.io`, say — there is no suppression to compare
+against and the traffic simply counts as that app's. Closing that is a wider
+change than the specificity comparison, since it touches every shared host on
+every assigned app rather than an enumerable pair set, so it wants its own
+evidence pass.
 
 Replay of the shipped rule set on the same window:
 

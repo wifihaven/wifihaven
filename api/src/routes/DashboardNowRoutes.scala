@@ -272,14 +272,21 @@ object DashboardNowRoutes {
    * mechanism): a single chatty 60-byte keepalive looks identical to a real request-driven app at
    * the byte level, so only identity is safe here.
    *
-   * #1559: ATTRIBUTION BEATS SUPPRESSION. `appHostPatterns` is the union of the profile's
-   * active-app host-sets (via [[ProfileAppDispositions.appHostPatterns]]). A row whose host matches
-   * an active app's host-set is attributed to that app and kept in the ranking — so an off-domain
-   * asset/CDN host an app genuinely depends on that also happens to be on the [[InfraHosts]]
-   * device-infra list (e.g. `beacons3.gvt2.com` when a "Google" app claims `gvt2.com`) surfaces in
-   * topHosts/nowActivity instead of being silently dropped. Routed through the single host-keyed
-   * [[Presence.suppressedAsBackground]] predicate — same rule the counting surfaces use, no second
-   * copy (#1532 / #1560).
+   * #1559: ATTRIBUTION BEATS SUPPRESSION — since #2815, when claimed at least as SPECIFICALLY.
+   * `appHostPatterns` is the union of the profile's active-app host-sets (via
+   * [[ProfileAppDispositions.appHostPatterns]]). A row whose host matches an active app's host-set
+   * is attributed to that app and kept in the ranking — so an off-domain asset/CDN host an app
+   * genuinely depends on that also happens to be on the [[InfraHosts]] device-infra list surfaces
+   * in topHosts/nowActivity instead of being silently dropped. The worked example still holds:
+   * `beacons3.gvt2.com` when a "Google" app claims `gvt2.com` is kept, because the background entry
+   * IS the `gvt2.com` apex — an equal-specificity claim, which the app still wins.
+   *
+   * What #2815 changed is the strictly-broader case: an app claiming a brand APEX no longer keeps a
+   * background lane [[InfraHosts]] enumerates by exact host, so a `brave.com`-assigned profile's
+   * `collector.bsg.brave.com` rows now drop out of the ranking too. That is deliberate and it is
+   * why this reads through the single host-keyed [[Presence.suppressedAsBackground]] predicate —
+   * same rule the counting surfaces use, no second copy (#1532 / #1560), so ranking and counting
+   * cannot disagree about what is background.
    */
   private def dropBackground(
       rows: List[TrafficRollupRow],

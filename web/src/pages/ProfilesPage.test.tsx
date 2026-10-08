@@ -151,6 +151,17 @@ const blocklistCatalog: BlocklistSummary[] = [
   { id: 'malware', name: 'Malware', description: null, bundled: false, source: 'operator', hostCount: 10, lastBuiltAt: null },
 ]
 
+// #2824 — `GET /api/profiles/global` answers 404 "Global profile not seeded" for a
+// household with no sentinel row (Routes.scala:526; true for households
+// provisioned between V65 and V73). The SPA carries the status on the thrown error
+// (api/httpError.ts) so an ABSENT global layer is distinguishable from an
+// unreadable one.
+function globalNotSeededError(): Error {
+  const e = new Error('Global profile not seeded') as Error & { status?: number }
+  e.status = 404
+  return e
+}
+
 const aliceUser: User = { id: 10, username: 'alice', role: 'child', profileIds: [1] }
 const bobUser:   User = { id: 11, username: 'bob',   role: 'adult', profileIds: [2] }
 const carolUser: User = { id: 12, username: 'carol', role: 'admin', profileIds: [1, 2] }
@@ -161,7 +172,10 @@ beforeEach(() => {
   ;(api.profiles.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([kidsProfile, adultsProfile])
   // #1773 — default to "global not seeded" so existing tests don't see an extra
   // card unless they explicitly opt in by overriding this mock.
-  ;(api.profiles.getGlobal as unknown as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('Global profile not seeded'))
+  // #2824 — shaped as the 404 the route actually returns (Routes.scala:526), so the
+  // coverage chip reads "no global layer" rather than "global layer unreadable".
+  ;(api.profiles.getGlobal as unknown as ReturnType<typeof vi.fn>)
+    .mockRejectedValue(globalNotSeededError())
   ;(api.profiles.create as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({ id: 99 })
   ;(api.profiles.update as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(undefined)
   ;(api.profiles.patch as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(undefined)
@@ -2729,5 +2743,109 @@ describe('ProfilesPage — two-list app management (#2764)', () => {
     await waitFor(() =>
       expect(api.apps.setPolicy).toHaveBeenCalledWith(54, 1, { mode: 'blocked', dailyMinutes: null }),
     )
+  })
+})
+
+// #2824 — the operator believed `adult` was blocked on their own profile. It was
+// not, and the only feedback was adult pop-ups appearing (#2823). Category
+// assignment lived exclusively inside the EXPANDED card, and cards are
+// collapse-by-default (#972), so a profile blocking nothing looked exactly like a
+// protected one. The collapsed summary row now carries coverage.
+describe('ProfilesPage — category coverage on the collapsed summary (#2824)', () => {
+  it('shows coverage on every collapsed card, without expanding anything', async () => {
+    renderPage()
+    await screen.findByTestId('profile-card-1')
+    // Nothing is expanded: the inline category EDITOR is not mounted…
+    expect(screen.queryByTestId('profile-categories-subsection-1')).not.toBeInTheDocument()
+    // …yet coverage is already legible for both profiles.
+    expect(screen.getByTestId('profile-coverage-1')).toHaveAttribute('data-coverage', 'covered')
+    expect(screen.getByTestId('profile-coverage-2')).toHaveAttribute('data-coverage', 'none')
+  })
+
+  it('makes "blocks nothing" an explicit state, not an empty space', async () => {
+    renderPage()
+    const chip = await screen.findByTestId('profile-coverage-2')
+    expect(chip).toHaveTextContent(/blocks nothing/i)
+  })
+
+  it('counts the profile\'s own categories', async () => {
+    renderPage()
+    // kidsProfile blocks adult + gambling.
+    expect(await screen.findByTestId('profile-coverage-1')).toHaveTextContent('2')
+  })
+
+  // PolicyService.scala:769-771 (#1771) unions the household-global sentinel's
+  // categories into every non-default-deny profile, so a profile covered only
+  // by the global layer is protected and must not be flagged.
+  it('credits coverage inherited from the household-global sentinel', async () => {
+    (api.profiles.getGlobal as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+      profile: {
+        id: 99, name: 'Household', blockedCategories: ['adult'], paused: false,
+        failureMode: 'last-known-good', crossDeviceOverlapMode: 'sum', pauseMode: 'soft',
+        defaultDeny: false, isGlobal: true,
+      },
+      scheduleIds: [], timeLimit: null,
+    })
+    renderPage()
+    await waitFor(() => {
+      expect(screen.getByTestId('profile-coverage-2')).toHaveAttribute('data-coverage', 'covered')
+    })
+    expect(screen.getByTestId('profile-coverage-2')).not.toHaveTextContent(/blocks nothing/i)
+  })
+
+  // A household provisioned between V65 and V73 has no sentinel row and the
+  // route 404s (see V73__profiles_is_global_per_household.sql). That is an ABSENT
+  // global layer, not an unknown one — coverage is still computable.
+  it('treats a 404 from the global sentinel as "no global layer", not as unknown', async () => {
+    (api.profiles.getGlobal as unknown as ReturnType<typeof vi.fn>)
+      .mockRejectedValue(globalNotSeededError())
+    renderPage()
+    await waitFor(() => {
+      expect(screen.getByTestId('profile-coverage-2')).toHaveAttribute('data-coverage', 'none')
+    })
+  })
+
+  // …but a genuine failure to read the global layer makes coverage UNKNOWABLE,
+  // and an unknown must not render as "blocks nothing" (AGENTS.md#loading-states).
+  it('renders an explicit unknown state when the global layer cannot be read', async () => {
+    (api.profiles.getGlobal as unknown as ReturnType<typeof vi.fn>)
+      .mockRejectedValue(Object.assign(new Error('boom'), { status: 500 }))
+    renderPage()
+    await waitFor(() => {
+      expect(screen.getByTestId('profile-coverage-2')).toHaveAttribute('data-coverage', 'unknown')
+    })
+    expect(screen.queryByText(/blocks nothing/i)).not.toBeInTheDocument()
+  })
+
+  it('never renders "blocks nothing" while the profile list is still loading', () => {
+    (api.profiles.list as unknown as ReturnType<typeof vi.fn>).mockReturnValue(new Promise(() => {}))
+    renderPage()
+    expect(screen.queryByText(/blocks nothing/i)).not.toBeInTheDocument()
+    expect(screen.queryByTestId('profile-coverage-1')).not.toBeInTheDocument()
+  })
+
+  // #2824 review — `useGlobalProfile` is gated on `isWriter` (#1773/#2522), and a
+  // DISABLED react-query stays `isPending` forever. Rendering the chip for a child
+  // would therefore pin a skeleton that never resolves on every card, for the whole
+  // session. Coverage is a parenting signal; the chip is writer-only.
+  it('renders no coverage chip — and no stuck skeleton — for a child', async () => {
+    mockAuth = { isAdmin: false, isWriter: false }
+    renderPage()
+    await screen.findByTestId('profile-card-1')
+    expect(screen.queryByTestId('profile-coverage-1')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('profile-coverage-loading-1')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('profile-coverage-2')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('profile-coverage-loading-2')).not.toBeInTheDocument()
+  })
+
+  it('does not flag a default-deny profile, which blocks strictly more', async () => {
+    (api.profiles.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([
+      kidsProfile,
+      { ...adultsProfile, profile: { ...adultsProfile.profile, defaultDeny: true } },
+    ])
+    renderPage()
+    const chip = await screen.findByTestId('profile-coverage-2')
+    expect(chip).toHaveAttribute('data-coverage', 'default-deny')
+    expect(chip).not.toHaveTextContent(/blocks nothing/i)
   })
 })

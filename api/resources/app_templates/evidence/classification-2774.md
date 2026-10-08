@@ -57,7 +57,7 @@ vendor-API pool that also fronts Drive/OAuth/Calendar — `_README.yml` Class 1,
 the #1636 collateral. `youtube-nocookie.com` is a YouTube-owned **content**
 domain, the same class as `youtube.com` itself, which this template has always
 carried. Checked against the mechanical guard: it is not in
-`SharedGfeHosts.googleAdApexes` (`api/test/src/SharedGfeHosts.scala`), so the
+`SharedGfeHosts.googleAdApexes` (`shared/src/types/SharedGfeHosts.scala`), so the
 #2601 test in `AppTemplatesSpec` passes.
 
 Resolution as of 2026-09-11: `www.youtube-nocookie.com` CNAMEs to
