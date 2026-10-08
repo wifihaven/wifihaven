@@ -3552,7 +3552,7 @@ class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo 
     // race-loser ipv4 rows show up under their resolved FQDN in the log UI
     // and in domain ILIKE filters.
     val base   =
-      fr"""SELECT ce.id, ce.mac, d.name, d.profile_id, p.name,
+      fr"""SELECT ce.id, ce.mac, d.name, """ ++ SqlFragments.labelProfileId ++ fr""", p.name,
                   CASE WHEN ce.resolved_host_value IS NOT NULL THEN 'fqdn' ELSE ce.host_type END,
                   COALESCE(ce.resolved_host_value, ce.host_value),
                   1, NOT ce.allowed, ce.reason, r.name,
@@ -3561,8 +3561,9 @@ class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo 
            LEFT JOIN routers r  ON r.id     = ce.router_id """ ++
         // #2609: `routers r` now leads so the device join can qualify on `r.household_id` (an ON
         // clause only resolves against tables to its left). The label join is household-scoped —
-        // see SqlFragments.deviceLabelJoin for why bare `d.mac = ce.mac` is wrong post-V74.
-        SqlFragments.deviceLabelJoin("ce.mac") ++
+        // see SqlFragments.deviceLabelJoin for why bare `d.mac = ce.mac` is wrong post-V74. #2845:
+        // the profile is the one that held the device at `ce.ts`.
+        SqlFragments.deviceLabelJoin("ce.mac", fr"ce.ts") ++
         fr"""WHERE 1=1"""
     // #862: window anchor moves from "now" to `until` (defaults to NOW()).
     val anchor = f.until.fold(fr"NOW()")(u => fr"$u::TIMESTAMPTZ")
@@ -3582,7 +3583,7 @@ class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo 
       .fold(fr"")(nel => fr"AND " ++ Fragments.in(fr"d.id", nel))
     val byPid  = cats.data.NonEmptyList
       .fromList(f.profileIds)
-      .fold(fr"")(nel => fr"AND " ++ Fragments.in(fr"d.profile_id", nel))
+      .fold(fr"")(nel => fr"AND " ++ Fragments.in(SqlFragments.labelProfileId, nel))
     val byBl   = f.blocked.fold(fr"")(b => fr"AND ce.allowed = ${!b}")
     val byDom  = f.domain.fold(fr"")(d =>
       // #720: domain filter has to look through the resolution too — otherwise
@@ -3636,7 +3637,7 @@ class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo 
     // #2609: `routers r` leads so the device/profile label join can qualify on `r.household_id`.
     val fromJoins = fr"""FROM connection_events ce
            LEFT JOIN routers r  ON r.id  = ce.router_id """ ++
-      SqlFragments.deviceLabelJoin("ce.mac")
+      SqlFragments.deviceLabelJoin("ce.mac", tsBin)
     // #862: window anchor moves from "now" to `until` (defaults to NOW()).
     val anchor    = f.until.fold(fr"NOW()")(u => fr"$u::TIMESTAMPTZ")
     val window    =
@@ -3649,7 +3650,7 @@ class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo 
       .fold(fr"")(nel => fr"AND " ++ Fragments.in(fr"d.id", nel))
     val byPid     = cats.data.NonEmptyList
       .fromList(f.profileIds)
-      .fold(fr"")(nel => fr"AND " ++ Fragments.in(fr"d.profile_id", nel))
+      .fold(fr"")(nel => fr"AND " ++ Fragments.in(SqlFragments.labelProfileId, nel))
     val byBl      = f.blocked.fold(fr"")(b => fr"AND ce.allowed = ${!b}")
     val byDom     = f.domain.fold(fr"")(d =>
       fr"AND COALESCE(ce.resolved_host_value, ce.host_value) ILIKE ${s"%$d%"}",
@@ -3716,7 +3717,11 @@ class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo 
     // table's, so `r` is always present and always carries the row's household.
     val fromJoins = fr"FROM " ++ table ++ fr"""
            LEFT JOIN routers r  ON r.id  = cer.router_id """ ++
-      SqlFragments.deviceLabelJoin("cer.mac")
+      // #2845: a rollup row carries no per-event timestamp, so it is labelled with the profile
+      // that held the device at the BUCKET START (`tsBin`). A bucket that straddles a reassignment
+      // or check-in is attributed whole to the earlier holder: off by at most one bucket on the
+      // series chart. Daily-limit math does not read these tables (it uses presence, §6.1).
+      SqlFragments.deviceLabelJoin("cer.mac", tsBin)
     val anchor    = f.until.fold(fr"NOW()")(u => fr"$u::TIMESTAMPTZ")
     val window    =
       fr"AND " ++ tsBin ++ fr"> " ++ anchor ++ fr"- make_interval(hours => ${f.hours}) AND " ++
@@ -3729,7 +3734,7 @@ class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo 
       .fold(fr"")(nel => fr"AND " ++ Fragments.in(fr"d.id", nel))
     val byPid     = cats.data.NonEmptyList
       .fromList(f.profileIds)
-      .fold(fr"")(nel => fr"AND " ++ Fragments.in(fr"d.profile_id", nel))
+      .fold(fr"")(nel => fr"AND " ++ Fragments.in(SqlFragments.labelProfileId, nel))
     // Rollup has split counts, not a per-event `allowed` flag: narrow to the
     // matching count column rather than filtering individual events.
     val byBl      = f.blocked.fold(fr"")(b =>
