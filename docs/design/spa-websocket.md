@@ -762,8 +762,8 @@ blocked live), with **S4 → S5** adding live bandwidth from the existing
 `traffic_reports` (no router change; realtime-ness scales with the usage-send rate
 and approaches real-time as #1023 streams usage). **Parallel:** S3/S4 can land
 alongside S2. **S7 is last and per-view-gated** — each cutover off polling is
-deliberate once that view's push path is proven, never armed automatically
-([`pr-review-checklist.md#monitor-to-merged`](../pr-review-checklist.md)).
+deliberate once that view's push path is proven: a session starts an S7 step only
+when the operator asks for that view's cutover.
 
 ---
 

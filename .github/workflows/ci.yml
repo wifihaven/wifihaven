@@ -175,6 +175,9 @@ jobs:
               # guards against is a render.yaml-only edit. Without this glob that PR shape
               # skips Shell Tests entirely and the guard never runs.
               - 'render.yaml'
+              # #2869: the .github/scripts guards' *.test.sh files match above, but an
+              # edit to the guard script alone would not, and would skip its own test.
+              - '.github/scripts/**'
             render:
               - '.github/workflows/ci.yml'
               - 'render.yaml'

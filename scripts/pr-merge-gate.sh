@@ -8,6 +8,7 @@
 # Usage:
 #   pr-merge-gate.sh check   <pr>    decide whether the session may enqueue; never mutates the PR
 #   pr-merge-gate.sh enqueue <pr>    run `check`, then enqueue the approved SHA with a head guard
+#   pr-merge-gate.sh disarm  <pr>    take the PR out of the merge queue and off auto-merge, and confirm
 #   pr-merge-gate.sh classify        stdin: changed paths, one per line -> one line per excluded path
 #   pr-merge-gate.sh verdict <sha>   stdin: a review comment body -> APPROVE | REQUEST-CHANGES | STALE | NONE
 #
@@ -15,11 +16,15 @@
 #   0  MERGE (check) / ENQUEUED (enqueue): the session may merge / has enqueued
 #   3  OPERATOR: APPROVE on HEAD + CI green, but the PR is an excluded class; the operator merges
 #   1  NOT-READY: no APPROVE on the current HEAD, CI not green, draft, conflicting, not open, ...
+#      (disarm: still queued or armed afterwards)
 #   2  usage error, or gh failed after retries
 set -euo pipefail
 
 REPO="${PR_MERGE_GATE_REPO:-wifihaven/wifihaven}"
 MARKER='<!-- wifihaven-pr-review reviewed-sha='
+# The repo is public: anyone can post a comment carrying the marker and an
+# APPROVE line. Only comments from these author associations count as reviews.
+TRUSTED_ASSOCIATIONS='OWNER|MEMBER|COLLABORATOR'
 
 die() { echo "pr-merge-gate: $*" >&2; exit 2; }
 indent() { local l; while IFS= read -r l; do printf "    %s\n" "${l}"; done; }
@@ -82,22 +87,24 @@ verdict() {
 # Sets GATE_HEAD to the SHA the decision covers. Each gh read ends in `|| return 2`
 # because `enqueue` calls this under `||`, where set -e is suspended.
 check() {
-  local pr="$1" view state draft head base mergeable
+  local pr="$1" view state draft head base mergeable changed
   local -a not_ready=()
   view="$(gh_retry pr view "${pr}" --repo "${REPO}" \
-    --json state,isDraft,headRefOid,baseRefName,mergeable \
-    --jq '"\(.state) \(.isDraft) \(.headRefOid) \(.baseRefName) \(.mergeable)"')" || return 2
-  read -r state draft head base mergeable <<< "${view}"
+    --json state,isDraft,headRefOid,baseRefName,mergeable,changedFiles \
+    --jq '"\(.state) \(.isDraft) \(.headRefOid) \(.baseRefName) \(.mergeable) \(.changedFiles)"')" || return 2
+  read -r state draft head base mergeable changed <<< "${view}"
   GATE_HEAD="${head}"
   [[ "${state}" == OPEN ]] || not_ready+=("PR state is ${state}, not OPEN")
   [[ "${draft}" == false ]] || not_ready+=("PR is a draft")
   [[ "${mergeable}" == MERGEABLE ]] || not_ready+=("mergeable is ${mergeable} (CONFLICTING: rebase; UNKNOWN: retry shortly)")
 
-  # 1. Reviewer verdict, bound to HEAD. Only the LATEST marked comment counts.
+  # 1. Reviewer verdict, bound to HEAD. Only the LATEST marked comment from a
+  #    trusted author counts; marked comments from anyone else are ignored, so
+  #    they can neither approve nor void a real review.
   local ids last_id body v
   ids="$(gh_retry api "repos/${REPO}/issues/${pr}/comments" --paginate \
-    --jq ".[] | select(.body | contains(\"${MARKER}\")) | .id")" || return 2
-  last_id="$(grep -E '^[0-9]+$' <<< "${ids}" | tail -n 1 || true)"
+    --jq ".[] | select(.body | contains(\"${MARKER}\")) | \"\(.id) \(.author_association)\"")" || return 2
+  last_id="$(grep -E "^[0-9]+ (${TRUSTED_ASSOCIATIONS})$" <<< "${ids}" | tail -n 1 | cut -d' ' -f1 || true)"
   if [[ -z "${last_id}" ]]; then
     not_ready+=("no /pr-review comment yet")
   else
@@ -111,16 +118,18 @@ check() {
     esac
   fi
 
-  # 2. Every required check green on HEAD. The required set is read from branch
-  #    protection, not hardcoded here.
-  local contexts ctx results
-  contexts="$(gh_retry api "repos/${REPO}/branches/${base}/protection/required_status_checks" --jq '.contexts[]')" || return 2
+  # 2. Every required check green on HEAD. The required set, and the app each
+  #    check is pinned to, are read from branch protection, not hardcoded here.
+  local contexts app ctx results
+  contexts="$(gh_retry api "repos/${REPO}/branches/${base}/protection/required_status_checks" \
+    --jq '.checks[] | "\(.app_id // "") \(.context)"')" || return 2
   [[ -n "${contexts}" ]] || not_ready+=("could not read required checks for ${base}")
-  while IFS= read -r ctx; do
+  while read -r app ctx; do
     [[ -z "${ctx}" ]] && continue
-    results="$(gh_retry api "repos/${REPO}/commits/${head}/check-runs?check_name=${ctx// /%20}" \
+    results="$(gh_retry api "repos/${REPO}/commits/${head}/check-runs?check_name=${ctx// /%20}${app:+&app_id=${app}}" \
       --jq '.check_runs[] | (.conclusion // .status)')" || return 2
-    if [[ -z "$(tr -d '[:space:]' <<< "${results}")" ]]; then
+    # A commit status has no app, so it can only satisfy a check not pinned to one.
+    if [[ -z "${app}" && -z "$(tr -d '[:space:]' <<< "${results}")" ]]; then
       results="$(gh_retry api "repos/${REPO}/commits/${head}/status" \
         --jq ".statuses[] | select(.context == \"${ctx}\") | .state")" || return 2
     fi
@@ -131,11 +140,17 @@ check() {
     fi
   done <<< "${contexts}"
 
-  # 3. Excluded classes, by changed path.
-  local files excluded
+  # 3. Excluded classes, by changed path (and the old path of a rename). The
+  #    files API stops at 3000 entries; a list shorter than changedFiles cannot
+  #    be classified, so it goes to the operator.
+  local files listed excluded
   files="$(gh_retry api "repos/${REPO}/pulls/${pr}/files" --paginate \
-    --jq '.[] | .filename, (.previous_filename // empty)')" || return 2
-  excluded="$(classify <<< "${files}")"
+    --jq '.[] | "\(.filename)\t\(.previous_filename // "")"')" || return 2
+  listed="$(grep -c . <<< "${files}" || true)"
+  excluded="$(tr '\t' '\n' <<< "${files}" | classify)"
+  if [[ "${changed}" =~ ^[0-9]+$ && "${listed}" -lt "${changed}" ]]; then
+    excluded+="${excluded:+$'\n'}unclassifiable: the files API listed ${listed} of ${changed} changed files"
+  fi
 
   if [[ ${#not_ready[@]} -gt 0 ]]; then
     echo "NOT-READY ${head}"
@@ -150,6 +165,32 @@ check() {
     return 3
   fi
   echo "MERGE ${head}"
+}
+
+# Prints "<node-id> <isInMergeQueue> <auto-merge armed>". Not available from
+# `gh pr view --json`, so read it through GraphQL.
+queue_state() {
+  gh_retry api graphql -F n="$1" -f o="${REPO%%/*}" -f r="${REPO##*/}" \
+    -f query='query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){pullRequest(number:$n){id isInMergeQueue autoMergeRequest{enabledAt}}}}' \
+    --jq '.data.repository.pullRequest | "\(.id) \(.isInMergeQueue) \(.autoMergeRequest != null)"'
+}
+
+# Takes the PR out of the queue and off auto-merge, then confirms it. Returns 0
+# only when it is neither queued nor armed afterwards.
+disarm() {
+  local pr="$1" st id queued armed
+  st="$(queue_state "${pr}")" || return 2
+  read -r id queued armed <<< "${st}"
+  if [[ "${armed}" == true ]]; then
+    gh pr merge "${pr}" --repo "${REPO}" --disable-auto > /dev/null 2>&1 || true
+  fi
+  if [[ "${queued}" == true ]]; then
+    gh api graphql -f id="${id}" \
+      -f query='mutation($id:ID!){dequeuePullRequest(input:{id:$id}){clientMutationId}}' > /dev/null 2>&1 || true
+  fi
+  st="$(queue_state "${pr}")" || return 2
+  read -r id queued armed <<< "${st}"
+  [[ "${queued}" == false && "${armed}" == false ]]
 }
 
 enqueue() {
@@ -167,15 +208,28 @@ enqueue() {
 
   # Head guard, part 2: --match-head-commit is sent as expectedHeadOid on the
   # enqueue (gh uses enablePullRequestAutoMerge when a merge queue is required).
-  gh_retry pr merge "${pr}" --repo "${REPO}" --squash --match-head-commit "${approved}" > /dev/null || return 2
+  # Called once, not through gh_retry: an enqueue that succeeded server-side and
+  # then errored must not be repeated, and must still reach part 3.
+  local merge_rc=0
+  gh pr merge "${pr}" --repo "${REPO}" --squash --match-head-commit "${approved}" > /dev/null || merge_rc=$?
 
-  # Head guard, part 3: if HEAD moved during the call, disarm rather than trust
-  # server-side enforcement of expectedHeadOid.
-  now="$(gh_retry pr view "${pr}" --repo "${REPO}" --json headRefOid --jq .headRefOid)" || return 2
+  # Head guard, part 3: whatever the merge call returned, if HEAD moved, disarm
+  # rather than trust server-side enforcement of expectedHeadOid.
+  if ! now="$(gh_retry pr view "${pr}" --repo "${REPO}" --json headRefOid --jq .headRefOid)"; then
+    echo "ERROR: could not re-read HEAD after enqueueing ${approved}. Check PR ${pr} by hand and disarm it if HEAD moved."
+    return 2
+  fi
   if [[ "${now}" != "${approved}" ]]; then
-    gh_retry pr merge "${pr}" --repo "${REPO}" --disable-auto > /dev/null || true
-    echo "ABORT: HEAD moved to ${now} during enqueue of ${approved}; disarmed. Re-run /pr-review."
-    return 1
+    if disarm "${pr}"; then
+      echo "ABORT: HEAD moved to ${now} during enqueue of ${approved}; dequeued and disarmed. Re-run /pr-review."
+      return 1
+    fi
+    echo "ERROR: HEAD moved to ${now} during enqueue of ${approved} and the PR could NOT be confirmed dequeued/disarmed. Disarm PR ${pr} by hand now."
+    return 2
+  fi
+  if [[ ${merge_rc} -ne 0 ]]; then
+    echo "ERROR: gh pr merge exited ${merge_rc}; HEAD is still ${approved}, so anything it did enqueue is the approved SHA. Check the queue state and retry."
+    return 2
   fi
   echo "ENQUEUED ${approved}"
 }
@@ -184,7 +238,9 @@ cmd="${1:-}"
 case "${cmd}" in
   check)    [[ $# -eq 2 ]] || die "usage: $0 check <pr>";    check "$2" ;;
   enqueue)  [[ $# -eq 2 ]] || die "usage: $0 enqueue <pr>";  enqueue "$2" ;;
+  disarm)   [[ $# -eq 2 ]] || die "usage: $0 disarm <pr>"
+            if disarm "$2"; then echo "DISARMED"; else echo "STILL QUEUED OR ARMED"; exit 1; fi ;;
   classify) [[ $# -eq 1 ]] || die "usage: $0 classify < paths"; classify ;;
   verdict)  [[ $# -eq 2 ]] || die "usage: $0 verdict <sha> < body"; verdict "$2" ;;
-  *) die "usage: $0 {check|enqueue} <pr> | classify | verdict <sha>" ;;
+  *) die "usage: $0 {check|enqueue|disarm} <pr> | classify | verdict <sha>" ;;
 esac

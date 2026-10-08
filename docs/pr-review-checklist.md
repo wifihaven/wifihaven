@@ -460,7 +460,10 @@ when they do.
 
 1. **APPROVE on the current head.** The latest marked `/pr-review` comment ends
    with `VERDICT: APPROVE @ <sha>`, and `<sha>` (and the comment's
-   `reviewed-sha=` marker) equals the PR's current `headRefOid`. An APPROVE for
+   `reviewed-sha=` marker) equals the PR's current `headRefOid`. Only comments
+   whose author association is `OWNER`, `MEMBER` or `COLLABORATOR` count: the
+   repo is public, so a marked comment from anyone else is ignored, and it can
+   neither approve nor void a review. An APPROVE for
    any other SHA is void. **Every push after a review, however small, needs a
    re-review before merging.** This is the
    [#2829](https://github.com/wifihaven/wifihaven/issues/2829) failure: a fix
@@ -468,9 +471,9 @@ when they do.
    was merged. The reviewer emits APPROVE only with no open BLOCKER
    ([output format](#output-format)).
 2. **Required checks green on that SHA.** Every required status check on
-   `main` succeeded on that exact commit. The script reads the required set from
-   branch protection (today it is the umbrella `CI` job) rather than hardcoding
-   it.
+   `main` succeeded on that exact commit, from the app branch protection pins it
+   to. The script reads the required set from branch protection (today it is
+   the umbrella `CI` job) rather than hardcoding it.
 3. **Open, not a draft, mergeable** (no conflicts).
 4. **Not an excluded class** (below).
 
@@ -481,7 +484,8 @@ but the session does **not** merge them. Their failure mode is prod-wide and CI
 cannot see it (for example a migration that runs for minutes against prod row
 counts, [#migrations-prod-data-volume](process/migrations.md#migrations-prod-data-volume)).
 Detection is by changed path, including the old path of a rename (`classify`
-in the script):
+in the script). A PR whose file list the API truncates (it stops at 3000 files)
+cannot be classified, so it also waits for the operator.
 
 | Class | Changed paths |
 |---|---|
@@ -511,17 +515,18 @@ That runs `check`, then:
    merge queue required, `gh` enqueues through `enablePullRequestAutoMerge` and
    sends `--match-head-commit` as its `expectedHeadOid` (gh v2.96.0,
    `pkg/cmd/pr/merge/http.go`);
-3. re-reads `headRefOid` afterwards and, if it moved, disarms with
-   `gh pr merge <n> --disable-auto` and reports.
+3. re-reads `headRefOid` afterwards, even if step 2 errored (step 2 is not
+   retried), and, if it moved, dequeues and disables auto-merge, then confirms
+   that neither is still set. If it cannot confirm, it exits 2 and says to
+   disarm by hand.
 
 Server-side enforcement of `expectedHeadOid` in merge-queue mode has not been
 exercised live, so steps 1 and 3 do not rely on it. Never pass `--admin`, and
 never arm `--auto` on a head that lacks an APPROVE.
 
-If you push to a PR that is queued or armed, the old APPROVE is void. Check
-`gh pr view <n> --json autoMergeRequest,isInMergeQueue`; if either is still set,
-disarm with `gh pr merge <n> --disable-auto` first, then re-review and
-`enqueue` again.
+If you push to a PR that is queued or armed, the old APPROVE is void. Run
+`scripts/pr-merge-gate.sh disarm <n>` first (it dequeues, disables auto-merge,
+and confirms both), then re-review and `enqueue` again.
 
 #### Iterating until done
 

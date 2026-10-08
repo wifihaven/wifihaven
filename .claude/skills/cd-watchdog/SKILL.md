@@ -209,9 +209,8 @@ git worktree add .claude/worktrees/cd-fix-<slug> -b claude/cd-fix-<slug> origin/
 - Monitor the PR through CI: if checks fail, read, fix, push. If a check fails on
   an **INFRA flake** (Step 3 signals), **re-run it** rather than editing code.
 - Merge, or leave for the operator, per the
-  [merge rule](../../../docs/pr-review-checklist.md#monitor-to-merged). A fix to
-  a `.github/workflows/master-*.yml` pipeline is prod deploy config there, so it
-  waits for the operator.
+  [merge rule](../../../docs/pr-review-checklist.md#monitor-to-merged)
+  (`scripts/pr-merge-gate.sh check <n>` says which).
 - Finish when the rule's "done" is met, or when you've left the skip/infra
   notice.
 
