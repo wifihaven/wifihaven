@@ -197,9 +197,10 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
       state <- tsvc.dayStateLive(HouseholdId.Default, now, today, settings, kidsId)
       capMin = state.flatMap(_.perApp.find(_.label == s"app:$appSlug").map(_.usedMinutes))
       // The legacy per-host proportional sum (what the un-bridged series plotted).
-      rows <- trafficRepo.listPresenceRows(
+      rows <- trafficRepo.listDevicePresenceRows(
         HouseholdId.Default,
         List(MacAddress.unsafe(testMac)),
+        today,
         today,
       )
       perHostPropMins = (wifihaven.api.presence.Presence
@@ -785,9 +786,10 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
             ),
           )
           settings <- hsRepo.getForHousehold(HouseholdId.Default)
-          rows     <- trafficRepo.listPresenceRows(
+          rows     <- trafficRepo.listDevicePresenceRows(
             HouseholdId.Default,
             List(MacAddress.unsafe(testMac)),
+            today,
             today,
           )
           // The canonical time-used total (the number on the profile card / the cap).

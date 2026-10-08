@@ -163,9 +163,9 @@ this section only summarises it.
   the backfill writes it. NULL is used instead of `'-infinity'` so no reader maps an infinite
   timestamp through JDBC. **Every reader treats a NULL `started_at` as unbounded**: a point-in-time
   match is `(started_at IS NULL OR ts >= started_at)`, never a bare `ts >= started_at` (which is NULL
-  for a backfilled row and would silently drop it). Scope reads clip each row to the request window in
-  SQL, `GREATEST(COALESCE(started_at, :windowStart), :windowStart)`, so Scala only ever sees finite
-  instants inside the window.
+  for a backfilled row and would silently drop it). The scope read returns NULL bounds to Scala as
+  `None` (unbounded), never as a sentinel instant (amended on #2844; this section first proposed
+  clipping in SQL with `GREATEST(COALESCE(started_at, :windowStart), :windowStart)`).
 - `uq_dpa_device_open`: a partial unique index allowing one open row per device, which is also the
   one-holder rule for a shared device. Indexes on `(household_id, profile_id, started_at)` for scope
   reads and `(device_id, started_at)` for the event-time join.
@@ -240,17 +240,26 @@ Usage is attributed at **read time**, by joining assignment intervals on each ro
 ### 6.1 One primitive: `AttributionScope`
 
 ```scala
-final case class AttributionSpan(mac: MacAddress, deviceId: DeviceId, from: Instant, until: Option[Instant])
-final case class AttributionScope(household: HouseholdId, byProfile: Map[ProfileId, List[AttributionSpan]])
+final case class AttributionSpan(mac: MacAddress, deviceId: DeviceId, from: Option[Instant], until: Option[Instant])
+final case class AttributionScope(household: HouseholdId, windowStart: Instant, windowEnd: Instant,
+                                  byProfile: Map[ProfileId, List[AttributionSpan]])
 ```
 
-Built by one repo read over `[dayStart, dayEnd)` (or any window), clipped to the window. Then:
+Built by one repo read (`DeviceRepo.attributionScope`) over `[dayStart, dayEnd)` (or any window):
+every interval that overlaps the window, with its own bounds and `None` for NULL. Bounds are not
+clipped in SQL (amended on #2844). Instead, when a scope builds a presence filter it drops any bound
+at or beyond the window's edge, because the presence read's own window already excludes those rows.
+So in the steady state (no assignment change inside the window) the presence query is exactly the
+pre-#2844 MAC-list query. Not clipping also keeps a row whose stored `date` was derived under an
+earlier household timezone, which a clip to the current timezone's window would drop. Then:
 
-- **Presence reads take spans, not MACs.** `TrafficReportRepo.listPresenceRows` /
-  `listPresenceRowsSince` gain a span-filtered form (`period_start >= from AND period_start < until`
-  per mac). The bare-MAC-list forms are removed from attribution call sites so a caller *cannot*
-  fetch per-profile presence without going through a scope (TYPE-ENFORCE, the same move as
-  `MacScope` in #2708).
+- **Presence reads take spans instead of MACs.** `TrafficReportRepo.listPresenceRows` /
+  `listPresenceRowsSince` / `listPresenceRowsInWindow` take a `PresenceSpans`
+  (`period_start >= from AND period_start < until` per mac), which only an `AttributionScope` can
+  build, so a caller *cannot* fetch per-profile presence without going through a scope
+  (TYPE-ENFORCE, the same move as `MacScope` in #2708). A device's own presence, whichever profile
+  held it (the per-device time-status views, the heartbeat explainer), is a separate
+  `listDevicePresenceRows*` read that takes MACs.
 - **The device list a profile folds over** (Sum mode, per-device summaries,
   `usedSecondsByMac`) is the set of devices with any span in the window, so a shared device appears
   under every profile that held it that day, credited only its in-interval presence.

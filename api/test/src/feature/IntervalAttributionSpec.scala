@@ -10,6 +10,8 @@ import wifihaven.api.usage.{
   AttributionScope,
   AttributionSpan,
   TimeUsedRollupJob,
+  UsageTraffic,
+  UsageTrafficQuery,
 }
 import wifihaven.shared.*
 import wifihaven.shared.types.*
@@ -27,8 +29,9 @@ import java.time.{Instant, LocalDate, LocalDateTime, LocalTime, ZoneOffset}
  * CURRENT profile.
  *
  * Fixture: profiles A and B, household tz UTC, day 2025-01-08. Device `moved` is on A from the
- * fixture clock (2025-01-06) and is reassigned to B at 14:00. It is active 10:00-10:30 (inside A's
- * interval) and 15:00-15:20 (inside B's). Device `stay` is on A throughout, active 08:00-08:15.
+ * fixture clock (`TestDatabase.FixtureAssignmentTime`) and is reassigned to B at 14:00. It is
+ * active 10:00-10:30 (inside A's interval) and 15:00-15:20 (inside B's). Device `stay` is on A
+ * throughout, active 08:00-08:15.
  *
  * Expected on every path: A = 30 + 15 = 45 minutes, B = 20. Attributing by current profile (the
  * pre-#2844 behaviour) gives A = 15, B = 50. Every expected value is non-zero, so a read that
@@ -96,8 +99,11 @@ object IntervalAttributionSpec
     a     <- pr.create("A", Nil)
     b     <- pr.create("B", Nil)
     // A per-app limit on both profiles, so the per-app minutes (`app_used_daily`) are checked too.
-    _     <- TestLayers.seedAppAssignment(ar, a, "youtube.com", AppMode.TimeLimited, Some(600))
-    _     <- TestLayers.seedAppAssignment(ar, b, "youtube.com", AppMode.TimeLimited, Some(600))
+    // Counts toward the daily limit (`exemptFromDaily = false`), so the headline sees it as well.
+    _     <- TestLayers
+      .seedAppAssignment(ar, a, "youtube.com", AppMode.TimeLimited, Some(600), false)
+    _     <- TestLayers
+      .seedAppAssignment(ar, b, "youtube.com", AppMode.TimeLimited, Some(600), false)
     moved <- TestLayers.seedDevice(dr, movedMac.value, "moved", a)
     stay  <- TestLayers.seedDevice(dr, stayMac.value, "stay", a)
     rid   <- ZIO.serviceWithZIO[RouterRepo](_.create("gw-2844", Sha256Hex.unsafe("i" * 64)))
@@ -139,6 +145,39 @@ object IntervalAttributionSpec
     new AppUsedRollupServiceLive(pr, dr, atl, trr, aru),
   )
 
+  // Seconds of traffic `GET /api/usage/traffic?profileId=` would report for `pid` over
+  // `[from, to)`, read both raw and through the SQL pre-aggregated 1h bucket.
+  private def trafficSecondsFor(
+      pid: ProfileId,
+      devs: List[Device],
+      scope: AttributionScope,
+      from: Instant,
+      to: Instant,
+  ): ZIO[TrafficReportRepo & RollupRepo, Throwable, (Long, Long)] = {
+    val mac = UsageTrafficQuery.resolveMacs(Nil, List(pid), devs, scope)
+    for {
+      trr <- ZIO.service[TrafficReportRepo]
+      rr  <- ZIO.service[RollupRepo]
+      raw <- mac.fold(ZIO.succeed(List.empty[wifihaven.api.usage.TrafficUsageDbRow]))(
+        (macs, spans) => trr.listRawInRange(HouseholdId.Default, macs, from, to, spans = spans),
+      )
+      agg <- UsageTrafficQuery.aggregate(
+        HouseholdId.Default,
+        trr,
+        rr,
+        mac,
+        from,
+        to,
+        UsageTraffic.Bucket.OneHour,
+        Set.empty,
+        ZoneOffset.UTC,
+        devs.map(d => d.mac -> d).toMap,
+        Map.empty,
+        Map.empty,
+      )
+    } yield (raw.map(_.activeSeconds.toLong).sum, agg.map(_.totalSeconds).sum)
+  }
+
   private def appMins(s: ProfileDayState): Int = s.perApp.map(_.usedMinutes).sum
 
   def spec = suite("IntervalAttributionSpec (#2844)")(
@@ -150,7 +189,7 @@ object IntervalAttributionSpec
         scope <- dr.attributionScope(HouseholdId.Default, window._1, window._2)
         prev  <- dr.attributionScope(HouseholdId.Default, window._1.minusSeconds(86400), window._1)
         next  <- dr.attributionScope(HouseholdId.Default, window._2, window._2.plusSeconds(86400))
-        fixtureStart = Some(LocalDateTime.of(2025, 1, 6, 0, 0).toInstant(ZoneOffset.UTC))
+        fixtureStart = Some(TestDatabase.FixtureAssignmentTime.toInstant(ZoneOffset.UTC))
       } yield assertTrue(
         window == (at(0), at(0).plusSeconds(86400)),
         scope.byProfile(f.a).toSet == Set(
@@ -163,6 +202,20 @@ object IntervalAttributionSpec
         prev.byProfile(f.a).map(_.deviceId).toSet == Set(f.moved, f.stay),
         next.byProfile(f.a).map(_.deviceId) == List(f.stay),
         next.byProfile(f.b).map(_.deviceId) == List(f.moved),
+        // A window with no assignment change inside it adds no predicate: the presence query is
+        // the pre-#2844 MAC-list query. The move day does add one.
+        prev.allProfiles.unbounded,
+        SqlFragments
+          .spanFilter(prev.allProfiles, "tr.mac", "tr.period_start")
+          .update
+          .sql
+          .isEmpty,
+        !scope.allProfiles.unbounded,
+        SqlFragments
+          .spanFilter(scope.allProfiles, "tr.mac", "tr.period_start")
+          .update
+          .sql
+          .contains("tr.period_start <"),
       )
     },
     test("live path: pre-move usage stays with A, post-move usage goes to B") {
@@ -239,6 +292,19 @@ object IntervalAttributionSpec
         svc  <- fullService
         prev <- svc.dayStateAll(HouseholdId.Default, at(16), day.minusDays(1), f.settings)
       } yield assertTrue(prev(f.a).usedMinutes == 25, prev(f.b).usedMinutes == 0)
+    },
+    test("traffic usage filtered by profile counts only the spans the profile held the device") {
+      // The `GET /api/usage/traffic?profileId=` resolution (`MacScope.Only` with span bounds),
+      // through both the raw read and the SQL pre-aggregated 1h read.
+      for {
+        f    <- seed
+        dr   <- ZIO.service[DeviceRepo]
+        devs <- dr.listAllForHousehold(HouseholdId.Default)
+        (from, to) = AttributionScope.dayWindow(day, f.settings)
+        scope <- dr.attributionScope(HouseholdId.Default, from, to)
+        a     <- trafficSecondsFor(f.a, devs, scope, from, to)
+        b     <- trafficSecondsFor(f.b, devs, scope, from, to)
+      } yield assertTrue(a == (2700L, 2700L), b == (1200L, 1200L))
     },
     test("a backfilled open-ended row (NULL started_at) still attributes the whole day") {
       for {

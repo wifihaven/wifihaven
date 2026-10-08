@@ -75,28 +75,37 @@ object BlockedPageLatencySpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPo
     def listForDevice(household: HouseholdId, mac: MacAddress, date: LocalDate) =
       underlying.listForDevice(household, mac, date)
     def listForRouter(routerId: RouterId, limit: Int) = underlying.listForRouter(routerId, limit)
-    def listTrafficRollupRows(household: HouseholdId, f: TrafficRollupFilter)             =
+    def listTrafficRollupRows(household: HouseholdId, f: TrafficRollupFilter)                      =
       underlying.listTrafficRollupRows(household, f)
-    def listPresenceRows(household: HouseholdId, macs: List[MacAddress], date: LocalDate) =
-      dayLoads.update(_ + 1) *> underlying.listPresenceRows(household, macs, date)
-    def listPresenceRows(
+    def listPresenceRows(spans: wifihaven.api.usage.PresenceSpans, date: LocalDate)                =
+      dayLoads.update(_ + 1) *> underlying.listPresenceRows(spans, date)
+    def listPresenceRows(spans: wifihaven.api.usage.PresenceSpans, from: LocalDate, to: LocalDate) =
+      underlying.listPresenceRows(spans, from, to)
+    def listPresenceRowsSince(
+        spans: wifihaven.api.usage.PresenceSpans,
+        date: LocalDate,
+        since: Instant,
+    ) =
+      underlying.listPresenceRowsSince(spans, date, since)
+    def listPresenceRowsInWindow(
+        spans: wifihaven.api.usage.PresenceSpans,
+        fromInstant: Instant,
+        toInstant: Instant,
+    ) =
+      underlying.listPresenceRowsInWindow(spans, fromInstant, toInstant)
+    def listDevicePresenceRows(
         household: HouseholdId,
         macs: List[MacAddress],
         from: LocalDate,
         to: LocalDate,
-    ) = underlying.listPresenceRows(household, macs, from, to)
-    def listPresenceRowsSince(
-        household: HouseholdId,
-        macs: List[MacAddress],
-        date: LocalDate,
-        since: Instant,
-    ) = underlying.listPresenceRowsSince(household, macs, date, since)
-    def listPresenceRowsInWindow(
+    ) =
+      underlying.listDevicePresenceRows(household, macs, from, to)
+    def listDevicePresenceRowsInWindow(
         household: HouseholdId,
         macs: List[MacAddress],
         fromInstant: Instant,
         toInstant: Instant,
-    ) = underlying.listPresenceRowsInWindow(household, macs, fromInstant, toInstant)
+    ) = underlying.listDevicePresenceRowsInWindow(household, macs, fromInstant, toInstant)
     def listRawInRange(
         household: HouseholdId,
         macs: List[MacAddress],
@@ -104,14 +113,23 @@ object BlockedPageLatencySpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPo
         toInstant: Instant,
         cursor: Option[wifihaven.api.usage.RawTrafficCursorKey],
         limit: Option[Int],
-    ) = underlying.listRawInRange(household, macs, fromInstant, toInstant, cursor, limit)
+        spans: Option[wifihaven.api.usage.PresenceSpans],
+    ) = underlying.listRawInRange(household, macs, fromInstant, toInstant, cursor, limit, spans)
     def listRawAggregatedInRange(
         household: HouseholdId,
         macs: List[MacAddress],
         fromInstant: Instant,
         toInstant: Instant,
         stepSeconds: Long,
-    ) = underlying.listRawAggregatedInRange(household, macs, fromInstant, toInstant, stepSeconds)
+        spans: Option[wifihaven.api.usage.PresenceSpans],
+    ) = underlying.listRawAggregatedInRange(
+      household,
+      macs,
+      fromInstant,
+      toInstant,
+      stepSeconds,
+      spans,
+    )
     def listFqdnHostAggregatesForDevice(
         household: HouseholdId,
         mac: MacAddress,

@@ -136,20 +136,27 @@ object UsageSeriesPerfSpec
         // Outside the local day on both ends (must be excluded by both paths).
         _    <- insertAt(routerId, mac, "before.com", localMid.minusSeconds(600))
         _    <- insertAt(routerId, mac, "after.com", nextMid.plusSeconds(60))
-        // Legacy three-call + zone filter (what fetchPresenceDayWindow used to do).
-        prev <- trafficRepo.listPresenceRows(
+        // Legacy three-call + zone filter (what the series route did before #1099).
+        prev <- trafficRepo.listDevicePresenceRows(
           HouseholdId.Default,
           List(MacAddress.unsafe(mac)),
           date.minusDays(1),
+          date.minusDays(1),
         )
-        cur <- trafficRepo.listPresenceRows(HouseholdId.Default, List(MacAddress.unsafe(mac)), date)
-        nxt <- trafficRepo.listPresenceRows(
+        cur  <- trafficRepo.listDevicePresenceRows(
+          HouseholdId.Default,
+          List(MacAddress.unsafe(mac)),
+          date,
+          date,
+        )
+        nxt  <- trafficRepo.listDevicePresenceRows(
           HouseholdId.Default,
           List(MacAddress.unsafe(mac)),
           date.plusDays(1),
+          date.plusDays(1),
         )
         legacy = (prev ++ cur ++ nxt).filter(_.periodStart.atZone(zone).toLocalDate == date)
-        windowed <- trafficRepo.listPresenceRowsInWindow(
+        windowed <- trafficRepo.listDevicePresenceRowsInWindow(
           HouseholdId.Default,
           List(MacAddress.unsafe(mac)),
           localMid,

@@ -2,6 +2,7 @@ package wifihaven.api.db
 
 import doobie.*
 import doobie.implicits.*
+import doobie.postgres.implicits.*
 import wifihaven.api.db.TypeMeta.given
 import wifihaven.shared.types.HouseholdId
 
@@ -107,4 +108,28 @@ object SqlFragments {
              AND ts <  (tr.date + INTERVAL '1 day')::TIMESTAMPTZ
            ORDER BY ts DESC LIMIT 1
          ) ce ON tr.host_type IN ('ipv4','ipv6')"""
+
+  // #2844 (design `docs/design/shared-devices.md` §6.1): restrict a usage read to the device
+  // intervals of an attribution scope — a row is kept when one of its MAC's spans covers its
+  // timestamp, half-open `[from, until)`, `None` meaning unbounded. Composes AFTER the read's own
+  // `mac IN (...)` predicate (which stays the index condition); this is a row filter on top of it.
+  // Empty when no span has a bound, which is every read whose window contains no assignment change,
+  // so the steady-state query is unchanged. `macColumn` / `tsColumn` are trusted compile-time
+  // literals spliced via `Fragment.const`, like [[householdEq]]'s `column`.
+  def spanFilter(
+      spans: wifihaven.api.usage.PresenceSpans,
+      macColumn: String,
+      tsColumn: String,
+  ): Fragment =
+    if (spans.unbounded) Fragment.empty
+    else {
+      val mac = Fragment.const(macColumn)
+      val ts  = Fragment.const(tsColumn)
+      val one = spans.spans.map { s =>
+        fr"(" ++ mac ++ fr"= ${s.mac}" ++
+          s.from.fold(Fragment.empty)(f => fr"AND" ++ ts ++ fr">= $f") ++
+          s.until.fold(Fragment.empty)(u => fr"AND" ++ ts ++ fr"< $u") ++ fr")"
+      }
+      fr"AND (" ++ one.reduce(_ ++ fr"OR" ++ _) ++ fr")"
+    }
 }

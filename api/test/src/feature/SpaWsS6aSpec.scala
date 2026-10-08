@@ -222,32 +222,41 @@ object SpaWsS6aSpec
     def listForDevice(household: HouseholdId, mac: MacAddress, date: java.time.LocalDate) =
       underlying.listForDevice(household, mac, date)
     def listForRouter(routerId: RouterId, limit: Int) = underlying.listForRouter(routerId, limit)
-    def listTrafficRollupRows(household: HouseholdId, f: TrafficRollupFilter) =
+    def listTrafficRollupRows(household: HouseholdId, f: TrafficRollupFilter)                 =
       underlying.listTrafficRollupRows(household, f)
+    def listPresenceRows(spans: wifihaven.api.usage.PresenceSpans, date: java.time.LocalDate) =
+      dayLoads.update(_ + 1) *> underlying.listPresenceRows(spans, date)
     def listPresenceRows(
-        household: HouseholdId,
-        macs: List[MacAddress],
-        date: java.time.LocalDate,
+        spans: wifihaven.api.usage.PresenceSpans,
+        from: java.time.LocalDate,
+        to: java.time.LocalDate,
     ) =
-      dayLoads.update(_ + 1) *> underlying.listPresenceRows(household, macs, date)
-    def listPresenceRows(
+      underlying.listPresenceRows(spans, from, to)
+    def listPresenceRowsSince(
+        spans: wifihaven.api.usage.PresenceSpans,
+        date: java.time.LocalDate,
+        since: java.time.Instant,
+    ) =
+      underlying.listPresenceRowsSince(spans, date, since)
+    def listPresenceRowsInWindow(
+        spans: wifihaven.api.usage.PresenceSpans,
+        fromInstant: java.time.Instant,
+        toInstant: java.time.Instant,
+    ) =
+      underlying.listPresenceRowsInWindow(spans, fromInstant, toInstant)
+    def listDevicePresenceRows(
         household: HouseholdId,
         macs: List[MacAddress],
         from: java.time.LocalDate,
         to: java.time.LocalDate,
-    ) = underlying.listPresenceRows(household, macs, from, to)
-    def listPresenceRowsSince(
-        household: HouseholdId,
-        macs: List[MacAddress],
-        date: java.time.LocalDate,
-        since: java.time.Instant,
-    ) = underlying.listPresenceRowsSince(household, macs, date, since)
-    def listPresenceRowsInWindow(
+    ) =
+      underlying.listDevicePresenceRows(household, macs, from, to)
+    def listDevicePresenceRowsInWindow(
         household: HouseholdId,
         macs: List[MacAddress],
         fromInstant: java.time.Instant,
         toInstant: java.time.Instant,
-    ) = underlying.listPresenceRowsInWindow(household, macs, fromInstant, toInstant)
+    ) = underlying.listDevicePresenceRowsInWindow(household, macs, fromInstant, toInstant)
     def listRawInRange(
         household: HouseholdId,
         macs: List[MacAddress],
@@ -255,14 +264,23 @@ object SpaWsS6aSpec
         toInstant: java.time.Instant,
         cursor: Option[wifihaven.api.usage.RawTrafficCursorKey],
         limit: Option[Int],
-    ) = underlying.listRawInRange(household, macs, fromInstant, toInstant, cursor, limit)
+        spans: Option[wifihaven.api.usage.PresenceSpans],
+    ) = underlying.listRawInRange(household, macs, fromInstant, toInstant, cursor, limit, spans)
     def listRawAggregatedInRange(
         household: HouseholdId,
         macs: List[MacAddress],
         fromInstant: java.time.Instant,
         toInstant: java.time.Instant,
         stepSeconds: Long,
-    ) = underlying.listRawAggregatedInRange(household, macs, fromInstant, toInstant, stepSeconds)
+        spans: Option[wifihaven.api.usage.PresenceSpans],
+    ) = underlying.listRawAggregatedInRange(
+      household,
+      macs,
+      fromInstant,
+      toInstant,
+      stepSeconds,
+      spans,
+    )
     def listFqdnHostAggregatesForDevice(
         household: HouseholdId,
         mac: MacAddress,
@@ -590,8 +608,9 @@ object SpaWsS6aSpec
               s,
               s.plusSeconds(300),
               300,
-              1000L,
-              2000L,
+              // Well above the heartbeat filter's byte floor, so every period counts as engaged.
+              500_000L,
+              500_000L,
             )
           }
         for {

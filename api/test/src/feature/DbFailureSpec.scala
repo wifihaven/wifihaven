@@ -75,22 +75,33 @@ object DbFailureSpec extends ZIOSpecDefault {
     def listForDevice(household: HouseholdId, mac: MacAddress, d: java.time.LocalDate) = throwing
     def listForRouter(r: RouterId, l: Int)                                             = throwing
     def listTrafficRollupRows(hh: HouseholdId, f: TrafficRollupFilter)                 = throwing
-    def listPresenceRows(household: HouseholdId, macs: List[MacAddress], d: java.time.LocalDate) =
+    def listPresenceRows(spans: wifihaven.api.usage.PresenceSpans, d: java.time.LocalDate) =
       throwing
     def listPresenceRows(
-        household: HouseholdId,
-        macs: List[MacAddress],
+        spans: wifihaven.api.usage.PresenceSpans,
         from: java.time.LocalDate,
         to: java.time.LocalDate,
-    ) = throwing
+    ) =
+      throwing
     def listPresenceRowsSince(
-        household: HouseholdId,
-        macs: List[MacAddress],
+        spans: wifihaven.api.usage.PresenceSpans,
         d: java.time.LocalDate,
         s: java.time.Instant,
     ) =
       throwing
     def listPresenceRowsInWindow(
+        spans: wifihaven.api.usage.PresenceSpans,
+        f: java.time.Instant,
+        t: java.time.Instant,
+    ) =
+      throwing
+    def listDevicePresenceRows(
+        household: HouseholdId,
+        macs: List[MacAddress],
+        from: java.time.LocalDate,
+        to: java.time.LocalDate,
+    ) = throwing
+    def listDevicePresenceRowsInWindow(
         household: HouseholdId,
         macs: List[MacAddress],
         fromInstant: java.time.Instant,
@@ -103,6 +114,7 @@ object DbFailureSpec extends ZIOSpecDefault {
         toInstant: java.time.Instant,
         cursor: Option[wifihaven.api.usage.RawTrafficCursorKey],
         limit: Option[Int],
+        spans: Option[wifihaven.api.usage.PresenceSpans],
     ) = throwing
     def listRawAggregatedInRange(
         household: HouseholdId,
@@ -110,6 +122,7 @@ object DbFailureSpec extends ZIOSpecDefault {
         fromInstant: java.time.Instant,
         toInstant: java.time.Instant,
         stepSeconds: Long,
+        spans: Option[wifihaven.api.usage.PresenceSpans],
     ) = throwing
     def listFqdnHostAggregatesForDevice(
         household: HouseholdId,
@@ -140,11 +153,11 @@ object DbFailureSpec extends ZIOSpecDefault {
   }
 
   private def brokenDeviceRepo: DeviceRepo = new DeviceRepo {
-    def listAllForHousehold(household: HouseholdId)                         = throwing
-    def listForProfile(profileId: ProfileId)                                = throwing
-    def findByMac(mac: MacAddress, household: HouseholdId)                  = throwing
-    def findOwningHousehold(mac: MacAddress)                                = throwing
-    def findByMacInHousehold(mac: MacAddress, household: HouseholdId)       = throwing
+    def listAllForHousehold(household: HouseholdId)                             = throwing
+    def attributionScope(household: HouseholdId, from: Instant, until: Instant) = throwing
+    def findByMac(mac: MacAddress, household: HouseholdId)                      = throwing
+    def findOwningHousehold(mac: MacAddress)                                    = throwing
+    def findByMacInHousehold(mac: MacAddress, household: HouseholdId)           = throwing
     def upsert(
         mac: MacAddress,
         name: String,
@@ -153,7 +166,7 @@ object DbFailureSpec extends ZIOSpecDefault {
         household: HouseholdId,
         byUsername: Option[String],
     ) = throwing
-    def updateLastSeen(mac: MacAddress, ip: String, household: HouseholdId) = throwing
+    def updateLastSeen(mac: MacAddress, ip: String, household: HouseholdId)     = throwing
     def touchLastSeen(mac: MacAddress, ip: Option[IpAddress], at: Instant, household: HouseholdId) =
       throwing
     def touchLastSeenBatch(

@@ -5,6 +5,7 @@ import wifihaven.api.cache.TimeStatusCache
 import wifihaven.api.db.*
 import wifihaven.api.metrics.AppMetrics
 import wifihaven.api.observability.LogContext
+import wifihaven.api.usage.AttributionScope
 import wifihaven.shared.*
 import wifihaven.shared.types.*
 import zio.{Clock as _, *}
@@ -1201,26 +1202,24 @@ object TimeRoutes {
               allAppLims <- appTimeLimitRepo.listAllForHousehold(claims.hh).mapError(ApiError.Db(_))
               ambient    <- ambientRepo.gateFor(settings, today).mapError(ApiError.Db(_))
               visible    <- visibleProfiles(claims, allProfiles, userProfileRepo)
-              devicesByPid = allDevices.groupBy(_.profileId)
               appLimsByPid = allAppLims.groupBy(_.profileId)
-              allMacs      = visible.iterator
-                .flatMap(p => devicesByPid.getOrElse(Some(p.id), Nil))
-                .map(_.mac)
-                .toList
-                .distinct
-              presence <- (if allMacs.isEmpty then ZIO.succeed(Nil)
-                           else trafficRepo.listPresenceRows(claims.hh, allMacs, from, to))
+              // #2844: each profile is credited the rows of the devices it held, while it held them.
+              scope    <- {
+                val (f, u) = AttributionScope.rangeWindow(from, to, settings)
+                deviceRepo.attributionScope(claims.hh, f, u).mapError(ApiError.Db(_))
+              }
+              presence <- trafficRepo
+                .listPresenceRows(scope.spansForProfiles(visible.map(_.id)), from, to)
                 .mapError(ApiError.Db(_))
               limitByPid = allLimits.iterator.map(l => l.profileId -> l.dailyMinutes).toMap
               summaries  = visible
                 .map { p =>
-                  val devices = devicesByPid.getOrElse(Some(p.id), Nil)
-                  val macSet  = devices.map(_.mac).toSet
+                  val devices = scope.devicesFor(p.id, allDevices)
                   // #2077: gate the weekly rows with the same profile app-attribution context
                   // as the daily headline, so the weekly bars reconcile with the daily view.
                   val pRows   = wifihaven.api.policy.TimeStatusService.gatedPresence(
                     appLimsByPid.getOrElse(p.id, Nil),
-                    presence.filter(r => macSet.contains(r.mac)),
+                    scope.spansFor(p.id).filter(presence),
                     settings,
                     ambient,
                   )
@@ -1277,11 +1276,10 @@ object TimeRoutes {
               allProfiles  <- profileRepo.listAllForHousehold(claims.hh).mapError(ApiError.Db(_))
               allDevices   <- deviceRepo.listAllForHousehold(claims.hh).mapError(ApiError.Db(_))
               visible      <- visibleProfiles(claims, allProfiles, userProfileRepo)
-              scoped       = profileIdOpt match {
+              scoped = profileIdOpt match {
                 case Some(pid) => visible.filter(_.id == pid)
                 case None      => visible
               }
-              devicesByPid = allDevices.groupBy(_.profileId)
               statuses <- ZIO
                 .foreach(scoped) { p =>
                   // #802: in-process cache keyed by (profileId, date). Cache miss falls through
@@ -1292,7 +1290,8 @@ object TimeRoutes {
                       buildProfileTimeStatus(
                         claims.hh,
                         p,
-                        devicesByPid.getOrElse(Some(p.id), Nil),
+                        allDevices,
+                        deviceRepo,
                         date,
                         now,
                         settings,
@@ -1304,7 +1303,7 @@ object TimeRoutes {
                     }
                 }
                 .mapError(ApiError.Db(_))
-              _        <- logCacheStatsPeriodically(cache)
+              _ <- logCacheStatsPeriodically(cache)
             } yield Response
               .json(statuses.toJson)
               .addHeader(cacheControlFor(isTodayMode = !date.isBefore(today)))
@@ -1332,12 +1331,11 @@ object TimeRoutes {
               allProfiles     <- profileRepo.listAllForHousehold(claims.hh).mapError(ApiError.Db(_))
               allDevices      <- deviceRepo.listAllForHousehold(claims.hh).mapError(ApiError.Db(_))
               visible         <- visibleProfiles(claims, allProfiles, userProfileRepo)
-              scoped       = profileIdOpt match {
+              scoped = profileIdOpt match {
                 case Some(pid) => visible.filter(_.id == pid)
                 case None      => visible
               }
-              devicesByPid = allDevices.groupBy(_.profileId)
-              ambient  <- ambientRepo.gateFor(settings, today).mapError(ApiError.Db(_))
+              ambient <- ambientRepo.gateFor(settings, today).mapError(ApiError.Db(_))
               statuses <- ZIO
                 .foreach(scoped) { p =>
                   // #802: weekly cache keyed by (profileId, from, to, bucketOffsetMin). Same TTL
@@ -1349,7 +1347,8 @@ object TimeRoutes {
                       buildProfileTimeStatusWeek(
                         claims.hh,
                         p,
-                        devicesByPid.getOrElse(Some(p.id), Nil),
+                        allDevices,
+                        deviceRepo,
                         from,
                         to,
                         timeLimitRepo,
@@ -1495,7 +1494,7 @@ object TimeRoutes {
                 .flatMap(ZIO.fromOption(_).orElseFail(ApiError.NotFound("Device not found")))
               _ <- requireProfileReadAccess(claims, device.profileId, userProfileRepo, profileRepo)
               rows <- trafficRepo
-                .listPresenceRows(claims.hh, List(device.mac), date)
+                .listDevicePresenceRows(claims.hh, List(device.mac), date, date)
                 .mapError(ApiError.Db(_))
               classified = wifihaven.api.presence.Presence
                 .classifyRows(rows, settings.heartbeatFilter)
@@ -1608,7 +1607,8 @@ object TimeRoutes {
   private def buildProfileTimeStatus(
       household: HouseholdId,
       profile: Profile,
-      devices: List[Device],
+      allDevices: List[Device],
+      deviceRepo: DeviceRepo,
       date: LocalDate,
       now: java.time.Instant,
       settings: HouseholdSettings,
@@ -1616,14 +1616,20 @@ object TimeRoutes {
       trafficRepo: TrafficReportRepo,
       appTimeLimitRepo: AppTimeLimitRepo,
       ambientRepo: AmbientHostsRepo,
-  ): Task[ProfileTimeStatus] = {
-    val macs = devices.map(_.mac)
+  ): Task[ProfileTimeStatus] =
     for {
       stateOpt <- timeStatusService.dayState(household, now, date, settings, profile.id)
       state = stateOpt.getOrElse(
         wifihaven.api.policy.ProfileDayState(profile.id, date, None, 0, 0, None, false, None, Nil),
       )
-      raw       <- trafficRepo.listPresenceRows(household, macs, date)
+      // #2844: the devices the profile held on `date` and only their in-interval rows, the same
+      // attribution `state.usedMinutes` was computed under.
+      scope     <- {
+        val (f, u) = AttributionScope.dayWindow(date, settings)
+        deviceRepo.attributionScope(household, f, u)
+      }
+      devices = scope.devicesFor(profile.id, allDevices)
+      raw       <- trafficRepo.listPresenceRows(scope.spansFor(profile.id), date)
       appLimits <- appTimeLimitRepo.listForProfile(profile.id)
       ambient   <- ambientRepo.gateFor(
         settings,
@@ -1639,7 +1645,6 @@ object TimeRoutes {
       // per-device + top-N host views the snapshot doesn't carry.
     } yield wifihaven.api.policy.TimeStatusService
       .assembleProfileTimeStatus(profile, devices, state, presence, appLimits, settings)
-  }
 
   /**
    * #723 weekly variant. Sums presence rows across the trailing range and bucket-dedupes per-mac
@@ -1650,7 +1655,8 @@ object TimeRoutes {
   private def buildProfileTimeStatusWeek(
       household: HouseholdId,
       profile: Profile,
-      devices: List[Device],
+      allDevices: List[Device],
+      deviceRepo: DeviceRepo,
       from: LocalDate,
       to: LocalDate,
       tlRepo: TimeLimitRepo,
@@ -1660,11 +1666,16 @@ object TimeRoutes {
       settings: HouseholdSettings,
       appTimeLimitRepo: AppTimeLimitRepo,
       ambient: wifihaven.api.presence.AmbientGate,
-  ): Task[ProfileTimeStatusWeek] = {
-    val macs = devices.map(_.mac)
+  ): Task[ProfileTimeStatusWeek] =
     for {
       tl        <- tlRepo.findForProfile(profile.id)
-      raw       <- trafficRepo.listPresenceRows(household, macs, from, to)
+      // #2844: the devices the profile held during the range, and only their in-interval rows.
+      scope     <- {
+        val (f, u) = AttributionScope.rangeWindow(from, to, settings)
+        deviceRepo.attributionScope(household, f, u)
+      }
+      devices = scope.devicesFor(profile.id, allDevices)
+      raw       <- trafficRepo.listPresenceRows(scope.spansFor(profile.id), from, to)
       appLimits <- appTimeLimitRepo.listForProfile(profile.id)
       // #2077: gate with the same profile app-attribution context as the daily view so the
       // weekly bars reconcile with the daily headline.
@@ -1717,7 +1728,6 @@ object TimeRoutes {
       deviceSummaries,
       hostUsage,
     )
-  }
 
   /** Per-device weekly variant of [[buildProfileTimeStatusWeek]]. */
   private def buildDeviceTimeStatusWeek(
@@ -1741,7 +1751,7 @@ object TimeRoutes {
       profile   <- pid.fold(ZIO.succeed("No profile"))(p =>
         profileRepo.findById(p).map(_.map(_.name).getOrElse("Unknown")),
       )
-      raw       <- trafficRepo.listPresenceRows(household, macs, from, to)
+      raw       <- trafficRepo.listDevicePresenceRows(household, macs, from, to)
       appLimits <- pid.fold(ZIO.succeed(List.empty[AppTimeLimit]))(
         appTimeLimitRepo.listForProfile,
       )
@@ -1866,7 +1876,7 @@ object TimeRoutes {
       stateOpt   <- pid.fold(ZIO.succeed(Option.empty[wifihaven.api.policy.ProfileDayState]))(p =>
         timeStatusService.dayState(household, now, date, settings, p),
       )
-      raw        <- trafficRepo.listPresenceRows(household, List(device.mac), date)
+      raw        <- trafficRepo.listDevicePresenceRows(household, List(device.mac), date, date)
       profileOpt <- pid.fold(ZIO.succeed(Option.empty[Profile]))(profileRepo.findById)
       appLimits  <- pid.fold(ZIO.succeed(List.empty[AppTimeLimit]))(
         appTimeLimitRepo.listForProfile,

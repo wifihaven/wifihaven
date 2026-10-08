@@ -3,7 +3,7 @@ package wifihaven.api.routes
 import wifihaven.api.db.*
 import wifihaven.api.observability.LogContext
 import wifihaven.api.policy.{PolicyService, TimeStatusService}
-import wifihaven.api.usage.{AppMembership, UsageTraffic, UsageTrafficQuery}
+import wifihaven.api.usage.{AppMembership, AttributionScope, UsageTraffic, UsageTrafficQuery}
 import wifihaven.shared.{Clock, Device, Profile, ProfileTimeStatus, TrafficUsageResponse, UserRole}
 import wifihaven.shared.types.{HouseholdId, MacAddress, ProfileId}
 import zio.{Clock as _, *}
@@ -412,6 +412,7 @@ object SpaPush {
                   registry,
                   trafficRepo,
                   rollupRepo,
+                  deviceRepo,
                   devices,
                   devByMac,
                   profNames,
@@ -438,6 +439,7 @@ object SpaPush {
       registry: SpaWsRegistry,
       trafficRepo: TrafficReportRepo,
       rollupRepo: RollupRepo,
+      deviceRepo: DeviceRepo,
       devices: List[Device],
       devByMac: Map[MacAddress, Device],
       profNames: Map[ProfileId, String],
@@ -466,72 +468,83 @@ object SpaPush {
         // #2708: `resolveMacs` returns a `MacScope`, which already distinguishes "the filter
         // selected nothing" from "no filter was supplied" — the pairing this call site used to
         // reconstruct from `parsed.filterRequested && resolvedMacs.isEmpty`.
-        val scope          = UsageTrafficQuery.resolveMacs(parsed.macs, parsed.profileIds, devices)
-        // #2048: `raw` WITHOUT a groupBy is the Traffic Usage page's per-host inspector (its DEFAULT
-        // view) — it renders per-host `rawRows`, so its live edge must carry the NEW rawRows for the
-        // ingest period (the rows the page prepends), NOT aggregated points. This mirrors the
-        // `GET /api/usage/traffic` split exactly (`UsageRoutes`: `Bucket.Raw if effectiveGroupBy
-        // .isEmpty` → `buildRaw`, else aggregate), so the stream and the GET stay SSOT. `raw` WITH a
-        // groupBy (the dashboard gauge's `groupBy=profile`) keeps the aggregate path below.
-        val isUngroupedRaw = parsed.bucket == UsageTraffic.Bucket.Raw && parsed.groupBySet.isEmpty
-        val computeBody: Task[TrafficUsageResponse] =
-          if (isUngroupedRaw) {
-            // The head window for `raw` IS the real report period `[periodStart, periodEnd)`
-            // (`UsageTraffic.windowFor`), so reading raw rows over `[headStart, headEnd)` returns
-            // exactly the just-ingested period's rows. No cursor/limit: a single ingest period is
-            // naturally bounded by its distinct `(mac, host)` rows (the page pages OLDER history via
-            // the GET; the push only delivers the fresh head). Built via the shared `buildRaw` (SSOT).
-            val rawZ = scope.fold(
-              ZIO.succeed(List.empty[wifihaven.api.usage.TrafficUsageDbRow]),
-            )(macs => trafficRepo.listRawInRange(household, macs, headStart, headEnd))
-            rawZ.map(rows =>
-              TrafficUsageResponse(
-                bucket = parsed.bucket.code,
-                groupBy = Nil,
-                from = headStart.toString,
-                to = headEnd.toString,
-                tz = parsed.zone.getId,
-                rawRows = UsageTraffic.buildRaw(rows, devByMac, profNames),
-                aggregateRows = Nil,
-                nextCursor = None,
-              ),
-            )
-          } else {
-            val aggZ =
-              UsageTrafficQuery.aggregate(
-                household,
-                trafficRepo,
-                rollupRepo,
-                scope,
-                headStart,
-                headEnd,
-                parsed.bucket,
-                parsed.groupBySet,
-                parsed.zone,
-                devByMac,
-                profNames,
-                appsByHost,
+        // #2844: a profile filter selects what the profiles held during the head window, by
+        // interval — the same resolution the GET makes over its window.
+        val attributionZ         =
+          if (parsed.profileIds.isEmpty)
+            ZIO.succeed(AttributionScope.empty(household, headStart, headEnd))
+          else deviceRepo.attributionScope(household, headStart, headEnd)
+        attributionZ.flatMap { attribution =>
+          val scope          =
+            UsageTrafficQuery.resolveMacs(parsed.macs, parsed.profileIds, devices, attribution)
+          // #2048: `raw` WITHOUT a groupBy is the Traffic Usage page's per-host inspector (its DEFAULT
+          // view) — it renders per-host `rawRows`, so its live edge must carry the NEW rawRows for the
+          // ingest period (the rows the page prepends), NOT aggregated points. This mirrors the
+          // `GET /api/usage/traffic` split exactly (`UsageRoutes`: `Bucket.Raw if effectiveGroupBy
+          // .isEmpty` → `buildRaw`, else aggregate), so the stream and the GET stay SSOT. `raw` WITH a
+          // groupBy (the dashboard gauge's `groupBy=profile`) keeps the aggregate path below.
+          val isUngroupedRaw = parsed.bucket == UsageTraffic.Bucket.Raw && parsed.groupBySet.isEmpty
+          val computeBody: Task[TrafficUsageResponse] =
+            if (isUngroupedRaw) {
+              // The head window for `raw` IS the real report period `[periodStart, periodEnd)`
+              // (`UsageTraffic.windowFor`), so reading raw rows over `[headStart, headEnd)` returns
+              // exactly the just-ingested period's rows. No cursor/limit: a single ingest period is
+              // naturally bounded by its distinct `(mac, host)` rows (the page pages OLDER history via
+              // the GET; the push only delivers the fresh head). Built via the shared `buildRaw` (SSOT).
+              val rawZ = scope.fold(
+                ZIO.succeed(List.empty[wifihaven.api.usage.TrafficUsageDbRow]),
+              )((macs, spans) =>
+                trafficRepo.listRawInRange(household, macs, headStart, headEnd, spans = spans),
               )
-            aggZ.map(rows =>
-              // `from`/`to` describe the head BUCKET window `[headStart, headEnd)` — not wall-clock
-              // "live edge time". `to` is therefore the bucket end and can sit slightly ahead of
-              // `now` for an in-progress bucket; it's metadata only (the client merges by
-              // `windowStart` and derives B/s from the bucket width, never from this `to`).
-              TrafficUsageResponse(
-                bucket = parsed.bucket.code,
-                groupBy = parsed.groupBySet.toList.map(_.code).sorted,
-                from = headStart.toString,
-                to = headEnd.toString,
-                tz = parsed.zone.getId,
-                rawRows = Nil,
-                aggregateRows = rows,
-                nextCursor = None,
-              ),
-            )
-          }
-        computeBody.flatMap(body =>
-          registry.fanOutTrafficUsage(household, params, body.toJsonAST.getOrElse(Json.Obj())),
-        )
+              rawZ.map(rows =>
+                TrafficUsageResponse(
+                  bucket = parsed.bucket.code,
+                  groupBy = Nil,
+                  from = headStart.toString,
+                  to = headEnd.toString,
+                  tz = parsed.zone.getId,
+                  rawRows = UsageTraffic.buildRaw(rows, devByMac, profNames),
+                  aggregateRows = Nil,
+                  nextCursor = None,
+                ),
+              )
+            } else {
+              val aggZ =
+                UsageTrafficQuery.aggregate(
+                  household,
+                  trafficRepo,
+                  rollupRepo,
+                  scope,
+                  headStart,
+                  headEnd,
+                  parsed.bucket,
+                  parsed.groupBySet,
+                  parsed.zone,
+                  devByMac,
+                  profNames,
+                  appsByHost,
+                )
+              aggZ.map(rows =>
+                // `from`/`to` describe the head BUCKET window `[headStart, headEnd)` — not wall-clock
+                // "live edge time". `to` is therefore the bucket end and can sit slightly ahead of
+                // `now` for an in-progress bucket; it's metadata only (the client merges by
+                // `windowStart` and derives B/s from the bucket width, never from this `to`).
+                TrafficUsageResponse(
+                  bucket = parsed.bucket.code,
+                  groupBy = parsed.groupBySet.toList.map(_.code).sorted,
+                  from = headStart.toString,
+                  to = headEnd.toString,
+                  tz = parsed.zone.getId,
+                  rawRows = Nil,
+                  aggregateRows = rows,
+                  nextCursor = None,
+                ),
+              )
+            }
+          computeBody.flatMap(body =>
+            registry.fanOutTrafficUsage(household, params, body.toJsonAST.getOrElse(Json.Obj())),
+          )
+        }
     }
 
   /**
@@ -580,26 +593,27 @@ object SpaPush {
                 // the same divergence the route had.
                 settings <- deps.hsRepo.getForHousehold(household)
                 date = PolicyService.householdLocalDate(now, settings)
-                ambient  <- deps.ambientRepo.gateFor(settings, date)
-                states   <- deps.timeStatusService.dayStateAll(household, now, date, settings)
-                profiles <- profileRepo.listAllForHousehold(household)
-                devices  <- deviceRepo.listAllForHousehold(household)
-                devsByPid = devices.groupBy(_.profileId).collect { case (Some(pid), ds) =>
-                  pid -> ds
+                ambient       <- deps.ambientRepo.gateFor(settings, date)
+                states        <- deps.timeStatusService.dayStateAll(household, now, date, settings)
+                profiles      <- profileRepo.listAllForHousehold(household)
+                devices       <- deviceRepo.listAllForHousehold(household)
+                // #2844: which profile held which device today, so each profile's body counts only
+                // the rows of the devices it held, while it held them (the GET's attribution).
+                scope         <- {
+                  val (from, until) = AttributionScope.dayWindow(date, settings)
+                  deviceRepo.attributionScope(household, from, until)
                 }
-                // ONE full-day presence load across this household's devices, sliced per profile
+                // ONE full-day presence load across this household's spans, sliced per profile
                 // below — the per-profile re-scan was the #2167 pool-starvation amplifier.
-                allPresence <- trafficRepo.listPresenceRows(household, devices.map(_.mac), date)
+                allPresence   <- trafficRepo.listPresenceRows(scope.allProfiles, date)
                 // This household's per-profile body, in listAllForHousehold order (the GET's order).
                 // Built once; each recipient receives its role-visible subset of it (design §4.4).
                 rows          <- ZIO.foreach(profiles) { p =>
-                  val devs = devsByPid.getOrElse(p.id, Nil)
-                  val macs = devs.map(_.mac).toSet
                   buildOneTimeStatus(
                     p,
-                    devs,
+                    scope.devicesFor(p.id, devices),
                     states.get(p.id),
-                    allPresence.filter(r => macs.contains(r.mac)),
+                    scope.spansFor(p.id).filter(allPresence),
                     appTimeLimitRepo,
                     date,
                     settings,
