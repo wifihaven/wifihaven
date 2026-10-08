@@ -889,11 +889,13 @@ object Presence {
   def hostMinutes(
       rows: List[PresenceRow],
       filter: HeartbeatFilter = HeartbeatFilter.Off,
+      // #2863: attribution context for `isHeartbeat`; see [[proportionalHostSeconds]].
+      appHostPatterns: List[String] = Nil,
   ): Map[HostId, Int] = {
     val accum = scala.collection.mutable.Map.empty[HostId, Long]
     for (
       (_, bucket) <- rows
-        .filterNot(r => isHeartbeat(r, filter))
+        .filterNot(r => isHeartbeat(r, filter, appHostPatterns))
         .groupBy(r => (r.mac, r.periodStart))
     ) {
       val secs  = bucketSeconds(bucket)
@@ -934,8 +936,13 @@ object Presence {
       overlap: CrossDeviceOverlapMode = CrossDeviceOverlapMode.Sum,
       filter: HeartbeatFilter = HeartbeatFilter.Off,
       continuationSeconds: Int = DefaultContinuationSeconds,
+      // #2863: the attribution context handed to `isHeartbeat`. A caller that reports these numbers
+      // next to an app headline (usage-by-app) must pass the SAME patterns the headline's rows were
+      // filtered with, or the two halves of one response suppress different rows. `Nil` = no app
+      // context (plain background suppression), the prior behaviour for every other caller.
+      appHostPatterns: List[String] = Nil,
   ): Map[HostId, Long] = {
-    val active = rows.filterNot(r => isHeartbeat(r, filter))
+    val active = rows.filterNot(r => isHeartbeat(r, filter, appHostPatterns))
     val gap    = effectiveGap(active, continuationSeconds)
     // per (device, host) → that host's stitched sessions on that device.
     val perDeviceHost: Map[(MacAddress, HostId), List[Span]] =
@@ -1017,8 +1024,9 @@ object Presence {
       overlap: CrossDeviceOverlapMode = CrossDeviceOverlapMode.Sum,
       filter: HeartbeatFilter = HeartbeatFilter.Off,
       continuationSeconds: Int = DefaultContinuationSeconds,
+      appHostPatterns: List[String] = Nil,
   ): (Map[Option[AppId], Long], SharedHostAttributionCounts) = {
-    val active    = rows.filterNot(r => isHeartbeat(r, filter))
+    val active    = rows.filterNot(r => isHeartbeat(r, filter, appHostPatterns))
     val gap       = effectiveGap(active, continuationSeconds)
     val hostRows  = active.filter(_.host == sharedHost)
     // Per device, stitch THIS host's sessions (one device can't be on the host twice at once), then
@@ -1260,8 +1268,9 @@ object Presence {
       overlap: CrossDeviceOverlapMode = CrossDeviceOverlapMode.Sum,
       filter: HeartbeatFilter = HeartbeatFilter.Off,
       continuationSeconds: Int = DefaultContinuationSeconds,
+      appHostPatterns: List[String] = Nil,
   ): Map[HostId, Int] =
-    proportionalHostSeconds(rows, overlap, filter, continuationSeconds).view
+    proportionalHostSeconds(rows, overlap, filter, continuationSeconds, appHostPatterns).view
       .mapValues(s => (s / 60).toInt)
       .filter(_._2 != 0)
       .toMap
