@@ -982,6 +982,32 @@ describe("render.nft drop rules carry log prefix + counter + comment (#1122/#112
     end
   end)
 
+  -- #2847: the API adds whole-MAC reasons (CheckedOut, for a shared device
+  -- nobody has checked in) without an agent release. The router treats the
+  -- reason as opaque: a profileless device whose inline rules carry a reason
+  -- this agent has never seen still renders the whole-MAC drop with that
+  -- reason verbatim in the comment, and nft_drops folds it into whole_mac.
+  it("#2847: an unrecognised blockReason on a profileless device renders verbatim and classifies as whole_mac", function()
+    local nft_drops = require("wifihaven.nft_drops")
+    local s = snap_one()
+    s.devices["aa:bb:cc:11:22:33"] = {
+      profileId = nil, name = "family-ipad",
+      rules = {
+        blocked      = true,
+        blockReason  = "CheckedOut",
+        extraBlocked = {},
+        extraAllowed = {},
+        blocklistIds = {},
+        blockIpOnly  = false,
+      },
+    }
+    local nft = render.nft(s)
+    assert.truthy(nft:find(
+      "ether saddr aa:bb:cc:11:22:33 counter drop comment \"wh_drop:aa:bb:cc:11:22:33:CheckedOut\"",
+      1, true), nft)
+    assert.equal("whole_mac", nft_drops.classify_reason("CheckedOut"))
+  end)
+
   it("every drop rule carries `counter drop` + comment and is preceded by its per-flow log rule (#1826/#1915)", function()
     local s = snap_one()
     -- Force every kind of drop to appear.

@@ -72,6 +72,15 @@ describe('BlockedPage — API-driven reason copy (#1615)', () => {
     await waitFor(() => expect(screen.getByText(/blocked by your parent/i)).toBeInTheDocument())
   })
 
+  // #2847: a shared device nobody has checked in. The Check in action itself is #2850.
+  it('renders shared-device copy when API returns reasonClass=checked_out', async () => {
+    mockBlockedInfo({ blocked: true, reasonClass: 'checked_out' })
+    renderBlocked({ mac: 'aa:bb:cc:11:22:33', host: 'example.com' })
+    await waitFor(() =>
+      expect(screen.getByText(/shared device.*check it in/i)).toBeInTheDocument(),
+    )
+  })
+
   it('renders category copy with category name from the API', async () => {
     mockBlockedInfo({ blocked: true, reasonClass: 'category', categoryName: 'Ads' })
     renderBlocked({ mac: 'aa:bb:cc:11:22:33', host: 'ads.example.com' })
