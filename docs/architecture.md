@@ -1430,8 +1430,9 @@ nobody has checked in, in any household policy; `Unmanaged` (#1122) is the
 baseline for a non-shared device with no profile assignment under a `block`
 household policy (both from `PolicyService.effectiveDeviceRules`); and
 `DefaultDeny` (§0.3) is the lowest-precedence baseline for a profile in
-default-deny mode — either can still be overridden by a higher-precedence
-step above reporting a stronger reason. `Manual` is reserved vocabulary with
+default-deny mode, which a higher-precedence step above can override with a
+stronger reason. `CheckedOut` and `Unmanaged` have no profile, so no numbered
+step applies to them; only `global.extraAllowed` carves them out. `Manual` is reserved vocabulary with
 no producer today — no step in `PolicyService` ever emits it (see
 [#2087](https://github.com/wifihaven/wifihaven/issues/2087)); AGENTS.md's
 Architectural model section and §0.2 above list the full seven-case ADT.

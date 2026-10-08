@@ -92,7 +92,7 @@ object PolicySharedDeviceSpec
         MacAddress.unsafe(mac),
         "family-ipad",
         Some(IpAddress.unsafe("10.0.0.50")),
-        java.time.Instant.now(),
+        TestClock.schoolDayAfternoon.toInstant(java.time.ZoneOffset.UTC),
       ),
     )
 

@@ -22,14 +22,28 @@ object PolicySnapshotMacDropAttributionSpec extends ZIOSpecDefault {
   // comment. Order intentional — matches MacBlockReason.asString's match order
   // so a renamed/added case here also fails any subset assertion below.
   private val expected: List[(MacBlockReason, String)] = List(
-    MacBlockReason.Paused     -> "Paused",
-    MacBlockReason.Schedule   -> "Schedule",
-    MacBlockReason.TimeLimit  -> "TimeLimit",
-    MacBlockReason.Manual     -> "Manual",
-    MacBlockReason.Unmanaged  -> "Unmanaged",
+    MacBlockReason.Paused      -> "Paused",
+    MacBlockReason.Schedule    -> "Schedule",
+    MacBlockReason.TimeLimit   -> "TimeLimit",
+    MacBlockReason.Manual      -> "Manual",
+    MacBlockReason.Unmanaged   -> "Unmanaged",
+    MacBlockReason.DefaultDeny -> "DefaultDeny",
     // #2847: the agent renders the reason opaquely; render_spec / nft_drops_spec pin that.
-    MacBlockReason.CheckedOut -> "CheckedOut",
+    MacBlockReason.CheckedOut  -> "CheckedOut",
   )
+
+  // Compiler-enforced: a non-exhaustive match fails the build (as in BlockReasonSpec's
+  // `shapeCheck`), so a new MacBlockReason case cannot compile until it is added here, which is
+  // the signal to add it to `expected` and to a render.lua / nft_drops pin.
+  private def pinned(r: MacBlockReason): String = r match {
+    case MacBlockReason.Paused      => "Paused"
+    case MacBlockReason.Schedule    => "Schedule"
+    case MacBlockReason.TimeLimit   => "TimeLimit"
+    case MacBlockReason.Manual      => "Manual"
+    case MacBlockReason.Unmanaged   => "Unmanaged"
+    case MacBlockReason.DefaultDeny => "DefaultDeny"
+    case MacBlockReason.CheckedOut  => "CheckedOut"
+  }
 
   def spec = suite("PolicySnapshotMacDropAttribution: MacBlockReason ↔ render.lua comment strings")(
     test("MacBlockReason.asString covers every enum case with the agent-expected wire string") {
@@ -44,20 +58,10 @@ object PolicySnapshotMacDropAttributionSpec extends ZIOSpecDefault {
       assertTrue(MacBlockReason.parse("paused").isEmpty) &&
       assertTrue(MacBlockReason.parse("").isEmpty)
     },
-    test("the exhaustive set is exactly six values — adding a seventh needs a render.lua pin") {
-      // If a new MacBlockReason is added without updating render.lua's
-      // comment emission, this assertion fails and forces the author to
-      // touch the agent side.
-      val all: List[MacBlockReason] = List(
-        MacBlockReason.Paused,
-        MacBlockReason.Schedule,
-        MacBlockReason.TimeLimit,
-        MacBlockReason.Manual,
-        MacBlockReason.Unmanaged,
-        MacBlockReason.CheckedOut,
-      )
-      assertTrue(all.length == expected.length) &&
-      assertTrue(all.toSet == expected.map(_._1).toSet)
+    test("expected covers every case of the exhaustive `pinned` match, once each") {
+      assertTrue(expected.map(_._1).distinct.length == expected.length) &&
+      assertTrue(expected.length == 7) &&
+      assertTrue(expected.forall { case (r, wire) => pinned(r) == wire })
     },
   )
 }
