@@ -21,6 +21,7 @@ import type { AccessRequestKind, BlockedInfoResponse } from '@/types/api'
 //   - time_limit → "Out of time today"        (no minute counts)
 //   - app_time_limit → "Out of time on this app"
 //   - extra_blocked → "Blocked by your parent"
+//   - checked_out → "This is a shared device. Check it in…" (#2847)
 //
 // #1615: the API is the only source of body copy and CTA kinds. The router
 // still appends `?reason=` to the redirect URL until PR2 (#1617), but the SPA
@@ -43,6 +44,9 @@ function copyFor(info: BlockedInfoResponse): string {
       return 'Out of time on this app today.'
     case 'extra_blocked':
       return 'Blocked by your parent.'
+    case 'checked_out':
+      // #2847: a shared device nobody has checked in. The Check in action is #2850.
+      return 'This is a shared device. Check it in to your profile to use it.'
     default:
       return 'Access blocked.'
   }

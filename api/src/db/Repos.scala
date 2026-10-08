@@ -2158,7 +2158,7 @@ class DeviceRepoLive(xa: Transactor[Task]) extends DeviceRepo {
   // leading column of uq_devices_household_mac).
   def listAllForHousehold(household: HouseholdId) =
     DbMetrics.timed("device.listAllForHousehold")(
-      (fr"SELECT d.id,d.mac,d.name,d.profile_id,p.name,d.last_seen_ip,d.last_seen_at::TEXT FROM devices d LEFT JOIN profiles p ON p.id=d.profile_id WHERE" ++
+      (fr"SELECT d.id,d.mac,d.name,d.profile_id,p.name,d.last_seen_ip,d.last_seen_at::TEXT,d.shared FROM devices d LEFT JOIN profiles p ON p.id=d.profile_id WHERE" ++
         SqlFragments.householdEq(household, "d.household_id") ++ fr"ORDER BY d.name")
         .query[
           (
@@ -2169,15 +2169,16 @@ class DeviceRepoLive(xa: Transactor[Task]) extends DeviceRepo {
               Option[String],
               Option[IpAddress],
               Option[String],
+              Boolean,
           ),
         ]
-        .map(r => Device(r._1, r._2, r._3, r._4, r._5, r._6, r._7))
+        .map(r => Device(r._1, r._2, r._3, r._4, r._5, r._6, r._7, r._8))
         .to[List]
         .transact(xa),
     )
   def listForProfile(profileId: ProfileId)        =
     DbMetrics.timed("device.listForProfile")(
-      sql"SELECT d.id,d.mac,d.name,d.profile_id,p.name,d.last_seen_ip,d.last_seen_at::TEXT FROM devices d LEFT JOIN profiles p ON p.id=d.profile_id WHERE d.profile_id=$profileId ORDER BY d.name"
+      sql"SELECT d.id,d.mac,d.name,d.profile_id,p.name,d.last_seen_ip,d.last_seen_at::TEXT,d.shared FROM devices d LEFT JOIN profiles p ON p.id=d.profile_id WHERE d.profile_id=$profileId ORDER BY d.name"
         .query[
           (
               DeviceId,
@@ -2187,9 +2188,10 @@ class DeviceRepoLive(xa: Transactor[Task]) extends DeviceRepo {
               Option[String],
               Option[IpAddress],
               Option[String],
+              Boolean,
           ),
         ]
-        .map(r => Device(r._1, r._2, r._3, r._4, r._5, r._6, r._7))
+        .map(r => Device(r._1, r._2, r._3, r._4, r._5, r._6, r._7, r._8))
         .to[List]
         .transact(xa),
     )
@@ -2220,7 +2222,7 @@ class DeviceRepoLive(xa: Transactor[Task]) extends DeviceRepo {
   // uq_devices_household_mac leading column.
   def findByMacInHousehold(mac: MacAddress, household: HouseholdId) =
     DbMetrics.timed("device.findByMacInHousehold")(
-      (fr"SELECT d.id,d.mac,d.name,d.profile_id,p.name,d.last_seen_ip,d.last_seen_at::TEXT FROM devices d LEFT JOIN profiles p ON p.id=d.profile_id WHERE d.mac=$mac AND" ++
+      (fr"SELECT d.id,d.mac,d.name,d.profile_id,p.name,d.last_seen_ip,d.last_seen_at::TEXT,d.shared FROM devices d LEFT JOIN profiles p ON p.id=d.profile_id WHERE d.mac=$mac AND" ++
         SqlFragments.householdEq(household, "d.household_id"))
         .query[
           (
@@ -2231,9 +2233,10 @@ class DeviceRepoLive(xa: Transactor[Task]) extends DeviceRepo {
               Option[String],
               Option[IpAddress],
               Option[String],
+              Boolean,
           ),
         ]
-        .map(r => Device(r._1, r._2, r._3, r._4, r._5, r._6, r._7))
+        .map(r => Device(r._1, r._2, r._3, r._4, r._5, r._6, r._7, r._8))
         .option
         .transact(xa),
     )

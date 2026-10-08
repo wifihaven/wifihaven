@@ -22,11 +22,13 @@ object PolicySnapshotMacDropAttributionSpec extends ZIOSpecDefault {
   // comment. Order intentional — matches MacBlockReason.asString's match order
   // so a renamed/added case here also fails any subset assertion below.
   private val expected: List[(MacBlockReason, String)] = List(
-    MacBlockReason.Paused    -> "Paused",
-    MacBlockReason.Schedule  -> "Schedule",
-    MacBlockReason.TimeLimit -> "TimeLimit",
-    MacBlockReason.Manual    -> "Manual",
-    MacBlockReason.Unmanaged -> "Unmanaged",
+    MacBlockReason.Paused     -> "Paused",
+    MacBlockReason.Schedule   -> "Schedule",
+    MacBlockReason.TimeLimit  -> "TimeLimit",
+    MacBlockReason.Manual     -> "Manual",
+    MacBlockReason.Unmanaged  -> "Unmanaged",
+    // #2847: the agent renders the reason opaquely; render_spec / nft_drops_spec pin that.
+    MacBlockReason.CheckedOut -> "CheckedOut",
   )
 
   def spec = suite("PolicySnapshotMacDropAttribution: MacBlockReason ↔ render.lua comment strings")(
@@ -42,7 +44,7 @@ object PolicySnapshotMacDropAttributionSpec extends ZIOSpecDefault {
       assertTrue(MacBlockReason.parse("paused").isEmpty) &&
       assertTrue(MacBlockReason.parse("").isEmpty)
     },
-    test("the exhaustive set is exactly five values — adding a sixth requires render.lua change") {
+    test("the exhaustive set is exactly six values — adding a seventh needs a render.lua pin") {
       // If a new MacBlockReason is added without updating render.lua's
       // comment emission, this assertion fails and forces the author to
       // touch the agent side.
@@ -52,6 +54,7 @@ object PolicySnapshotMacDropAttributionSpec extends ZIOSpecDefault {
         MacBlockReason.TimeLimit,
         MacBlockReason.Manual,
         MacBlockReason.Unmanaged,
+        MacBlockReason.CheckedOut,
       )
       assertTrue(all.length == expected.length) &&
       assertTrue(all.toSet == expected.map(_._1).toSet)

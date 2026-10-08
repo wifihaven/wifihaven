@@ -25,7 +25,7 @@ describe('blockReasonText', () => {
 
   // #2847: MacBlockReason.CheckedOut, a shared device with no holder.
   it('renders checkedOut with its own label', () => {
-    expect(blockReasonText({ kind: 'checkedOut' } as BlockReason)).toBe('shared device checked out')
+    expect(blockReasonText({ kind: 'checkedOut' })).toBe('shared device checked out')
   })
 
   // #2846: the SPA deploys separately from the API, so the API can emit a reason kind this build

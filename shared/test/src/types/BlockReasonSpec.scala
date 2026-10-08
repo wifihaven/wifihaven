@@ -25,6 +25,7 @@ object BlockReasonSpec extends ZIOSpecDefault {
           MacBlockReason.Manual,
           MacBlockReason.Unmanaged,
           MacBlockReason.DefaultDeny,
+          MacBlockReason.CheckedOut,
         ).foldLeft(assertTrue(true)) { (acc, r) =>
           acc && assertTrue(r.toJson.fromJson[MacBlockReason].contains(r))
         }
@@ -222,6 +223,7 @@ object BlockReasonSpec extends ZIOSpecDefault {
         case MacBlockReason.Manual         => ()
         case MacBlockReason.Unmanaged      => ()
         case MacBlockReason.DefaultDeny    => ()
+        case MacBlockReason.CheckedOut     => ()
         case _: BlockReason.Category       => ()
         case _: BlockReason.AppTimeLimit   => ()
         case _: BlockReason.AppBlocked     => ()
@@ -240,6 +242,7 @@ object BlockReasonSpec extends ZIOSpecDefault {
         MacBlockReason.Manual,
         MacBlockReason.Unmanaged,
         MacBlockReason.DefaultDeny,
+        MacBlockReason.CheckedOut,
         BlockReason.Category(ads),
         BlockReason.AppTimeLimit("youtube"),
         BlockReason.AppBlocked("netflix"),

@@ -231,6 +231,7 @@ object MacBlockReason:
   case object Manual      extends MacBlockReason   // reserved — no producer; see #2087
   case object Unmanaged   extends MacBlockReason   // no profile assignment under `block` policy (#1122)
   case object DefaultDeny extends MacBlockReason   // profile is default-deny baseline (§0.3)
+  case object CheckedOut  extends MacBlockReason   // shared device with no holder (#2847)
 
 object BlockReason:
   // Per-flow drop reasons — emitted by the router at connection-drop time
@@ -1423,15 +1424,17 @@ Order matters because earlier conditions short-circuit:
 7. Profile / device assigned categories → `blocklistIds` for this MAC
 8. `blockIpOnly` flag for the profile / device → set as-is
 
-Two `MacBlockReason` cases sit outside this per-request short-circuit chain
-rather than being a numbered step: `Unmanaged` (#1122) is the baseline for a
-device with no profile assignment under a `block` household policy, and
+Three `MacBlockReason` cases sit outside this per-request short-circuit chain
+rather than being a numbered step: `CheckedOut` (#2847) blocks a shared device
+nobody has checked in, in any household policy; `Unmanaged` (#1122) is the
+baseline for a non-shared device with no profile assignment under a `block`
+household policy (both from `PolicyService.effectiveDeviceRules`); and
 `DefaultDeny` (§0.3) is the lowest-precedence baseline for a profile in
 default-deny mode — either can still be overridden by a higher-precedence
 step above reporting a stronger reason. `Manual` is reserved vocabulary with
 no producer today — no step in `PolicyService` ever emits it (see
 [#2087](https://github.com/wifihaven/wifihaven/issues/2087)); AGENTS.md's
-Architectural model section and §0.2 above list the full six-case ADT.
+Architectural model section and §0.2 above list the full seven-case ADT.
 
 The router never re-evaluates any of this. It receives the resolved
 `BlockRules` and applies them mechanically.

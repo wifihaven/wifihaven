@@ -196,6 +196,8 @@ object BlockedRoutes {
     case r @ MacBlockReason.Paused     => ZIO.succeed((r.wireKind, None))
     case r @ MacBlockReason.Schedule   => ZIO.succeed((r.wireKind, None))
     case r @ MacBlockReason.TimeLimit  => ZIO.succeed((r.wireKind, None))
+    // #2847: a shared device nobody has checked in; the SPA renders shared-device copy.
+    case r @ MacBlockReason.CheckedOut => ZIO.succeed((r.wireKind, None))
     case r @ BlockReason.ExtraBlocked  => ZIO.succeed((r.wireKind, None))
     case BlockReason.ExtraBlockedBy(_) =>
       // #1645: a per-flow host block from another path still renders as the
