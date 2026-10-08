@@ -52,7 +52,7 @@ Every per-profile usage read selects presence rows by "MACs whose
   attribution either.
 - `AppUsedRollupService` (`api/src/usage/AppUsedRollupService.scala:172`), `AmbientLearnJob`
   (`api/src/usage/AmbientLearnJob.scala:279`), `UsageRoutes` (`:420,:993`), `Routes`
-  (`:1203,:1283,:1338`), `DashboardNowRoutes` (`:136,:176`), `SpaPush` (`:587`).
+  (`:1203,:1283,:1338`), `DashboardNowRoutes` (`:115,:176`), `SpaPush` (`:587`).
 - Connection-event logs and series label and filter by profile through
   `SqlFragments.deviceLabelJoin` -> `LEFT JOIN profiles p ON p.id = d.profile_id`
   (`api/src/db/SqlFragments.scala:84-87`) and `d.profile_id IN (...)`
@@ -67,8 +67,11 @@ history. §6 fixes both with one mechanism.
 Prod sets `WIFIHAVEN_UI_ALLOWED_HOSTS=api.wifihaven.net,app.wifihaven.net`
 (`render.yaml:458`), which `PolicyService` ships in `global.extraAllowed`
 (`api/src/policy/PolicyService.scala:385,836`). The router renders it as `@global_allow`, a
-carve-out on every per-MAC drop including whole-MAC `blocked` (`render.lua:1352-1356`,
-`ga_suffix`). The block page itself redirects to the SPA's `/blocked?mac=&host=&bpt=`
+carve-out on every per-MAC drop including whole-MAC `blocked`: when a global allow list is present,
+every blocked MAC moves onto the per-family rule path that carries `ga_suffix`
+(`render.lua:946-957,1352-1356`), and the HTTP DNAT carries the same carve-out
+(`render.lua:1494-1497`), so `app.wifihaven.net` is never redirected to the block page. The block
+page itself redirects to the SPA's `/blocked?mac=&host=&bpt=`
 (`openwrt/files/usr/lib/lua/wifihaven/block_page.lua:174-186`). **Still to verify on hardware:**
 a blocked macOS browser can load `app.wifihaven.net`, log in, and open the ws. That is a test
 in the first UX slice, on the test router, not prod.
@@ -86,7 +89,9 @@ new value in the same API deploy that first emits it.
 **F4. Users link to profiles as a many-to-many set. CONFIRMED.**
 `UserProfileRepo` (`api/src/db/Repos.scala:406-428`): a user may be linked to several profiles,
 and a profile to several users. A child token already sees only its linked profiles
-(`SpaWsRegistry.scala:57`, `useDataScope`). Which profile a check-in uses is Q4.
+(`SpaPush.scala:574-582` and `useDataScope`; `SpaWsRegistry.scala:57` is the per-role ws topic
+visibility, which §9 extends with a shared-devices topic for `Child`). Which profile a check-in
+uses is Q4.
 
 **F5. Precedents.** The unmanaged-MAC path (`PolicyService.scala:789-806`) already emits
 explicit per-MAC `rules = {blocked, Unmanaged}` for a profileless device. The checked-out state
@@ -145,41 +150,31 @@ it is a #1452 violation.
 
 ### 5.1 One assignment-history table for all devices (Q7)
 
-```sql
--- V90 (schema-only PR)
-CREATE TABLE device_profile_assignments (
-  id             BIGSERIAL PRIMARY KEY,
-  household_id   BIGINT      NOT NULL REFERENCES households(id),
-  device_id      BIGINT      NOT NULL REFERENCES devices(id)  ON DELETE CASCADE,
-  profile_id     BIGINT      NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
-  started_at     TIMESTAMPTZ NOT NULL,          -- '-infinity' for backfilled rows
-  ended_at       TIMESTAMPTZ NULL,              -- NULL = open
-  kind           TEXT        NOT NULL CHECK (kind IN ('assigned','check_in')),
-  started_by     BIGINT      NULL REFERENCES users(id) ON DELETE SET NULL,
-  ended_by       BIGINT      NULL REFERENCES users(id) ON DELETE SET NULL,
-  end_cause      TEXT        NULL CHECK (end_cause IN
-                   ('reassigned','unassigned','check_out','forced','time_limit',
-                    'schedule','paused','idle','day_reset','unshared')),
-  CHECK (ended_at IS NULL OR ended_at > started_at)
-);
--- One open assignment per device = one holder per shared device, by construction.
-CREATE UNIQUE INDEX uq_dpa_device_open ON device_profile_assignments(device_id)
-  WHERE ended_at IS NULL;
-CREATE INDEX idx_dpa_household_profile ON device_profile_assignments(household_id, profile_id, started_at);
-CREATE INDEX idx_dpa_device_started    ON device_profile_assignments(device_id, started_at);
+The authoritative DDL is the migration itself
+(`api/resources/db/migration/V<n>__device_profile_assignments.sql`, numbered at merge time, #2842);
+this section only summarises it.
 
-ALTER TABLE devices ADD COLUMN shared BOOLEAN NOT NULL DEFAULT FALSE;
-ALTER TABLE household_settings
-  ADD COLUMN shared_device_idle_minutes INT NOT NULL DEFAULT 15
-  CHECK (shared_device_idle_minutes BETWEEN 1 AND 1440);
-
--- Backfill: every currently-assigned device gets one open interval from -infinity, which
--- reproduces today's attribution EXACTLY (current profile owns all history). Zero behaviour
--- change at migration time.
-INSERT INTO device_profile_assignments(household_id, device_id, profile_id, started_at, kind)
-SELECT household_id, id, profile_id, '-infinity', 'assigned'
-FROM devices WHERE profile_id IS NOT NULL;
-```
+- `device_profile_assignments(id, household_id, device_id, profile_id, started_at, ended_at, kind,
+  started_by, ended_by, end_cause, created_at)`. `kind` is `assigned` or `check_in`. `end_cause` is
+  one of `reassigned`, `unassigned`, `check_out`, `forced`, `time_limit`, `schedule`, `paused`,
+  `idle`, `day_reset`, `made_shared`, `unshared`, and is set exactly when `ended_at` is.
+- `started_at IS NULL` means an open-ended start (the row covers everything before `ended_at`). Only
+  the backfill writes it. NULL is used instead of `'-infinity'` so no reader maps an infinite
+  timestamp through JDBC; scope reads clip to the request window in SQL
+  (`COALESCE(started_at, :windowStart)`), so Scala only ever sees finite instants.
+- `uq_dpa_device_open`: a partial unique index allowing one open row per device, which is also the
+  one-holder rule for a shared device. Indexes on `(household_id, profile_id, started_at)` for scope
+  reads and `(device_id, started_at)` for the event-time join.
+- FKs: `device_id ON DELETE CASCADE`; `profile_id ON DELETE CASCADE`, which mirrors
+  `devices.profile_id ON DELETE SET NULL` so no open row outlives its profile. `household_id` is
+  always copied from the device row by the §5.3 primitive, never taken from the caller.
+- `devices.shared BOOLEAN NOT NULL DEFAULT FALSE`.
+- `household_settings.shared_device_idle_minutes INT NOT NULL DEFAULT 15`, constrained to 5–1440.
+  The floor of 5 keeps the threshold well above one usage-report period (agent
+  `usage_report_interval`, default 60 s, `openwrt/files/etc/config/wifihaven:47`) plus ingest and
+  tick lag, so idle cannot fire between two reports of an active device.
+- Backfill: every device with a profile gets one open, open-ended `assigned` row. That reproduces
+  today's attribution exactly, so the migration changes no behaviour.
 
 `devices` is a small table (one row per device per household); the backfill is metadata-scale,
 not a growth-table rewrite (#migrations-prod-data-volume does not apply). Row count to be
@@ -210,10 +205,15 @@ TEST-PIN asserts `devices.profile_id` equals the open interval's profile for eve
 each feature test. Profile deletion cascades both (`ON DELETE SET NULL` on `devices`,
 `ON DELETE CASCADE` on the history), so the invariant survives the one writer we do not control.
 
-Deploy gap: between the schema PR and the code PR, old code can reassign a device without writing
-history. The code PR's boot step reconciles any device whose open interval disagrees with
-`profile_id` (close at boot, open at boot), logged and metered. It is a one-shot, filed for deletion
-under #1608.
+Drift guard. The two stores can still disagree: between the schema deploy and the primitive's deploy,
+and during any Render deploy where an old instance overlaps a new one, old code can write
+`devices.profile_id` without history. So reconciliation is a **standing invariant check** that runs
+on every per-household reevaluate tick: the primitive compares each device's `devices.profile_id`
+with its open row and, on a mismatch, closes and reopens at the tick instant
+(`end_cause = reassigned` / `unassigned`). Each repair increments
+`device_assignment_drift_repaired_total` (no device or household label), which has a dashboard panel
+and an alert, because any non-zero rate after the rollout means a writer is bypassing the primitive.
+A repair limits misattribution to one tick, and every repair is counted.
 
 ## 6. Interval-aware attribution
 
@@ -253,7 +253,7 @@ stated, not hidden.
 | Ambient learn | `AmbientLearnJob.scala:279` | day |
 | Usage routes (usage-by-app, weekly, series) | `UsageRoutes.scala:420,993` | request window |
 | Time status / rollup routes | `Routes.scala:1203,1283,1338` | day / range |
-| Dashboard "now" | `DashboardNowRoutes.scala:136,176` | now (current read; already right via §5.2) |
+| Dashboard "now" | `DashboardNowRoutes.scala:115,176` | now (current read; already right via §5.2) |
 | SPA ws time-status push | `SpaPush.scala:587` | day |
 | Logs + series profile label/filter | `SqlFragments.deviceLabelJoin`, `Repos.scala:3547,3577,3644,3724` | per event `ts` |
 
@@ -303,9 +303,16 @@ val rules =
 
 `checkedOutRules` = `BlockRules(blocked = true, blockReason = Some(CheckedOut), extraAllowed = Nil, ...)`,
 independent of the household's unmanaged policy, so a shared device is blocked when checked out
-even in an `allow` household. `decideDetailed` (the block page's `GET /api/blocked`) reads the same
-device row and returns `CheckedOut`. Both paths share one `effectiveDeviceRules` function so they
-cannot drift (#1544).
+even in an `allow` household.
+
+`decideDetailed` (the block page's `GET /api/blocked`) does **not** do this today: any device with
+`profileId = None` short-circuits to `Allow` / `NoProfile` (`PolicyService.scala:979-992`). That is
+already wrong for the unmanaged path (the snapshot blocks with `Unmanaged`, `decide` says `NoProfile`)
+and would be wrong for a checked-out device. #2847 therefore extracts one
+`effectiveDeviceRules(device, settings)` that returns the profile id, the shared-checked-out rules or
+the unmanaged rules. The snapshot's device mapping and `decideDetailed`'s `case None` branch both call
+it, so `decide` reports `CheckedOut` / `Unmanaged` exactly when the router drops for that reason
+(#1544).
 
 ### 7.2 Precedence for a shared device
 
@@ -337,12 +344,16 @@ matching `end_cause` and then `invalidate(household)`. Writes stay out of the sn
 
 - `time_limit` / `schedule` / `paused`: the holder's `ProfileDayState.blockReason`. Precedence when
   several hold at once follows the existing `Paused > Schedule > TimeLimit` order.
-- `idle`: the latest engaged presence row inside the open interval (or the interval start if none) is
+- `idle`: the latest row of `TimeStatusService.gatedPresence(holderAppLimits, rows, settings, ambient)`
+  for the device inside the open interval (or the interval start if none) is
   older than `shared_device_idle_minutes`.
 - `day_reset`: the interval started before the household's most recent daily reset
   (`PolicyService.nextDailyResetAfter` / `householdLocalDate`, the same reset everything else uses).
   The `ended_at` is stamped at the reset instant, not the tick instant, so no post-reset presence is
-  attributed to yesterday's holder.
+  attributed to yesterday's holder. Between the reset instant and the tick that closes the row (one
+  tick, `snapshotCacheRefreshSeconds`, default 5 s, `api/src/Config.scala:177`) the device still
+  enforces the holder's rules while its presence belongs to no profile. This is accepted and stated,
+  like the one-report-period boundary in §6.1.
 
 A parent granting a time extension after auto-checkout does **not** re-check the child in; the child
 checks in again.
@@ -380,9 +391,20 @@ is unreachable; the device stays bound to the holder's last rules until the link
 | Route | Who | Effect |
 |---|---|---|
 | `GET /api/shared-devices` | any authed user in household | Shared devices, current holder (profile + user display name), since-when. A child sees all shared devices but only check-in actions for profiles they are linked to. |
-| `POST /api/shared-devices/{deviceId}/check-in` `{profileId}` | child: linked profiles; adult/admin: any household profile (Q5a) | Opens a `check_in` interval. 409 `held` (Q2). 403 `not_linked`. 409 `profile_blocked` if the profile is currently `Paused` / `Schedule` / `TimeLimit` (Q3). |
-| `POST /api/shared-devices/{deviceId}/check-out` | any user linked to the holder profile, or adult/admin | Closes with `check_out` (holder side) or `forced` (adult acting on someone else's check-in). |
-| `PATCH /api/devices/{id}` `{shared}` | writer (adult) | Toggles shared. Turning it on closes any `assigned` interval (`end_cause = unshared`) and leaves the device checked out. |
+| `POST /api/shared-devices/{mac}/check-in` `{profileId}` | child: linked profiles; adult/admin: any household profile (Q5a) | Opens a `check_in` interval. 409 `held` (Q2). 403 `not_linked`. 409 `profile_blocked` if the profile is currently `Paused` / `Schedule` / `TimeLimit` (Q3). |
+| `POST /api/shared-devices/{mac}/check-out` | any user linked to the holder profile, or adult/admin | Closes with `check_out` (holder side) or `forced` (adult acting on someone else's check-in). |
+| `PATCH /api/devices/{mac}` `{shared}` | writer (adult) | New optional field on the existing route (`Routes.scala:1052`). Turning it on closes any `assigned` interval (`end_cause = made_shared`) and leaves the device checked out. |
+
+Routes are keyed by `{mac}` like the existing device routes; `(household_id, mac)` is unique (V65).
+
+The existing assignment writers must not bypass check-in. `PUT /api/devices` (`Routes.scala:980`) and
+`PATCH /api/devices/{mac}` (`Routes.scala:1052`) both accept a `profileId`; on a shared device a
+non-null `profileId` is rejected with 409 `device_shared`, because an `assigned` interval on a shared
+device would enforce like a check-in that no auto-checkout ever releases. The §5.3 primitive also
+refuses `kind = 'assigned'` for a shared device, so the rule holds for any future writer.
+
+Child visibility: a child token's ws topics are limited per role (`SpaWsRegistry.scala:57`). A new
+`sharedDevices` topic is added to the `Child` set so a child's dashboard sees check-in changes live.
 
 Every route is household-scoped from `claims.hh`; a device id from another household is a 404. Each
 mutation calls `invalidate(household)` and emits an SPA ws event so every open dashboard updates.
@@ -422,23 +444,25 @@ within one usage-report interval plus one reevaluate tick.
 
 - `shared_device_checkin_total{action=check_in|check_out, cause}` with `cause` drawn from the
   `end_cause` enum plus `user`; bounded, no mac/profile/device label.
-- `shared_device_checkins_open` gauge (household count, not per device).
+- `shared_device_checkins_open` gauge: fleet-wide total of open check-ins, no household or device label.
+- `shared_device_checkout_job_total{outcome=ok|error}` and `shared_device_checkout_job_duration_seconds`
+  for the §7.3 job.
 - `shared_device_checkin_rejected_total{reason=held|not_linked|profile_blocked|not_shared|bad_bpt}`.
-- `device_assignment_reconciled_total` for the §5.3 boot reconciler.
+- `device_assignment_drift_repaired_total` for the §5.3 standing drift check, with an alert.
 - Grafana panels for all of the above under `deploy/grafana/dashboards/` in the same PRs.
 
 ## 13. Making an existing device shared
 
-There is no per-household or per-device migration. The V90 backfill is uniform: every device that
-has a profile gets one open `assigned` interval from `-infinity`, which reproduces today's
+There is no per-household or per-device migration. The schema backfill is uniform: every device that
+has a profile gets one open, open-ended `assigned` interval, which reproduces today's
 attribution exactly.
 
 Making a device shared is an ordinary operation, the same for a brand-new device and for one that
 has been on a profile for months:
 
-1. An adult turns on **Shared** for the device (`PATCH /api/devices/{id}` `{shared: true}`).
+1. An adult turns on **Shared** for the device (`PATCH /api/devices/{mac}` `{shared: true}`).
 2. The assignment primitive closes the device's open `assigned` interval at that instant
-   (`end_cause = unshared`) and clears `devices.profile_id`. The device is now checked out.
+   (`end_cause = made_shared`) and clears `devices.profile_id`. The device is now checked out.
 3. Usage before that instant stays with the profile the device was on; usage after it is attributed
    only to whoever has it checked in.
 
@@ -448,9 +472,14 @@ a profile (§15 Q8).
 
 ## 14. Rollout order (foundation first)
 
-1. **Schema PR:** V90 `device_profile_assignments` + `devices.shared` + backfill. Migration only.
-2. **Assignment primitive:** single writer, boot reconciler, CI guard, invariant TEST-PIN.
-3. **AttributionScope:** span-scoped presence reads; migrate every §6.2 call site; type guard.
+1. **Schema PR:** `device_profile_assignments` + `devices.shared` + idle setting + backfill.
+   Migration only.
+2. **Assignment primitive:** single writer, standing drift check on the reevaluate tick (with
+   alert), CI guard, invariant TEST-PIN.
+3. **AttributionScope:** span-scoped presence reads; migrate every §6.2 call site; type guard. The
+   span filter is materially changed SQL on `traffic_reports` (partitioned growth table, read on the
+   5 s per-household tick), so this PR also carries `EXPLAIN (ANALYZE, BUFFERS)` against prod-shaped
+   data.
 4. **Logs/series:** interval-aware `deviceLabelJoin`, with EXPLAIN.
 5. **SPA tolerance:** render an unknown `MacBlockReason` generically (ships before 6).
 6. **PolicyService:** `CheckedOut` reason, shared-device resolution, `decide` parity, router busted spec.
@@ -467,7 +496,7 @@ change (reassigning a device no longer moves its history).
 
 | # | Question | Decision | Consequence in this design |
 |---|---|---|---|
-| Q1 | Where can a child check in? | From any device, by picking the shared device from a list. No proof of physical presence. | `deviceId` in the route is enough; `mac`/`bpt` from the block page only pre-selects the device. Trust model: a remote check-in only spends the child's own time. |
+| Q1 | Where can a child check in? | From any device, by picking the shared device from a list. No proof of physical presence. | The device `mac` in the route is enough; `mac`/`bpt` from the block page only pre-selects the device. Trust model: a remote check-in only spends the child's own time. |
 | Q2 | Device already held? | Refused (409) until the holder checks out or is auto-checked-out; an adult can force a check-out. | Enforced by `uq_dpa_device_open`; the route maps the unique violation to 409 `held`. |
 | Q3 | Auto-checkout triggers | Daily time exhausted, schedule/bedtime block, profile paused, idle timeout, daily reset (all five). | `end_cause` ∈ `time_limit`, `schedule`, `paused`, `idle`, `day_reset`. Check-in is also refused while the profile is blocked for `Paused`, `Schedule` or `TimeLimit` (`DefaultDeny` is a baseline, not a block-for-now, so it may check in). §7.2 rows 3–5 all end in `CheckedOut`. |
 | Q3a | Idle threshold | 15 min default, per household. | New `household_settings.shared_device_idle_minutes INT NOT NULL DEFAULT 15` in the schema PR, editable on Settings (autosave). "Idle" means no engaged presence on the device (the same heartbeat/ambient-filtered definition that drives screen time), so background OS traffic does not keep a check-in alive and there is no second definition of activity. |
