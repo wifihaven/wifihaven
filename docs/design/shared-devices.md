@@ -224,9 +224,13 @@ Otherwise (a `profile_id` with no open check-in, or an open `assigned` row) the 
 tick covers the households the reevaluate sweep rebuilds (connected routers plus the default
 household) and every household a mutation invalidates, so a household whose router is offline is
 repaired when its router reconnects or its policy is next edited. Each repair increments
-`device_assignment_drift_repaired_total` (no device or household label), which has a dashboard panel
-and an alert, because any non-zero rate after the rollout means a writer is bypassing the primitive.
-A repair limits misattribution to one tick, and every repair is counted.
+`device_assignment_drift_repaired_total` (no device or household label), because any non-zero rate
+after the rollout means a writer is bypassing the primitive. A dashboard panel shows every repair;
+the alert (W17) fires only when repairs recur in every 5-minute window for 30 minutes, so a sporadic
+bypass (say, a route that runs only when a parent edits a device) shows on the panel and never pages.
+The CI guard and the test-pin are what catch a new bypassing writer before it ships; a quiet W17 is
+not evidence that none exists. A repair limits misattribution to one tick, and every repair is
+counted.
 
 ## 6. Interval-aware attribution
 

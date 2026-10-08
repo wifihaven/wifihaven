@@ -42,7 +42,7 @@
 # are CONNECTED. Do not fold them into one rule; they need different reference
 # signals and different `for` durations.
 #
-# All fifteen carry severity=warning + env=prod labels, which the notification
+# All of them carry severity=warning + env=prod labels, which the notification
 # policy in alerting.tf routes to the wifihaven-warning (email) contact point.
 # None of these are ratio queries, so unlike the critical set (§7.1) they need
 # no zero-traffic guard — a counter that never increments is simply absent

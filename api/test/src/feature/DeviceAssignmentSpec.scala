@@ -95,7 +95,10 @@ object DeviceAssignmentSpec
     } yield pid).transact(xa)
 
   private def globalProfile(xa: Transactor[Task]): Task[ProfileId] =
-    sql"SELECT id FROM profiles WHERE is_global".query[ProfileId].unique.transact(xa)
+    sql"SELECT id FROM profiles WHERE is_global AND household_id = ${HouseholdId.Default}"
+      .query[ProfileId]
+      .unique
+      .transact(xa)
 
   private def assignAssigned(f: Fixture, id: DeviceId, pid: ProfileId): Task[Boolean] =
     f.assignments.assign(
