@@ -231,6 +231,47 @@ object RouterDecisionSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
         assertTrue(dr.decision == ConnectionDecision.Allow) &&
         assertTrue(dr.reason == "no_profile")
     },
+    // #2847: under a `block` household the router drops a profileless device as `Unmanaged`
+    // (snapshot `rules`), so the decision endpoint now says the same and records the block.
+    test(
+      "MAC in devices with NULL profile_id, block household → block:unmanaged_mac, block_event",
+    ) {
+      for {
+        _        <- cleanDb
+        rr       <- ZIO.service[RouterRepo]
+        dRepo    <- ZIO.service[DeviceRepo]
+        ber      <- ZIO.service[BlockEventRepo]
+        hsr      <- ZIO.service[HouseholdSettingsRepo]
+        existing <- hsr.getForHousehold(HouseholdId.Default)
+        _        <- hsr.update(
+          HouseholdId.Default,
+          existing.copy(unmanagedMacPolicy = UnmanagedMacPolicy(policy = "block", blockPage = true)),
+        )
+        mac = "aa:bb:cc:11:22:98"
+        _  <- dRepo.upsertUnknown(
+          MacAddress.unsafe(mac),
+          "mystery-laptop",
+          Some(IpAddress.unsafe("10.0.0.6")),
+          TestClock.schoolDayAfternoon.toInstant(ZoneOffset.UTC),
+        )
+        ps <- makePsDefault
+        routes = RouterRoutes.routes(
+          rr,
+          ps,
+          RouterAuthLive(rr),
+          ber,
+          TestLayers.TestBlockPageSecret,
+        )
+        tok    <- seedAndEnrollRouter(rr, routes)
+        resp   <- callDecide(routes, tok, mac, "example.com")
+        body   <- resp.body.asString
+        dr     <- ZIO.fromEither(body.fromJson[RouterDecisionResponse])
+        events <- ber.recent(10)
+      } yield assertTrue(resp.status == Status.Ok) &&
+        assertTrue(dr.decision == ConnectionDecision.Block) &&
+        assertTrue(dr.reason == "unmanaged_mac") &&
+        assertTrue(events.size == 1)
+    },
     test("paused profile → block:paused, null expires_at, block_event recorded") {
       for {
         _   <- cleanDb

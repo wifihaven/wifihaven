@@ -176,6 +176,16 @@ describe('BlockedPage — ask-a-parent CTA (#960)', () => {
     expect(screen.getByTestId('ask-parent-extension')).toBeInTheDocument()
   })
 
+  // #2847: a checked-out shared device has no profile, so none of the access-request kinds can be
+  // granted (AlertRoutes rejects extension / exemption / unpause without a profile). Offer none;
+  // the Check in action is #2850.
+  it('offers no ask-a-parent CTAs when API returns reasonClass=checked_out', async () => {
+    mockBlockedInfo({ blocked: true, reasonClass: 'checked_out' })
+    renderBlocked({ mac: 'aa:bb:cc:11:22:33', host: 'example.com' })
+    await waitFor(() => expect(screen.getByText(/shared device/i)).toBeInTheDocument())
+    expect(screen.queryByTestId('ask-parent')).not.toBeInTheDocument()
+  })
+
   it('falls back to the static instruction when the mac param is missing', () => {
     // The block-page redirect always supplies mac=, but be tolerant: when it
     // is missing we cannot identify the kid's profile, so hide the CTA and
