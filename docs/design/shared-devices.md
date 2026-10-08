@@ -241,25 +241,26 @@ Usage is attributed at **read time**, by joining assignment intervals on each ro
 
 ```scala
 final case class AttributionSpan(mac: MacAddress, deviceId: DeviceId, from: Option[Instant], until: Option[Instant])
-final case class AttributionScope(household: HouseholdId, windowStart: Instant, windowEnd: Instant,
-                                  byProfile: Map[ProfileId, List[AttributionSpan]])
+final case class AttributionScope private[db] (household: HouseholdId, byProfile: Map[ProfileId, List[AttributionSpan]])
 ```
 
-Built by one repo read (`DeviceRepo.attributionScope`) over `[dayStart, dayEnd)` (or any window):
-every interval that overlaps the window, with its own bounds and `None` for NULL. Bounds are not
-clipped in SQL (amended on #2844). Instead, when a scope builds a presence filter it drops any bound
-at or beyond the window's edge, because the presence read's own window already excludes those rows.
-So in the steady state (no assignment change inside the window) the presence query is exactly the
-pre-#2844 MAC-list query. Not clipping also keeps a row whose stored `date` was derived under an
-earlier household timezone, which a clip to the current timezone's window would drop. Then:
+Built by one repo read (`DeviceRepo.attributionScope`, the only constructor) over `[dayStart,
+dayEnd)` (or any window): every interval that overlaps the window, with its own bounds and `None`
+for NULL. Bounds are not clipped to the window (amended on #2844), so a span is correct for any
+presence read whatever window that read uses: the read's own window bounds its rows, and the span
+only says which profile each row belongs to. Not clipping also keeps a row whose stored `date` was
+derived under an earlier household timezone, which a clip to the current timezone's window would
+drop. Then:
 
 - **Presence reads take spans instead of MACs.** `TrafficReportRepo.listPresenceRows` /
-  `listPresenceRowsSince` / `listPresenceRowsInWindow` take a `PresenceSpans`
-  (`period_start >= from AND period_start < until` per mac), which only an `AttributionScope` can
-  build, so a caller *cannot* fetch per-profile presence without going through a scope
-  (TYPE-ENFORCE, the same move as `MacScope` in #2708). A device's own presence, whichever profile
-  held it (the per-device time-status views, the heartbeat explainer), is a separate
-  `listDevicePresenceRows*` read that takes MACs.
+  `listPresenceRowsSince` / `listPresenceRowsInWindow` take a `PresenceSpans`, which only an
+  `AttributionScope` can build, so a caller cannot fetch per-profile presence without going
+  through a scope (TYPE-ENFORCE, the same move as `MacScope` in #2708). Never-reassigned devices (an
+  unbounded backfill span) match on `mac IN (...)` alone; only a device with a bounded span adds
+  `period_start >= from AND period_start < until`. So a household where nothing has been reassigned
+  issues exactly the pre-#2844 query. A device's own presence, whichever profile held it (the
+  per-device time-status views, the heartbeat explainer), is a separate `listDevicePresenceRows*`
+  read that takes MACs.
 - **The device list a profile folds over** (Sum mode, per-device summaries,
   `usedSecondsByMac`) is the set of devices with any span in the window, so a shared device appears
   under every profile that held it that day, credited only its in-interval presence.
