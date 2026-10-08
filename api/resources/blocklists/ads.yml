@@ -709,6 +709,18 @@ hosts:
   # name-pattern block — not re-added.)
   - responsiveads.com
   - vdo.ai
+  # traffic-driven additions (#2816): 30-day prod recent-apexes sweep (30
+  # devices, 2026-09-29). al-ad.com has no public company page but its
+  # observed subdomains (ortb-us22/us32/.../us69.al-ad.com — literally "open
+  # RTB") are a direct RTB-bidder signal, same "name is the function"
+  # reasoning as rtbedge.com/bidgust.com above; absent from the ads-extended
+  # feed entirely. ebayadservices.com (eBay's own ad-services apex) was
+  # HELD OUT: both it and www. resolve onto shared Akamai edges
+  # (andes.ebay.com.edgekey.net -> *.akamaiedge.net, 23.211.124.x), the same
+  # /24 pages.ebay.com answers in, so an IP-layer drop would take unrelated
+  # eBay traffic with it (the #2823 shared-CDN skip; `akamai*` is on the
+  # Step 1 skip list). Pinned absent in BundledBlocklistsSpec.
+  - al-ad.com
   # traffic-driven additions (#2823): two hops of the pop-under REDIRECT CHAIN
   # behind the CAM4 pop-unders reported on Sameer Mac. Found by enumerating
   # every host the device resolved in the burst windows around each cam4 hit.

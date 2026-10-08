@@ -420,6 +420,37 @@ that edit in the same PR.** If a step above is now wrong, fix the step too.
   to block an apex that was in none of its categories — the real explanation
   was a mid-session policy edit, not a whole-MAC block, but the control is what
   made that distinguishable.
+- **2026-09-29** (#2816) — **A "dedicated" ad-services apex is only
+  dedicated if it RESOLVES to dedicated addresses — the owner registering a
+  separate domain proves nothing about the IP layer.** `ebayadservices.com`
+  (eBay's own ad-services domain, confirmed via Netify/host.io/MarkMonitor)
+  was first added on the reasoning that, unlike `googleadservices.com`
+  (`SharedGfeHosts`), it was not shared infra. Independent review (after
+  #2823 set the shared-CDN rule) resolved it: the apex and `www.` CNAME
+  through `andes.ebay.com.edgekey.net` onto Akamai edges in the same /24
+  that `pages.ebay.com` answers in. `akamai*` was already on the Step 1 skip
+  list, so it was held out and pinned absent. The deciding test is still
+  "does it share an IP pool with unrelated traffic," but answer it with
+  `dig`, not with the domain's ownership.
+- **2026-09-29** (#2816) — **Two more `track`-substring consumer/SaaS false
+  positives: `sail-track.com`** (a legitimate marine GPS-tracking app family,
+  unrelated "Sail Track"/SailTrack products) **and `synctrack.io`** (a
+  legitimate Shopify post-purchase order-tracking SaaS, founded 2019, 20K+
+  merchants) — neither is ad-tech despite matching the `track`/`sync`
+  keyword sweep. Low hit-counts (19 and 6 respectively) with legitimate,
+  confirmable identities; verify before guessing from the substring.
+- **2026-09-29** (#2816) — **A brand's own affiliate/payment-tracking domain
+  for content that is ALREADY blocked at the main apex is low marginal value
+  even when confirmed genuine — check whether the parent brand is already
+  curated before adding the tracking sibling.** `cam4tracking.com` (confirmed
+  via urlscan/semrush to redirect to CAM4's affiliate payment portal,
+  cam4pays.com) carries no independent adult content of its own; `cam4.com`
+  is already in `adult.yml`. Given this list's explicit "conservative starter
+  set of top apex domains" scope (not comprehensive infra coverage), the
+  tracking-only sibling was held out rather than added. (#2823 later found
+  the structural reason that settles it regardless of marginal value: the
+  observed `track.cam4tracking.com` answers on shared CloudFront edges. See
+  the 2026-10-02 entries above.)
 - **2026-09-22** (#2807) — **The #2742 "check membership across every curated
   file, not just the one the sweep bucketed it into" lesson was only being
   applied to hosts already known from prior evidence docs — NOT to a host

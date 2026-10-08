@@ -481,6 +481,31 @@ object BundledBlocklistsSpec
         assertTrue(!adult.contains(Hostname.unsafe("unhappyweakness.com"))) &&
         assertTrue(!adult.contains(Hostname.unsafe("realizationnewestfangs.com")))
     },
+    // #2816: eBay's ad-services apex and its `www.` resolve onto shared Akamai
+    // edges (`andes.ebay.com.edgekey.net`, same /24 as `pages.ebay.com`), so an
+    // IP-layer drop would take unrelated eBay traffic with it. Held out; pinned
+    // here so a later pass does not re-add it on the "eBay's own dedicated
+    // domain" reasoning that first let it in.
+    test("#2816: Akamai-fronted ebayadservices.com stays out of every inline list") {
+      for {
+        inlineLists <- loadInlineOnly
+        offenders = inlineLists.flatMap { bl =>
+          val hosts = bl.content match {
+            case BundledBlocklistContent.Inline(hs) => hs
+            case _                                  => Nil
+          }
+          hosts
+            .filter { x =>
+              val xv = x.value.toLowerCase
+              xv == "ebayadservices.com" || xv.endsWith(".ebayadservices.com")
+            }
+            .map(x => s"${bl.id.value}:${x.value}")
+        }
+      } yield
+      // liveness anchor: the ads list loaded, so the absence check is not vacuous
+      assertTrue(inlineHostsOf(inlineLists, "ads").contains(Hostname.unsafe("mgid.com"))) &&
+        assertTrue(offenders.isEmpty)
+    },
     test("#2823: held-out CAM4-chain hosts stay out of every inline list") {
       // Each of these was observed in the measured chain and investigated, and each
       // is held out. Fourteen are held out because they resolve onto a shared
