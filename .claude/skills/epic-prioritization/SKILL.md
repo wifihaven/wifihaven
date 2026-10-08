@@ -151,7 +151,8 @@ recommendation. Before naming the next spawn, check it against `AGENTS.md` and
 - **Every PR gets the independent review** (`docs/pr-review-checklist.md`)
   before it's authorized to merge — a separate agent, not the author.
 - **Monitor merge-queue PRs to MERGED** — queued ≠ done; watch for queue CI
-  failures and conflicts.
+  failures and conflicts. Who merges is the
+  [merge rule](../../../docs/pr-review-checklist.md#monitor-to-merged).
 
 ---
 

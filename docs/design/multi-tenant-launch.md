@@ -591,7 +591,7 @@ migration-isolation gate, [#2098](https://github.com/wifihaven/wifihaven/issues/
 is the proof).
 
 Process per the plan comment: one do-er session per unit, monitored to
-MERGED before dependents release; **the operator merges everything**.
+MERGED before dependents release. At the time the operator merged every PR; the current rule is [`pr-review-checklist.md#monitor-to-merged`](../pr-review-checklist.md#monitor-to-merged).
 
 ---
 

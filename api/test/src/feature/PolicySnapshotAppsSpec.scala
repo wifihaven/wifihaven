@@ -110,6 +110,7 @@ object PolicySnapshotAppsSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPo
       ar,
       tss,
       clk,
+      repairAssignmentDrift = PolicyServiceLive.NoDriftCheck,
     ): PolicyService
 
   private def seedRouterRow: ZIO[RouterRepo, Throwable, RouterId] =

@@ -77,14 +77,34 @@ object SqlFragments {
   // scopes the LABELS. Index-backed by V65's `uq_devices_household_mac` UNIQUE(household_id, mac),
   // whose leading column is exactly this predicate, so the join stays a single index lookup.
   //
+  // #2845 (epic #2841, design `docs/design/shared-devices.md` §6.3): the PROFILE label is the
+  // profile that held the device at `tsExpr` (the event's timestamp, or a rollup bucket's start),
+  // read from `device_profile_assignments` (V90), not `devices.profile_id`. The current profile
+  // would re-label a device's whole history every time it moves (or a shared device is checked in).
+  // `started_at IS NULL` is V90's open-ended start (every backfilled row), so the lower bound is
+  // `(started_at IS NULL OR ts >= started_at)`: a bare `ts >= started_at` is NULL for those rows
+  // and would drop the label from almost every device's history. Intervals are half-open
+  // [started_at, ended_at) and one device's rows never overlap (`DeviceAssignment.assign` closes the
+  // open row at the instant it opens the next), so this joins at most one row per event. Index-
+  // backed by `idx_dpa_device_started` (V90). The profile column every read path selects and
+  // filters on is [[labelProfileId]].
+  //
   // `macColumn` and `routerAlias` are spliced verbatim via `Fragment.const` — trusted compile-time
-  // literals, NEVER user input, exactly like [[householdEq]]'s `column`. The emitted fragment
-  // requires `routerAlias` to be joined BEFORE `devices` in the FROM clause: Postgres only resolves
-  // an ON clause against tables already introduced to its left.
-  def deviceLabelJoin(macColumn: String, routerAlias: String = "r"): Fragment =
+  // literals, NEVER user input, exactly like [[householdEq]]'s `column`; `tsExpr` is a caller-built
+  // fragment over the source table's columns. The emitted fragment requires `routerAlias` to be
+  // joined BEFORE `devices` in the FROM clause: Postgres only resolves an ON clause against tables
+  // already introduced to its left.
+  def deviceLabelJoin(macColumn: String, tsExpr: Fragment, routerAlias: String = "r"): Fragment =
     fr"LEFT JOIN devices d ON d.mac =" ++ Fragment.const(macColumn) ++
       fr"AND d.household_id =" ++ Fragment.const(s"$routerAlias.household_id") ++
-      fr"LEFT JOIN profiles p ON p.id = d.profile_id"
+      fr"LEFT JOIN device_profile_assignments dpa ON dpa.device_id = d.id" ++
+      fr"AND (dpa.started_at IS NULL OR" ++ tsExpr ++ fr">= dpa.started_at)" ++
+      fr"AND (dpa.ended_at IS NULL OR" ++ tsExpr ++ fr"< dpa.ended_at)" ++
+      fr"LEFT JOIN profiles p ON p.id = dpa.profile_id"
+
+  // #2845: the event-time profile id from [[deviceLabelJoin]]. Every `connection_events` read path
+  // selects and filters on this, so the label and the filter can never come from different rows.
+  val labelProfileId: Fragment = fr"dpa.profile_id"
 
   // Promotes ipv4/ipv6-typed `traffic_reports` rows to their resolved fqdn by
   // looking up the most recent `connection_events` row for the same

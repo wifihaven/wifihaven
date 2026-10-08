@@ -151,6 +151,7 @@ object DbFailureSpec extends ZIOSpecDefault {
         pid: Option[ProfileId],
         ip: String,
         household: HouseholdId,
+        byUsername: Option[String],
     ) = throwing
     def updateLastSeen(mac: MacAddress, ip: String, household: HouseholdId) = throwing
     def touchLastSeen(mac: MacAddress, ip: Option[IpAddress], at: Instant, household: HouseholdId) =

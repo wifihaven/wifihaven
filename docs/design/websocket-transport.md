@@ -813,7 +813,5 @@ and whatever minimal handshake it actually needs at that point.)
 
 **Critical path:** D0 → C (agent). **Parallel track:** A (server endpoint; B the
 handshake is won't-do, §2) and E (perf) can land while D0 runs, since they are
-valuable even if the agent never migrates. **G is last and operator-gated** —
-never armed automatically
-(`docs/pr-review-checklist.md#monitor-to-merged` discipline: the cutover is the
-operator's call).
+valuable even if the agent never migrates. **G is last and operator-gated**: a
+session starts it only after the operator confirms the fleet is on ws.

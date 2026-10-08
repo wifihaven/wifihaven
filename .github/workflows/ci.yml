@@ -175,6 +175,9 @@ jobs:
               # guards against is a render.yaml-only edit. Without this glob that PR shape
               # skips Shell Tests entirely and the guard never runs.
               - 'render.yaml'
+              # #2869: the .github/scripts guards' *.test.sh files match above, but an
+              # edit to the guard script alone would not, and would skip its own test.
+              - '.github/scripts/**'
             render:
               - '.github/workflows/ci.yml'
               - 'render.yaml'
@@ -470,6 +473,40 @@ jobs:
 
       - name: Reject new hardcoded usage-period literals
         run: bash .github/scripts/check-usage-period-hardcode.sh "${{ steps.base.outputs.sha }}"
+
+  # ── devices.profile_id has one writer (#2843) ───────────────────────────
+  # `DeviceAssignment.assign` is the only code allowed to write
+  # devices.profile_id, because it records the assignment history in the same
+  # transaction (docs/design/shared-devices.md §5.3). Full-tree scan of api/src,
+  # not a diff, so an existing bypass cannot hide.
+  device-profile-writers:
+    name: Device Profile Writer Check
+    needs: changes
+    if: needs.changes.outputs.scala == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Reject devices.profile_id writes outside DeviceAssignment.assign
+        run: bash .github/scripts/check-device-profile-writers.sh
+
+  # ── Merge rule: one definition (#2869) ─────────────────────────────────
+  # The PR merge rule lives only in docs/pr-review-checklist.md#monitor-to-merged;
+  # every other doc / skill / command links to it. This fails if one restates it.
+  # Deliberately NOT path-filtered: the edit it guards against can land in any
+  # Markdown file or skill, and a filtered job that skips reads as success.
+  merge-rule-single-source:
+    name: Merge Rule Single-Source Check
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Reject restatements of the merge rule outside its canonical section
+        run: bash .github/scripts/check-merge-rule-single-source.sh
 
   # ── Cloud-agent prompts: re-paste reminder + PROMPT_VERSION bump ─────────
   # The Claude Code Cloud ROUTINE copy of deploy/{support,press}-agent/agent.yaml
@@ -968,6 +1005,8 @@ jobs:
       - migrations-immutable
       - migration-isolation
       - usage-period-hardcode
+      - device-profile-writers
+      - merge-rule-single-source
       - agent-prompt-repaste
       - shell-tests
       - lua-tests

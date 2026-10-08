@@ -186,6 +186,15 @@ object TestDatabase {
     for {
       pg <- ZIO.service[EmbeddedPostgres]
       db <- ZIO.service[TestDb]
+      // #2843 TEST-PIN: before wiping, check the state the previous test left behind against the
+      // device-assignment invariants, so a writer that bypasses `DeviceAssignment.assign` fails the
+      // test that exercised it. The LAST test a spec runs is not followed by a reset, so it is not
+      // checked here; a spec whose final test matters asserts the pin itself (DeviceAssignmentSpec
+      // does, after every case).
+      _  <- AssignmentInvariant.assertHolds(
+        Transactor.fromDataSource[Task](db.ds, scala.concurrent.ExecutionContext.global),
+        s"state left in ${db.name} by the previous test",
+      )
       _  <- cloneTemplateInto(pg, db.name)
     } yield ()
 
@@ -198,18 +207,27 @@ object TestDatabase {
    */
   type AllRepos =
     TestDb & UserRepo & HouseholdRepo & UserProfileRepo & ProfileRepo & NamedScheduleRepo &
-      HouseholdSettingsRepo & TimeLimitRepo & AppTimeLimitRepo & DeviceRepo & BlocklistRepo &
-      TimeUsageRepo & TimeExtensionRepo & RouterRepo & TrafficReportRepo & BlockEventRepo &
-      ConnectionEventRepo & AlertRepo & AppRepo & RollupRepo & TimeUsedRollupRepo &
+      HouseholdSettingsRepo & TimeLimitRepo & AppTimeLimitRepo & DeviceRepo & DeviceAssignmentRepo &
+      BlocklistRepo & TimeUsageRepo & TimeExtensionRepo & RouterRepo & TrafficReportRepo &
+      BlockEventRepo & ConnectionEventRepo & AlertRepo & AppRepo & RollupRepo & TimeUsedRollupRepo &
       AppUsedRollupRepo & AmbientHostsRepo & HouseholdBillingRepo & BetaRequestRepo &
       BetaCohortRepo & EntitlementsRepo & PressMessageRepo & PasswordResetTokenRepo &
       SupportConsentRepo
 
   val layer: ZLayer[Any, Throwable, EmbeddedPostgres & TestDb & Transactor[Task] & AllRepos] = {
-    val pg = embeddedPg
-    val td = pg >>> testDb
-    val xa = td >>> transactor
-    pg ++ td ++ xa ++ (xa >>> Repos.all)
+    val pg  = embeddedPg
+    val td  = pg >>> testDb
+    val xa  = td >>> transactor
+    // #2843: DeviceRepoLive timestamps assignment history from a Clock. Fixture writes get a fixed
+    // TestClock; a spec that asserts on history timestamps builds its own DeviceRepoLive over its own
+    // TestClock (DeviceAssignmentSpec). The primitive clamps a transition to the device's latest
+    // history bound, so mixing this clock with a spec's never inverts an interval.
+    val clk = ZLayer.succeed[wifihaven.shared.Clock](
+      new wifihaven.shared.Clock.TestClock(
+        Unsafe.unsafe(implicit u => Ref.unsafe.make(java.time.LocalDateTime.of(2025, 1, 6, 0, 0))),
+      ),
+    )
+    pg ++ td ++ xa ++ ((xa ++ clk) >>> Repos.all)
   }
 }
 
@@ -421,9 +439,8 @@ object TestLayers {
           .query[ProfileId]
           .unique
           .transact(xa)
-      _        <-
-        sql"INSERT INTO devices(mac, name, profile_id, household_id) VALUES ($macB, 'devB', $profileB, $hhB)".update.run
-          .transact(xa)
+      // #2843: through the writer, so household B's device carries its assignment history too.
+      _        <- dr.upsert(macB, "devB", Some(profileB), "", hhB)
       // Enrolled routers for each household (known raw tokens).
       tokenA = "rt_hhA_token_0000000000000000"
       tokenB = "rt_hhB_token_0000000000000000"

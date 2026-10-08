@@ -544,8 +544,7 @@ object MultiTenantIsolationSpec
         // The SAME MAC owned by BOTH households, under different device names and profiles.
         _   <- dr.upsert(macM, "sharedA", Some(two.profileA), "192.168.1.20", two.hhA)
         _   <-
-          sql"INSERT INTO devices(mac,name,profile_id,household_id) VALUES ($macM,'sharedB',${two.profileB},${two.hhB})".update.run
-            .transact(xa)
+          dr.upsert(macM, "sharedB", Some(two.profileB), "", two.hhB)
         ts = Instant.parse("2026-05-07T14:00:00Z")
         // Exactly ONE event, behind household A's router.
         _      <- cer.insertBatch(
@@ -597,10 +596,7 @@ object MultiTenantIsolationSpec
         devIdA <- dr.upsert(macM, "sharedA", Some(two.profileA), "192.168.1.20", two.hhA)
         // Household B's device row for the SAME MAC — capture its id so A can try to filter by it.
         devIdB <-
-          sql"INSERT INTO devices(mac,name,profile_id,household_id) VALUES ($macM,'sharedB',${two.profileB},${two.hhB}) RETURNING id"
-            .query[DeviceId]
-            .unique
-            .transact(xa)
+          dr.upsert(macM, "sharedB", Some(two.profileB), "", two.hhB)
         ts = Instant.parse("2026-05-07T14:00:00Z")
         _      <- cer.insertBatch(
           List(
@@ -655,8 +651,7 @@ object MultiTenantIsolationSpec
         xa  <- ZIO.service[Transactor[Task]]
         _   <- dr.upsert(macM, "sharedA", Some(two.profileA), "192.168.1.20", two.hhA)
         _   <-
-          sql"INSERT INTO devices(mac,name,profile_id,household_id) VALUES ($macM,'sharedB',${two.profileB},${two.hhB})".update.run
-            .transact(xa)
+          dr.upsert(macM, "sharedB", Some(two.profileB), "", two.hhB)
         // The series window is anchored on SQL NOW() (real wall-clock), not the injected TestClock.
         now = Instant.now()
         _      <- cer.insertBatch(
@@ -702,8 +697,7 @@ object MultiTenantIsolationSpec
         xa  <- ZIO.service[Transactor[Task]]
         _   <- dr.upsert(macM, "sharedA", Some(two.profileA), "192.168.1.20", two.hhA)
         _   <-
-          sql"INSERT INTO devices(mac,name,profile_id,household_id) VALUES ($macM,'sharedB',${two.profileB},${two.hhB})".update.run
-            .transact(xa)
+          dr.upsert(macM, "sharedB", Some(two.profileB), "", two.hhB)
         now = Instant.now()
         _      <- cer.insertBatch(
           List(
@@ -1413,8 +1407,7 @@ object MultiTenantIsolationSpec
         // blocked=true (seedTwoHouseholds seeds B-Kids paused).
         _   <- dr.upsert(macM, "sharedA", Some(two.profileA), "192.168.1.20", two.hhA)
         _   <-
-          sql"INSERT INTO devices(mac,name,profile_id,household_id) VALUES ($macM,'sharedB',${two.profileB},${two.hhB})".update.run
-            .transact(xa)
+          dr.upsert(macM, "sharedB", Some(two.profileB), "", two.hhB)
         routes = RouterRoutes.routes(
           rr,
           ps,
@@ -1462,8 +1455,7 @@ object MultiTenantIsolationSpec
         // The SAME MAC in both households, plus a hh-B time_usage row for it.
         _      <- dr.upsert(macM, "sharedA", Some(two.profileA), "192.168.1.20", two.hhA)
         _      <-
-          sql"INSERT INTO devices(mac,name,profile_id,household_id) VALUES ($macM,'sharedB',${two.profileB},${two.hhB})".update.run
-            .transact(xa)
+          dr.upsert(macM, "sharedB", Some(two.profileB), "", two.hhB)
         _      <-
           sql"""INSERT INTO time_usage(household_id,device_mac,host_type,host_value,date,seconds_used,proportional_seconds,bytes_in,bytes_out,last_seen_at)
                 VALUES (${two.hhB},$macM,'fqdn','youtube.com','2026-05-07',60,60,100,50,NOW())""".update.run
@@ -1518,8 +1510,7 @@ object MultiTenantIsolationSpec
         // The SAME MAC in both households.
         _   <- dr.upsert(macM, "sharedA", Some(two.profileA), "192.168.1.20", two.hhA)
         _   <-
-          sql"INSERT INTO devices(mac,name,profile_id,household_id) VALUES ($macM,'sharedB',${two.profileB},${two.hhB})".update.run
-            .transact(xa)
+          dr.upsert(macM, "sharedB", Some(two.profileB), "", two.hhB)
         auth   = RouterAuthLive(rr)
         routes = RouterIngestRoutes.routes(auth, rr, tr, tu, dr, cer, ar, hsr)
         rec    = UsageRecord(
@@ -1573,8 +1564,7 @@ object MultiTenantIsolationSpec
         // The SAME MAC in both households.
         _     <- dr.upsert(macM, "sharedA", Some(two.profileA), "192.168.1.20", two.hhA)
         _     <-
-          sql"INSERT INTO devices(mac,name,profile_id,household_id) VALUES ($macM,'sharedB',${two.profileB},${two.hhB})".update.run
-            .transact(xa)
+          dr.upsert(macM, "sharedB", Some(two.profileB), "", two.hhB)
         // The block-page / access-request call shape: no household argument → default
         // household (hhA is HouseholdId.Default in the fixture). Must return exactly the
         // hhA row and NOT throw on the 2-row match.
