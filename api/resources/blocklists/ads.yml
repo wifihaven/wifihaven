@@ -705,8 +705,8 @@ hosts:
   # AI-product signal" trap (#2599/#2742/#2756/#2759/#2792) — both surfaced
   # in the ai.yml sweep but their entire business is ad delivery.
   # (bidsystem.ai, a third .ai-TLD ad candidate from this sweep, was found on
-  # independent review to already be curated above at line 378 — not
-  # re-added.)
+  # independent review to already be curated above, in the RTB/bidder/SSP
+  # name-pattern block — not re-added.)
   - responsiveads.com
   - vdo.ai
   # traffic-driven additions (#2823): two hops of the pop-under REDIRECT CHAIN
