@@ -37,7 +37,10 @@
 -- table. No growth table (`traffic_reports`, `connection_events`,
 -- `block_events`, rollups) is scanned, rewritten or re-indexed. The two
 -- ALTER TABLE ... ADD COLUMN statements have constant defaults, so they are
--- metadata-only on Postgres 11+.
+-- metadata-only on Postgres 11+. The idle-minutes CHECK validates by scanning
+-- `household_settings` (one row per household), and the `devices` lock taken
+-- by its ALTER is held through the backfill until commit (one row per
+-- device); both are trivial at that size.
 --
 -- ── Old image compatibility ─────────────────────────────────────────────────
 -- Additive only. Image N-1 never reads the new table or columns; its device
@@ -67,8 +70,12 @@ CREATE TABLE device_profile_assignments (
     'schedule', 'paused', 'idle', 'day_reset', 'made_shared', 'unshared')),
   -- A closed row says why it closed; an open row has no cause.
   CONSTRAINT dpa_end_cause_iff_ended CHECK ((ended_at IS NULL) = (end_cause IS NULL)),
+  -- `>=`, not `>`: a row closed at the instant it opened is a valid, empty
+  -- interval. Readers match half-open [started_at, ended_at), so it covers no
+  -- presence. Under an injected test clock an open-then-close at the same
+  -- instant is the normal case.
   CONSTRAINT dpa_interval_order CHECK (
-    ended_at IS NULL OR started_at IS NULL OR ended_at > started_at),
+    ended_at IS NULL OR started_at IS NULL OR ended_at >= started_at),
   -- Only the backfill writes an open-ended start, and only for 'assigned'.
   CONSTRAINT dpa_open_start_is_assigned CHECK (started_at IS NOT NULL OR kind = 'assigned')
 );
