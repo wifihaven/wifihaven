@@ -21,6 +21,7 @@ export function blockReasonText(r: BlockReason): string {
     case 'schedule':      return 'scheduled quiet time'
     case 'timeLimit':     return 'daily limit reached'
     case 'manual':        return 'blocked by parent'
+    case 'defaultDeny':   return 'default deny'
     case 'category':      return `category: ${r.slug}`
     case 'appTimeLimit':  return `app limit: ${r.label}`
     case 'appBlocked':    return `app blocked: ${r.appId}`
