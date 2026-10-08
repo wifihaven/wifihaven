@@ -25,5 +25,8 @@ export function blockReasonText(r: BlockReason): string {
     case 'appTimeLimit':  return `app limit: ${r.label}`
     case 'appBlocked':    return `app blocked: ${r.appId}`
     case 'unknown':       return r.raw || 'unknown'
+    // #2846: the SPA deploys separately from the API (Cloudflare Pages), so the API can emit a
+    // kind this build predates. Render the generic label rather than `undefined` (a blank cell).
+    default:              return 'blocked'
   }
 }

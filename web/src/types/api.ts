@@ -252,6 +252,8 @@ export function hostIsFqdn(h: HostId): boolean {
 // #962: typed BlockReason mirroring shared.BlockReason. Kind-tagged JSON; the
 // API persists this shape in JSONB on block_events/connection_events and
 // returns it verbatim on /api/logs. Render via blockReasonText (lib/blockReason).
+// The union is what this build knows; the API may send a newer kind (#2846), which
+// blockReasonText renders as generic "blocked".
 export type BlockReason =
   | { kind: 'allow' }
   | { kind: 'blocked' }
