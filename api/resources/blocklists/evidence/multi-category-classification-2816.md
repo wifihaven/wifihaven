@@ -14,7 +14,7 @@ the time of this run. Its 3 pending additions — `responsiveads.com`, `vdo.ai`
 (both ads.yml) and `hellohaven.ai` (ai.yml) — were folded into this pass's
 "already covered" set before sweeping, so they don't show up as duplicate
 gaps below. (As of 2026-10-08, `hellohaven.ai` is on main via #2837;
-`responsiveads.com` and `vdo.ai` are still carried by #2808.)
+`responsiveads.com` and `vdo.ai` landed on main when #2808 merged.)
 
 ## Added
 

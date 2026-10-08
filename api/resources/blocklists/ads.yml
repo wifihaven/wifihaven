@@ -696,6 +696,19 @@ hosts:
   - rtbedge.com
   - bidgust.com
   - impression.link
+  # traffic-driven additions (#2807): 30-day prod recent-apexes sweep (30
+  # devices, 2026-09-22). Both are confirmed ad-tech companies whose observed
+  # subdomains corroborate the function: responsiveads.com (ResponsiveAds —
+  # display-ad creative/serving; publish./video2. subdomains) and vdo.ai
+  # (VDO.AI — video-ad platform; ortb. subdomain is a direct open-RTB signal)
+  # are two more instances of the recurring ".ai/company-name TLD is not an
+  # AI-product signal" trap (#2599/#2742/#2756/#2759/#2792) — both surfaced
+  # in the ai.yml sweep but their entire business is ad delivery.
+  # (bidsystem.ai, a third .ai-TLD ad candidate from this sweep, was found on
+  # independent review to already be curated above, in the RTB/bidder/SSP
+  # name-pattern block — not re-added.)
+  - responsiveads.com
+  - vdo.ai
   # traffic-driven additions (#2816): 30-day prod recent-apexes sweep (30
   # devices, 2026-09-29). al-ad.com has no public company page but its
   # observed subdomains (ortb-us22/us32/.../us69.al-ad.com — literally "open
