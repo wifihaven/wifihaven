@@ -420,18 +420,18 @@ that edit in the same PR.** If a step above is now wrong, fix the step too.
   to block an apex that was in none of its categories — the real explanation
   was a mid-session policy edit, not a whole-MAC block, but the control is what
   made that distinguishable.
-- **2026-09-29** (#2816) — **A major platform's own dedicated ad-services
-  apex is not automatically a dual-use skip — the deciding factor is whether
-  it shares an IP/infra pool with unrelated product traffic, not whether the
-  owner is a household-name company.** `ebayadservices.com` (eBay's own
-  ad-services domain, confirmed via Netify/host.io/MarkMonitor) looked at
-  first glance like it might belong in the same skip bucket as
-  `googleadservices.com` — but that one is banned specifically because it
-  sits on Google's *shared* GFE IP pool alongside Drive/Docs/other product
-  traffic (`SharedGfeHosts`), not merely because it's ad-related. eBay's ad
-  apex is not shared infra — same reasoning that let `amazon-ads-
-  attestation.com` (#2729) in. Check for actual IP/infra sharing, not just
-  "is this a big company's ad domain."
+- **2026-09-29** (#2816) — **A "dedicated" ad-services apex is only
+  dedicated if it RESOLVES to dedicated addresses — the owner registering a
+  separate domain proves nothing about the IP layer.** `ebayadservices.com`
+  (eBay's own ad-services domain, confirmed via Netify/host.io/MarkMonitor)
+  was first added on the reasoning that, unlike `googleadservices.com`
+  (`SharedGfeHosts`), it was not shared infra. Independent review (after
+  #2823 set the shared-CDN rule) resolved it: the apex and `www.` CNAME
+  through `andes.ebay.com.edgekey.net` onto Akamai edges in the same /24
+  that `pages.ebay.com` answers in. `akamai*` was already on the Step 1 skip
+  list, so it was held out and pinned absent. The deciding test is still
+  "does it share an IP pool with unrelated traffic," but answer it with
+  `dig`, not with the domain's ownership.
 - **2026-09-29** (#2816) — **Two more `track`-substring consumer/SaaS false
   positives: `sail-track.com`** (a legitimate marine GPS-tracking app family,
   unrelated "Sail Track"/SailTrack products) **and `synctrack.io`** (a

@@ -13,14 +13,14 @@ files, not just the category its keyword match suggested (#2742 learning).
 the time of this run. Its 3 pending additions — `responsiveads.com`, `vdo.ai`
 (both ads.yml) and `hellohaven.ai` (ai.yml) — were folded into this pass's
 "already covered" set before sweeping, so they don't show up as duplicate
-gaps below.
+gaps below. (As of 2026-10-08, `hellohaven.ai` is on main via #2837;
+`responsiveads.com` and `vdo.ai` are still carried by #2808.)
 
 ## Added
 
 | Apex | Category | Bytes | Hits | What it is | Why it was a gap |
 |---|---|---|---|---|---|
 | `al-ad.com` | ads | 171,052 | 12 | No public company page; observed subdomains `ortb-us22/us32/us33/us34/us35/us63/us64/us69.al-ad.com` — literally "open RTB" server pool naming. | Name-is-function precedent (#2122/#2064/#2792) — absent from the `ads-extended` feed entirely, no other curated source flags it either. |
-| `ebayadservices.com` | ads | 1,547,158 | 1 | eBay's own dedicated ad-services apex (confirmed via Netify, host.io, and eBay's own MarkMonitor registration) — separate from eBay's core marketplace domain. | The `ads-extended` feed lists only `www.ebayadservices.com`, not the apex — our apex entry is the stronger block (#2122 pattern). Distinguished from the standing `googleadservices.com` skip: that one is banned because it sits on Google's *shared* GFE IP pool (`SharedGfeHosts`) alongside unrelated Google product traffic; `ebayadservices.com` is a dedicated, non-shared apex — same reasoning that let `amazon-ads-attestation.com` (#2729) in. |
 
 Dropped when main was merged in (2026-10-08): `teamwood.games` (285,697 bytes / 21 hits) and `teamwoodgames.com` (2,170,825 bytes / 9 hits), Teamwood Games, the Super Auto Pets studio, were already added to `games.yml` by #2837 (the #2836 pass), so this PR no longer adds them.
 
@@ -28,10 +28,11 @@ Dropped when main was merged in (2026-10-08): `teamwood.games` (285,697 bytes / 
 
 | Apex | Category swept into | Bytes | Hits | Disposition | Reason |
 |---|---|---|---|---|---|
+| `ebayadservices.com` | ads | 1,547,158 | 1 | Held out — shared CDN | eBay's own ad-services apex (confirmed via Netify, host.io, and eBay's MarkMonitor registration). First added in this pass, then dropped during independent review on 2026-10-08: the apex and `www.` both resolve onto shared Akamai edges (`andes.ebay.com.edgekey.net` → `e168507.a.akamaiedge.net`, 23.211.124.194/.195), the same /24 `pages.ebay.com` answers in. That is the #2823 shared-CDN skip, and `akamai*` is on the skill's Step 1 skip list. Pinned absent in `BundledBlocklistsSpec`. |
 | `amgtrack.online` | ads (`track` substring) | 31,752 | 2 | Held out — unverified | Search only surfaced an unrelated GPS-tracker product (`amgotrack.com`, different domain/spelling). No confirmed identity for this exact apex; too little traffic to risk a name-guess. |
 | `sail-track.com` | ads (`track` substring) | 39,517 | 19 | Skip | Resolves to a legitimate marine/sailing GPS-tracking app family ("Sail Track" / SailTrack), not ad infra. Substring false positive. |
 | `synctrack.io` | ads (`sync`/`track` substring) | 21,304 | 6 | Skip | Synctrack — a legitimate Shopify post-purchase/order-tracking SaaS (founded 2019, 20K+ merchant customers). Substring false positive. |
-| `cam4tracking.com` | ads (`track` substring) | 77,198 | 2 | Skip | Confirmed CAM4 (adult platform) affiliate/payment redirect domain (→ cam4pays.com). `cam4.com` itself is already curated in `adult.yml`; this tracking-only sibling carries no independent content and is low marginal value per this list's "conservative starter set" scope. |
+| `cam4tracking.com` | ads (`track` substring) | 77,198 | 2 | Skip | Confirmed CAM4 (adult platform) affiliate/payment redirect domain (→ cam4pays.com). `cam4.com` itself is already curated in `adult.yml`; this tracking-only sibling carries no independent content and is low marginal value per this list's "conservative starter set" scope. #2823 later found a structural reason too: its only observed host, `track.cam4tracking.com`, answers on shared CloudFront edges. |
 | `ad-score.com` | ads | 2,900,834 | 72 | Held out (unchanged from #2742) | At least three unrelated "AdScore"-named companies exist (ad-fraud detection, automotive-ad compliance, marketing analytics); no way to confirm which owns this specific domain. |
 | `app-ads-services.com`, `googleadservices.com`, `bounceexchange.com`, `smartborad.com`, `freebeacon.com`, `insidetracker.com`, `myfitnesspal.com`, `opentrackr.org`, `popcorn-tracker.org`, `paperlesspost.com`, `desync.com` | ads (various substrings) | — | — | Skip (standing) | Re-confirmed as prior-pass documented skips/false-positives (dual-use Google infra, SharedGfeHosts-banned, BitTorrent-tracker decoys, unrelated brands) — no new signal this pass. |
 | `stackexchange.com`, `creativecommons.org` | ads (`exchange`/`creativ` substring) | — | — | Skip | Obvious substring false positives — Stack Overflow network and the Creative Commons nonprofit. |
@@ -63,7 +64,7 @@ recurring in the window) — consistent with prior low-incidence passes.
 ## Self-update
 
 See the Learnings log in `.claude/skills/blocklist-pass/SKILL.md` for the new
-entries from this run: the `ebayadservices.com` "dedicated ad-services apex
-vs. shared-GFE" distinction, the `sail-track.com`/`synctrack.io`
+entries from this run: the `ebayadservices.com` shared-CDN lesson (it is
+Akamai-fronted, so it was held out), the `sail-track.com`/`synctrack.io`
 `track`-substring false positives, and the `cam4tracking.com`
 already-covered-content affiliate-tracking pattern.
