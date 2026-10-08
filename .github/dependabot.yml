@@ -5,8 +5,10 @@
 # #2855 bundled patch fixes (brace-expansion, js-yaml, undici, source-map-js) with vitest 4->5 and
 # tailwindcss 3->4; the vitest half failed `npm ci` and blocked the patches.
 #
-# Patch/minor security fixes are grouped into one PR; a major lands as its own PR so it can be
-# migrated (or closed) without blocking the rest.
+# Patch/minor security fixes are grouped into one PR. Updates outside the group's update-types
+# should land as individual PRs, so a major can be migrated (or closed) without blocking the rest.
+# GitHub's docs don't spell out how update-types applies inside a security-updates group, so
+# confirm this on the next advisory that needs a major.
 version: 2
 updates:
   - package-ecosystem: npm
