@@ -285,10 +285,16 @@ object DashboardNowApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostg
       "#1559 a background-pattern host attributed to an active app is kept in the now-widget ranking",
     ) {
       // Attribution beats suppression on the ranking path (#1559), the same way #1506 made it
-      // beat suppression on the counting paths. An off-domain asset/CDN host an app genuinely
-      // depends on that also happens to match the unified InfraHosts device-infra list must stay
-      // in topHosts / nowActivity instead of being silently dropped. A device-infra host with no
-      // app behind it (ocsp.digicert.com here) stays dropped.
+      // beat suppression on the counting paths — and since #2815, on both paths alike, only when
+      // the app claimed the host at least as SPECIFICALLY as the background list did. An
+      // off-domain asset/CDN host an app genuinely depends on that also happens to match the
+      // unified InfraHosts device-infra list must stay in topHosts / nowActivity instead of being
+      // silently dropped. A device-infra host with no app behind it (ocsp.digicert.com here)
+      // stays dropped.
+      //
+      // This fixture is unaffected by #2815 because it is an EQUAL-specificity claim: the app
+      // claims `gvt2.com` and the background entry IS the `gvt2.com` apex, so the app still wins.
+      // A brand apex over a lane enumerated by exact host would now drop from the ranking too.
       //
       // The app's host-set is built via app_policy_assignments + app_hosts, the same
       // attribution data `Presence.appHostPatterns` reads — i.e. routed through the single

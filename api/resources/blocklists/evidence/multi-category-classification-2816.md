@@ -21,8 +21,8 @@ gaps below.
 |---|---|---|---|---|---|
 | `al-ad.com` | ads | 171,052 | 12 | No public company page; observed subdomains `ortb-us22/us32/us33/us34/us35/us63/us64/us69.al-ad.com` — literally "open RTB" server pool naming. | Name-is-function precedent (#2122/#2064/#2792) — absent from the `ads-extended` feed entirely, no other curated source flags it either. |
 | `ebayadservices.com` | ads | 1,547,158 | 1 | eBay's own dedicated ad-services apex (confirmed via Netify, host.io, and eBay's own MarkMonitor registration) — separate from eBay's core marketplace domain. | The `ads-extended` feed lists only `www.ebayadservices.com`, not the apex — our apex entry is the stronger block (#2122 pattern). Distinguished from the standing `googleadservices.com` skip: that one is banned because it sits on Google's *shared* GFE IP pool (`SharedGfeHosts`) alongside unrelated Google product traffic; `ebayadservices.com` is a dedicated, non-shared apex — same reasoning that let `amazon-ads-attestation.com` (#2729) in. |
-| `teamwood.games` | games | 285,697 | 21 | Teamwood Games (Danish studio) — API backend for Super Auto Pets. | Confirmed via the studio's own itch.io/Steam/IndieDB presence. Major consumer mobile/PC auto-battler title, no shared infra. |
-| `teamwoodgames.com` | games | 2,170,825 | 9 | Teamwood Games' studio site. | Same as above — sibling apex for the same confirmed studio. |
+
+Dropped when main was merged in (2026-10-08): `teamwood.games` (285,697 bytes / 21 hits) and `teamwoodgames.com` (2,170,825 bytes / 9 hits), Teamwood Games, the Super Auto Pets studio, were already added to `games.yml` by #2837 (the #2836 pass), so this PR no longer adds them.
 
 ## Investigated and held out / skipped (not added)
 

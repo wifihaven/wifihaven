@@ -183,11 +183,14 @@ object AppTemplatesSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
           // #2790: orphan-driven catalog pass — BrickLink marketplace + Studio
           "bricklink",
           "hamstudy",
+          // #2820: the merged public-IP-lookup app keeps icanhazip's slug; the
+          // retired `ipify` template is gone from the catalog.
           "icanhazip",
-          // #2811: weather + ipify display-cleanup apps, OneNote for the web
+          // #2811: weather display-cleanup app, OneNote for the web
           "weather",
           "onenote",
-          "ipify",
+          // #2833: Scratch, scoped to the delegated `scratch.mit.edu` zone
+          "scratch",
         )
         val slugs    = templates.map(_.slug.value).toSet
         assertTrue(slugs == expected) &&
@@ -217,6 +220,149 @@ object AppTemplatesSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
         "/app_templates/youtube.yml",
       )
       assertTrue(r.isLeft)
+    },
+    test("#2820 one public-IP-lookup template covers both brands' host sets") {
+      // Display-cleanup consolidation: icanhazip (#2805) and ipify (#2811) are the
+      // same class of background public-IP lookup. One template now carries all
+      // three hosts, and no second template claims any of them.
+      for {
+        templates <- AppTemplates.loadAll()
+        bySlug        = templates.map(t => t.slug.value -> t).toMap
+        merged        = bySlug("icanhazip")
+        ipLookupHosts = Set(
+          Hostname.unsafe("icanhazip.com"),
+          Hostname.unsafe("api.ipify.org"),
+          Hostname.unsafe("api64.ipify.org"),
+        )
+      } yield assertTrue(
+        merged.hosts.toSet == ipLookupHosts,
+        // attribution-only: the hosts stay distinctive, none promoted to shared,
+        // and nothing else in the catalog lists them.
+        merged.sharedHosts.isEmpty,
+        templates.filter(t => t.hosts.exists(ipLookupHosts.contains)).map(_.slug.value) ==
+          List("icanhazip"),
+        !bySlug.contains("ipify"),
+        // operator-visible name is brand-neutral now that it covers both
+        merged.name.toLowerCase.contains("public ip"),
+      )
+    },
+    test("#2820 the merged template declares the retired slug it supersedes") {
+      for {
+        templates <- AppTemplates.loadAll()
+        merged = templates.find(_.slug.value == "icanhazip").get
+      } yield assertTrue(merged.retires.map(_.value) == List("ipify"))
+    },
+    test("#2820 retirement ids never collide with a live template slug") {
+      for {
+        templates <- AppTemplates.loadAll()
+      } yield assertTrue(AppTemplates.retirementViolations(templates).isEmpty)
+    },
+    test("#2820 retirementViolations flags a retirement id that is also a live slug") {
+      val a = tmpl("a", List("a.com"), Nil).copy(retires = List(AppTemplateId.unsafe("b")))
+      val b = tmpl("b", List("b.com"), Nil)
+      assertTrue(AppTemplates.retirementViolations(List(a, b)).nonEmpty)
+    },
+    test("#2820 retirementViolations flags two templates retiring the same id") {
+      val a = tmpl("a", List("a.com"), Nil).copy(retires = List(AppTemplateId.unsafe("z")))
+      val b = tmpl("b", List("b.com"), Nil).copy(retires = List(AppTemplateId.unsafe("z")))
+      assertTrue(AppTemplates.retirementViolations(List(a, b)).nonEmpty)
+    },
+    test("#2820 loadAll REJECTS a catalog whose retires entry names a live template") {
+      // The pure invariant check is covered above; this pins that the loader actually
+      // refuses the catalog, because a bad entry would delete a shipped app's row.
+      for {
+        result <- AppTemplates.loadAll("/bad_app_templates").either
+      } yield assertTrue(
+        result.isLeft,
+        result.swap.toOption.get.getMessage.contains("retires"),
+        result.swap.toOption.get.getMessage.contains("beta"),
+      )
+    },
+    test("#2820 a template rename is pushed onto the row it already seeded") {
+      // apps.name is written only at CREATE and there is no operator rename surface
+      // (#1798), so without this a merged template's new name never reaches a
+      // deployment that seeded the row under the old one.
+      for {
+        _       <- cleanDb
+        appRepo <- ZIO.service[AppRepo]
+        before = tmpl("icanhazip", List("icanhazip.com"), Nil)
+        _      <- AppTemplates.seed(appRepo, List(before))
+        seeded <- appRepo.findByTemplateId(before.slug).someOrFailException
+        after = before.copy(name = "Public IP lookup")
+        summary <- AppTemplates.seed(appRepo, List(after))
+        row     <- appRepo.findById(seeded.id).someOrFailException
+        // second pass with the same template is a no-op
+        again   <- AppTemplates.seed(appRepo, List(after))
+      } yield assertTrue(
+        row.name == "Public IP lookup",
+        row.id == seeded.id,
+        summary.renamed.map(r => (r.slug, r.from, r.to)) ==
+          List(("icanhazip", "icanhazip", "Public IP lookup")),
+        again.renamed.isEmpty,
+      )
+    },
+    test("#2820 a template names every row carrying its template_id, including an adopted one") {
+      // reconcileOne stamps a template_id onto a pre-existing row without touching its
+      // name. From then on the template owns the name — there is no app-create or rename
+      // route (#1798), so a divergent name is drift, not a choice. Pinning it here makes
+      // the consequence of adoption explicit rather than a side effect.
+      for {
+        _       <- cleanDb
+        appRepo <- ZIO.service[AppRepo]
+        t = tmpl("icanhazip", List("icanhazip.com"), Nil).copy(name = "Public IP lookup")
+        // a pre-existing row on the canonical slug, carrying no template_id
+        adoptedId <- appRepo.create("My IP thing", "icanhazip", None, Some("📶"), IconType.Emoji)
+        _         <- appRepo.setHosts(adoptedId, List(Hostname.unsafe("icanhazip.com")))
+        // reconcile adopts it...
+        _         <- wifihaven.api.AppReconciler.reconcileTemplates(appRepo, List(t))
+        adopted   <- appRepo.findById(adoptedId).someOrFailException
+        // ...and the next seed names it
+        _         <- AppTemplates.seed(appRepo, List(t))
+        after     <- appRepo.findById(adoptedId).someOrFailException
+      } yield assertTrue(
+        adopted.templateId.contains(t.slug),
+        adopted.name == "My IP thing",
+        after.name == "Public IP lookup",
+      )
+    },
+    test("#2820 the seeder acts on the resolved row, and says so, when a template has two") {
+      // reconcileOne can stamp a template_id onto a canonical row while a `-template-N`
+      // row already carries one, and nothing collapses that pair. The seeder then has to
+      // pick — deterministically, and loudly enough that the losing row's hosts and usage
+      // are not quietly stranded.
+      for {
+        _       <- cleanDb
+        appRepo <- ZIO.service[AppRepo]
+        t = tmpl("youtube", List("youtube.com"), Nil).copy(name = "YouTube")
+        // suffixed row first, so "lowest id" and "canonical slug" disagree
+        suffixedId  <- appRepo.create(
+          "Seeded",
+          "youtube-template-2",
+          Some(t.slug),
+          None,
+          IconType.Url,
+        )
+        _           <- appRepo.setHosts(suffixedId, List(Hostname.unsafe("ytimg.com")))
+        canonicalId <- appRepo.create("Adopted", "youtube", Some(t.slug), None, IconType.Url)
+        _           <- appRepo.setHosts(canonicalId, List(Hostname.unsafe("youtube.com")))
+        _           <- AppTemplates.seed(appRepo, List(t))
+        canonical   <- appRepo.findById(canonicalId).someOrFailException
+        suffixed    <- appRepo.findById(suffixedId).someOrFailException
+        logged      <- ZTestLogger.logOutput
+      } yield assertTrue(
+        // the canonical-slug row is the one the seeder names and tops up
+        canonical.name == "YouTube",
+        suffixed.name == "Seeded",
+        // and the ambiguity is reported rather than absorbed
+        logged.exists(e =>
+          e.logLevel == LogLevel.Warning &&
+            e.message().contains("template_id=youtube is on 2 rows") &&
+            e.message().contains(s"$canonicalId:youtube") &&
+            // names the WINNER, not merely that both rows were listed
+            // trailing ';' so this can't be satisfied by a longer id with the same prefix
+            e.message().contains(s"resolved to id=${canonicalId.value};"),
+        ),
+      )
     },
     test("#1896 catalog satisfies the shared-host invariants") {
       for {
@@ -808,6 +954,39 @@ object AppTemplatesSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
             .map(h => s"${t.slug.value}:${h.value}"),
         )
       } yield assertTrue(offenders.isEmpty)
+    },
+    test(
+      "#2833 — Scratch is scoped to the delegated scratch.mit.edu zone, never the mit.edu apex",
+    ) {
+      // `mit.edu` is a shared multi-service university apex. Both matchers on the path
+      // are pure suffix tests — dnsmasq against the verbatim `nftset=/<host>/` the agent
+      // emits, and `HostMatch.matchesApex` (`host == x || host.endsWith("." + x)`) — so a
+      // `mit.edu` entry would pull EVERY MIT hostname into this app: into the
+      // per-(MAC, host) `eb_` drop set when Scratch is blocked, and into its time budget
+      // when it is not. Enforcement is IP-layer, so the block half is the #1636 shape.
+      //
+      // `scratch.mit.edu` is safe to carry alone because it is a DELEGATED zone: MIT's
+      // own `mit.edu` zone (Akamai nameservers) hands the subtree to a separate Route 53
+      // nameserver set, so everything under it is the Scratch Foundation's by
+      // construction. `ocw.mit.edu` is a second, independently delegated zone — which is
+      // what makes the apex a present multi-service parent rather than a hypothetical.
+      //
+      // The positive half pins the exact FQDN, which nothing else in this file does —
+      // the pinned slug set above would catch `scratch.yml` being deleted, but not its
+      // host being edited to anything that merely avoids the literal `mit.edu`. So an
+      // absence assertion alone would pass on `www.scratch.mit.edu`, which is why both
+      // halves are here. Verified: each fails on its own (apex entry fails the first,
+      // `www.scratch.mit.edu` the second).
+      for {
+        templates <- AppTemplates.loadAll()
+        offenders = templates.flatMap(t =>
+          (t.hosts ++ t.sharedHosts)
+            .filter(_.value == "mit.edu")
+            .map(h => s"${t.slug.value}:${h.value}"),
+        )
+        scratch   = templates.find(_.slug.value == "scratch")
+      } yield assertTrue(offenders.isEmpty) &&
+        assertTrue(scratch.exists(_.hosts.exists(_.value == "scratch.mit.edu")))
     },
   ) @@ TestAspect.sequential
 }

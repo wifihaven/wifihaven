@@ -710,3 +710,104 @@ hosts:
   # SharedGfeHosts case).
   - al-ad.com
   - ebayadservices.com
+  # traffic-driven additions (#2823): two hops of the pop-under REDIRECT CHAIN
+  # behind the CAM4 pop-unders reported on Sameer Mac. Found by enumerating
+  # every host the device resolved in the burst windows around each cam4 hit.
+  # These are ad/redirect infra, so they belong here and NOT in `adult` even
+  # though the chain lands on an adult site.
+  # Evidence: evidence/adult-classification-2823.md
+  #
+  # Chain, 2026-09-12 01:24-01:26Z and again 2026-10-03 02:27-02:30Z. Within
+  # 01:24:11 the ordering is same-second and not strictly resolved, so the lure
+  # is named as the apex seen at that second rather than asserted as causal:
+  #   piratebay.com (01:24:11, lure; torrindex.net 01:24:22 and
+  #     thepiratebay.org 01:24:23 follow the first hops)
+  #     -> unhappyweakness.com (01:24:19)
+  #     -> track.cam4tracking.com (01:25:04) -> ws./static./api.cam4.com
+  # The chain's terminal ad network, `mgid.com`, is already curated above
+  # (line ~166) and confirmed `blocked:true` on prod — no action needed there.
+  #
+  # unhappyweakness.com + realizationnewestfangs.com are ONE operator: both
+  # resolve to the identical 9-address set on Servers.com (172.240.108.x /
+  # 172.240.127.x / 172.255.141.4), share nameservers
+  # NS1/NS2.PUBLICDNSSERVICE.COM, and are both eNom + privacy-proxy +
+  # registrant country CZ. Augur Security's fast-flux-TDS write-up names
+  # `realizationnewestfangs.com` explicitly and lists 172.240.x.x among the
+  # pool's ranges — an independent fingerprint match to what was measured here:
+  # https://www.augursecurity.com/post/multi-hop-malvertising-infrastructure-exposed
+  # unhappyweakness.com separately carries a 1/100 Gridinsoft trust score with
+  # multiple malware/phishing blacklist hits. So each has two independent
+  # signals. A malvertising flag does not disqualify an ads-category add (#2122
+  # gamaibids.com precedent), and `malware` is URL-sourced (URLhaus) so it
+  # cannot be hand-curated anyway.
+  #
+  # The discriminator is WHAT KIND OF ADDRESS these answer on, not a
+  # household-scoped lookup. Both resolve to their own A records on bulk VPS
+  # hosting (Servers.com), which is categorically unlike a CNAME onto a CDN
+  # edge that fronts thousands of unrelated distributions: an address-level
+  # drop here cannot take out an unrelated tenant the way #2601 did. (They are
+  # also absent from the 785 CDN addresses this household resolves, but that
+  # check alone would NOT be sufficient — the #2601 harm is to other tenants of
+  # the pool, which a household-scoped sample cannot measure.)
+  #
+  # Of the 15 held-out chain hosts, 14 sit behind shared Cloudflare or
+  # CloudFront frontends (including cam4tracking.com) and were not added for
+  # exactly that reason — one of them, itefullofeedshen.com, was measured
+  # sharing an exact address with a household CloudFront distribution. The
+  # 15th, clickpathworks.com, IS on a dedicated address and is held out for a
+  # different reason: a single self-derived signal.
+  #
+  # NOTE this fleet is FAST-FLUX by design — ~300 auto-generated compound-word
+  # domains that rotate. These two entries block the two members observed here;
+  # they are not a durable fix for the fleet. #2826 is the shared-frontend
+  # question, #2827 the sweep blind spot.
+  #
+  # clickpathworks.com was investigated and HELD OUT: its only signal is that
+  # its two observed hosts CNAME into ak-is2.net, whose own subdomains look
+  # ad-shaped (cpm., rtb-as., *.xml.) — one DNS observation plus an inference
+  # from naming, with no independent curator or reputation datum. That is below
+  # the two-independent-signals bar the axon.ai/trygravity.ai false positives
+  # established.
+  - unhappyweakness.com
+  - realizationnewestfangs.com
+  #
+  # traffic-driven additions (#2836): 30-day prod recent-apexes sweep across
+  # all 30 devices, 2026-10-06. adnami.io (confirmed: Adnami ApS, a Danish
+  # display/high-impact ad-tech vendor) and adition.com (confirmed: ADITION
+  # technologies / Virtual Minds, a German programmatic ad-serving platform)
+  # both have named-company confirmation. adnpbs.com/adxflyer.com have no
+  # confirmed company page but maximally self-descriptive ad-exchange +
+  # prebid-server-shaped names (same bar as the inhousedsp.com precedent,
+  # #2212) and resolve to dedicated AWS/Tencent Cloud addresses, not a
+  # shared CDN pool — adxflyer.com is additionally corroborated by an
+  # independent hagezi/dns-blocklists ads listing (GitHub issue #6965).
+  # nexverse.ai is a confirmed "AI-native AdTech platform" (VerSe
+  # Innovation subsidiary) — another instance of the `.ai`-TLD-hides-an-
+  # ad-network trap (axon.ai/programmaticx.ai/trygravity.ai/koah.ai/
+  # mediayo.ai), filed here not in ai.yml.
+  #
+  # Held out this pass (no action, recorded so a later pass does not
+  # re-guess): adncdn.net (CloudFront-fronted), admbucket.com (Tencent Cloud
+  # CDN-fronted), synctrack.io/addtoany.com (Cloudflare-fronted) — all
+  # structural CDN skips per the #2823 rule regardless of name. ad-score.com
+  # (multiple unrelated companies share the name, re-confirmed ambiguous),
+  # advolve.io/syncingbridge.com/verysane.ai (no confirmed identity).
+  # adxvalidation.com has the same self-descriptive "ADX" naming and
+  # dedicated-Tencent-Cloud hosting as adxflyer.com, but — unlike it — no
+  # independent corroborating source; its only signal is a traffic shape
+  # similar to adxflyer.com's from the SAME pull, which isn't a second
+  # independent signal. Held out pending stronger confirmation.
+  # adtrafficquality.google resolves onto Google's own shared GFE anycast
+  # pool (173.194.x, same range as gstatic.com/google.com) — a structural
+  # skip for the same IP-layer-collateral reason `SharedGfeHosts` exists
+  # (`shared/src/types/SharedGfeHosts.scala`), though this specific `.google`
+  # gTLD apex isn't in that hostname list. google-analytics.com/
+  # app-ads-services.com/app-analytics-services.com/merchant-center-
+  # analytics.goog/adobe.com/adobe.io/adobedc.net/adobedtm.com/
+  # adobelogin.com/adoberesources.net/popcorn-tracker.org/tagsrvcs.com are
+  # standing dual-use/BT-tracker skips, re-confirmed.
+  - adnami.io
+  - adition.com
+  - adnpbs.com
+  - adxflyer.com
+  - nexverse.ai

@@ -82,6 +82,19 @@ object BundledBlocklistsSpec
         case _                                 => false
       }))
 
+  /** #2823: one place that pulls an inline list's hosts, instead of a per-test `match` copy. */
+  private def inlineHostsOf(
+      bundled: List[BundledBlocklist],
+      id: String,
+  ): List[Hostname] =
+    bundled
+      .find(_.id == BlocklistId.unsafe(id))
+      .toList
+      .flatMap(_.content match {
+        case BundledBlocklistContent.Inline(hs) => hs
+        case _                                  => Nil
+      })
+
   def spec = suite("BundledBlocklists")(
     test("_index.yml is in sync with the .yml files in blocklists/") {
       for {
@@ -168,6 +181,8 @@ object BundledBlocklistsSpec
         assertTrue(ads.contains(Hostname.unsafe("adpushup.com"))) &&
         // traffic-driven addition pinned for presence (#2759)
         assertTrue(ads.contains(Hostname.unsafe("adspostx.com"))) &&
+        // traffic-driven addition pinned for presence (#2836)
+        assertTrue(ads.contains(Hostname.unsafe("adnami.io"))) &&
         assertTrue(meta.isDefined) &&
         assertTrue(meta.exists(m => m.bundled && m.name == "Ads & Trackers"))
     },
@@ -406,7 +421,9 @@ object BundledBlocklistsSpec
         // traffic-driven addition pinned for presence (#2348)
         assertTrue(hosts.contains(Hostname.unsafe("saygames.io"))) &&
         // traffic-driven addition pinned for presence (#2756)
-        assertTrue(hosts.contains(Hostname.unsafe("wordplays.com")))
+        assertTrue(hosts.contains(Hostname.unsafe("wordplays.com"))) &&
+        // traffic-driven addition pinned for presence (#2836)
+        assertTrue(hosts.contains(Hostname.unsafe("teamwoodgames.com")))
     },
     test("gambling + social-media: traffic-driven additions are present (#2212)") {
       for {
@@ -438,6 +455,113 @@ object BundledBlocklistsSpec
         // traffic-driven addition pinned for presence (#2756)
         assertTrue(social.contains(Hostname.unsafe("truthsocial.com")))
     },
+    // #2823: the CAM4 pop-under chain pass. Two hops on dedicated hosting are
+    // curated in `ads`; every chain host that fronts on a shared Cloudflare or
+    // CloudFront frontend is pinned ABSENT from every inline list, because an
+    // address-level drop there is #2601 collateral on a non-Google pool and
+    // `SharedGfeHosts` only covers Google. `cam4tracking.com` is in that set
+    // despite being a real coverage gap — its only observed host is a
+    // CloudFront CNAME, so blocking it would arm shared edge addresses rather
+    // than its own dedicated apex. See
+    // evidence/adult-classification-2823.md and #2377.
+    test("#2823: CAM4-chain hops on dedicated hosting are curated in ads") {
+      for {
+        bundled <- BundledBlocklists.loadAll()
+        ads   = inlineHostsOf(bundled, "ads")
+        adult = inlineHostsOf(bundled, "adult")
+      } yield
+      // liveness anchors: these lists loaded and are non-empty
+      assertTrue(ads.contains(Hostname.unsafe("mgid.com"))) &&
+        assertTrue(adult.contains(Hostname.unsafe("cam4.com"))) &&
+        // the two dedicated-hosting hops, classified `ads` not `adult`
+        assertTrue(ads.contains(Hostname.unsafe("unhappyweakness.com"))) &&
+        assertTrue(ads.contains(Hostname.unsafe("realizationnewestfangs.com"))) &&
+        assertTrue(!adult.contains(Hostname.unsafe("unhappyweakness.com"))) &&
+        assertTrue(!adult.contains(Hostname.unsafe("realizationnewestfangs.com")))
+    },
+    test("#2823: held-out CAM4-chain hosts stay out of every inline list") {
+      // Each of these was observed in the measured chain and investigated, and each
+      // is held out. Fourteen are held out because they resolve onto a shared
+      // Cloudflare or CloudFront frontend, so they can never be an IP-layer
+      // enforcement target (#2601 on a non-Google pool, which `SharedGfeHosts`
+      // does not cover — it is Google-only). `clickpathworks.com` is the one
+      // exception: it is on a dedicated Webair address, and is held out for a
+      // different reason — a single self-derived signal — pinned here so a later
+      // pass re-adds it only with real corroboration.
+      //
+      // Covers `devTestBlocklists` as well as the shipped YAML, for the same reason
+      // the #2601 test below (`:620`) does: `test_ads` is a real inline list that reaches
+      // `blocklistIds` -> `bl_test_ads` whenever WIFIHAVEN_SEED_TEST_BLOCKLISTS is
+      // set, so it would reproduce the same collateral on a dev router, and
+      // `loadAll()` only sees the YAML resources — hence the explicit `++`.
+      val heldOut = List(
+        // CDN-fronted (14) — unblockable at the IP layer
+        "cam4tracking.com",
+        "itefullofeedshen.com",
+        "moonlighthathel.org",
+        "ghabovethec.info",
+        "herefwukou.org",
+        "buying.expert",
+        "toplakehorizon.com",
+        "astoopolitet.org",
+        "show-sb.com",
+        "holdbitter.com",
+        "storageimagedisplay.com",
+        "waifuoverlord.com",
+        "sowve.com",
+        "nresystems.com",
+        // dedicated hosting, held out for insufficient corroboration (1)
+        "clickpathworks.com",
+      ).map(Hostname.unsafe)
+      for {
+        inlineLists <- loadInlineOnly
+        offenders = (inlineLists ++ BundledBlocklists.devTestBlocklists).flatMap { bl =>
+          val hosts = bl.content match {
+            case BundledBlocklistContent.Inline(hs) => hs
+            case _                                  => Nil
+          }
+          // SUFFIX match, not equality — mirrors `SharedGfeHosts.isBanned`
+          // (`shared/src/types/SharedGfeHosts.scala:110-113`), the matcher shape the
+          // #2601 sibling test below (`:620`) uses. Exact-apex equality would miss
+          // `track.cam4tracking.com`, and that is the ONLY host ever observed for
+          // that apex — so the subdomain is the likelier form a future pass would
+          // reach for, and its CloudFront edges are the identical harm. Host-scoped
+          // entries are already normal in these catalogs (`ai.yml` carries
+          // `gemini.google.com`; `games.yml` carries `store.steampowered.com`), so
+          // this is a realistic evasion. Case-folded: `Hostname.unsafe` does not
+          // normalize.
+          hosts
+            .filter { x =>
+              val xv = x.value.toLowerCase
+              heldOut.exists { h =>
+                val hv = h.value.toLowerCase
+                xv == hv || xv.endsWith("." + hv)
+              }
+            }
+            .map(x => s"${bl.id.value}:${x.value}")
+        }
+      } yield
+      // Liveness anchors FIRST: without these the absence check below passes for
+      // free if the catalogs fail to load (#2823). The four `contains` assertions
+      // are the falsifiable ones — they fail if `loadAll()` returns nothing or
+      // drops a list. The trailing `forall(hs.nonEmpty)` cannot actually fail
+      // today (the loader rejects an empty `hosts:` outright,
+      // `BundledBlocklists.scala:157`); it is kept as a cheap guard in case that
+      // validation is ever relaxed.
+      assertTrue(inlineLists.map(_.id).contains(BlocklistId.unsafe("adult"))) &&
+        assertTrue(inlineLists.map(_.id).contains(BlocklistId.unsafe("ads"))) &&
+        assertTrue(inlineHostsOf(inlineLists, "adult").contains(Hostname.unsafe("cam4.com"))) &&
+        assertTrue(inlineHostsOf(inlineLists, "ads").contains(Hostname.unsafe("mgid.com"))) &&
+        assertTrue(
+          inlineLists.forall(bl =>
+            bl.content match {
+              case BundledBlocklistContent.Inline(hs) => hs.nonEmpty
+              case _                                  => true
+            },
+          ),
+        ) &&
+        assertTrue(offenders.isEmpty)
+    },
     test("ai: bundled list is loaded and includes the major AI services (#1890)") {
       for {
         bundled <- BundledBlocklists.loadAll()
@@ -458,6 +582,8 @@ object BundledBlocklistsSpec
         assertTrue(hosts.contains(Hostname.unsafe("midjourney.com"))) &&
         // traffic-driven addition pinned for presence (#2348)
         assertTrue(hosts.contains(Hostname.unsafe("gemini.google"))) &&
+        // traffic-driven addition pinned for presence (#2836)
+        assertTrue(hosts.contains(Hostname.unsafe("hellohaven.ai"))) &&
         // #2768 preemptive hardening, one pin per group so a bad merge that drops
         // the block is caught. These are NOT traffic-driven — see the ai.yml
         // rationale block and evidence/ai-classification-2768.md.

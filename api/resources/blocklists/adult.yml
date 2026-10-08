@@ -30,3 +30,30 @@ hosts:
   - bangbros.com
   - realitykings.com
   - naughtyamerica.com
+  #
+  # cam4tracking.com — INVESTIGATED (#2823) AND DELIBERATELY NOT ADDED.
+  # It is a genuine coverage gap: a separate registrable domain from `cam4.com`
+  # above (so that entry does not suffix-match it), absent from the StevenBlack
+  # porn-only feed entirely, and `PolicyService` returns blocked:false for it on
+  # every MAC checked. It is CAM4's affiliate/redirect tracking apex and the
+  # measured entry point of a pop-under chain.
+  #
+  # It stays out because it is not blockable at the IP layer. The only host ever
+  # observed is `track.cam4tracking.com`, a CloudFront CNAME
+  # (dw5ee7oih1tmy.cloudfront.net). Nothing resolves the bare apex, so adding
+  # this host would never put its dedicated MojoHost address into `bl_adult` —
+  # it would put SHARED CloudFront edge addresses there, for every profile with
+  # `adult` enabled. 6 of the 226 cloudfront.net hostnames this household
+  # resolves already sit in the same /24, and that /24 demonstrably reuses
+  # addresses across distributions. That is #2601 on a non-Google pool.
+  #
+  # The `bl_<id>` 1h timeout does NOT make this safe: it is a property of the
+  # enforcement plane shared by every member of every `bl_` set, so it cannot
+  # distinguish this host from the 13 Cloudflare/CloudFront-fronted chain hops
+  # that were also held out. Same rule, same outcome.
+  #
+  # #2377 (SNI-level disambiguation) is what would make it addable. Do not
+  # re-add from the hostname alone before then.
+  # Evidence: evidence/adult-classification-2823.md
+  # (no host entries below this line — the block above is a do-not-re-add note,
+  #  not an endorsement of anything appended after it.)

@@ -1,0 +1,5 @@
+slug: beta
+name: Beta
+icon: "🅱️"
+hosts:
+  - beta.example.com

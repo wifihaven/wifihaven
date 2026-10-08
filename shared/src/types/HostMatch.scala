@@ -78,6 +78,41 @@ object HostMatch {
       patterns.exists(p => matchesPattern(fqdn.value, p)),
     )
 
+  /**
+   * #2813: the most SPECIFIC of `patterns` that `host` matches, if any — the pattern, not just a
+   * Boolean, so a caller can compare two competing classifications by how specifically each one
+   * claimed the host. Specificity is [[patternSpecificity]], the same measure the background class
+   * uses, so the two are directly comparable.
+   *
+   * Two callers need the ordering: the #2077 anchor gate and, since #2815,
+   * `Presence.suppressedAsBackground`. [[matchesAny]] deliberately stays a short-circuiting
+   * `exists` rather than delegating here — it still answers a plain Boolean for `isExempt` and the
+   * byte-floor branch of `isHeartbeat` on every row, so paying for a full scan plus an intermediate
+   * list there is a hot-path regression.
+   */
+  def matchedPatternIn(host: HostId, patterns: List[String]): Option[String] =
+    if patterns.isEmpty then None
+    else
+      host.asFqdn.flatMap(fqdn =>
+        patterns
+          .filter(p => matchesPattern(fqdn.value, p))
+          .maxByOption(patternSpecificity),
+      )
+
+  /**
+   * #2813: how specific a host pattern is, as its count of dot-separated labels. A `*.` prefix and
+   * a leading `-` (the `-pa.googleapis.com` suffix family) are stripped first, so the three pattern
+   * forms this codebase uses — exact host, apex, suffix family — are all measured the same way and
+   * are directly comparable: `client-log-forwarder.1password.com` is 3, `1password.com` is 2,
+   * `*.example.com` is 2, `-pa.googleapis.com` is 3.
+   *
+   * Lives here rather than on `InfraHosts` because it is a pure property of the pattern string with
+   * no infra-host semantics, and because `InfraHosts` already depends on this object — measuring it
+   * there and reaching back would invert the leaf-primitive relationship. `InfraHosts` aliases it.
+   */
+  def patternSpecificity(pattern: String): Int =
+    pattern.stripPrefix("*.").stripPrefix("-").count(_ == '.') + 1
+
   /** Boolean variant of [[lookupApex]] over a set of apexes. */
   def hasApexMatch(host: String, apexes: Set[String], maxHops: Int = 5): Boolean =
     apexTails(host, maxHops).exists(apexes.contains)

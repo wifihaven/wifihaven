@@ -1,0 +1,7 @@
+# #2820 fixture: a catalog whose `retires:` entry names a LIVE template slug.
+# `AppTemplates.loadAll` must reject it rather than letting the reconciler merge
+# away a shipped app. Not part of the shipped catalog — the loader only reads
+# this directory when a test passes the prefix explicitly.
+slugs:
+  - alpha
+  - beta

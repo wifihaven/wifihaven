@@ -796,13 +796,19 @@ object MultiTenantIsolationSpec
           tokenA,
         )
         pageA       <- ZIO.fromEither(bodyA.fromJson[ConnectionEventSeriesPage])
-        aRow = pageA.rows.find(_.groups.getOrElse("domain", "") == "a-series.example.com")
-        bRow = pageA.rows.find(_.groups.getOrElse("domain", "") == "b-series.example.com")
+        // Sum across ALL buckets for the domain rather than reading a single `.find`ed row: these events
+        // are anchored on real wall-clock `now`, so a run in the first ~60s after a top-of-hour splits
+        // A's two events across two 1h buckets (two count-1 rows), which first-row `.find` undercounts.
+        aCount = pageA.rows
+          .filter(_.groups.getOrElse("domain", "") == "a-series.example.com")
+          .map(_.countSucceeded)
+          .sum
+        bRows  = pageA.rows.filter(_.groups.getOrElse("domain", "") == "b-series.example.com")
       } yield assertTrue(sA == Status.Ok) &&
         // A's own host present with A's own count only …
-        assertTrue(aRow.exists(_.countSucceeded == 2)) &&
+        assertTrue(aCount == 2) &&
         // … and household B's host never leaks into A's series.
-        assertTrue(bRow.isEmpty)
+        assertTrue(bRows.isEmpty)
     },
     test("pin 1 — GET /api/connection-events/series (rollup) counts ONLY the caller's household") {
       for {
@@ -855,11 +861,17 @@ object MultiTenantIsolationSpec
           tokenA,
         )
         pageA       <- ZIO.fromEither(bodyA.fromJson[ConnectionEventSeriesPage])
-        aRow = pageA.rows.find(_.groups.getOrElse("domain", "") == "a-series.example.com")
-        bRow = pageA.rows.find(_.groups.getOrElse("domain", "") == "b-series.example.com")
+        // Sum across ALL hourly buckets for the domain: the wall-clock-anchored events straddle a
+        // top-of-hour boundary when CI runs in the first ~90s of an hour, splitting A's two events into
+        // two count-1 rollup rows that first-row `.find` undercounts to 1 (the #2837 CD flake).
+        aCount = pageA.rows
+          .filter(_.groups.getOrElse("domain", "") == "a-series.example.com")
+          .map(_.countSucceeded)
+          .sum
+        bRows  = pageA.rows.filter(_.groups.getOrElse("domain", "") == "b-series.example.com")
       } yield assertTrue(sA == Status.Ok) &&
-        assertTrue(aRow.exists(_.countSucceeded == 2)) &&
-        assertTrue(bRow.isEmpty)
+        assertTrue(aCount == 2) &&
+        assertTrue(bRows.isEmpty)
     },
     test("pin 1 — GET /api/stats counts ONLY the caller's household (leak pin #2282)") {
       for {

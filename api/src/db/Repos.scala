@@ -4277,7 +4277,21 @@ trait AppRepo {
   def listAll: Task[List[App]]
   def findById(id: AppId): Task[Option[App]]
   def findBySlug(slug: String): Task[Option[App]]
+
+  /**
+   * The one row this template manages. `apps.template_id` carries no UNIQUE constraint
+   * (`V28__apps.sql:17`) and `AppTemplates.findFreeSlug` can park a second row at `<slug>-template`
+   * / `<slug>-template-N`, so this RESOLVES the duplicate state rather than raising on it (#2820):
+   * the row on the canonical slug wins, else the lowest id. Every caller that wants "the template's
+   * row" goes through this, so they all agree on which row that is.
+   */
   def findByTemplateId(templateId: AppTemplateId): Task[Option[App]]
+
+  /**
+   * #2820: every row carrying this `template_id`, ordered by id — for the callers that must act on
+   * all of them (the retirement merge) rather than on the resolved one.
+   */
+  def listByTemplateId(templateId: AppTemplateId): Task[List[App]]
   def create(
       name: String,
       slug: String,
@@ -4420,11 +4434,36 @@ class AppRepoLive(xa: Transactor[Task]) extends AppRepo {
       .option
       .transact(xa)
 
+  // Resolves the canonical-slug row first, then the lowest id, so a canonical + `<slug>-template`
+  // pair yields the canonical one deterministically instead of raising (#2820). "Canonical slug ==
+  // the template id string" is the seeder's own rule — `AppTemplates.seedOne` creates the row with
+  // `slug = findFreeSlug(t.slug.value)` and `template_id = t.slug`, falling back to a suffix only
+  // when the base is taken.
+  //
+  // Resolving silently would hide a real inconsistency, so say so: duplicates are a state
+  // `reconcileOne` can create (it stamps a template_id onto a canonical row while a `-template-N`
+  // row already carries one) and nothing collapses, and the losing row keeps hosts and usage
+  // history nobody will look at again.
   def findByTemplateId(templateId: AppTemplateId) =
-    sql"SELECT id,name,slug,template_id,icon,icon_type,created_at FROM apps WHERE template_id=$templateId"
+    listByTemplateId(templateId).flatMap { rows =>
+      val resolved = rows.find(_.slug == templateId.value).orElse(rows.headOption)
+      ZIO
+        .logWarning(
+          s"apps: template_id=${templateId.value} is on ${rows.size} rows " +
+            rows.map(r => s"${r.id.value}:${r.slug}").mkString("[", ",", "]") +
+            s" — resolved to id=${resolved.map(_.id.value).getOrElse("none")}; " +
+            "the others keep hosts and usage that no template manages",
+        )
+        .when(rows.size > 1)
+        .as(resolved)
+    }
+
+  def listByTemplateId(templateId: AppTemplateId) =
+    sql"""SELECT id,name,slug,template_id,icon,icon_type,created_at
+          FROM apps WHERE template_id=$templateId ORDER BY id"""
       .query[R]
       .map(toApp)
-      .option
+      .to[List]
       .transact(xa)
 
   def create(

@@ -235,11 +235,30 @@ object AmbientGateSpec extends ZIOSpecDefault {
       val gated   = gatedMinutes(rows, g)
       assertTrue(gated == ungated, gated >= 30)
     },
-    test("#2177 app attribution beats the cloud-background class (#1506 seam)") {
-      // A host on the class that an ACTIVE app template claims anchors via attribution —
-      // the class only removes the FALLBACK anchor role, never the app seam.
-      val rows = (0 until 10).toList.map(m => row(mac1, m, "excess-ga.duolingo.com"))
-      assertTrue(gatedMinutes(rows, gate(), List("duolingo.com")) >= 10)
+    test("#1506/#2813 app attribution beats the class at EQUAL specificity") {
+      // A host an ACTIVE app template claims AS SPECIFICALLY as the class does still anchors via
+      // attribution — the class only removes the FALLBACK anchor role, never the app seam. The
+      // `serato.com` template against the `serato.com` class apex is the live instance of this:
+      // both claim the same 2-label apex, so Serato keeps anchoring and the #1446/#2068
+      // undercount guarantee is untouched.
+      val rows = (0 until 10).toList.map(m => row(mac1, m, "insights.serato.com"))
+      assertTrue(gatedMinutes(rows, gate(), List("serato.com")) >= 10)
+    },
+    test("#2813 a MORE SPECIFIC class entry beats a brand-apex app pattern") {
+      // The inverse of the pin above, and the #2813 bug: an app template that claims a brand
+      // APEX must not launder an anchor onto a background LANE of that brand that InfraHosts
+      // enumerates by exact host. `excess-ga.duolingo.com` (3 labels, on the class) outranks the
+      // `duolingo.com` app pattern (2), so a window of nothing but the telemetry beacon drops.
+      val beaconOnly = (0 until 10).toList.map(m => row(mac1, m, "excess-ga.duolingo.com"))
+      // ...while a genuine Duolingo session — which also hits the app's real API host, deliberately
+      // NOT on the class — keeps its minutes in full, beacon rows included.
+      val realUse    = (20 until 30).toList.flatMap { m =>
+        List(row(mac1, m, "ios-api-cf.duolingo.com"), row(mac1, m, "excess-ga.duolingo.com"))
+      }
+      assertTrue(
+        gatedMinutes(beaconOnly, gate(), List("duolingo.com")) == 0,
+        gatedMinutes(realUse, gate(), List("duolingo.com")) >= 10,
+      )
     },
     test("#2177 the ambient_gate_enabled kill-switch disables class weighting too") {
       // The class tier rides the same operator switch as the learned baseline: gate off ⇒

@@ -142,8 +142,9 @@ object PerAppScheduleSpec extends ZIOSpecDefault {
         )
         // capGroups: TimeLimited only.
         assertTrue(ds.capGroups.map(_.appId) == List(AppId(300L))) &&
-        // appHostPatterns: mode-agnostic. Attribution should beat suppression for any host an
-        // assigned app names, regardless of its mode.
+        // appHostPatterns: mode-agnostic — every assigned app's hosts are in the attribution set
+        // regardless of its mode. What that attribution then WINS is a separate question (#2815
+        // made the background half specificity-dependent); this pins only the set's membership.
         assertTrue(ds.appHostPatterns.toSet == Set("khan.org", "badhost.com", "youtube.com")) &&
         // exemptPatterns: mode-agnostic, only filters on the exempt flag.
         assertTrue(ds.exemptPatterns.toSet == Set("khan.org"))

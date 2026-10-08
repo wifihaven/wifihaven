@@ -1,0 +1,308 @@
+# App-catalog classification — #2833 Scratch (2026-10-05)
+
+Operator-named pass: author a Scratch app template. The brand was given; the
+traffic pull scoped the host-set and settled the two questions the issue
+raised — what Scratch's real subdomain lanes are, and whether anything outside
+`scratch.mit.edu` belongs in the set.
+
+Source: prod cloud API, read-only. No policy writes.
+
+```
+GET /api/devices                                                     # roster
+GET /api/devices/<mac>/recent-apexes?windowDays=90&limit=1000        # bytes/hits + subdomains
+GET /api/profiles/<id>/usage-by-app?from=2026-09-05&to=2026-10-05    # profiles 1,5,6,7 — orphanHosts
+```
+
+Kid devices sampled: Kid Laptop (`ca:ef:a1:72:6a:a3`), Kid Mac (2)
+(`b0:de:28:25:93:89`, no rows in window), Octavius iPad
+(`a6:05:9a:63:83:af`), Prima iPad (`8a:8a:0b:86:5a:63`), Prima iPad (3)
+(`ae:2f:81:30:53:6a`), Quintus Chromebook (`c4:13:75:68:a1:01`), Quintus iPad
+(`26:74:fc:f9:4e:9e`). These drove the classification.
+
+**The whole roster was then swept** — `GET /api/devices` returns **30**
+devices, and all 30 were queried over the same 90d window for `mit.edu`,
+`turbowarp`, `penguinmod`, `scratchjr` and `scratchfoundation`. Only the five
+devices in the table below returned anything, every hit was under
+`scratch.mit.edu`, and no device returned a single byte for any of the four
+sibling brands. That sweep is what licenses the "no other MIT hostname
+appeared" claim; the kid-device sample alone could not.
+
+## Observed traffic
+
+90d bytes under the `mit.edu` apex — **every byte of it `*.scratch.mit.edu`**,
+on every device:
+
+| device | bytes | hits |
+| --- | ---: | ---: |
+| Quintus Chromebook | 215,904,583 (215.9 MB) | 162 |
+| Kid Laptop | 85,839,730 (85.8 MB) | 98 |
+| Prima iPad | 74,417 (74 KB) | 2 |
+| Sameer Mac (adult) | 168,663,045 (168.7 MB) | 161 |
+| Sameer iPhone (adult) | 1,764,970 (1.8 MB) | 3 |
+
+The two adult rows are the values from the 30-device roster sweep on
+2026-10-05; an earlier revision carried `168,662,266` / 98 hits for the Mac and
+a blank hit count for the iPhone, from a partial adult sweep run earlier the
+same day. **Two separate things changed and only one of them has an
+explanation**, so both are stated rather than folded into one cause:
+
+- The Mac's **byte** delta (+779) is consistent with the window advancing
+  between the two pulls.
+- The **hit** counts are not. +63 hits for +779 bytes is ~12 B/hit against this
+  row's own ~1.05 MB/hit, and the iPhone gained 3 hits against a byte-identical
+  count, which no window advance can produce. The likeliest reading is that the
+  partial sweep did not populate the hit column the same way — the blank iPhone
+  cell is the tell — but **that is not established and the cause is
+  unexplained.**
+
+The sweep values are the ones to trust: they come from the complete run, and
+the byte counts are what the classification rests on.
+
+`recent-apexes` reports bytes per APEX, not per subdomain, so those totals
+cannot be split per host. The per-host figures below are 30d proportional
+minutes from `orphanHosts`, which is per-host.
+
+### Per-host proportional minutes, 30d, kid profiles
+
+| host | profile 1 (Kids) | profile 5 (Quintus) | profile 6 (Prima) |
+| --- | ---: | ---: | ---: |
+| `projects.scratch.mit.edu` | — | 54 | — |
+| `assets.scratch.mit.edu` | 25 | 45 | 1 |
+| `uploads.scratch.mit.edu` | 1 | 30 | — |
+| `scratch.mit.edu` | 25 | 20 | — |
+| `cdn.assets.scratch.mit.edu` | 14 | — | — |
+| `clouddata.scratch.mit.edu` | — | 11 | — |
+| `cdn2.scratch.mit.edu` | — | 5 | — |
+| `backpack.scratch.mit.edu` | 3 | — | — |
+| `api.scratch.mit.edu` | 0 | 2 | — |
+| `cdn.scratch.mit.edu` | — | 0 | — |
+
+**242 proportional minutes over 30 days, all of it orphaned** — attributed to
+no app before this template. Profile 7 (Octavius) had none.
+
+Two notes on reading that table, because the figures do not add up naively.
+Each cell is floored to whole minutes, so the cells sum to 236 while the total
+is computed from raw seconds (14,544 s = 242.4 min). And each cell is one
+profile's share, not a host total: across profiles, from raw seconds, the
+per-host figures are `assets` 72.4, `projects` 54.9, `scratch` 45.1, `uploads`
+31.9, `cdn.assets` 14.7, `clouddata` 11.0, `cdn2` 5.7, `backpack` 3.4, `api`
+2.7, `cdn` 0.7. So the largest single host is `assets.scratch.mit.edu`, not the
+54-minute profile-5 `projects` cell.
+
+## Disposition: new app template, anchoring presence
+
+A kid building, remixing or playing a Scratch project is genuine engagement and
+its time belongs in a budget. This is explicitly **not** the
+`icanhazip` / `weather` display-cleanup class (#2805/#2811/#2820), which exists
+to de-orphan background traffic nobody is "using" and is documented
+attribution-only. Scratch is the opposite case: anchoring is the intended
+behaviour. No host here goes into a background class, and the template says so
+inline so a later pass does not reclassify it.
+
+Per #2813/#2815, the thing to avoid is reaching for a brand APEX to get that
+anchoring. This template does not — see below.
+
+## Host set: one entry, `scratch.mit.edu`
+
+Every Scratch host observed is a child of `scratch.mit.edu`, and both
+enforcement (dnsmasq suffix match on the verbatim `nftset=/<host>/` the agent
+emits) and attribution (`HostMatch.matchesApex`, `host == x ||
+host.endsWith("." + x)`) suffix-match the entry's own subtree. So one entry
+covers all ten observed hosts. Enumerating them would add no coverage and would
+rot as Scratch adds subdomains.
+
+Attribution depth is fine: the deepest observed host,
+`cdn.assets.scratch.mit.edu`, is 5 labels, and `HostMatch.lookupApex` →
+`apexTails(host, maxHops = 5)` finds `scratch.mit.edu` on the 3rd tail — well
+inside the bound that bites `amazon-telemetry.yml`'s deep anchors.
+
+### Why that is a tight FQDN and not "the apex in disguise"
+
+`scratch.mit.edu` is a **delegated DNS zone**. MIT's own `mit.edu` zone is on
+Akamai nameservers and hands the whole subtree to a separate Route 53 set:
+
+```
+$ dig +short NS mit.edu
+eur5.akam.net.  use5.akam.net.  usw2.akam.net.  ns1-37.akam.net.
+asia2.akam.net. asia1.akam.net. ns1-173.akam.net. use2.akam.net.
+
+$ dig +short NS scratch.mit.edu
+ns-275.awsdns-34.com.  ns-583.awsdns-08.net.
+ns-1316.awsdns-36.org. ns-1587.awsdns-06.co.uk.
+
+$ dig @use5.akam.net +noall +authority +answer NS scratch.mit.edu
+scratch.mit.edu. 1800 IN NS ns-1587.awsdns-06.co.uk.   (+ the other three)
+```
+
+MIT's own authoritative server returns that delegation, so everything under
+`scratch.mit.edu` is administered by the Scratch Foundation by construction,
+and nothing else in `mit.edu` is reachable through the entry. This is the
+stable, checkable argument the `youtube.yml` standard asks for — a nameserver
+delegation, not an IP-overlap claim, which would be unverifiable for
+DNS-steered hosts.
+
+## The `mit.edu` exclusion
+
+`mit.edu` must never appear in this host set. Both matchers above are pure
+suffix tests, so a `mit.edu` entry would pull EVERY MIT hostname into the
+per-(MAC, host) `eb_` drop set when Scratch is blocked, and into Scratch's
+budget when it is not. Enforcement is IP-layer, so the block half is the #1636
+shape: a blocked parent's resolved IPs are dropped, collateral included.
+
+`mit.edu` is demonstrably a multi-service parent right now:
+
+| host | fronting |
+| --- | --- |
+| `www.mit.edu`, `web.mit.edu` | Akamai (`www.mit.edu.edgekey.net`) |
+| `ocw.mit.edu` (OpenCourseWare) | a SECOND independently delegated zone, own Route 53 set (`ns-293.awsdns-36.com`, `ns-620.awsdns-13.net`, …) |
+| `alum.mit.edu` | Akamai edge address |
+| `scratch.mit.edu` | Fastly + AWS, own Route 53 set |
+
+**Honest scope:** no non-Scratch MIT hostname appeared in this household's
+traffic at all. The exclusion is structural and precautionary — it closes a
+latent trap rather than an observed one. Said plainly in the template so nobody
+reads it as a fixed incident.
+
+## Shared-CDN handling (`_README.yml` Class 2)
+
+| host | CNAME target |
+| --- | --- |
+| `assets`, `cdn.assets`, `cdn`, `cdn2`, `uploads` `.scratch.mit.edu` | `d.sni.global.fastly.net` |
+| `backpack.scratch.mit.edu` | `b.sni.global.fastly.net` |
+| `scratch`, `api`, `projects` `.scratch.mit.edu` | no CNAME (A records direct) |
+| `clouddata.scratch.mit.edu` | no CNAME; generic AWS EC2 addresses |
+
+Six hosts sit behind Fastly's shared edge: the five asset / CDN lanes, plus
+`backpack`, which is the sprite carrier rather than a CDN lane. Class 2 treats
+that as latent risk and **not** a reason to strip them. They are where the
+app's own bytes live, and stripping them would both defeat the block and
+under-count the time:
+those six are 7,720 of the 14,544 proportional seconds, 53% of the app's
+time. Equally, no `*.fastly.net`
+artifact is pinned, since those rotate. The delegated-zone entry gets both
+halves right in one line: the Scratch-branded names are in the set, the shared
+Fastly names are not.
+
+`clouddata.scratch.mit.edu` is on generic AWS EC2 rather than a CDN edge, so —
+as `amazon-telemetry.yml` records for its own hosts — an address entering an
+`eb_` set can later be reassigned to an unrelated AWS tenant. Bounded by the
+same mechanism: `eb_`/`eb6_` sets are declared `flags dynamic,timeout` with
+`timeout 1h` (`render.lua:1009-1018`) and `eb_refresh.lua` re-resolves every
+`eb_` host on `eb_refresh_interval`, default 1800s (`wifihaven-agent:143`),
+strictly below that timeout — so the exposure is the residual of one ageing
+window. Not a reason to drop the host.
+
+## Scratch mods and third-party players — excluded, with evidence
+
+The issue asked for this to be decided explicitly rather than defaulted.
+
+| candidate | HTTP / title | traffic (90d, all devices) | disposition |
+| --- | --- | ---: | --- |
+| `turbowarp.org` | 200 "TurboWarp - Run Scratch projects faster" | none | exclude |
+| `packager.turbowarp.org` | 200 "TurboWarp Packager" | none | exclude |
+| `penguinmod.com` | 200 "PenguinMod - Home" | none | exclude |
+| `scratchjr.org` | 200 "ScratchJr - Home" | none | watch-item |
+| `scratchfoundation.org` | resolves (Fastly `151.101.{2,66,130,194}.132`), own delegated Route 53 zone; live site, see the dated note below | none | exclude |
+
+TurboWarp and PenguinMod are third-party Scratch MODS run by different
+operators on different sites. They play Scratch projects, but folding them into
+this template would bill another site's time to this app's budget — the
+mis-attribution the issue warned about. Zero traffic in the sample, so there is
+no evidence to override that. If either shows traffic later it gets its own
+template, not an entry here.
+
+ScratchJr is the Scratch Foundation's own tablet product for younger kids —
+same family, separate apex, zero observed traffic. Watch-item, add only with
+its own evidence.
+
+### `scratchfoundation.org` — a dated note, because the answer moved twice
+
+**As of 2026-10-05 ~16:30Z this host is NOT blocked.** It presents its own cert
+(`subject=CN=scratchfoundation.org`, issuer `C=US, O=Certainly, CN=Certainly
+Intermediate R1`) and serves the real Scratch Foundation site. Re-running the
+commands below today shows that, not what they showed earlier. The history is
+kept because the lesson is the point, not the host.
+
+**Earlier the same day** — ~14:40Z and ~15:40Z, during two review passes —
+`scratchfoundation.org` could not be fetched from the measurement host, and the
+reason was **this deployment's own enforcement**, not anything at the Scratch
+Foundation. Two earlier drafts of this row got that wrong — first "no answer",
+then "HTTPS presents a self-signed cert" — and the self-signed cert was the
+tell:
+
+```
+$ echo | openssl s_client -connect scratchfoundation.org:443 \
+      -servername scratchfoundation.org 2>/dev/null \
+  | openssl x509 -noout -subject -issuer
+subject=CN=block.wifihaven.local
+issuer=CN=block.wifihaven.local
+
+$ curl -k https://scratchfoundation.org          # 200, our own page
+<title>Blocked</title>
+<meta http-equiv="refresh" content="0;url=https://app.wifihaven.net/blocked?host=scratchfoundation.org&mac=52%3A1a%3A60%3Ad8%3A4e%3A32">
+```
+
+That was our block page arriving via our own HTTPS DNAT — `render.lua:1462-1463`
+emits a TCP/80 and a TCP/443 rule per predicate, which is why a self-signed
+`CN=block.wifihaven.local` answers on 443 at all. Controls from the same
+machine — `scratch.mit.edu` (`CN=scratch.mit.edu`), `turbowarp.org`
+(`CN=turbowarp.org`), `penguinmod.com` — each presented their own valid cert, so
+it was host-specific interception rather than a blanket MITM of the measurement
+host. Reading an enforcement artifact as a property of the destination is the
+inference `AGENTS.md` is most emphatic about, and it is recorded here because it
+happened.
+
+**That it cleared within hours with no repo change is itself evidence for the
+hypothesis below**: a fetched blocklist was dropping it and has since rotated.
+It also makes the standing point — a block observation is a snapshot, so date
+it. The disposition is unaffected either way: zero traffic on all 30 devices,
+so `scratchfoundation.org` stays excluded on volume, not on reachability.
+
+**The curated-list grep did not cover whatever was dropping it.**
+`grep -rniE 'mit\.edu|scratch'` over `api/resources/blocklists/` was clean
+throughout (re-confirmed), so the drop came from a *fetched* blocklist, an
+`extraBlocked` entry, or `blockIpOnly` — none of which a repo grep sees. The
+block clearing within hours with no repo change points at the fetched list.
+
+**No host this PR ships is affected**: `scratch.mit.edu` completes its TLS
+handshake against its own cert from this machine, so it is not being dropped
+for this MAC, and there is no app-blocklist conflict in the diff. Worth knowing
+because `scratchfoundation.org` and `scratchjr.org` are both recorded as future
+candidates, and a later pass measuring them from inside the enforcement plane
+would reach the same wrong conclusion.
+
+The only off-domain host either Scratch page references is
+`www.googletagmanager.com` (checked by fetching `scratch.mit.edu/` and
+`scratch.mit.edu/projects/editor/` and grepping the HTML for hostnames). Shared
+Google tag infrastructure, not Scratch's bytes — excluded.
+
+## App ↔ blocklist overlap (#1983)
+
+Re-verified this run: `grep -rniE 'mit\.edu|scratch'` over
+`api/resources/blocklists/` returns nothing. No chosen host sits on a curated
+list.
+
+Scope of that check: it covers the **curated, repo-authored** lists only. A
+fetched blocklist, an `extraBlocked` entry or `blockIpOnly` is invisible to it
+— see the dated `scratchfoundation.org` note below for a host that was
+demonstrably being dropped on this household while this grep was clean (it is
+no longer blocked as of 2026-10-05 ~16:30Z, which does not change the point).
+`scratch.mit.edu` itself is confirmed reachable from the measurement host (its
+own TLS cert, not the block page), so the shipped host is unaffected.
+
+## Icon
+
+`https://icons.duckduckgo.com/ip3/scratch.mit.edu.ico` returns HTTP 200 with a
+real 4,286-byte `image/x-icon` (`file` reports a 32x32 32-bpp icon), so it is
+not the generic placeholder the service serves for domains it does not know.
+
+The `mit.edu` key is **not** used, and not because it fails — checked, it
+returns HTTP 200 with a real 15,406-byte `image/x-icon`, MIT's own
+institutional mark. That is the reason to avoid it: it would label this app
+with the university instead of the product, the same call
+`amazon-telemetry.yml` records when it declines the AWS logo.
+
+(An earlier draft of this doc claimed the apex 404s with a 1,478-byte PNG
+placeholder. The first request did return that, but it has not reproduced in
+five subsequent requests and the cause is unknown — so the 404 is recorded as
+an observation, not explained.)
