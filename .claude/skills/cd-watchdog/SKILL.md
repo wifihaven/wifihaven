@@ -202,14 +202,17 @@ git worktree add .claude/worktrees/cd-fix-<slug> -b claude/cd-fix-<slug> origin/
 
 ---
 
-## Step 6 — Review + monitor, do NOT merge
+## Step 6 — Review + monitor to MERGED
 
 - Run the **`/pr-review`** skill; address BLOCKERs + cheap SHOULD-FIX; push;
   re-run until clean.
 - Monitor the PR through CI: if checks fail, read, fix, push. If a check fails on
   an **INFRA flake** (Step 3 signals), **re-run it** rather than editing code.
-- **NEVER `gh pr merge`; NEVER enable auto-merge** — that is the operator's call.
-- Finish when the PR is **green + mergeable**, or when you've left the skip/infra
+- Merge, or leave for the operator, per the
+  [merge rule](../../../docs/pr-review-checklist.md#monitor-to-merged). A fix to
+  a `.github/workflows/master-*.yml` pipeline is prod deploy config there, so it
+  waits for the operator.
+- Finish when the rule's "done" is met, or when you've left the skip/infra
   notice.
 
 ---

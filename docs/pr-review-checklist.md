@@ -39,8 +39,9 @@ Classify every finding:
 - **SHOULD-FIX** — fix now unless there's a good reason not to; reviewer's call.
 - **NIT** — minor / stylistic; non-blocking.
 
-End with **VERDICT: APPROVE** or **VERDICT: REQUEST-CHANGES**. **Never APPROVE
-while an open BLOCKER exists.**
+End with **`VERDICT: APPROVE @ <sha>`** or **`VERDICT: REQUEST-CHANGES @ <sha>`**,
+where `<sha>` is the full 40-char SHA of the PR head you reviewed (see *Output
+format*). **Never APPROVE while an open BLOCKER exists.**
 
 ---
 
@@ -285,11 +286,25 @@ NITS
 1. <file:line> — <minor note>
 ...
 
-VERDICT: APPROVE | REQUEST-CHANGES
+VERDICT: APPROVE @ <full 40-char HEAD sha>        (or: VERDICT: REQUEST-CHANGES @ <sha>)
 <3-line summary of the change and the basis for the verdict>
 ```
 
-Never emit **VERDICT: APPROVE** while any BLOCKER is listed.
+Never emit **APPROVE** while any BLOCKER is listed.
+
+**The verdict line is machine-read** by `scripts/pr-merge-gate.sh` to decide
+whether the author may merge ([merge rule](#monitor-to-merged)), so its shape
+is exact:
+
+- exactly one line in the comment, starting at column 0:
+  `VERDICT: APPROVE @ <sha>` or `VERDICT: REQUEST-CHANGES @ <sha>`;
+- `<sha>` is the full 40-char lowercase SHA of the commit you reviewed, the
+  same SHA as the comment's `reviewed-sha=` marker;
+- if you quote an example verdict anywhere else in the comment, indent it or
+  put it in a code block so it does not start at column 0.
+
+A verdict naming any SHA other than the current PR head is **void**: the gate
+treats it as no review at all.
 
 ---
 
@@ -316,11 +331,14 @@ the commit the review covers — the PR head at review time.
 
 ### Post as a comment, never as a GitHub review
 
-Post with **`gh pr comment <n>`** — a plain, **non-approving** PR comment. Do
-**NOT** use `gh pr review --approve` / `--request-changes`: an automated GitHub
-*review* can satisfy or conflict with required-human-review rules and interfere
-with the merge queue. The APPROVE / REQUEST-CHANGES verdict lives in the comment
-body as text, not as a GitHub review state.
+Post with **`gh pr comment <n>`** — a plain PR comment. Do **NOT** use
+`gh pr review --approve` / `--request-changes`. Every PR is authored from the
+operator's GitHub account and GitHub does not let an author approve their own
+PR, so a GitHub review state cannot carry the verdict; it would also interact
+with review rules and the merge queue. The APPROVE / REQUEST-CHANGES verdict
+lives in the comment body as the SHA-bound `VERDICT:` line (see *Output
+format*). That line is the approve signal the [merge rule](#monitor-to-merged)
+reads.
 
 Use `--body-file` (write the body to a temp file) rather than `--body` for the
 long, multi-line body, so markdown and special characters survive shell quoting:
@@ -378,6 +396,8 @@ gh pr comment <n> --repo wifihaven/wifihaven --body-file /tmp/pr-review-body.md
 - **Any open BLOCKER** — a prior one still NOT-ADDRESSED / PARTIAL, *or* a newly
   introduced one — keeps the verdict at **REQUEST-CHANGES** and stays
   merge-gating.
+- **An APPROVE covers one SHA.** Any push after it, including a one-line fix
+  for a review finding, voids it until the review is re-run on the new head.
 
 ### Idempotent, non-spammy
 
@@ -407,11 +427,11 @@ an open BLOCKER. The checklist leads with duplicated-logic / single-source-of-tr
 and test-integrity, the two failure modes behind our recurring prod incidents.
 
 **The review is POSTED to the PR and RE-RUN on each push.** The reviewer posts
-its findings as a marked, **non-approving** PR comment (`gh pr comment` — never a
-GitHub `--approve` / `--request-changes` review, so it can't interfere with
-required human reviews or the merge queue), leading with a machine-findable
-marker that records the reviewed commit
-(`<!-- wifihaven-pr-review reviewed-sha=<sha> -->`). On a subsequent push the
+its findings as a marked PR comment (`gh pr comment`, never a GitHub
+`--approve` / `--request-changes` review; see *Post as a comment* above),
+leading with a machine-findable marker that records the reviewed commit
+(`<!-- wifihaven-pr-review reviewed-sha=<sha> -->`) and ending with a verdict
+line bound to the same SHA (`VERDICT: APPROVE @ <sha>`). On a subsequent push the
 review re-runs incrementally: it finds the prior marked comment, **statuses each
 prior finding** ADDRESSED / NOT-ADDRESSED / PARTIAL against current code, reviews
 only the **incremental delta** (`git diff <reviewed-sha>...HEAD`) for new
@@ -421,40 +441,112 @@ merge-gating. See the *Posting & re-runs* section above for the full algorithm.
 
 ### Monitor PRs through to MERGED, not just queued {#monitor-to-merged}
 
-**Spawned chips monitor PRs through to MERGED, not just to queued.** The
-independent review pass is the gate for ENTERING the merge queue, but the
-author chip's job isn't done until the PR's state is `MERGED`. Once queued,
-the chip watches the merge queue and iterates without waiting for an operator
+**This section is the one definition of the PR merge rule** (decided by the
+operator 2026-10-08, [#2869](https://github.com/wifihaven/wifihaven/issues/2869)).
+AGENTS.md, skills, and commands link here and do not restate it;
+`.github/scripts/check-merge-rule-single-source.sh` fails CI if one does. Its
+mechanical check is [`scripts/pr-merge-gate.sh`](../scripts/pr-merge-gate.sh).
+If the script and this section disagree, this section is right and the script
+is the bug.
+
+The author-side session (the chip that opened the PR) owns it from open to
+`MERGED`. The operator can always merge or hold any PR themselves.
+
+#### When the session may merge
+
+The session merges the PR itself when **all** of these hold. Run
+`scripts/pr-merge-gate.sh check <n>`; it prints `MERGE <sha>` (exit 0) only
+when they do.
+
+1. **APPROVE on the current head.** The latest marked `/pr-review` comment ends
+   with `VERDICT: APPROVE @ <sha>`, and `<sha>` (and the comment's
+   `reviewed-sha=` marker) equals the PR's current `headRefOid`. An APPROVE for
+   any other SHA is void. **Every push after a review, however small, needs a
+   re-review before merging.** This is the
+   [#2829](https://github.com/wifihaven/wifihaven/issues/2829) failure: a fix
+   was pushed after review, the session reported done, and an unreviewed SHA
+   was merged. The reviewer emits APPROVE only with no open BLOCKER
+   ([output format](#output-format)).
+2. **Required checks green on that SHA.** Every required status check on
+   `main` succeeded on that exact commit. The script reads the required set from
+   branch protection (today it is the umbrella `CI` job) rather than hardcoding
+   it.
+3. **Open, not a draft, mergeable** (no conflicts).
+4. **Not an excluded class** (below).
+
+#### Excluded classes: the operator merges
+
+These still get the full review and must reach APPROVE on HEAD with green CI,
+but the session does **not** merge them. Their failure mode is prod-wide and CI
+cannot see it (for example a migration that runs for minutes against prod row
+counts, [#migrations-prod-data-volume](process/migrations.md#migrations-prod-data-volume)).
+Detection is by changed path, including the old path of a rename (`classify`
+in the script):
+
+| Class | Changed paths |
+|---|---|
+| Schema migration | `api/resources/db/migration/**`, or any `V<n>__*.sql` |
+| Prod deploy config | `render.yaml`; `infra/cloudflare/**` (DNS, Pages, Workers routes); `**/wrangler*.toml`; `docker/entrypoint.sh` (env and secrets into app config); `.github/workflows/master-*.yml` (the prod CD pipelines and their secrets) |
+| Merge-policy machinery | `scripts/pr-merge-gate.sh`, `.claude/commands/pr-review.md`, this file, `.github/scripts/check-merge-rule-single-source.sh`, so a PR cannot loosen the gate it then merges through |
+
+Router agent changes are **eligible**, even though a merge cuts a release the
+family router self-installs.
+
+#### How to merge: enqueue with a head guard
+
+"Merge" means **enqueue into the merge queue**. The `Main Protection` ruleset
+on `main` allows squash only, requires linear history, and runs a merge queue
+(squash, `ALLGREEN`, one entry built and merged at a time) that re-runs CI on
+the combined result before landing. Enqueueing a PR authored from the same
+account works; the ruleset requires 0 approvals.
+
+```bash
+scripts/pr-merge-gate.sh enqueue <n>
+```
+
+That runs `check`, then:
+
+1. re-reads `headRefOid` immediately before enqueueing and aborts if it moved;
+2. runs `gh pr merge <n> --squash --match-head-commit <approved-sha>`. With a
+   merge queue required, `gh` enqueues through `enablePullRequestAutoMerge` and
+   sends `--match-head-commit` as its `expectedHeadOid` (gh v2.96.0,
+   `pkg/cmd/pr/merge/http.go`);
+3. re-reads `headRefOid` afterwards and, if it moved, disarms with
+   `gh pr merge <n> --disable-auto` and reports.
+
+Server-side enforcement of `expectedHeadOid` in merge-queue mode has not been
+exercised live, so steps 1 and 3 do not rely on it. Never pass `--admin`, and
+never arm `--auto` on a head that lacks an APPROVE.
+
+If you push to a PR that is queued or armed, the old APPROVE is void. Check
+`gh pr view <n> --json autoMergeRequest,isInMergeQueue`; if either is still set,
+disarm with `gh pr merge <n> --disable-auto` first, then re-review and
+`enqueue` again.
+
+#### Iterating until done
+
+Once the PR is open the session iterates without waiting for an operator
 prompt:
 
 - **Queue CI fails** (Gate 2 port collision from a sibling chip,
-  infrastructure flake, etc.) → diagnose, push a fix, iterate.
+  infrastructure flake, etc.) → diagnose, push a fix, re-review, enqueue again.
 - **Conflict appears** with another PR that landed first → rebase on
-  `origin/main`, resolve, push.
+  `origin/main`, resolve, push, re-review, enqueue again.
 - **Re-review needed** because new commits got pushed → re-run `/pr-review`,
-  address BLOCKERs, push. (This pairs with the re-run-on-push behavior in the
-  *Posting & re-runs* section above, which covers the REVIEWER side; this rule
-  covers the AUTHOR side of the same lifecycle.)
+  address BLOCKERs, push. (This is the AUTHOR side of the re-run-on-push
+  behavior in *Posting & re-runs* above.)
+- **The operator dequeued or disarmed the PR** (it left the queue with no push
+  and no queue-CI failure) → treat it as a hold. Do not enqueue again; report
+  and stop.
 
-**The chip NEVER queues a PR for merge itself, and NEVER re-arms
-merge-when-ready unless the operator had already armed it.** The
-merge-when-ready click is the operator's explicit approval to ship — it is
-**required** so the operator approves every change, and a chip running
-`gh pr merge … --auto` (or any equivalent) bypasses that approval and is
-forbidden. Concretely:
+#### What "done" means
 
-- **First time the PR is ready** → the chip reports "review APPROVE, ready
-  for merge-when-ready," and stops. The operator clicks merge-when-ready.
-- **After a rebase or queue-CI fix push**, the chip may re-arm
-  merge-when-ready (`gh pr merge <n> --auto …`) **only if** the operator had
-  already armed it before the push — i.e. `gh pr view <n> --json
-  autoMergeRequest` returned a non-null `autoMergeRequest` immediately
-  before the push knocked it off. Check that field; if it is null, do
-  nothing and report state.
-- **If the operator explicitly unqueued the PR** (the chip should treat
-  any transition from armed → null as "operator unqueued" unless the chip
-  itself just force-pushed), the chip does NOT re-arm. Report and stop.
+- **Eligible PR:** done only when `gh pr view <n> --json state` returns
+  `MERGED`. Queued is not merged.
+- **Excluded class:** done when the PR is `OPEN`, mergeable, has an APPROVE on
+  HEAD and green CI (`check` prints `OPERATOR <sha>`, exit 3). Say plainly that
+  it is **waiting for the operator to merge**, and name the excluded class and
+  path the script reported. Do not enqueue it.
 
-A chip replies "done" only when `gh pr view <n> --json state` returns
-`MERGED`. Polling cadence is ~5–10 minutes — use `ScheduleWakeup` for long
-waits, don't busy-poll.
+Polling cadence is ~5–10 minutes. Use `ScheduleWakeup` for long waits; don't
+busy-poll.

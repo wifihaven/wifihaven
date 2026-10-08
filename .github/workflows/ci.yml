@@ -489,6 +489,22 @@ jobs:
       - name: Reject devices.profile_id writes outside DeviceAssignment.assign
         run: bash .github/scripts/check-device-profile-writers.sh
 
+  # ── Merge rule: one definition (#2869) ─────────────────────────────────
+  # The PR merge rule lives only in docs/pr-review-checklist.md#monitor-to-merged;
+  # every other doc / skill / command links to it. This fails if one restates it.
+  # Deliberately NOT path-filtered: the edit it guards against can land in any
+  # Markdown file or skill, and a filtered job that skips reads as success.
+  merge-rule-single-source:
+    name: Merge Rule Single-Source Check
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Reject restatements of the merge rule outside its canonical section
+        run: bash .github/scripts/check-merge-rule-single-source.sh
+
   # ── Cloud-agent prompts: re-paste reminder + PROMPT_VERSION bump ─────────
   # The Claude Code Cloud ROUTINE copy of deploy/{support,press}-agent/agent.yaml
   # is WEB-UI-ONLY: merging does not update the running agent, and a stale
@@ -987,6 +1003,7 @@ jobs:
       - migration-isolation
       - usage-period-hardcode
       - device-profile-writers
+      - merge-rule-single-source
       - agent-prompt-repaste
       - shell-tests
       - lua-tests
