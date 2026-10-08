@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, useLocation } from 'react-router-dom'
 import type { ConnectionEventAggRow, Device, ProfileDetail, QueryLog } from '@/types/api'
@@ -251,6 +251,24 @@ describe('LogsPage — infinite scroll (#862)', () => {
     expect(await screen.findByTestId('end-of-stream')).toBeInTheDocument()
   })
 
+})
+
+describe('LogsPage — unrecognised block reason (#2846)', () => {
+  // The SPA deploys separately from the API, so a row can carry a reason kind this build
+  // predates. The row renders with the generic reason label, not a blank cell or the raw kind.
+  it('renders an unrecognised reason kind as generic "blocked"', async () => {
+    const futureLog = {
+      ...log1, id: 3, host: { type: 'fqdn', value: 'future.example' },
+      blocked: true, reason: { kind: 'notYetKnownReason' },
+    } as unknown as QueryLog
+    ;(api.logs.query as unknown as ReturnType<typeof vi.fn>)
+      .mockResolvedValue({ rows: [futureLog], nextCursor: null })
+    renderAt()
+    const host = await screen.findByText('future.example')
+    const row = host.closest('tr') as HTMLElement
+    expect(within(row).getByText('blocked')).toBeInTheDocument()
+    expect(within(row).queryByText(/notYetKnownReason/)).not.toBeInTheDocument()
+  })
 })
 
 describe('LogsPage — status filter (#1432)', () => {

@@ -489,6 +489,19 @@ describe('RecentlyBlockedSection (#1338 / #2073 / #2062)', () => {
     expect(api.logs.query).toHaveBeenCalledWith({ blocked: true, limit: 20, hours: 1 })
   })
 
+  // #2846: the API can emit a reason kind this SPA build predates (the SPA deploys separately).
+  // The row still renders, with the generic reason label rather than a blank cell or raw kind.
+  it('renders an unrecognised reason kind as generic "blocked" (#2846)', async () => {
+    const futureRow = {
+      ...blockedRow, reason: { kind: 'notYetKnownReason' },
+    } as unknown as QueryLog
+    mockQuery().mockResolvedValue({ rows: [futureRow], nextCursor: null })
+    render(withQuery(<MemoryRouter><RecentlyBlockedSection /></MemoryRouter>))
+    const row = await screen.findByTestId(`recently-blocked-${futureRow.id}`)
+    expect(within(row).getByText('blocked')).toBeInTheDocument()
+    expect(within(row).queryByText(/notYetKnownReason/)).not.toBeInTheDocument()
+  })
+
   // ── #2073: group the blocked rows under a per-profile header (the clickable deep-link) ──
   it('groups rows by profile; the profile header deep-links to /profiles?id=<profileId> (#2073)', async () => {
     mockQuery().mockResolvedValue({ rows: [blockedRow, blockedRow2], nextCursor: null })

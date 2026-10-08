@@ -252,6 +252,8 @@ export function hostIsFqdn(h: HostId): boolean {
 // #962: typed BlockReason mirroring shared.BlockReason. Kind-tagged JSON; the
 // API persists this shape in JSONB on block_events/connection_events and
 // returns it verbatim on /api/logs. Render via blockReasonText (lib/blockReason).
+// The union is what this build knows; the API may send a newer kind (#2846), which
+// blockReasonText renders as generic "blocked".
 export type BlockReason =
   | { kind: 'allow' }
   | { kind: 'blocked' }
@@ -264,6 +266,7 @@ export type BlockReason =
   | { kind: 'schedule' }
   | { kind: 'timeLimit' }
   | { kind: 'manual' }
+  | { kind: 'defaultDeny' } // #1316: MacBlockReason.DefaultDeny, a default-deny profile's per-MAC drop
   | { kind: 'category'; slug: string }
   | { kind: 'appTimeLimit'; label: string } // #1518 rename from `siteTimeLimit`. The API
   // JsonEncoder canonicalizes legacy V40-migrated DB rows to this kind on read,
@@ -1041,7 +1044,9 @@ export interface BlocklistHosts {
 
 // #959: kid-side block-page payload from GET /api/blocked?mac=&host=.
 // `reasonClass` is one of: "paused" | "schedule" | "time_limit" |
-// "app_time_limit" | "category" | "extra_blocked". `blocked: false`
+// "app_time_limit" | "category" | "extra_blocked" | "blocked" (the generic class
+// BlockedRoutes.mapReason returns for every other reason). BlockedPage renders any
+// class it does not know with the generic copy (#2846). `blocked: false`
 // means the device is not blocked for this host (or is unenrolled).
 export interface BlockedInfoResponse {
   blocked: boolean
