@@ -513,7 +513,6 @@ object UsageRoutes {
       settings: HouseholdSettings,
       ambientRepo: AmbientHostsRepo,
   ): IO[ApiError, ProfileUsageByApp] = {
-    val filter              = settings.heartbeatFilter
     val continuationSeconds = settings.presenceContinuationSeconds
     for {
       profile <- profileRepo
@@ -546,7 +545,6 @@ object UsageRoutes {
         mappings,
         appLimits,
         settings,
-        filter,
         continuationSeconds,
       )
       (resp, counts) = built
@@ -574,12 +572,36 @@ object UsageRoutes {
       mappings: List[AppHost],
       appLimits: List[AppTimeLimit],
       settings: HouseholdSettings,
-      filter: HeartbeatFilter,
       continuationSeconds: Int,
   ): (ProfileUsageByApp, wifihaven.api.presence.Presence.SharedHostAttributionCounts) = {
     import wifihaven.api.presence.Presence
     val appById = appList.iterator.map(a => a.id -> a).toMap
     val overlap = profile.crossDeviceOverlapMode
+    // #2863: the heartbeat filter is read from `settings` only, the same source the daily total and
+    // `distinctiveSpansByApp` use, so the counting rule cannot diverge by being handed another one.
+    val filter  = settings.heartbeatFilter
+
+    // #2863: ONE suppression rule for every number in this response. A row counts iff it is not a
+    // heartbeat under the profile's own app-attribution context — `TimeStatusService.appHostPatterns`
+    // over the profile's assignments, the exact predicate and context the daily total uses.
+    //
+    // Before this, the headline and the drill-down called `Presence.isHeartbeat` with DIFFERENT
+    // contexts: the headline's primitives passed each app's own host-set (for a catalog-only app,
+    // its catalog hosts), the per-host / presence / orphan helpers passed none. Both branches of the
+    // predicate diverged. Background branch: an unassigned iMessage claimed `ess.apple.com`
+    // (`InfraHosts.suppressOnly`) at equal specificity and showed 28 min over an empty drill-down.
+    // Byte-floor branch: an assigned app's sub-floor row counted in its headline and vanished from
+    // its hosts.
+    //
+    // Filtering ONCE here and passing the same patterns to the per-host helpers makes the halves
+    // agree by construction: the headline primitives below re-apply `isHeartbeat` with their own
+    // group patterns, which can only remove rows from `counted`, never restore one. For an ASSIGNED
+    // app those groups are a subset of `attributionPatterns` and `matchedPatternIn` takes the most
+    // specific match, so its headline is unchanged; what changes is that an UNASSIGNED app's own
+    // host-set no longer un-suppresses device background — which the daily total never let it do.
+    val attributionPatterns = wifihaven.api.policy.TimeStatusService.appHostPatterns(appLimits)
+    val counted             =
+      presence.filterNot(r => Presence.isHeartbeat(r, filter, attributionPatterns))
 
     // Distinctive host → owning-app: lowest appId wins when a host is in multiple apps (#1061),
     // apex-aware so subdomain traffic attributes to the apex-form entry (#1161). #1898: SHARED rows
@@ -616,7 +638,7 @@ object UsageRoutes {
       wifihaven.api.policy.TimeStatusService.distinctiveSpansByApp(
         profile,
         appLimits,
-        presence,
+        counted,
         settings,
       )
 
@@ -655,11 +677,17 @@ object UsageRoutes {
     // app start qualifying for shared-host seconds — silently moving them out of the orphan bucket.
     // A separate pass cannot affect the assigned apps' numbers at all.
     //
-    // Being its own pass, this one has its own `appHostPatterns` and therefore its own
-    // `effectiveGap` and heartbeat carve-out: a catalog app's minutes are stitched under a gap
-    // derived from the catalog groups, not from the assigned ones. That asymmetry is the price of
-    // not letting catalog traffic reach the assigned apps' gap, and it is the right way round —
-    // assigned apps are the ones with an enforcement counterpart to stay close to.
+    // This pass reads `counted`, so catalog apps are counted under the PROFILE's suppression rule
+    // (#2863, the block at the top of this function). The primitive's own `isHeartbeat` call with
+    // the catalog groups can only remove further rows, never rescue one: a catalog app's host-set
+    // does NOT un-suppress device background, because the daily total never lets it. Do not feed
+    // this pass the unfiltered rows to "restore" that — it is exactly the 28-minute iMessage
+    // headline over an empty drill-down. Its `effectiveGap` is derived from the rows that survive
+    // both filters, so it can still differ from the assigned apps' gap; that asymmetry is the price
+    // of not letting catalog traffic reach the assigned apps' gap, and it is the right way round.
+    // The residual mismatch only runs "hosts without headline" (a host the profile rule keeps but
+    // the catalog groups suppress shows in `hosts`), never a headline with no hosts behind it (outside the #1061
+    // tiebreak case noted below).
     //
     // The membership gate uses `HostMatch.matchesAny`, the same predicate the primitive itself
     // applies, so an app the primitive would match is never gated out by a weaker matcher. Cost is
@@ -681,7 +709,7 @@ object UsageRoutes {
         .view
         .mapValues(_.map(_.host.value).distinct)
         .toMap
-    val presenceHosts: List[HostId]                         = presence.map(_.host).distinct
+    val presenceHosts: List[HostId]                         = counted.map(_.host).distinct
     // (label, appId, hosts) for the catalog-only apps this batch touched. Deriving the label→appId
     // map from THESE entries (not from the full catalog) keeps the "no assigned app can appear on
     // the catalog pass" disjointness visible at the definition.
@@ -699,7 +727,7 @@ object UsageRoutes {
       else
         Presence
           .appSecondsForProfile(
-            presence,
+            counted,
             catalogEntries.map { case (label, _, hosts) => label -> hosts },
             overlap,
             filter,
@@ -713,11 +741,21 @@ object UsageRoutes {
 
     // #1465: per-host presence is the session-stitch span (heartbeat-filtered), combined across the
     // profile's devices by its `crossDeviceOverlapMode`.
-    val propByHost    =
-      Presence.proportionalHostSeconds(presence, overlap, filter, continuationSeconds)
-    val seenByHost    = Presence.hostMinutes(presence, filter)
-    val propMinByHost =
-      Presence.proportionalHostMinutes(presence, overlap, filter, continuationSeconds)
+    val propByHost    = Presence.proportionalHostSeconds(
+      counted,
+      overlap,
+      filter,
+      continuationSeconds,
+      attributionPatterns,
+    )
+    val seenByHost    = Presence.hostMinutes(counted, filter, attributionPatterns)
+    val propMinByHost = Presence.proportionalHostMinutes(
+      counted,
+      overlap,
+      filter,
+      continuationSeconds,
+      attributionPatterns,
+    )
 
     // Per host, the proportional-seconds allocation across `Some(appId)` / `None` ("Other").
     var counts = Presence.SharedHostAttributionCounts.zero
@@ -727,12 +765,13 @@ object UsageRoutes {
         if (candidates.nonEmpty) {
           val candidateSpans = distinctiveSpans.view.filterKeys(candidates.contains).toMap
           val (alloc, c)     = Presence.allocateSharedHostSeconds(
-            presence,
+            counted,
             h,
             candidateSpans,
             overlap,
             filter,
             continuationSeconds,
+            attributionPatterns,
           )
           counts = counts + c
           h -> alloc
@@ -767,7 +806,7 @@ object UsageRoutes {
     // Per-app bucket-dedup for presence-seconds (heartbeat rows stripped, #1465). Not additive across
     // apps by design — a bucket's seconds count once per distinct app key it touches.
     val appPresence = scala.collection.mutable.Map.empty[Option[AppId], Long]
-    val activeRows  = presence.filterNot(r => Presence.isHeartbeat(r, filter))
+    val activeRows  = counted
     for ((_, bucket) <- activeRows.groupBy(r => (r.mac, r.periodStart))) {
       val secs = bucket.iterator.map(_.activeSeconds.toLong).maxOption.getOrElse(0L)
       val keys = bucket.iterator.flatMap(r => touchedByHost.getOrElse(r.host, Set.empty)).toSet
