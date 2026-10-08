@@ -89,7 +89,8 @@ new value in the same API deploy that first emits it.
 **F4. Users link to profiles as a many-to-many set. CONFIRMED.**
 `UserProfileRepo` (`api/src/db/Repos.scala:406-428`): a user may be linked to several profiles,
 and a profile to several users. A child token already sees only its linked profiles
-(`SpaPush.scala:574-582` and `useDataScope`; `SpaWsRegistry.scala:57` is the per-role ws topic
+(`resolveVisibleSets`, `SpaPush.scala:610,757`, and `useDataScope`; `SpaWsRegistry.scala:57` is
+the per-role ws topic
 visibility, which §9 extends with a shared-devices topic for `Child`). Which profile a check-in
 uses is Q4.
 
@@ -160,8 +161,11 @@ this section only summarises it.
   `idle`, `day_reset`, `made_shared`, `unshared`, and is set exactly when `ended_at` is.
 - `started_at IS NULL` means an open-ended start (the row covers everything before `ended_at`). Only
   the backfill writes it. NULL is used instead of `'-infinity'` so no reader maps an infinite
-  timestamp through JDBC; scope reads clip to the request window in SQL
-  (`COALESCE(started_at, :windowStart)`), so Scala only ever sees finite instants.
+  timestamp through JDBC. **Every reader treats a NULL `started_at` as unbounded**: a point-in-time
+  match is `(started_at IS NULL OR ts >= started_at)`, never a bare `ts >= started_at` (which is NULL
+  for a backfilled row and would silently drop it). Scope reads clip each row to the request window in
+  SQL, `GREATEST(COALESCE(started_at, :windowStart), :windowStart)`, so Scala only ever sees finite
+  instants inside the window.
 - `uq_dpa_device_open`: a partial unique index allowing one open row per device, which is also the
   one-holder rule for a shared device. Indexes on `(household_id, profile_id, started_at)` for scope
   reads and `(device_id, started_at)` for the event-time join.
@@ -210,7 +214,10 @@ and during any Render deploy where an old instance overlaps a new one, old code 
 `devices.profile_id` without history. So reconciliation is a **standing invariant check** that runs
 on every per-household reevaluate tick: the primitive compares each device's `devices.profile_id`
 with its open row and, on a mismatch, closes and reopens at the tick instant
-(`end_cause = reassigned` / `unassigned`). Each repair increments
+(`end_cause = reassigned` / `unassigned`). A non-shared device reopens as `assigned`. A shared device
+never gets an `assigned` row: if its `devices.profile_id` disagrees with its open `check_in` (or it
+has a `profile_id` and no open check-in), the repair clears `devices.profile_id`, which leaves the
+device checked out, and closes any open row with `end_cause = unassigned`. Each repair increments
 `device_assignment_drift_repaired_total` (no device or household label), which has a dashboard panel
 and an alert, because any non-zero rate after the rollout means a writer is bypassing the primitive.
 A repair limits misattribution to one tick, and every repair is counted.
@@ -268,7 +275,7 @@ to compile.
 ```sql
 LEFT JOIN devices d ON d.mac = ce.mac AND d.household_id = r.household_id
 LEFT JOIN device_profile_assignments dpa
-       ON dpa.device_id = d.id AND ce.ts >= dpa.started_at
+       ON dpa.device_id = d.id AND (dpa.started_at IS NULL OR ce.ts >= dpa.started_at)
       AND (dpa.ended_at IS NULL OR ce.ts < dpa.ended_at)
 LEFT JOIN profiles p ON p.id = dpa.profile_id
 ```
@@ -403,10 +410,15 @@ non-null `profileId` is rejected with 409 `device_shared`, because an `assigned`
 device would enforce like a check-in that no auto-checkout ever releases. The §5.3 primitive also
 refuses `kind = 'assigned'` for a shared device, so the rule holds for any future writer.
 
+A `PATCH /api/devices/{mac}` body that sets both fields is applied as one transaction, `shared`
+first: `{shared: true, profileId: <non-null>}` is rejected with 409 `device_shared`;
+`{shared: false, profileId: P}` closes any open check-in (`end_cause = unshared`) and then assigns P
+as an ordinary `assigned` row.
+
 Child visibility: a child token's ws topics are limited per role (`SpaWsRegistry.scala:57`). A new
 `sharedDevices` topic is added to the `Child` set so a child's dashboard sees check-in changes live.
 
-Every route is household-scoped from `claims.hh`; a device id from another household is a 404. Each
+Every route is household-scoped from `claims.hh`; a MAC not in the caller's household is a 404. Each
 mutation calls `invalidate(household)` and emits an SPA ws event so every open dashboard updates.
 
 Device identity for "check in on *this* device" is Q1. The block-page path already carries a
