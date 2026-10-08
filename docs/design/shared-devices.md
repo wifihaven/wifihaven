@@ -254,13 +254,14 @@ drop. Then:
 
 - **Presence reads take spans instead of MACs.** `TrafficReportRepo.listPresenceRows` /
   `listPresenceRowsSince` / `listPresenceRowsInWindow` take a `PresenceSpans`, which only an
-  `AttributionScope` can build, so a caller cannot fetch per-profile presence without going
-  through a scope (TYPE-ENFORCE, the same move as `MacScope` in #2708). Never-reassigned devices (an
-  unbounded backfill span) match on `mac IN (...)` alone; only a device with a bounded span adds
-  `period_start >= from AND period_start < until`. So a household where nothing has been reassigned
-  issues exactly the pre-#2844 query. A device's own presence, whichever profile held it (the
-  per-device time-status views, the heartbeat explainer), is a separate `listDevicePresenceRows*`
-  read that takes MACs.
+  `AttributionScope` can build, so a caller cannot fetch per-profile presence without going through
+  a scope (TYPE-ENFORCE, the same move as `MacScope` in #2708). The repo drops any span bound that
+  lies outside the window it is about to read, which it knows exactly, so a device adds
+  `period_start >= from AND period_start < until` only when one of its assignment changes falls
+  inside that window. Every other device matches on `mac IN (...)` alone, and a read with no change
+  in its window is exactly the pre-#2844 query. A device's own presence, whichever profile held it
+  (the per-device time-status views, the heartbeat explainer), is a separate
+  `listDevicePresenceRows*` read that takes MACs.
 - **The device list a profile folds over** (Sum mode, per-device summaries,
   `usedSecondsByMac`) is the set of devices with any span in the window, so a shared device appears
   under every profile that held it that day, credited only its in-interval presence.

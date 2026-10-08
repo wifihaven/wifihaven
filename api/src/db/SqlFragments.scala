@@ -6,6 +6,8 @@ import doobie.postgres.implicits.*
 import wifihaven.api.db.TypeMeta.given
 import wifihaven.shared.types.HouseholdId
 
+import java.time.{Instant, LocalDate, ZoneOffset}
+
 // Shared SQL fragments used across repos to keep duplicated read-side joins
 // in one place (#1532 SSOT audit, #1741).
 object SqlFragments {
@@ -114,18 +116,26 @@ object SqlFragments {
   // timestamp, half-open `[from, until)`, `None` meaning unbounded. Composes AFTER the read's own
   // `mac IN (...)` predicate, which stays the index condition; this is a row filter on top of it.
   //
-  // Empty when every span is unbounded — every device still on its V90 backfill row, i.e. never
-  // reassigned — so that read is the pre-#2844 query. Otherwise the never-reassigned devices
-  // collapse into one `mac IN (...)` disjunct and only devices with a bounded span get a per-span
-  // time term, so the OR chain grows with reassigned devices, not household size. `macColumn` /
-  // `tsColumn` are trusted compile-time literals spliced via `Fragment.const`, like
-  // [[householdEq]]'s `column`.
-  def spanFilter(spans: PresenceSpans, macColumn: String, tsColumn: String): Fragment =
-    if (spans.unbounded) Fragment.empty
+  // `[windowStart, windowEnd)` must contain every row the read can return (the caller passes the
+  // window its own WHERE clause bounds `tsColumn` to). A span bound at or beyond that window cannot
+  // exclude any of those rows, so it is elided here, where the window is known exactly. A device
+  // therefore gets a time term only when one of its assignment changes falls inside the read's
+  // window; every other device rides one `mac IN (...)` disjunct, and when none has a change in the
+  // window the fragment is empty and the read is the pre-#2844 query. `macColumn` / `tsColumn` are
+  // trusted compile-time literals spliced via `Fragment.const`, like [[householdEq]]'s `column`.
+  def spanFilter(
+      spans: PresenceSpans,
+      macColumn: String,
+      tsColumn: String,
+      windowStart: Instant,
+      windowEnd: Instant,
+  ): Fragment = {
+    val within = spans.within(windowStart, windowEnd)
+    if (within.unbounded) Fragment.empty
     else {
       val mac             = Fragment.const(macColumn)
       val ts              = Fragment.const(tsColumn)
-      val (open, bounded) = spans.spans.partition(_.unbounded)
+      val (open, bounded) = within.spans.partition(_.unbounded)
       val openTerm        = cats.data.NonEmptyList
         .fromList(open.map(_.mac.value).distinct)
         .map(nel => fr"(" ++ Fragments.in(mac, nel) ++ fr")")
@@ -136,4 +146,16 @@ object SqlFragments {
       }
       fr"AND (" ++ (openTerm.toList ++ boundedTerms).reduce(_ ++ fr"OR" ++ _) ++ fr")"
     }
+  }
+
+  // #2844: an instant window containing every `traffic_reports` row whose household-local `date` is
+  // in `from`..`to`, whatever the household's `daily_reset_tz` (UTC-12..UTC+14) and
+  // `daily_reset_time` (a day starting as late as 23:59): such a row's `period_start` is within
+  // `[from 00:00 UTC - 1 day, to 00:00 UTC + 3 days)`. Used as `spanFilter`'s window for the
+  // date-keyed presence reads, which do not know the household's settings.
+  def dateReadWindow(from: LocalDate, to: LocalDate): (Instant, Instant) =
+    (
+      from.minusDays(1).atStartOfDay(ZoneOffset.UTC).toInstant,
+      to.plusDays(3).atStartOfDay(ZoneOffset.UTC).toInstant,
+    )
 }

@@ -3086,10 +3086,24 @@ class TrafficReportRepoLive(xa: Transactor[Task]) extends TrafficReportRepo {
       .transact(xa)
 
   def listPresenceRows(spans: wifihaven.api.db.PresenceSpans, date: LocalDate) =
-    listPresenceRowsBetween(spans.household, spans.macs, spanFilterOf(spans), date, date, None)
+    listPresenceRowsBetween(
+      spans.household,
+      spans.macs,
+      dateSpanFilter(spans, date, date),
+      date,
+      date,
+      None,
+    )
 
   def listPresenceRows(spans: wifihaven.api.db.PresenceSpans, from: LocalDate, to: LocalDate) =
-    listPresenceRowsBetween(spans.household, spans.macs, spanFilterOf(spans), from, to, None)
+    listPresenceRowsBetween(
+      spans.household,
+      spans.macs,
+      dateSpanFilter(spans, from, to),
+      from,
+      to,
+      None,
+    )
 
   def listPresenceRowsSince(
       spans: wifihaven.api.db.PresenceSpans,
@@ -3099,7 +3113,7 @@ class TrafficReportRepoLive(xa: Transactor[Task]) extends TrafficReportRepo {
     listPresenceRowsBetween(
       spans.household,
       spans.macs,
-      spanFilterOf(spans),
+      dateSpanFilter(spans, date, date),
       date,
       date,
       Some(since),
@@ -3110,7 +3124,13 @@ class TrafficReportRepoLive(xa: Transactor[Task]) extends TrafficReportRepo {
       fromInstant: Instant,
       toInstant: Instant,
   ) =
-    presenceRowsInWindow(spans.household, spans.macs, spanFilterOf(spans), fromInstant, toInstant)
+    presenceRowsInWindow(
+      spans.household,
+      spans.macs,
+      spanFilterOf(spans, fromInstant, toInstant),
+      fromInstant,
+      toInstant,
+    )
 
   def listDevicePresenceRows(
       household: HouseholdId,
@@ -3129,8 +3149,22 @@ class TrafficReportRepoLive(xa: Transactor[Task]) extends TrafficReportRepo {
     presenceRowsInWindow(household, macs, Fragment.empty, fromInstant, toInstant)
 
   // #2844: the attribution predicate for the presence reads below (`tr` is `traffic_reports`).
-  private def spanFilterOf(spans: wifihaven.api.db.PresenceSpans): Fragment =
-    SqlFragments.spanFilter(spans, "tr.mac", "tr.period_start")
+  private def spanFilterOf(
+      spans: wifihaven.api.db.PresenceSpans,
+      windowStart: Instant,
+      windowEnd: Instant,
+  ): Fragment =
+    SqlFragments.spanFilter(spans, "tr.mac", "tr.period_start", windowStart, windowEnd)
+
+  // The date-keyed reads filter on `tr.date`, so their window is the settings-independent one.
+  private def dateSpanFilter(
+      spans: wifihaven.api.db.PresenceSpans,
+      from: LocalDate,
+      to: LocalDate,
+  ): Fragment = {
+    val (start, end) = SqlFragments.dateReadWindow(from, to)
+    spanFilterOf(spans, start, end)
+  }
 
   private def presenceRowsInWindow(
       household: HouseholdId,
@@ -3287,7 +3321,7 @@ class TrafficReportRepoLive(xa: Transactor[Task]) extends TrafficReportRepo {
     // #846 audit: newest-first ordering so the SPA renders most-recent at top.
     // #862: add stable secondary keys for keyset cursor.
     val limitFr    = limit.fold(fr"")(n => fr"LIMIT $n")
-    val spanFilter = spans.fold(Fragment.empty)(spanFilterOf)
+    val spanFilter = spans.fold(Fragment.empty)(spanFilterOf(_, fromInstant, toInstant))
     val select     = baseSelect ++ macFilter ++ spanFilter ++ byCursor ++
       fr"ORDER BY tr.period_start DESC, tr.mac ASC, COALESCE(CASE WHEN tr.host_type IN ('ipv4','ipv6') THEN ce.resolved_host_value END, tr.host_value) ASC " ++ limitFr
     DbMetrics.timed("traffic.listRawInRange")(
@@ -3336,7 +3370,7 @@ class TrafficReportRepoLive(xa: Transactor[Task]) extends TrafficReportRepo {
              AND (active_seconds > 0 OR bytes_in > 0 OR bytes_out > 0)
            """ ++ SqlFragments.householdRouterScope(household, "router_id") ++ fr" " ++
         macFilter ++ spans.fold(Fragment.empty)(
-          SqlFragments.spanFilter(_, "mac", "period_start"),
+          SqlFragments.spanFilter(_, "mac", "period_start", fromInstant, toInstant),
         ) ++
         fr"GROUP BY mac, host_type, host_value, date, bucket_start"
     val select    =

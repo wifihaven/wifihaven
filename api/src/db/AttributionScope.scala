@@ -140,6 +140,21 @@ final case class PresenceSpans private (household: HouseholdId, spans: List[Attr
   /** True when every span is unbounded, so a MAC match alone selects the rows. */
   def unbounded: Boolean = spans.forall(_.unbounded)
 
+  /**
+   * These spans with every bound at or beyond `[windowStart, windowEnd)` dropped: for a read whose
+   * rows all lie in that window such a bound excludes nothing (see `SqlFragments.spanFilter`).
+   */
+  private[db] def within(windowStart: Instant, windowEnd: Instant): PresenceSpans =
+    PresenceSpans(
+      household,
+      spans.map(s =>
+        s.copy(
+          from = s.from.filter(_.isAfter(windowStart)),
+          until = s.until.filter(_.isBefore(windowEnd)),
+        ),
+      ),
+    )
+
   /** These spans restricted to `macs` (a `?mac=` filter intersected with a profile filter). */
   def restrictTo(macs: Set[MacAddress]): PresenceSpans =
     PresenceSpans(household, spans.filter(s => macs.contains(s.mac)))

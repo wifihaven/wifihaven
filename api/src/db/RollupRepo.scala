@@ -473,7 +473,7 @@ class RollupRepoLive(xa: Transactor[Task]) extends RollupRepo {
     // instead of being inferred.
     DbMetrics.timed("rollup.listHourlyInRange") {
       (base ++ macFilter(macs) ++
-        spans.fold(Fragment.empty)(SqlFragments.spanFilter(_, "mac", "bucket_start")) ++
+        spans.fold(Fragment.empty)(SqlFragments.spanFilter(_, "mac", "bucket_start", from, to)) ++
         fr"ORDER BY bucket_start DESC, mac, hostname")
         .query[Row]
         .map { case (m, h, bs, secs, bi, bo) =>

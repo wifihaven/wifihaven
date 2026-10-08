@@ -379,27 +379,33 @@ object IntervalAttributionSpec
         all <- svc.dayStateAllLive(HouseholdId.Default, at(16), day, f.settings)
       } yield assertTrue(n == 1, all(f.a).usedMinutes == 45, all(f.b).usedMinutes == 20)
     },
-    test("only reassigned devices add a time predicate to the presence query") {
-      def sqlOf(spans: PresenceSpans) =
-        SqlFragments.spanFilter(spans, "tr.mac", "tr.period_start").update.sql
+    test("only an assignment change inside the read's window adds a time predicate") {
+      // The date-keyed day read's SQL for `spans` (`listPresenceRows(spans, date)`).
+      def sqlOn(spans: PresenceSpans, date: LocalDate) = {
+        val (start, end) = SqlFragments.dateReadWindow(date, date)
+        SqlFragments.spanFilter(spans, "tr.mac", "tr.period_start", start, end).update.sql
+      }
+      def count(sql: String, term: String)             =
+        sql.split(java.util.regex.Pattern.quote(term), -1).length - 1
       for {
         f     <- seed
-        xa    <- ZIO.service[Transactor[Task]]
         dr    <- ZIO.service[DeviceRepo]
-        // `stay` in the V90 backfill shape: never reassigned, so its span is unbounded.
-        _     <- sql"""UPDATE device_profile_assignments SET started_at = NULL
-                        WHERE device_id = ${f.stay} AND ended_at IS NULL""".update.run.transact(xa)
         scope <- AttributionScope.forDay(dr, HouseholdId.Default, day, f.settings)
-        // Devices that were never reassigned issue the pre-#2844 query.
-        steady = scope.allProfiles.restrictTo(Set(stayMac))
+        // Days later every span still has a finite start (the writer stamps every row), but no
+        // change falls in that read's window.
+        later = day.plusDays(5)
+        lscope <- AttributionScope.forDay(dr, HouseholdId.Default, later, f.settings)
+        moveDay = sqlOn(scope.allProfiles, day)
       } yield assertTrue(
-        !steady.isEmpty,
-        steady.unbounded,
-        sqlOf(steady).isEmpty,
-        // `stay` rides one IN disjunct; only `moved` gets per-span time terms (one per profile).
-        sqlOf(scope.allProfiles).contains(" IN ("),
-        sqlOf(scope.allProfiles).split("tr.period_start <", -1).length - 1 == 1,
-        sqlOf(scope.allProfiles).split("tr.period_start >=", -1).length - 1 == 2,
+        // `stay` was assigned long before the window: it matches on the IN disjunct alone.
+        sqlOn(scope.allProfiles.restrictTo(Set(stayMac)), day).isEmpty,
+        moveDay.contains(" IN ("),
+        // `moved` changed at 14:00: A's span ends there, B's starts there. Nothing else is bounded.
+        count(moveDay, "tr.period_start <") == 1,
+        count(moveDay, "tr.period_start >=") == 1,
+        // A household with no change near the read is back on the pre-#2844 query.
+        lscope.allProfiles.macs.toSet == Set(movedMac, stayMac),
+        sqlOn(lscope.allProfiles, later).isEmpty,
       )
     },
   ) @@ TestAspect.sequential
