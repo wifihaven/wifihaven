@@ -162,7 +162,12 @@ object TimeUsedRollupSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
               .serviceWithZIO[DeviceRepo](_.listAllForHousehold(HouseholdId.Default))
               .map(_.filter(_.profileId.contains(kid)))
             atls    <- ZIO.serviceWithZIO[AppTimeLimitRepo](_.listForProfile(kid))
-            allPres <- trr.listPresenceRows(HouseholdId.Default, devices.map(_.mac), today)
+            allPres <- trr.listDevicePresenceRows(
+              HouseholdId.Default,
+              devices.map(_.mac),
+              today,
+              today,
+            )
             prefixP = allPres.filter(_.periodStart.isBefore(prefix))
             secs    = TimeStatusService.usedSecondsForProfile(profile, devices, atls, prefixP, s)
           } yield secs
