@@ -205,18 +205,27 @@ object TestDatabase {
    */
   type AllRepos =
     TestDb & UserRepo & HouseholdRepo & UserProfileRepo & ProfileRepo & NamedScheduleRepo &
-      HouseholdSettingsRepo & TimeLimitRepo & AppTimeLimitRepo & DeviceRepo & BlocklistRepo &
-      TimeUsageRepo & TimeExtensionRepo & RouterRepo & TrafficReportRepo & BlockEventRepo &
-      ConnectionEventRepo & AlertRepo & AppRepo & RollupRepo & TimeUsedRollupRepo &
+      HouseholdSettingsRepo & TimeLimitRepo & AppTimeLimitRepo & DeviceRepo & DeviceAssignmentRepo &
+      BlocklistRepo & TimeUsageRepo & TimeExtensionRepo & RouterRepo & TrafficReportRepo &
+      BlockEventRepo & ConnectionEventRepo & AlertRepo & AppRepo & RollupRepo & TimeUsedRollupRepo &
       AppUsedRollupRepo & AmbientHostsRepo & HouseholdBillingRepo & BetaRequestRepo &
       BetaCohortRepo & EntitlementsRepo & PressMessageRepo & PasswordResetTokenRepo &
       SupportConsentRepo
 
   val layer: ZLayer[Any, Throwable, EmbeddedPostgres & TestDb & Transactor[Task] & AllRepos] = {
-    val pg = embeddedPg
-    val td = pg >>> testDb
-    val xa = td >>> transactor
-    pg ++ td ++ xa ++ (xa >>> Repos.all)
+    val pg  = embeddedPg
+    val td  = pg >>> testDb
+    val xa  = td >>> transactor
+    // #2843: DeviceRepoLive timestamps assignment history from a Clock. Fixture writes get a fixed
+    // TestClock; a spec that asserts on history timestamps builds its own DeviceRepoLive over its own
+    // TestClock (DeviceAssignmentSpec). The primitive clamps a transition to the device's latest
+    // history bound, so mixing this clock with a spec's never inverts an interval.
+    val clk = ZLayer.succeed[wifihaven.shared.Clock](
+      new wifihaven.shared.Clock.TestClock(
+        Unsafe.unsafe(implicit u => Ref.unsafe.make(java.time.LocalDateTime.of(2025, 1, 6, 0, 0))),
+      ),
+    )
+    pg ++ td ++ xa ++ ((xa ++ clk) >>> Repos.all)
   }
 }
 

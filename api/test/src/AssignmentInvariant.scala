@@ -56,6 +56,12 @@ object AssignmentInvariant {
       .traverse(_.query[String].to[List])
       .map(_.flatten)
       .transact(xa)
+      // A few specs DROP a table on purpose to simulate a DB failure (MultiTenantScopedReadGuardSpec
+      // #2462). With `devices` or the history table gone there is no data to hold the invariant
+      // over, so an undefined table (SQLSTATE 42P01) is not a violation. Any other error fails.
+      .catchSome {
+        case e: java.sql.SQLException if e.getSQLState == "42P01" => ZIO.succeed(Nil)
+      }
 
   /** Fails listing every violation, so a broken fixture names the device it broke. */
   def assertHolds(xa: Transactor[Task], context: String): Task[Unit] =

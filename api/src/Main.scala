@@ -458,9 +458,10 @@ object Main extends ZIOAppDefault {
     AppConfig.layer >+>
       ZLayer.fromZIO(ZIO.serviceWith[AppConfig](_.db)) >+>
       Database.transactorLayer >+>
+      // #2843: ahead of Repos.all — DeviceRepoLive timestamps assignment history from it.
+      Clock.live >+>
       Repos.all >+>
       ZLayer.fromZIO(ZIO.serviceWith[AppConfig](_.jwt)) >+>
-      Clock.live >+>
       AuthService.layer >+>
       // #1515: per-app rollup read accessor, wired ahead of TimeStatusService so the snapshot's
       // per-app cap reads `app_used_daily` + a live tail on the rollup path.

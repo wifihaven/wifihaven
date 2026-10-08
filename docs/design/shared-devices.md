@@ -203,8 +203,9 @@ it is the holder while checked in and `NULL` while checked out.
 `DeviceAssignment.assign(household, deviceId, newProfile: Option[ProfileId], at, kind, by, cause)`
 is the **only** code that writes `devices.profile_id`. In one transaction it closes the open
 interval (`ended_at = at`, `end_cause`), opens the new one, and updates `devices.profile_id`.
-The existing writers (`Repos.scala:2274,2320` upserts) are routed through it; a CI guard rejects
-a new `UPDATE devices SET ... profile_id` / `INSERT INTO devices(... profile_id ...)` outside it, and a
+The existing writers (`Repos.scala:2274,2320` upserts) are routed through it; a CI guard
+(`.github/scripts/check-device-profile-writers.sh`) rejects an `UPDATE devices ... profile_id` /
+`INSERT INTO devices(... profile_id ...)` outside it, and a
 TEST-PIN asserts `devices.profile_id` equals the open interval's profile for every device after
 each feature test. Profile deletion cascades both (`ON DELETE SET NULL` on `devices`,
 `ON DELETE CASCADE` on the history), so the invariant survives the one writer we do not control.
@@ -215,9 +216,11 @@ and during any Render deploy where an old instance overlaps a new one, old code 
 on every per-household reevaluate tick: the primitive compares each device's `devices.profile_id`
 with its open row and, on a mismatch, closes and reopens at the tick instant
 (`end_cause = reassigned` / `unassigned`). A non-shared device reopens as `assigned`. A shared device
-never gets an `assigned` row: if its `devices.profile_id` disagrees with its open `check_in` (or it
-has a `profile_id` and no open check-in), the repair clears `devices.profile_id`, which leaves the
-device checked out, and closes any open row with `end_cause = unassigned`. Each repair increments
+never gets an `assigned` row. If it has an open `check_in`, the check-in is the truth (only the
+primitive writes one), so the repair restores `devices.profile_id` from it and leaves the row open.
+Otherwise (a `profile_id` with no open check-in, or an open `assigned` row) the repair clears
+`devices.profile_id`, which leaves the device checked out, and closes any open row with
+`end_cause = unassigned`. (Amended on #2843; the first version cleared the check-in too.) Each repair increments
 `device_assignment_drift_repaired_total` (no device or household label), which has a dashboard panel
 and an alert, because any non-zero rate after the rollout means a writer is bypassing the primitive.
 A repair limits misattribution to one tick, and every repair is counted.

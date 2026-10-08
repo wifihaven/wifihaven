@@ -111,7 +111,10 @@ object DeviceAssignmentSpec
       profiles <- pr.listAllForHousehold(HouseholdId.Default)
       auth    = AuthServiceLive(ur, jwtCfg, clk)
       devices = new DeviceRepoLive(xa, clk)
-      token <- auth.login("admin", "changeme").map(_.token.value)
+      token <- auth
+        .login("admin", "changeme")
+        .map(_.token.value)
+        .mapError(e => new RuntimeException(e.toString))
     } yield Fixture(
       xa,
       clk,
@@ -213,11 +216,11 @@ object DeviceAssignmentSpec
         for {
           f     <- fixture
           _     <- put(f, Some(f.kids))
-          _     <- f.clock.advance(java.time.Duration.ofHours(2))
+          _     <- f.clock.advance(java.time.Duration.ofMinutes(40))
           resp  <- patch(f, s"""{"profileId":${f.adults.value}}""")
           rows  <- history(f.xa)
           admin <- adminId(f.xa)
-          t1  = instantOf(T0.plusHours(2))
+          t1  = instantOf(T0.plusMinutes(40))
           res = assertTrue(
             resp.status == Status.Ok,
             rows.map(r => (r.profileId, r.startedAt, r.endedAt, r.endCause, r.endedBy)) == List(

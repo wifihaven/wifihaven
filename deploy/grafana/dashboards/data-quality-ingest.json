@@ -766,6 +766,82 @@
           "refId": "A"
         }
       ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "Device assignment drift repaired — rate (#2843)",
+      "description": "sum(rate(device_assignment_drift_repaired_total[5m])) — devices whose devices.profile_id disagreed with their open device_profile_assignments row and were repaired by the standing drift check on the per-household reevaluate tick (DeviceAssignmentRepoLive.repairDrift). Expect brief non-zero only while an old API image overlaps a deploy; after that, any repair means a writer is bypassing DeviceAssignment.assign. The WARN log line 'device assignment drift repaired' names the household. Unlabelled; from AppMetrics.recordDeviceAssignmentDriftRepaired. Alert: W17.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 16, "x": 0, "y": 80 },
+      "id": 22,
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "unit": "short",
+          "min": 0,
+          "custom": { "drawStyle": "line", "fillOpacity": 20, "showPoints": "never", "lineWidth": 1 },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 0.1 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum(rate(device_assignment_drift_repaired_total{env=\"$env\"}[5m]))",
+          "legendFormat": "devices repaired/s",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "Device assignment drift repaired (last 24h)",
+      "description": "sum(increase(device_assignment_drift_repaired_total[24h])) — devices repaired by the #2843 drift check over the trailing day. Steady state is 0. From AppMetrics.recordDeviceAssignmentDriftRepaired.",
+      "type": "stat",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 80 },
+      "id": 23,
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "unit": "short",
+          "min": 0,
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 1 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum(increase(device_assignment_drift_repaired_total{env=\"$env\"}[24h]))",
+          "legendFormat": "devices (24h)",
+          "refId": "A"
+        }
+      ]
     }
   ],
   "refresh": "30s",

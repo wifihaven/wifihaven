@@ -271,6 +271,12 @@ class PolicyServiceLive(
     // wires the real `HouseholdSettingsRepo.enforcementDisabled` read (behavioral setting). Fails
     // toward enforcing on a read blip (false) so a transient DB hiccup never flips the fleet permissive.
     enforcementDisabledOf: HouseholdId => Task[Boolean] = _ => ZIO.succeed(false),
+    // #2843: the standing device-assignment drift check (design `docs/design/shared-devices.md`
+    // §5.3), run at the start of every per-household reevaluate. It repairs any device whose
+    // `devices.profile_id` disagrees with its open history row and returns how many it repaired.
+    // The production layer wires `DeviceAssignmentRepo.repairDrift`; defaulted to "nothing to
+    // repair" for the ~40 direct test constructions, like the readers above.
+    repairAssignmentDrift: (HouseholdId, Instant) => Task[Int] = (_, _) => ZIO.succeed(0),
 ) extends PolicyService {
 
   // #1849: the cached snapshot. Process-local `AtomicReference` (matching the existing
@@ -526,7 +532,7 @@ class PolicyServiceLive(
   // fiber [[invalidateMany]] forks) and both apply the `cacheEnabled` guard upstream, so this stays
   // private: a public overload would be trait surface every implementor has to stub for no caller.
   private def reevaluateHousehold(household: HouseholdId): UIO[Unit] =
-    ZIO.succeed(versionOf(household)).flatMap { gen =>
+    repairDrift(household) *> ZIO.succeed(versionOf(household)).flatMap { gen =>
       // `foldCauseZIO`, not `foldZIO`: a DEFECT (not just a typed failure) in one household's build
       // would otherwise escape the `foreachDiscard` above and kill the reconcile ticker fiber
       // outright — `Main` runs it as `.repeat(...).forkScoped` with nothing to restart it, so the
@@ -567,6 +573,22 @@ class PolicyServiceLive(
           },
         )
     }
+
+  // #2843: repair device-assignment drift BEFORE the build, so a repair that changes
+  // `devices.profile_id` (a shared device cleared or restored from its check-in) is in this tick's
+  // snapshot rather than the next. A failure is logged at ERROR and never blocks the build: the
+  // snapshot only reads `devices.profile_id`, which is unchanged by a failed repair, and the next
+  // tick retries.
+  private def repairDrift(household: HouseholdId): UIO[Unit] =
+    clock.instant
+      .flatMap(at => ZIO.suspend(repairAssignmentDrift(household, at)))
+      .unit
+      .catchAllCause(cause =>
+        ZIO.logErrorCause(
+          s"device assignment drift check failed for household=${household.value}",
+          cause,
+        ),
+      )
 
   def setPublisher(p: PolicySnapshotPublisher): UIO[Unit] =
     ZIO.succeed(publisher.set(p))
@@ -1262,7 +1284,8 @@ object PolicyService {
   val layer: ZLayer[
     AppConfig & ProfileRepo & NamedScheduleRepo & HouseholdSettingsRepo & TimeLimitRepo &
       AppTimeLimitRepo & DeviceRepo & BlocklistRepo & TrafficReportRepo & TimeExtensionRepo &
-      AppRepo & TimeStatusService & Clock & wifihaven.api.db.HouseholdBillingRepo,
+      AppRepo & TimeStatusService & Clock & wifihaven.api.db.HouseholdBillingRepo &
+      DeviceAssignmentRepo,
     Nothing,
     PolicyService,
   ] = ZLayer.fromFunction {
@@ -1281,6 +1304,7 @@ object PolicyService {
         tss: TimeStatusService,
         clk: Clock,
         hbr: wifihaven.api.db.HouseholdBillingRepo,
+        dar: DeviceAssignmentRepo,
     ) =>
       new PolicyServiceLive(
         pr,
@@ -1328,6 +1352,8 @@ object PolicyService {
                 )
                 .as(false)
             },
+        // #2843: the standing drift check on every per-household reevaluate tick.
+        repairAssignmentDrift = dar.repairDrift,
       )
   }
 
