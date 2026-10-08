@@ -122,9 +122,12 @@ check() {
   #    check is pinned to, are read from branch protection, not hardcoded here.
   local contexts app ctx results
   contexts="$(gh_retry api "repos/${REPO}/branches/${base}/protection/required_status_checks" \
-    --jq '.checks[] | "\(.app_id // "") \(.context)"')" || return 2
+    --jq '.checks[] | "\(.app_id // "")|\(.context)"')" || return 2
   [[ -n "${contexts}" ]] || not_ready+=("could not read required checks for ${base}")
-  while read -r app ctx; do
+  # Split on '|', not whitespace: `read` strips leading IFS whitespace (tabs
+  # included), which would turn an unpinned check's empty app field into the
+  # context. A context may contain spaces; ctx takes the rest of the line.
+  while IFS='|' read -r app ctx; do
     [[ -z "${ctx}" ]] && continue
     results="$(gh_retry api "repos/${REPO}/commits/${head}/check-runs?check_name=${ctx// /%20}${app:+&app_id=${app}}" \
       --jq '.check_runs[] | (.conclusion // .status)')" || return 2
@@ -181,12 +184,14 @@ disarm() {
   local pr="$1" st id queued armed
   st="$(queue_state "${pr}")" || return 2
   read -r id queued armed <<< "${st}"
+  # Mutation errors go to stderr (for whoever has to disarm by hand); success is
+  # judged only by the re-read below.
   if [[ "${armed}" == true ]]; then
-    gh pr merge "${pr}" --repo "${REPO}" --disable-auto > /dev/null 2>&1 || true
+    gh pr merge "${pr}" --repo "${REPO}" --disable-auto > /dev/null || true
   fi
   if [[ "${queued}" == true ]]; then
     gh api graphql -f id="${id}" \
-      -f query='mutation($id:ID!){dequeuePullRequest(input:{id:$id}){clientMutationId}}' > /dev/null 2>&1 || true
+      -f query='mutation($id:ID!){dequeuePullRequest(input:{id:$id}){clientMutationId}}' > /dev/null || true
   fi
   st="$(queue_state "${pr}")" || return 2
   read -r id queued armed <<< "${st}"
@@ -239,7 +244,12 @@ case "${cmd}" in
   check)    [[ $# -eq 2 ]] || die "usage: $0 check <pr>";    check "$2" ;;
   enqueue)  [[ $# -eq 2 ]] || die "usage: $0 enqueue <pr>";  enqueue "$2" ;;
   disarm)   [[ $# -eq 2 ]] || die "usage: $0 disarm <pr>"
-            if disarm "$2"; then echo "DISARMED"; else echo "STILL QUEUED OR ARMED"; exit 1; fi ;;
+            rc=0; disarm "$2" || rc=$?
+            case "${rc}" in
+              0) echo "DISARMED" ;;
+              1) echo "STILL QUEUED OR ARMED"; exit 1 ;;
+              *) echo "UNKNOWN: could not read the queue state"; exit 2 ;;
+            esac ;;
   classify) [[ $# -eq 1 ]] || die "usage: $0 classify < paths"; classify ;;
   verdict)  [[ $# -eq 2 ]] || die "usage: $0 verdict <sha> < body"; verdict "$2" ;;
   *) die "usage: $0 {check|enqueue|disarm} <pr> | classify | verdict <sha>" ;;

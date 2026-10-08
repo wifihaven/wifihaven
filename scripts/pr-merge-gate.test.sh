@@ -87,9 +87,9 @@ case "${args}" in
     if [[ "${n}" -le 1 ]]; then echo "PR_id ${FAKE_QUEUE_BEFORE:-true false}"; else echo "PR_id ${FAKE_QUEUE_AFTER:-false false}"; fi ;;
   "api repos/"*"/issues/"*"/comments --paginate"*) printf '%s\n' "${FAKE_COMMENTS:-}" ;;
   "api repos/"*"/issues/comments/"*) cat "${FAKE_BODY_FILE}" ;;
-  "api repos/"*"/protection/required_status_checks"*) echo "15368 CI" ;;
+  "api repos/"*"/protection/required_status_checks"*) printf '%s\n' "${FAKE_REQUIRED-15368|CI}" ;;
   "api repos/"*"/check-runs"*) printf '%s\n' ${FAKE_CI-success} ;;
-  "api repos/"*"/status "*|"api repos/"*"/status") : ;;
+  "api repos/"*"/status "*|"api repos/"*"/status") printf '%s\n' ${FAKE_STATUS:-} ;;
   "api repos/"*"/pulls/"*"/files"*) for f in ${FAKE_FILES:-api/src/Main.scala}; do printf '%s\n' "${f/=/$'\t'}"; done ;;
   *) echo "fake gh: unhandled: ${args}" >&2; exit 9 ;;
 esac
@@ -106,7 +106,7 @@ run_gate() { # cmd -> sets OUT and RC
 }
 scenario() { # reset to the happy path: APPROVE on HEAD, CI green, eligible files
   export FAKE_HEAD="${SHA_A}" FAKE_COMMENTS=$'11 MEMBER\n22 MEMBER' FAKE_CI=success FAKE_FILES="api/src/Main.scala"
-  unset FAKE_STATE FAKE_DRAFT FAKE_MERGEABLE FAKE_LATER_HEADS FAKE_FAIL FAKE_CHANGED FAKE_MERGE_RC \
+  unset FAKE_REQUIRED FAKE_STATUS FAKE_STATE FAKE_DRAFT FAKE_MERGEABLE FAKE_LATER_HEADS FAKE_FAIL FAKE_CHANGED FAKE_MERGE_RC \
     FAKE_QUEUE_BEFORE FAKE_QUEUE_AFTER
   body "${SHA_A}" "VERDICT: APPROVE @ ${SHA_A}" > "${TMP}/body"
 }
@@ -116,6 +116,17 @@ expect_eq "happy: rc" 0 "${RC}"
 expect_eq "happy: decision" "MERGE ${SHA_A}" "$(head -1 <<< "${OUT}")"
 grep -q 'issues/comments/22' "${TMP}/log" && ok || bad "happy: should read the LATEST marked comment (22)"
 grep -q 'check_name=CI&app_id=15368' "${TMP}/log" && ok || bad "happy: check-runs must be pinned to the required app"
+
+# An unpinned required check (empty app) is still checked, via check-runs then
+# commit statuses, and a context with spaces stays whole.
+scenario; export FAKE_REQUIRED='|CI' FAKE_CI=failure; run_gate check
+expect_eq "unpinned required check, red: rc" 1 "${RC}"
+scenario; export FAKE_REQUIRED='|CI' FAKE_CI="" FAKE_STATUS=success; run_gate check
+expect_eq "unpinned check satisfied by a commit status: rc" 0 "${RC}"
+scenario; export FAKE_REQUIRED='|CI' FAKE_CI="" FAKE_STATUS=failure; run_gate check
+expect_eq "unpinned check, red commit status: rc" 1 "${RC}"
+scenario; export FAKE_REQUIRED='15368|Scala Build & Test'; run_gate check
+grep -q 'check_name=Scala%20Build%20&%20Test&app_id=15368' "${TMP}/log" && ok || bad "multi-word context: $(grep check-runs "${TMP}/log")"
 
 # The repo is public: a marked comment from an outsider neither approves nor voids.
 scenario; FAKE_COMMENTS=$'11 MEMBER\n22 NONE'; run_gate check
