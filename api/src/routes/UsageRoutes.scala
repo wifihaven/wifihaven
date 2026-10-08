@@ -564,7 +564,7 @@ object UsageRoutes {
   // This is NOT the rejected #842/#715 argmax-foreground heuristic: allocation is gated purely on an
   // app's own distinctive presence, never on byte magnitude. Returns the response plus the per-span
   // attribution tally for the metric.
-  private[routes] def computeUsageByApp(
+  private def computeUsageByApp(
       pid: ProfileId,
       from: LocalDate,
       to: LocalDate,
@@ -601,7 +601,9 @@ object UsageRoutes {
     // host-set no longer un-suppresses device background — which the daily total never let it do.
     val attributionPatterns = wifihaven.api.policy.TimeStatusService.appHostPatterns(appLimits)
     val counted             =
-      presence.filterNot(r => Presence.isHeartbeat(r, filter, attributionPatterns))
+      presence.filterNot(r =>
+        Presence.isHeartbeat(r, settings.heartbeatFilter, attributionPatterns),
+      )
 
     // Distinctive host → owning-app: lowest appId wins when a host is in multiple apps (#1061),
     // apex-aware so subdomain traffic attributes to the apex-form entry (#1161). #1898: SHARED rows
@@ -677,11 +679,16 @@ object UsageRoutes {
     // app start qualifying for shared-host seconds — silently moving them out of the orphan bucket.
     // A separate pass cannot affect the assigned apps' numbers at all.
     //
-    // Being its own pass, this one has its own `appHostPatterns` and therefore its own
-    // `effectiveGap` and heartbeat carve-out: a catalog app's minutes are stitched under a gap
-    // derived from the catalog groups, not from the assigned ones. That asymmetry is the price of
-    // not letting catalog traffic reach the assigned apps' gap, and it is the right way round —
-    // assigned apps are the ones with an enforcement counterpart to stay close to.
+    // This pass reads `counted`, so catalog apps are counted under the PROFILE's suppression rule
+    // (#2863, the block at the top of this function). The primitive's own `isHeartbeat` call with
+    // the catalog groups can only remove further rows, never rescue one: a catalog app's host-set
+    // does NOT un-suppress device background, because the daily total never lets it. Do not feed
+    // this pass the unfiltered rows to "restore" that — it is exactly the 28-minute iMessage
+    // headline over an empty drill-down. Its `effectiveGap` is derived from the rows that survive
+    // both filters, so it can still differ from the assigned apps' gap; that asymmetry is the price
+    // of not letting catalog traffic reach the assigned apps' gap, and it is the right way round.
+    // The residual mismatch only runs "hosts without headline" (a host the profile rule keeps but
+    // the catalog groups suppress shows in `hosts`), never a headline with no hosts behind it.
     //
     // The membership gate uses `HostMatch.matchesAny`, the same predicate the primitive itself
     // applies, so an app the primitive would match is never gated out by a weaker matcher. Cost is

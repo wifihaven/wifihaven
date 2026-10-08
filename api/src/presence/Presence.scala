@@ -1024,6 +1024,9 @@ object Presence {
       overlap: CrossDeviceOverlapMode = CrossDeviceOverlapMode.Sum,
       filter: HeartbeatFilter = HeartbeatFilter.Off,
       continuationSeconds: Int = DefaultContinuationSeconds,
+      // #2863: attribution context for `isHeartbeat`. Pass the SAME patterns given to
+      // [[proportionalHostSeconds]] for this batch, or the "allocation sums to
+      // proportionalHostSeconds(host)" property above breaks.
       appHostPatterns: List[String] = Nil,
   ): (Map[Option[AppId], Long], SharedHostAttributionCounts) = {
     val active    = rows.filterNot(r => isHeartbeat(r, filter, appHostPatterns))
