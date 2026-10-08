@@ -115,7 +115,7 @@ scenario; run_gate check
 expect_eq "happy: rc" 0 "${RC}"
 expect_eq "happy: decision" "MERGE ${SHA_A}" "$(head -1 <<< "${OUT}")"
 grep -q 'issues/comments/22' "${TMP}/log" && ok || bad "happy: should read the LATEST marked comment (22)"
-grep -q 'check_name=CI&app_id=15368' "${TMP}/log" && ok || bad "happy: check-runs must be pinned to the required app"
+grep -q 'check-runs -X GET -f check_name=CI -f app_id=15368 ' "${TMP}/log" && ok || bad "happy: check-runs must be pinned to the required app"
 
 # An unpinned required check (empty app) is still checked, via check-runs then
 # commit statuses, and a context with spaces stays whole.
@@ -126,7 +126,7 @@ expect_eq "unpinned check satisfied by a commit status: rc" 0 "${RC}"
 scenario; export FAKE_REQUIRED='|CI' FAKE_CI="" FAKE_STATUS=failure; run_gate check
 expect_eq "unpinned check, red commit status: rc" 1 "${RC}"
 scenario; export FAKE_REQUIRED='15368|Scala Build & Test'; run_gate check
-grep -q 'check_name=Scala%20Build%20&%20Test&app_id=15368' "${TMP}/log" && ok || bad "multi-word context: $(grep check-runs "${TMP}/log")"
+grep -qF -- '-f check_name=Scala Build & Test -f app_id=15368 ' "${TMP}/log" && ok || bad "multi-word context: $(grep check-runs "${TMP}/log")"
 
 # The repo is public: a marked comment from an outsider neither approves nor voids.
 scenario; FAKE_COMMENTS=$'11 MEMBER\n22 NONE'; run_gate check

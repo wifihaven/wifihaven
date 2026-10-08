@@ -129,8 +129,9 @@ check() {
   # context. A context may contain spaces; ctx takes the rest of the line.
   while IFS='|' read -r app ctx; do
     [[ -z "${ctx}" ]] && continue
-    results="$(gh_retry api "repos/${REPO}/commits/${head}/check-runs?check_name=${ctx// /%20}${app:+&app_id=${app}}" \
-      --jq '.check_runs[] | (.conclusion // .status)')" || return 2
+    # -X GET -f lets gh URL-encode the name (a context may contain '&', '#', ...).
+    results="$(gh_retry api "repos/${REPO}/commits/${head}/check-runs" -X GET -f check_name="${ctx}" \
+      ${app:+-f app_id="${app}"} --jq '.check_runs[] | (.conclusion // .status)')" || return 2
     # A commit status has no app, so it can only satisfy a check not pinned to one.
     if [[ -z "${app}" && -z "$(tr -d '[:space:]' <<< "${results}")" ]]; then
       results="$(gh_retry api "repos/${REPO}/commits/${head}/status" \
