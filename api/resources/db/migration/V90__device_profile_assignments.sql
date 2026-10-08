@@ -33,14 +33,14 @@
 -- device's history), so this migration changes no behaviour.
 --
 -- ── Cost ─────────────────────────────────────────────────────────────────────
--- Reads/writes only `devices` (one row per device per household) and the new
--- table. No growth table (`traffic_reports`, `connection_events`,
--- `block_events`, rollups) is scanned, rewritten or re-indexed. The two
--- ALTER TABLE ... ADD COLUMN statements have constant defaults, so they are
--- metadata-only on Postgres 11+. The idle-minutes CHECK validates by scanning
--- `household_settings` (one row per household), and the `devices` lock taken
--- by its ALTER is held through the backfill until commit (one row per
--- device); both are trivial at that size.
+-- Touches only `devices` (one row per device per household),
+-- `household_settings` (one row per household) and the new table. No growth
+-- table (`traffic_reports`, `connection_events`, `block_events`, rollups) is
+-- scanned, rewritten or re-indexed. The two ALTER TABLE ... ADD COLUMN
+-- statements have constant defaults, so they are metadata-only on Postgres
+-- 11+. The idle-minutes CHECK validates by scanning `household_settings`, and
+-- the ACCESS EXCLUSIVE lock from `ALTER TABLE devices` is held through the
+-- backfill until commit; both are trivial at those sizes.
 --
 -- ── Old image compatibility ─────────────────────────────────────────────────
 -- Additive only. Image N-1 never reads the new table or columns; its device
