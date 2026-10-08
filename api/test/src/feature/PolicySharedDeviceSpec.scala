@@ -28,7 +28,8 @@ import java.time.LocalDateTime
  * `Unmanaged` while `/api/blocked` said `Allow` / `NoProfile`).
  *
  * No writer for `devices.shared` exists yet (check-in routes are #2848), so the fixture flips the
- * column directly.
+ * column directly. A checked-in device is held through a `check_in` row written by
+ * `DeviceAssignment.assign`, as #2843's `AssignmentInvariant` requires of a shared device.
  */
 object PolicySharedDeviceSpec
     extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clock & Transactor[Task]] {
@@ -75,6 +76,25 @@ object PolicySharedDeviceSpec
         .transact(xa)
         .unit
     }
+
+  // Shared first, then checked in through the single assignment writer (`check_in` row).
+  private def seedCheckedIn(mac: String, holder: ProfileId) =
+    for {
+      _   <- seedProfileless(mac)
+      _   <- markShared(mac)
+      dev <- ZIO.serviceWithZIO[DeviceRepo](_.findByMac(MacAddress.unsafe(mac))).someOrFailException
+      _   <- ZIO.serviceWithZIO[DeviceAssignmentRepo](
+        _.assign(
+          HouseholdId.Default,
+          dev.id,
+          Some(holder),
+          TestClock.schoolDayAfternoon.toInstant(java.time.ZoneOffset.UTC),
+          AssignmentKind.CheckIn,
+          None,
+          AssignmentEndCause.Reassigned,
+        ),
+      )
+    } yield ()
 
   private def setUnmanagedPolicy(policy: String) =
     for {
@@ -149,10 +169,8 @@ object PolicySharedDeviceSpec
         for {
           _    <- cleanDb
           pr   <- ZIO.service[ProfileRepo]
-          dr   <- ZIO.service[DeviceRepo]
           kid  <- TestLayers.seedKidsProfile(pr)
-          _    <- TestLayers.seedDevice(dr, SharedMac, "family-ipad", kid)
-          _    <- markShared(SharedMac)
+          _    <- seedCheckedIn(SharedMac, kid)
           _    <- setUnmanagedPolicy("block")
           ps   <- makePsAt(TestClock.schoolDayAfternoon)
           snap <- ps.snapshot
@@ -213,11 +231,9 @@ object PolicySharedDeviceSpec
         for {
           _   <- cleanDb
           pr  <- ZIO.service[ProfileRepo]
-          dr  <- ZIO.service[DeviceRepo]
           kid <- TestLayers.seedKidsProfile(pr)
           _   <- pr.setPaused(kid, true)
-          _   <- TestLayers.seedDevice(dr, SharedMac, "family-ipad", kid)
-          _   <- markShared(SharedMac)
+          _   <- seedCheckedIn(SharedMac, kid)
           ps  <- makePsAt(TestClock.schoolDayAfternoon)
           d   <- ps.decideDetailed(HouseholdId.Default, SharedMac, Host)
         } yield assertTrue(
