@@ -204,6 +204,11 @@ object MetricGuard {
     // too aggressive (real sessions vanishing), a flat zero while phantom
     // inflation returns means it is too lax.
     "presence_app_sessions_dropped_total"       -> Set.empty[String],
+    // #2843 — devices whose `devices.profile_id` disagreed with their open assignment-history row
+    // and were repaired by the standing drift check on the reevaluate tick. Unlabelled: any
+    // non-zero rate after a rollout settles means a writer is bypassing `DeviceAssignment.assign`,
+    // and the WARN log names the household; a per-device/household label would break the firewall.
+    "device_assignment_drift_repaired_total"    -> Set.empty[String],
     // #2077 ambient anchor-gate observability (unlabelled).
     "presence_ambient_spans_dropped_total"      -> Set.empty[String],
     "presence_ambient_hosts"                    -> Set.empty[String],
@@ -1889,6 +1894,14 @@ object AppMetrics {
         RollupDurationBoundaries,
       ) *>
       MetricGuard.gauge("wifihaven_rollup_rows_upserted", Map("rollup_job" -> job), rows.toDouble)
+
+  // ── Device assignment drift (#2843) ──────────────────────────────────────────
+  // Emitted by DeviceAssignmentRepoLive.repairDrift on every per-household reevaluate tick, by the
+  // number of devices repaired — including 0, so the series exists from the first tick and the
+  // first repair after a restart is a visible step for rate()/increase() rather than the birth of
+  // a new series.
+  def recordDeviceAssignmentDriftRepaired(devices: Int): UIO[Unit] =
+    MetricGuard.counter("device_assignment_drift_repaired_total", Map.empty, devices.toLong)
 
   /**
    * #2553 — one household's slice of an all-tenant rollup tick was skipped

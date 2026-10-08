@@ -1,7 +1,8 @@
-# Warning (notify, look-today) alert rules — W1–W15
+# Warning (notify, look-today) alert rules — W1–W17
 # (W1–W5: #1405, parent #1381. W6–W7: #2416. W8: #2488. W9: #2553. W10: #2646.
 #  W11–W12: #2477. W13: #2517. W14: #2646 follow-up, W10's absence arm.
-#  W15: #2736, the ws-cutover safety net — read its block before touching it.)
+#  W15: #2736, the ws-cutover safety net — read its block before touching it.
+#  W16: #2785. W17: #2843, device assignment drift.)
 # Implements docs/design/alerting.md §7.2.
 #
 # Every expression is grounded in a series emitted today (§2 "alert only on
@@ -41,7 +42,7 @@
 # are CONNECTED. Do not fold them into one rule; they need different reference
 # signals and different `for` durations.
 #
-# All fifteen carry severity=warning + env=prod labels, which the notification
+# All of them carry severity=warning + env=prod labels, which the notification
 # policy in alerting.tf routes to the wifihaven-warning (email) contact point.
 # None of these are ratio queries, so unlike the critical set (§7.1) they need
 # no zero-traffic guard — a counter that never increments is simply absent
@@ -66,7 +67,7 @@
 # and the rate/increase window come straight from §7.2.
 
 locals {
-  # Keyed w1..w16 (stable resource addressing). `window_s` bounds the data fetch
+  # Keyed w1..w17 (stable resource addressing). `window_s` bounds the data fetch
   # and must cover the rate/increase window in `expr` (for W10, its
   # `last_over_time` lookback; W14 and W15 have no range selector at all and take
   # the file minimum). `paused` ships W5 off.
@@ -712,6 +713,28 @@ locals {
       for      = "15m"
       paused   = false
       summary  = "Router {{ $labels.router_id }} keeps stalling its agent tick loop: on_tick has gone more than 30s between entries against a 1s heartbeat, repeatedly, for at least the last 15 minutes. That loop is single-fibered and runs BOTH the websocket pushed-policy apply and the usage/event reporting path, so for the length of each stall this router is enforcing the snapshot it applied BEFORE the operator's last change, and is reporting no usage and no connection events. It will look healthy everywhere else: the process is up, the websocket is live, and W15 will not fire. This is the 2026-09-13 shape, where a granted time extension took 4m11s to reach the device. FIRST: the 'Which step blocked the tick' panel on the router-fleet dashboard — agent_slow_step_total{step} names the offender out of ws_apply / block_page_token / blocklist_refresh / eb_refresh / usage_report / metrics_push. If it is eb_refresh, check the sweep-size panel: that sweep re-resolves every member host of every subscribed blocklist and is sliced (eb_refresh_slice_seconds) rather than cheap. If it is usage_report, the step is the WHOLE once-a-minute usage flush (nft counter read, report build, post, counter reset): check how many counters that router is folding and whether the report build is resolving hostnames against one parse of the dns-tail cache (#2796: re-parsing it per counter cost 27.5s a flush on the family router). If it is one of the three curl steps, an upstream is sitting at its timeout bound — check http_connect_timeout / http_max_time on the box and whether that router's WAN is flapping (logread | grep udhcpc). If it is step=other, an agent call site used a name outside tick_guard.STEPS, which is a bug in itself. If NO step is attributed, the time went somewhere this instrumentation does not cover yet, and that is worth an issue of its own. Corroborate against usage_window_stall_total on the same router: it observes the same failure one hop later, so the two should move together."
+    }
+    # W17 (#2843) — a writer is bypassing DeviceAssignment.assign. The standing
+    # drift check on every per-household reevaluate tick repairs any device whose
+    # devices.profile_id disagrees with its open device_profile_assignments row
+    # and counts each repair. A repair is expected only while an old API image
+    # overlaps a deploy (Render runs both briefly), which the `for` rides out; a
+    # rate that persists past that means current code writes the column
+    # without history. The 5 m window with a 30 m `for` means a repair has to
+    # recur through half an hour; one isolated repair drops out of the window
+    # after 5 m and never fires. The counter is written (+0) on every tick, so
+    # the series exists from the first tick and the first repair after a
+    # restart is visible to increase().
+    #
+    # QUERY COST: one 5 m increase over a single unlabelled counter.
+    w17 = {
+      title    = "W17 Device assignment drift keeps being repaired"
+      expr     = "sum(increase(device_assignment_drift_repaired_total{env=\"prod\"}[5m]))"
+      window_s = 300
+      gt       = 0
+      for      = "30m"
+      paused   = false
+      summary  = "The #2843 drift check has kept repairing device profile assignments for at least 30 minutes, with a repair in every 5-minute window: something is writing devices.profile_id without going through DeviceAssignment.assign, so those devices' usage history is being attributed by a record the repair has to reconstruct at tick granularity. FIRST: grep the API log for 'device assignment drift repaired', which names the household and the device count per tick. If it started at a deploy and is still firing, the new image has a writer that bypasses the primitive: check the 'Device Profile Writer Check' CI job on the deployed commit and any statement that builds the devices write from fragments, which that text scan cannot see. If no deploy is in flight, look for a manual SQL session or script writing devices.profile_id on prod. The repair itself is safe to leave running while you look; it never loses an assignment, it only moves the transition to the tick instant. Dashboard: data-quality-ingest, 'Device assignment drift repaired' panels."
     }
   }
 }

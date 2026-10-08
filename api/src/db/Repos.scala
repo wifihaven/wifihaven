@@ -782,6 +782,9 @@ trait DeviceRepo {
       pid: Option[ProfileId],
       ip: String,
       household: HouseholdId = HouseholdId.Default,
+      // #2843: the acting user's username, resolved within `household` and recorded as the history
+      // row's started_by / ended_by. None for system writes and fixtures.
+      byUsername: Option[String] = None,
   ): Task[DeviceId]
 
   /**
@@ -2152,7 +2155,9 @@ class AppTimeLimitRepoLive(xa: Transactor[Task]) extends AppTimeLimitRepo {
       .transact(xa)
 }
 
-class DeviceRepoLive(xa: Transactor[Task]) extends DeviceRepo {
+// #2843: `clock` timestamps the assignment-history rows `upsert` writes through
+// `DeviceAssignment.assign`.
+class DeviceRepoLive(xa: Transactor[Task], clock: wifihaven.shared.Clock) extends DeviceRepo {
   // #2107: same projection as listAll, AND-scoped to one household. `devices` is aliased `d`, so the
   // predicate is qualified `d.household_id`. Index-backed by V65's idx_devices_household (and the
   // leading column of uq_devices_household_mac).
@@ -2243,38 +2248,39 @@ class DeviceRepoLive(xa: Transactor[Task]) extends DeviceRepo {
       pid: Option[ProfileId],
       ip: String,
       household: HouseholdId = HouseholdId.Default,
-  ) = {
-    // #708: pid=None writes NULL (device unassigned). Devices without a profile
-    // are a supported state — same shape auto-discovery produces.
-    // #1771: defensive guard — devices cannot be assigned to the global sentinel
-    // profile. The route layer rejects this with a 400 before we get here, but
-    // catching it again in the repo means a buggy code path (or a direct SQL
-    // call from a future caller) still fails loudly instead of corrupting the
-    // device-to-profile graph. The guard and the INSERT run in the SAME doobie
-    // transaction so a (today-impossible) concurrent flip of `profiles.is_global`
-    // can't slip a device assignment past the check.
-    val check = pid.fold(doobie.free.connection.unit) { p =>
-      sql"SELECT is_global FROM profiles WHERE id=$p"
-        .query[Boolean]
-        .option
-        .flatMap {
-          case Some(true) =>
-            doobie.free.connection.raiseError[Unit](
-              new IllegalArgumentException(
-                s"devices cannot be assigned to the global profile (id=${p.value})",
-              ),
-            )
-          case _          => doobie.free.connection.unit
-        }
-    }
+      byUsername: Option[String] = None,
+  ) =
+    // #708: pid=None means the device is unassigned (profile_id NULL), the same shape
+    // auto-discovery produces.
     // #2108: constructively keyed by `household` (default household 1 for single-household call
     // sites). `ON CONFLICT (household_id, mac)` (V65's uq_devices_household_mac) so a row is created/
     // updated in the writer's household only — the same MAC in another household is a different row.
-    (check *>
-      sql"INSERT INTO devices(mac,name,profile_id,last_seen_ip,last_seen_at,household_id) VALUES($mac,$name,$pid,NULLIF($ip,''),NOW(),$household) ON CONFLICT(household_id,mac) DO UPDATE SET name=EXCLUDED.name,profile_id=EXCLUDED.profile_id RETURNING id"
-        .query[DeviceId]
-        .unique).transact(xa)
-  }
+    // #2843: the row is written WITHOUT its profile; `DeviceAssignment.assign` then sets
+    // `devices.profile_id` and the assignment history together, in this same transaction. It is
+    // also where the #1771 global-profile guard now lives. A changed profile closes the open row as
+    // `reassigned` (or `unassigned` when cleared); an unchanged one writes no history.
+    clock.instant.flatMap { at =>
+      (for {
+        id <- sql"""INSERT INTO devices(mac,name,last_seen_ip,last_seen_at,household_id)
+                    VALUES($mac,$name,NULLIF($ip,''),NOW(),$household)
+                    ON CONFLICT(household_id,mac) DO UPDATE SET name=EXCLUDED.name
+                    RETURNING id""".query[DeviceId].unique
+        by <- byUsername.flatTraverse(u =>
+          sql"SELECT id FROM users WHERE household_id=$household AND username=$u"
+            .query[UserId]
+            .option,
+        )
+        _  <- DeviceAssignment.assign(
+          household,
+          id,
+          pid,
+          at,
+          AssignmentKind.Assigned,
+          by,
+          if (pid.isDefined) AssignmentEndCause.Reassigned else AssignmentEndCause.Unassigned,
+        )
+      } yield id).transact(xa)
+    }
   def updateLastSeen(mac: MacAddress, ip: String, household: HouseholdId = HouseholdId.Default) =
     // #2125: AND-scoped to `household` so it can only touch its own household's row.
     sql"UPDATE devices SET last_seen_ip=$ip,last_seen_at=NOW() WHERE household_id=$household AND mac=$mac".update.run
@@ -2317,8 +2323,10 @@ class DeviceRepoLive(xa: Transactor[Task]) extends DeviceRepo {
       // MAC is created unmanaged (profile_id NULL) in the router's household; the same MAC behind
       // another household's gateway is a DIFFERENT row under ON CONFLICT(household_id,mac) (V65's
       // uq_devices_household_mac). Never lookup-and-reject (design §3.2.2).
-      sql"""INSERT INTO devices(mac,name,profile_id,last_seen_ip,last_seen_at,household_id)
-          VALUES($mac,$name,NULL,$ip,$at,$household)
+      // #2843: no profile_id column — a discovered device starts unassigned (NULL default), and only
+      // `DeviceAssignment.assign` ever sets it.
+      sql"""INSERT INTO devices(mac,name,last_seen_ip,last_seen_at,household_id)
+          VALUES($mac,$name,$ip,$at,$household)
           ON CONFLICT(household_id,mac) DO UPDATE
           SET last_seen_ip=COALESCE(EXCLUDED.last_seen_ip,devices.last_seen_ip),
               last_seen_at=EXCLUDED.last_seen_at
@@ -4890,7 +4898,9 @@ object Repos {
   val householdSettingsRepo = ZLayer.fromFunction(HouseholdSettingsRepoLive(_))
   val timeLimitRepo         = ZLayer.fromFunction(TimeLimitRepoLive(_))
   val appTimeLimitRepo      = ZLayer.fromFunction(AppTimeLimitRepoLive(_))
-  val deviceRepo            = ZLayer.fromFunction(DeviceRepoLive(_))
+  val deviceRepo            = ZLayer.fromFunction(DeviceRepoLive(_, _))
+  // #2843: the device-profile assignment primitive, for the reevaluate tick's drift check.
+  val deviceAssignmentRepo  = ZLayer.fromFunction(DeviceAssignmentRepoLive(_))
   val blocklistRepo         = ZLayer.fromFunction(BlocklistRepoLive(_))
   val timeUsageRepo         = ZLayer.fromFunction(TimeUsageRepoLive(_))
   val timeExtRepo           = ZLayer.fromFunction(TimeExtensionRepoLive(_))
@@ -4920,5 +4930,5 @@ object Repos {
   // grants that widen the #2241 agent token's data scope (V84).
   val supportConsentRepo    = ZLayer.fromFunction(SupportConsentRepoLive(_))
   val all                   =
-    userRepo ++ householdRepo ++ userProfileRepo ++ profileRepo ++ namedScheduleRepo ++ householdSettingsRepo ++ timeLimitRepo ++ appTimeLimitRepo ++ deviceRepo ++ blocklistRepo ++ timeUsageRepo ++ timeExtRepo ++ routerRepo ++ trafficReportRepo ++ blockEventRepo ++ connEventRepo ++ alertRepo ++ appRepo ++ rollupRepo ++ timeUsedRollupRepo ++ appUsedRollupRepo ++ partitionRepo ++ ambientHostsRepo ++ householdBillingRepo ++ betaRequestRepo ++ betaCohortRepo ++ entitlementsRepo ++ pressMessageRepo ++ passwordResetRepo ++ supportConsentRepo
+    userRepo ++ householdRepo ++ userProfileRepo ++ profileRepo ++ namedScheduleRepo ++ householdSettingsRepo ++ timeLimitRepo ++ appTimeLimitRepo ++ deviceRepo ++ deviceAssignmentRepo ++ blocklistRepo ++ timeUsageRepo ++ timeExtRepo ++ routerRepo ++ trafficReportRepo ++ blockEventRepo ++ connEventRepo ++ alertRepo ++ appRepo ++ rollupRepo ++ timeUsedRollupRepo ++ appUsedRollupRepo ++ partitionRepo ++ ambientHostsRepo ++ householdBillingRepo ++ betaRequestRepo ++ betaCohortRepo ++ entitlementsRepo ++ pressMessageRepo ++ passwordResetRepo ++ supportConsentRepo
 }

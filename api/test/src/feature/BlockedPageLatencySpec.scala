@@ -364,6 +364,7 @@ object BlockedPageLatencySpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPo
           tss,
           clk,
           namedScheduleRepo = nsr,
+          repairAssignmentDrift = PolicyServiceLive.NoDriftCheck,
         )
         routes            = BlockedRoutes.routes(
           ps,

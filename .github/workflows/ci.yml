@@ -471,6 +471,24 @@ jobs:
       - name: Reject new hardcoded usage-period literals
         run: bash .github/scripts/check-usage-period-hardcode.sh "${{ steps.base.outputs.sha }}"
 
+  # ── devices.profile_id has one writer (#2843) ───────────────────────────
+  # `DeviceAssignment.assign` is the only code allowed to write
+  # devices.profile_id, because it records the assignment history in the same
+  # transaction (docs/design/shared-devices.md §5.3). Full-tree scan of api/src,
+  # not a diff, so an existing bypass cannot hide.
+  device-profile-writers:
+    name: Device Profile Writer Check
+    needs: changes
+    if: needs.changes.outputs.scala == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Reject devices.profile_id writes outside DeviceAssignment.assign
+        run: bash .github/scripts/check-device-profile-writers.sh
+
   # ── Cloud-agent prompts: re-paste reminder + PROMPT_VERSION bump ─────────
   # The Claude Code Cloud ROUTINE copy of deploy/{support,press}-agent/agent.yaml
   # is WEB-UI-ONLY: merging does not update the running agent, and a stale
@@ -968,6 +986,7 @@ jobs:
       - migrations-immutable
       - migration-isolation
       - usage-period-hardcode
+      - device-profile-writers
       - agent-prompt-repaste
       - shell-tests
       - lua-tests

@@ -235,8 +235,7 @@ object BlockPageHouseholdSpec
       xa  <- ZIO.service[Transactor[Task]]
       _   <- dr.upsert(macM, "sharedA", Some(two.profileA), "192.168.1.20", two.hhA)
       _   <-
-        sql"INSERT INTO devices(mac,name,profile_id,household_id) VALUES ($macM,'sharedB',${two.profileB},${two.hhB})".update.run
-          .transact(xa)
+        dr.upsert(macM, "sharedB", Some(two.profileB), "", two.hhB)
     } yield two
 
   private def alertHouseholds(xa: Transactor[Task]): Task[List[(HouseholdId, String)]] =

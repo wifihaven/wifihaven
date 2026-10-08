@@ -957,8 +957,8 @@ object DeviceRoutes {
       deviceRepo: DeviceRepo,
       userProfileRepo: UserProfileRepo,
       // #1771: profileRepo is consulted to reject device assignments to the global sentinel with
-      // a 400 before any DB write. The repo-layer guard (`DeviceRepoLive.upsert`) is a defensive
-      // backstop.
+      // a 400 before any DB write. The guard in `DeviceAssignment.assign` (the one writer of
+      // `devices.profile_id`, #2843) is a defensive backstop.
       profileRepo: ProfileRepo,
       // #1849: a device's profile assignment (or its existence) is snapshot content — drop the
       // computed-snapshot cache on upsert/delete/reassign so the change reaches the fleet at once.
@@ -1001,7 +1001,8 @@ object DeviceRoutes {
             // under `claims.hh` only (ON CONFLICT (household_id, mac)); it cannot address another
             // household's row.
             id <- deviceRepo
-              .upsert(mac, udr.name, udr.profileId, "", claims.hh)
+              // #2843: the caller is recorded on the assignment-history row this writes.
+              .upsert(mac, udr.name, udr.profileId, "", claims.hh, byUsername = Some(claims.sub))
               .mapError(ApiError.Db(_))
             // #481: log device upsert so the next CI failure makes it obvious
             // whether the mutation reached the API at all.
@@ -1083,7 +1084,7 @@ object DeviceRoutes {
             newName = namePatch.applyTo(existing.name)
             newPid = pidPatch.applyToNullable(existing.profileId)
             _ <- deviceRepo
-              .upsert(normalized, newName, newPid, "", claims.hh)
+              .upsert(normalized, newName, newPid, "", claims.hh, byUsername = Some(claims.sub))
               .mapError(ApiError.Db(_))
             _ <- LogContext.annotate(LogContext.Mac, normalized.value) {
               LogContext.annotateOpt(
