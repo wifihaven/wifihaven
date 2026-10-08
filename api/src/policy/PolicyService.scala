@@ -143,6 +143,13 @@ trait PolicyService {
 object PolicyServiceLive {
 
   /**
+   * #2843: a drift check that repairs nothing, for test constructions whose fixtures never write
+   * `devices.profile_id` outside `DeviceAssignment.assign`. Production wires
+   * `DeviceAssignmentRepo.repairDrift` in [[PolicyService.layer]].
+   */
+  val NoDriftCheck: (HouseholdId, Instant) => Task[Int] = (_, _) => ZIO.succeed(0)
+
+  /**
    * #1104: test-friendly factory that wires a default `TimeStatusServiceLive` over the same repos.
    * Lets the existing PolicySnapshot* specs and Router* specs continue passing the old positional
    * args; production wiring still goes through `PolicyService.layer`, which injects an explicit
@@ -205,6 +212,7 @@ object PolicyServiceLive {
       cacheEnabled,
       billingStatusOf = billingStatusOf,
       enforcementDisabledOf = enforcementDisabledOf,
+      repairAssignmentDrift = NoDriftCheck,
     )
   }
 }
@@ -274,9 +282,10 @@ class PolicyServiceLive(
     // #2843: the standing device-assignment drift check (design `docs/design/shared-devices.md`
     // §5.3), run at the start of every per-household reevaluate. It repairs any device whose
     // `devices.profile_id` disagrees with its open history row and returns how many it repaired.
-    // The production layer wires `DeviceAssignmentRepo.repairDrift`; defaulted to "nothing to
-    // repair" for the ~40 direct test constructions, like the readers above.
-    repairAssignmentDrift: (HouseholdId, Instant) => Task[Int] = (_, _) => ZIO.succeed(0),
+    // Deliberately NOT defaulted (no-dark-by-default): every construction names its drift check.
+    // The production layer wires `DeviceAssignmentRepo.repairDrift`; the `apply` test factory and
+    // specs that construct directly pass [[PolicyServiceLive.NoDriftCheck]] by name.
+    repairAssignmentDrift: (HouseholdId, Instant) => Task[Int],
 ) extends PolicyService {
 
   // #1849: the cached snapshot. Process-local `AtomicReference` (matching the existing

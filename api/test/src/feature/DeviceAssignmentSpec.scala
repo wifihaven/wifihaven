@@ -84,6 +84,30 @@ object DeviceAssignmentSpec
   private def markShared(xa: Transactor[Task]): Task[Unit] =
     sql"UPDATE devices SET shared = TRUE WHERE mac = $Mac".update.run.transact(xa).unit
 
+  private def otherHouseholdProfile(xa: Transactor[Task]): Task[ProfileId] =
+    (for {
+      hh  <- sql"INSERT INTO households(name, slug) VALUES ('Other', 'other-2843') RETURNING id"
+        .query[HouseholdId]
+        .unique
+      pid <- sql"INSERT INTO profiles(name, household_id) VALUES ('Other kids', $hh) RETURNING id"
+        .query[ProfileId]
+        .unique
+    } yield pid).transact(xa)
+
+  private def globalProfile(xa: Transactor[Task]): Task[ProfileId] =
+    sql"SELECT id FROM profiles WHERE is_global".query[ProfileId].unique.transact(xa)
+
+  private def assignAssigned(f: Fixture, id: DeviceId, pid: ProfileId): Task[Boolean] =
+    f.assignments.assign(
+      HouseholdId.Default,
+      id,
+      Some(pid),
+      instantOf(T0.plusMinutes(1)),
+      AssignmentKind.Assigned,
+      None,
+      AssignmentEndCause.Reassigned,
+    )
+
   private def driftCounter: UIO[Double] =
     Metric.counter("device_assignment_drift_repaired_total").value.map(_.count)
 
@@ -292,7 +316,7 @@ object DeviceAssignmentSpec
           rows   <- history(f.xa)
           cur    <- currentProfile(f.xa)
           res = assertTrue(
-            result.left.exists(_.isInstanceOf[SharedDeviceAssignmentRefused]),
+            result.left.exists(_.isInstanceOf[DeviceAssignmentError.SharedDeviceRefused]),
             rows.isEmpty,
             cur.isEmpty,
           )
@@ -337,7 +361,54 @@ object DeviceAssignmentSpec
             )
             .either
           rows   <- history(f.xa)
-        } yield assertTrue(result.isLeft, rows.isEmpty)
+          out    <- pinned(
+            f,
+            assertTrue(
+              result.left.exists(_.isInstanceOf[DeviceAssignmentError.DeviceNotInHousehold]),
+              rows.isEmpty,
+            ),
+          )
+        } yield out
+      },
+      test("refuses a profile from another household and leaves both stores unchanged") {
+        for {
+          f      <- fixture
+          _      <- put(f, Some(f.kids))
+          before <- history(f.xa)
+          other  <- otherHouseholdProfile(f.xa)
+          id     <- deviceId(f.xa)
+          result <- assignAssigned(f, id, other).either
+          after  <- history(f.xa)
+          cur    <- currentProfile(f.xa)
+          out    <- pinned(
+            f,
+            assertTrue(
+              result.left.exists(_.isInstanceOf[DeviceAssignmentError.ProfileNotInHousehold]),
+              after == before,
+              cur.contains(f.kids.value),
+            ),
+          )
+        } yield out
+      },
+      test("refuses the global sentinel profile (#1771) and leaves both stores unchanged") {
+        for {
+          f      <- fixture
+          _      <- put(f, Some(f.kids))
+          before <- history(f.xa)
+          global <- globalProfile(f.xa)
+          id     <- deviceId(f.xa)
+          result <- assignAssigned(f, id, global).either
+          after  <- history(f.xa)
+          cur    <- currentProfile(f.xa)
+          out    <- pinned(
+            f,
+            assertTrue(
+              result.left.exists(_.isInstanceOf[DeviceAssignmentError.GlobalProfile]),
+              after == before,
+              cur.contains(f.kids.value),
+            ),
+          )
+        } yield out
       },
       test(
         "a clock behind the open row's start never produces an inverted or overlapping interval",

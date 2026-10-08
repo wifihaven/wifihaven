@@ -986,6 +986,7 @@ jobs:
       - migrations-immutable
       - migration-isolation
       - usage-period-hardcode
+      - device-profile-writers
       - agent-prompt-repaste
       - shell-tests
       - lua-tests

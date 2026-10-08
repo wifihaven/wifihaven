@@ -67,7 +67,7 @@
 # and the rate/increase window come straight from §7.2.
 
 locals {
-  # Keyed w1..w16 (stable resource addressing). `window_s` bounds the data fetch
+  # Keyed w1..w17 (stable resource addressing). `window_s` bounds the data fetch
   # and must cover the rate/increase window in `expr` (for W10, its
   # `last_over_time` lookback; W14 and W15 have no range selector at all and take
   # the file minimum). `paused` ships W5 off.
@@ -720,18 +720,21 @@ locals {
     # and counts each repair. A repair is expected only while an old API image
     # overlaps a deploy (Render runs both briefly), which the `for` rides out; a
     # rate that persists past that means current code writes the column
-    # without history. Counter, so a never-incremented series is absent and
-    # resolves no_data → OK like the rest of this group.
+    # without history. The 5 m window with a 30 m `for` means a repair has to
+    # recur through half an hour; one isolated repair drops out of the window
+    # after 5 m and never fires. The counter is written (+0) on every tick, so
+    # the series exists from the first tick and the first repair after a
+    # restart is visible to increase().
     #
-    # QUERY COST: one 30 m increase over a single unlabelled counter.
+    # QUERY COST: one 5 m increase over a single unlabelled counter.
     w17 = {
       title    = "W17 Device assignment drift keeps being repaired"
-      expr     = "sum(increase(device_assignment_drift_repaired_total{env=\"prod\"}[30m]))"
-      window_s = 1800
+      expr     = "sum(increase(device_assignment_drift_repaired_total{env=\"prod\"}[5m]))"
+      window_s = 300
       gt       = 0
       for      = "30m"
       paused   = false
-      summary  = "The #2843 drift check has repaired device profile assignments for at least 30 minutes straight: something is writing devices.profile_id without going through DeviceAssignment.assign, so those devices' usage history is being attributed by a record the repair has to reconstruct at tick granularity. FIRST: grep the API log for 'device assignment drift repaired', which names the household and the device count per tick. If it started at a deploy and is still firing, the new image has a writer that bypasses the primitive: check the 'Device Profile Writer Check' CI job on the deployed commit and any statement that builds the devices write from fragments, which that text scan cannot see. If no deploy is in flight, look for a manual SQL session or script writing devices.profile_id on prod. The repair itself is safe to leave running while you look; it never loses an assignment, it only moves the transition to the tick instant. Dashboard: data-quality-ingest, 'Device assignment drift repaired' panels."
+      summary  = "The #2843 drift check has kept repairing device profile assignments for at least 30 minutes, with a repair in every 5-minute window: something is writing devices.profile_id without going through DeviceAssignment.assign, so those devices' usage history is being attributed by a record the repair has to reconstruct at tick granularity. FIRST: grep the API log for 'device assignment drift repaired', which names the household and the device count per tick. If it started at a deploy and is still firing, the new image has a writer that bypasses the primitive: check the 'Device Profile Writer Check' CI job on the deployed commit and any statement that builds the devices write from fragments, which that text scan cannot see. If no deploy is in flight, look for a manual SQL session or script writing devices.profile_id on prod. The repair itself is safe to leave running while you look; it never loses an assignment, it only moves the transition to the tick instant. Dashboard: data-quality-ingest, 'Device assignment drift repaired' panels."
     }
   }
 }

@@ -188,7 +188,9 @@ object TestDatabase {
       db <- ZIO.service[TestDb]
       // #2843 TEST-PIN: before wiping, check the state the previous test left behind against the
       // device-assignment invariants, so a writer that bypasses `DeviceAssignment.assign` fails the
-      // test that exercised it.
+      // test that exercised it. The LAST test a spec runs is not followed by a reset, so it is not
+      // checked here; a spec whose final test matters asserts the pin itself (DeviceAssignmentSpec
+      // does, after every case).
       _  <- AssignmentInvariant.assertHolds(
         Transactor.fromDataSource[Task](db.ds, scala.concurrent.ExecutionContext.global),
         s"state left in ${db.name} by the previous test",

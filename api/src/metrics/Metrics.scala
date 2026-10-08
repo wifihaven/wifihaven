@@ -1895,6 +1895,14 @@ object AppMetrics {
       ) *>
       MetricGuard.gauge("wifihaven_rollup_rows_upserted", Map("rollup_job" -> job), rows.toDouble)
 
+  // ── Device assignment drift (#2843) ──────────────────────────────────────────
+  // Emitted by DeviceAssignmentRepoLive.repairDrift on every per-household reevaluate tick, by the
+  // number of devices repaired — including 0, so the series exists from the first tick and the
+  // first repair after a restart is a visible step for rate()/increase() rather than the birth of
+  // a new series.
+  def recordDeviceAssignmentDriftRepaired(devices: Int): UIO[Unit] =
+    MetricGuard.counter("device_assignment_drift_repaired_total", Map.empty, devices.toLong)
+
   /**
    * #2553 — one household's slice of an all-tenant rollup tick was skipped
    * ([[wifihaven.api.usage.HouseholdTickIsolation]]). Any non-zero rate means a tenant has stopped
@@ -1904,12 +1912,6 @@ object AppMetrics {
    * from any other per-household failure (`error`). The household id is in the accompanying ERROR
    * log, never a label (§4 cardinality firewall).
    */
-  // ── Device assignment drift (#2843) ──────────────────────────────────────────
-  // Emitted by DeviceAssignmentRepoLive.repairDrift on the per-household reevaluate tick, once per
-  // tick that repaired anything, by the number of devices repaired.
-  def recordDeviceAssignmentDriftRepaired(devices: Int): UIO[Unit] =
-    MetricGuard.counter("device_assignment_drift_repaired_total", Map.empty, devices.toLong)
-
   def recordRollupHouseholdSkipped(job: String, reason: String): UIO[Unit] =
     MetricGuard.counter(
       "wifihaven_rollup_household_skipped_total",

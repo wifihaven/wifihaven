@@ -220,7 +220,10 @@ never gets an `assigned` row. If it has an open `check_in`, the check-in is the 
 primitive writes one), so the repair restores `devices.profile_id` from it and leaves the row open.
 Otherwise (a `profile_id` with no open check-in, or an open `assigned` row) the repair clears
 `devices.profile_id`, which leaves the device checked out, and closes any open row with
-`end_cause = unassigned`. (Amended on #2843; the first version cleared the check-in too.) Each repair increments
+`end_cause = unassigned`. (Amended on #2843; the first version cleared the check-in too.) The
+tick covers the households the reevaluate sweep rebuilds (connected routers plus the default
+household) and every household a mutation invalidates, so a household whose router is offline is
+repaired when its router reconnects or its policy is next edited. Each repair increments
 `device_assignment_drift_repaired_total` (no device or household label), which has a dashboard panel
 and an alert, because any non-zero rate after the rollout means a writer is bypassing the primitive.
 A repair limits misattribution to one tick, and every repair is counted.

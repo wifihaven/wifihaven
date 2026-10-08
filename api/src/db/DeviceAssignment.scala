@@ -34,20 +34,41 @@ enum AssignmentEndCause(val db: String) {
 }
 
 /**
- * The primitive refused an `assigned` row on a shared device (design §9): a shared device is only
- * ever held through a `check_in`, because an `assigned` row would enforce like a check-in that no
- * auto-checkout releases.
+ * Why [[DeviceAssignment.assign]] refused a write. Sealed so the routes that surface these (#2848:
+ * 409 `device_shared`, 403 / 404 for scope) can map them exhaustively.
  */
-final case class SharedDeviceAssignmentRefused(deviceId: DeviceId)
-    extends RuntimeException(
-      s"device ${deviceId.value} is shared: it can be checked in, not assigned",
-    )
+sealed abstract class DeviceAssignmentError(message: String) extends RuntimeException(message)
 
-/** The device is not in the household the caller named. */
-final case class DeviceNotInHousehold(deviceId: DeviceId, household: HouseholdId)
-    extends RuntimeException(
-      s"device ${deviceId.value} is not in household ${household.value}",
-    )
+object DeviceAssignmentError {
+
+  /**
+   * An `assigned` row on a shared device (design §9): a shared device is only ever held through a
+   * `check_in`, because an `assigned` row would enforce like a check-in that no auto-checkout
+   * releases.
+   */
+  final case class SharedDeviceRefused(deviceId: DeviceId)
+      extends DeviceAssignmentError(
+        s"device ${deviceId.value} is shared: it can be checked in, not assigned",
+      )
+
+  /** The device is not in the household the caller named. */
+  final case class DeviceNotInHousehold(deviceId: DeviceId, household: HouseholdId)
+      extends DeviceAssignmentError(
+        s"device ${deviceId.value} is not in household ${household.value}",
+      )
+
+  /** #1771: no device can be held by the global sentinel profile. */
+  final case class GlobalProfile(profileId: ProfileId)
+      extends DeviceAssignmentError(
+        s"devices cannot be assigned to the global profile (id=${profileId.value})",
+      )
+
+  /** The profile is in another household than the device, or does not exist. */
+  final case class ProfileNotInHousehold(profileId: ProfileId, household: HouseholdId)
+      extends DeviceAssignmentError(
+        s"profile ${profileId.value} is not in household ${household.value}",
+      )
+}
 
 /**
  * #2843 (epic #2841, design `docs/design/shared-devices.md` §5.3): the ONLY code that writes
@@ -78,7 +99,7 @@ object DeviceAssignment {
       .flatMap {
         case Some((hh, shared)) => DeviceRow(hh, shared).pure[ConnectionIO]
         case None               =>
-          FC.raiseError[DeviceRow](DeviceNotInHousehold(device, household))
+          FC.raiseError[DeviceRow](DeviceAssignmentError.DeviceNotInHousehold(device, household))
       }
 
   private def openRow(device: DeviceId): ConnectionIO[Option[OpenRow]] =
@@ -138,20 +159,10 @@ object DeviceAssignment {
       .option
       .flatMap {
         case Some((true, _))                  =>
-          FC.raiseError(
-            new IllegalArgumentException(
-              s"devices cannot be assigned to the global profile (id=${profile.value})",
-            ),
-          )
-        case Some((_, hh)) if hh != household =>
-          FC.raiseError(
-            new IllegalArgumentException(
-              s"profile ${profile.value} is not in household ${household.value}",
-            ),
-          )
-        case None                             =>
-          FC.raiseError(new IllegalArgumentException(s"profile ${profile.value} does not exist"))
-        case _                                => FC.unit
+          FC.raiseError(DeviceAssignmentError.GlobalProfile(profile))
+        case Some((_, hh)) if hh == household => FC.unit
+        case _                                =>
+          FC.raiseError(DeviceAssignmentError.ProfileNotInHousehold(profile, household))
       }
 
   /**
@@ -162,8 +173,9 @@ object DeviceAssignment {
    * A no-op returning false when the open row already holds `newProfile` (whatever its kind), so a
    * rename or a re-sent PUT does not churn history; `devices.profile_id` is still re-synced. The
    * new row's `household_id` is the device row's, never the caller's: `household` only scopes the
-   * lookup, and a device outside it fails with [[DeviceNotInHousehold]]. Refuses an `assigned` row
-   * on a shared device with [[SharedDeviceAssignmentRefused]].
+   * lookup, and a device outside it fails with [[DeviceAssignmentError.DeviceNotInHousehold]].
+   * Refuses an `assigned` row on a shared device with
+   * [[DeviceAssignmentError.SharedDeviceRefused]].
    */
   def assign(
       household: HouseholdId,
@@ -182,7 +194,7 @@ object DeviceAssignment {
         else
           for {
             _  <- FC
-              .raiseError[Unit](SharedDeviceAssignmentRefused(device))
+              .raiseError[Unit](DeviceAssignmentError.SharedDeviceRefused(device))
               .whenA(dev.shared && kind == AssignmentKind.Assigned && newProfile.isDefined)
             _  <- newProfile.traverse_(checkProfile(dev.household, _))
             ts <- transitionAt(device, at)
@@ -298,12 +310,11 @@ class DeviceAssignmentRepoLive(xa: Transactor[Task]) extends DeviceAssignmentRep
         DeviceAssignment.repairDrift(household, at).transact(xa),
       )
       .tap { n =>
-        ZIO.when(n > 0)(
-          AppMetrics.recordDeviceAssignmentDriftRepaired(n) *>
-            ZIO.logWarning(
-              s"device assignment drift repaired: household=${household.value} devices=$n " +
-                "(something wrote devices.profile_id outside DeviceAssignment.assign)",
-            ),
+        AppMetrics.recordDeviceAssignmentDriftRepaired(n) *> ZIO.when(n > 0)(
+          ZIO.logWarning(
+            s"device assignment drift repaired: household=${household.value} devices=$n " +
+              "(something wrote devices.profile_id outside DeviceAssignment.assign)",
+          ),
         )
       }
 }
