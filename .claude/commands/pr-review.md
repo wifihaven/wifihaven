@@ -15,9 +15,17 @@ Apply the checklist's 9 dimensions to the diff (the 9th, **Unsourced facts &
 magic constants**, catches the #2018 class — behavior-driving magic numbers and
 "how it works" comments asserted without tracing to an authoritative source),
 cite `file:line`, classify every
-finding BLOCKER / SHOULD-FIX / NIT, do **not** modify files, and end with
-VERDICT: APPROVE or REQUEST-CHANGES (never APPROVE with an open BLOCKER) plus a
-3-line summary. Then post per the algorithm below.
+finding BLOCKER / SHOULD-FIX / NIT, do **not** modify files, and end with the
+SHA-bound verdict line plus a 3-line summary. Then post per the algorithm below.
+
+The verdict line is machine-read by the [merge rule](../../docs/pr-review-checklist.md#monitor-to-merged),
+so its shape is exact (checklist *Output format*): one line, at column 0,
+
+    VERDICT: APPROVE @ <HEAD_SHA>            or   VERDICT: REQUEST-CHANGES @ <HEAD_SHA>
+
+with `<HEAD_SHA>` the full 40-char SHA from step 1, the same SHA as the marker.
+Never APPROVE with an open BLOCKER. A verdict for any other SHA is void, so a
+review of an older head never authorizes a merge.
 
 ## Flow
 
@@ -46,14 +54,17 @@ VERDICT: APPROVE or REQUEST-CHANGES (never APPROVE with an open BLOCKER) plus a
         (three-dot) — the latest push(es) plus context the fix touched — for NEW
         findings.
 
-3. **Post one marked comment** as a **non-approving** PR comment (never
-   `gh pr review --approve/--request-changes` — it can interfere with required
-   human reviews / the merge queue). Write the body to a temp file, leading with
-   the marker for the **current** HEAD SHA:
+3. **Post one marked comment** as a plain PR comment (never
+   `gh pr review --approve/--request-changes`: GitHub forbids self-approval on
+   these operator-authored PRs, and the verdict lives in the comment). Write the
+   body to a temp file, leading with the marker for the **current** HEAD SHA and
+   ending with the verdict line for the **same** SHA:
 
    ```bash
    printf '<!-- wifihaven-pr-review reviewed-sha=%s -->\n' "$HEAD_SHA" > /tmp/pr-review-body.md
-   # ...append the review body (re-run: prior-findings status table → new findings → VERDICT)...
+   # ...append the review body (re-run: prior-findings status table → new findings)...
+   printf '\nVERDICT: %s @ %s\n' "$VERDICT" "$HEAD_SHA" >> /tmp/pr-review-body.md   # APPROVE | REQUEST-CHANGES
+   # ...append the 3-line summary...
    gh pr comment <n> --repo wifihaven/wifihaven --body-file /tmp/pr-review-body.md
    ```
 
@@ -61,4 +72,6 @@ VERDICT: APPROVE or REQUEST-CHANGES (never APPROVE with an open BLOCKER) plus a
    push introduced no new BLOCKER. Any open BLOCKER (still NOT-ADDRESSED /
    PARTIAL, or newly introduced) keeps the verdict at REQUEST-CHANGES and stays
    merge-gating. Post exactly one updated comment per run — don't duplicate a
-   comment for the same SHA.
+   comment for the same SHA. Re-read `headRefOid` just before posting; if the
+   head moved while you reviewed, review the new delta first rather than posting
+   a verdict for a SHA that is already stale.

@@ -233,8 +233,8 @@ scalafmt --check --non-interactive                                     # only if
 - Worktree off `origin/main` (`git worktree add .claude/worktrees/<slug> -b <branch> origin/main`).
 - Open a PR. Use "Relates to #<issue>" (don't auto-close unless fully covered).
 - Run `/pr-review`, address BLOCKERs + cheap SHOULD-FIX, push, re-run until no
-  BLOCKER. Monitor CI through green; do **not** `gh pr merge` / enable
-  auto-merge (operator's call).
+  BLOCKER. Take the PR through to MERGED per the
+  [merge rule](../../../docs/pr-review-checklist.md#monitor-to-merged).
 - Post a brief summary on the issue: new apps (slug + host-set + rationale) and
   any app-vs-blocklist / sub-experience-scoping decisions.
 

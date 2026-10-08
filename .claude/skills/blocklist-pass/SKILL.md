@@ -255,8 +255,9 @@ which category files you edited.
 
 Worktree off `origin/main`; **file a FRESH tracking issue per pass** (never
 reopen a closed one); open a PR ("Relates to #<issue>"); run `/pr-review`,
-address BLOCKERs + cheap SHOULD-FIX, push, re-run until no BLOCKER; monitor CI
-through green. Do **not** `gh pr merge` / enable auto-merge (operator's call).
+address BLOCKERs + cheap SHOULD-FIX, push, re-run until no BLOCKER; take the PR
+through to MERGED per the
+[merge rule](../../../docs/pr-review-checklist.md#monitor-to-merged).
 Post a summary on the issue: per category, apexes added + what each is + why it
 was a gap.
 
