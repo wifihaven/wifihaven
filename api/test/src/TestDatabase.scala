@@ -186,6 +186,13 @@ object TestDatabase {
     for {
       pg <- ZIO.service[EmbeddedPostgres]
       db <- ZIO.service[TestDb]
+      // #2843 TEST-PIN: before wiping, check the state the previous test left behind against the
+      // device-assignment invariants, so a writer that bypasses `DeviceAssignment.assign` fails the
+      // test that exercised it.
+      _  <- AssignmentInvariant.assertHolds(
+        Transactor.fromDataSource[Task](db.ds, scala.concurrent.ExecutionContext.global),
+        s"state left in ${db.name} by the previous test",
+      )
       _  <- cloneTemplateInto(pg, db.name)
     } yield ()
 
@@ -421,9 +428,8 @@ object TestLayers {
           .query[ProfileId]
           .unique
           .transact(xa)
-      _        <-
-        sql"INSERT INTO devices(mac, name, profile_id, household_id) VALUES ($macB, 'devB', $profileB, $hhB)".update.run
-          .transact(xa)
+      // #2843: through the writer, so household B's device carries its assignment history too.
+      _        <- dr.upsert(macB, "devB", Some(profileB), "", hhB)
       // Enrolled routers for each household (known raw tokens).
       tokenA = "rt_hhA_token_0000000000000000"
       tokenB = "rt_hhB_token_0000000000000000"
