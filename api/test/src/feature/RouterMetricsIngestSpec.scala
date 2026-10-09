@@ -2,13 +2,14 @@ package wifihaven.api.feature
 
 import wifihaven.api.MetricsConfig
 import wifihaven.api.db.*
-import wifihaven.api.metrics.RouterMetricsService
+import wifihaven.api.metrics.{AppMetrics, RouterMetricsService}
 import wifihaven.api.routes.*
 import wifihaven.shared.*
 import wifihaven.shared.types.*
 import wifihaven.shared.Clock.TestClock
 import wifihaven.testinfra.*
 import io.zonky.test.db.postgres.embedded.EmbeddedPostgres
+import java.nio.file.{Files, Paths}
 import zio.{Clock as _, *}
 import zio.http.*
 import zio.json.*
@@ -585,7 +586,32 @@ object RouterMetricsIngestSpec
         assertTrue(bucketCount(scraped, m, ridStr, 5.0).contains(2.0)) &&
         assertTrue(bucketCount(scraped, m, ridStr, 6.0).contains(2.0)) &&
         assertTrue(bucketCount(scraped, m, ridStr, 60.0).contains(2.0)) &&
-        assertTrue(bucketCount(scraped, m, ridStr, Double.PositiveInfinity).contains(5.0))
+        assertTrue(bucketCount(scraped, m, ridStr, Double.PositiveInfinity).contains(5.0)) &&
+        // The fold reconstructs `_sum` from per-bucket representatives: 0.5 + 5.0 + 3 overflows at
+        // the registry's top finite bound + 1 (61). It must stay finite: ZIO appends
+        // Double.MaxValue to every Boundaries, and using that as the overflow representative drove
+        // `_sum` to +Inf after two overflows, breaking every mean panel for the router.
+        assertTrue(
+          seriesValue(scraped, s"${m}_sum", s"""router_id="$ridStr"""").contains(188.5),
+        )
+    },
+    test("#2897 RouterDurationBoundaries matches the agent's buckets in the contract fixture") {
+      // The bucket set is a cross-language pair (agent DURATION_BUCKETS in metrics.lua, API
+      // RouterDurationBoundaries). metrics_spec.lua pins the Lua literal; this pins the Scala side
+      // against the fixture the agent's own build_batch generated, so changing either side alone
+      // fails CI. ZIO appends Double.MaxValue to every Boundaries, hence the filter.
+      val fixture = {
+        var cur = Paths.get(sys.props.getOrElse("user.dir", ".")).toAbsolutePath
+        while cur != null && !Files.isDirectory(cur.resolve("contract")) do cur = cur.getParent
+        cur.resolve("contract/router-to-api/router_metrics_batch.json")
+      }
+      val batch   = Files.readString(fixture).fromJson[RouterMetricsBatch]
+      val agentLe = batch.toOption.toList
+        .flatMap(_.histograms)
+        .map(_.buckets.map(_.le).filterNot(_ == "+Inf").map(_.toDouble))
+        .distinct
+      val apiLe   = AppMetrics.RouterDurationBoundaries.values.filter(_ < Double.MaxValue).toList
+      assertTrue(batch.isRight) && assertTrue(agentLe == List(apiLe))
     },
   ).provideSomeLayer[TestDatabase.AllRepos & EmbeddedPostgres & Clock](
     wifihaven.api.metrics.MetricsRuntime.prometheus(pollInterval),
