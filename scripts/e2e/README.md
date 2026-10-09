@@ -75,6 +75,7 @@ scripts/e2e/
     test_blocked_mac_events.py · test_install_health.py
     test_port_alloc.py · test_snapshot_builder.py
     test_global_policy.py             suite H (#1460) — @global_allow / @global_block
+    test_shared_device_checkout.py    suite L (#2877) — checked-out shared device blocked; ws check-in unblocks
   gate3/                              Gate 3 smoke + conftest
     test_smoke.py
 ```

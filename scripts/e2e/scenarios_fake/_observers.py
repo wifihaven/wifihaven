@@ -56,7 +56,7 @@ def mac_drop_rule_present(mac: str) -> bool:
     set membership there would never succeed (the #1360 G2 false-failure).
 
     We look for a forward-chain drop rule scoped to this MAC whose reason is a
-    ``MacBlockReason`` (Paused / Schedule / TimeLimit / Manual / generic
+    ``MacBlockReason`` (Paused / Schedule / TimeLimit / Manual / CheckedOut / generic
     ``blocked``). render.lua tags every drop with ``comment "wh_drop:<mac>:<reason>"``
     (#1122); destination-scoped reasons like ``host``, ``category:<id>``,
     ``global_block`` (#1319/#1460), and ``ip_only`` ALSO use the
@@ -72,7 +72,7 @@ def mac_drop_rule_present(mac: str) -> bool:
     prefix = f"wh_drop:{norm_mac(mac)}:"
     # MacBlockReason cases — see shared/.../BlockReason.scala. Lowercased to
     # match the lowercased nft dump above.
-    whole_mac_reasons = ("paused", "schedule", "timelimit", "manual", "blocked")
+    whole_mac_reasons = ("paused", "schedule", "timelimit", "manual", "checkedout", "blocked")
     return any((prefix + r) in out for r in whole_mac_reasons)
 
 
