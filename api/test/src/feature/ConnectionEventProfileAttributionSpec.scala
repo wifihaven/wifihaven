@@ -109,7 +109,7 @@ object ConnectionEventProfileAttributionSpec
 
   private def seriesByProfile(rows: List[ConnectionEventAggRow]) =
     rows
-      .map(r => (r.windowStart, r.groups.getOrElse("profile", ""), r.countSucceeded))
+      .map(r => (r.windowStart, r.soleProfile.getOrElse(""), r.countSucceeded))
       .sortBy(r => (r._1, r._2))
 
   def spec = suite("connection_events profile label at event time (#2845)")(
@@ -166,12 +166,12 @@ object ConnectionEventProfileAttributionSpec
         all == List((Before, None, None), (After, Some(f.adults), Some("Adults"))),
       )
     },
-    test("raw /series groups and filters by the profile at event time") {
+    test("raw /series labels and filters by the profile at event time") {
       for {
         f      <- fixture(List(Before, After))
         _      <- reassign(f, Some(f.adults))
-        rows   <- f.events.querySeries(filter(), 3600, Set("profile"))
-        adults <- f.events.querySeries(filter(List(f.adults)), 3600, Set("profile"))
+        rows   <- f.events.querySeries(filter(), 3600, Set.empty)
+        adults <- f.events.querySeries(filter(List(f.adults)), 3600, Set.empty)
       } yield assertTrue(
         seriesByProfile(rows) == List(
           ("2026-03-02T10:00:00Z", "Kids", 1),
@@ -185,9 +185,9 @@ object ConnectionEventProfileAttributionSpec
         f    <- fixture(List(Before, SameHour, After))
         _    <- reassign(f, Some(f.adults))
         _    <- f.events.rerollConnEventsHourly(Instant.parse("2026-03-02T08:00:00Z"))
-        rows <- f.events.querySeriesRollup(filter(), 3600, Set("profile"), BucketGrain.Hourly)
+        rows <- f.events.querySeriesRollup(filter(), 3600, Set.empty, BucketGrain.Hourly)
         kids <- f.events
-          .querySeriesRollup(filter(List(f.kids)), 3600, Set("profile"), BucketGrain.Hourly)
+          .querySeriesRollup(filter(List(f.kids)), 3600, Set.empty, BucketGrain.Hourly)
       } yield assertTrue(
         // The 10:00 bucket holds an event from after the 10:30 move, and is still Kids'.
         seriesByProfile(rows) == List(
@@ -205,7 +205,7 @@ object ConnectionEventProfileAttributionSpec
         rows <- f.events.querySeriesRollup(
           filter().copy(hours = 48),
           86400,
-          Set("profile"),
+          Set.empty,
           BucketGrain.Daily,
         )
         // Profile and count only: the re-binned `windowStart` follows date_bin's origin in the session

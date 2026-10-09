@@ -201,7 +201,8 @@ object AdultEditBoundarySpec
       connRepo <- ZIO.service[ConnectionEventRepo]
       upRepo   <- ZIO.service[UserProfileRepo]
       auth     <- makeAuth
-    } yield LogRoutes.routes(auth, connRepo, upRepo)
+      clock    <- ZIO.service[Clock]
+    } yield LogRoutes.routes(auth, connRepo, upRepo, clock)
 
   private def timeRoutes =
     for {

@@ -636,7 +636,7 @@ object HttpRoutes {
       spaEventBus,
       ambientRepoR,
     ) ++
-      LogRoutes.routes(auth, connRepo, upRepo) ++
+      LogRoutes.routes(auth, connRepo, upRepo, clock) ++
       UsageRoutes.routes(
         auth,
         deviceRepo,
