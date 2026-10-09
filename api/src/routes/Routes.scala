@@ -2688,9 +2688,16 @@ def requireAdmin(req: Request, auth: AuthService): IO[ApiError, JwtClaims] =
 def requireWriter(req: Request, auth: AuthService): IO[ApiError, JwtClaims] =
   // requireAuth already enforces must_change_password; then we check role.
   requireAuth(req, auth).flatMap { claims =>
-    if claims.role == "admin" || claims.role == "adult" then ZIO.succeed(claims)
+    if isWriterRole(claims) then ZIO.succeed(claims)
     else ZIO.fail(ApiError.Forbidden("Adult or admin required"))
   }
+
+/**
+ * The role half of [[requireWriter]]: admin or adult. For a route that every role may call but that
+ * grants writers more (#2848 shared-device check-in / check-out).
+ */
+def isWriterRole(claims: JwtClaims): Boolean =
+  claims.role == "admin" || claims.role == "adult"
 
 /**
  * #2132 (multi-tenant P5-2, epic #622): the OPERATOR gate — admin AND a member of household 1 (the

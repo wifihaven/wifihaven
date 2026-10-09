@@ -419,7 +419,10 @@ final class SpaWsRegistryLive(
    * HOUSEHOLD by the caller, so their tenant gate is [[SpaPush]]'s
    * `recipients.groupBy(_.household)` plus the [[recipientsFor]] role/subscription gate, not this
    * predicate. A future push that builds ONE body and delivers it to many recipients must come
-   * through here instead.
+   * through here instead, or carry the body as a [[HouseholdScoped]] value, as
+   * [[fanOutSharedDevices]] does (#2848): there the tenant gate is the type, since
+   * `forHousehold(s.household)` is the only way to read the body, and the subscription + role gate
+   * is [[subscribedAndVisible]], the same one this predicate composes.
    */
   private def eligible(
       s: SpaConnState,

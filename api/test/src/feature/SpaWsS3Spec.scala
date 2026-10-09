@@ -15,6 +15,7 @@ import zio.{Clock as _, *}
 import zio.http.*
 import zio.http.ChannelEvent.UserEvent
 import zio.json.*
+import zio.json.ast.Json
 import zio.test.*
 
 import java.time.LocalDateTime
@@ -217,6 +218,18 @@ object SpaWsS3Spec
           Router,
       ) => ZIO[Client & BootstrapEnv, Throwable, A],
   ): ZIO[BootstrapEnv, Throwable, A] =
+    withRegistryHarness((port, ingest, bus, router, _) => body(port, ingest, bus, router))
+
+  /** [[withHarness]], also handing the test the registry so it can drive a fan-out directly. */
+  private def withRegistryHarness[A](
+      body: (
+          Int,
+          RouterIngestService,
+          SpaEventBus,
+          Router,
+          SpaWsRegistry,
+      ) => ZIO[Client & BootstrapEnv, Throwable, A],
+  ): ZIO[BootstrapEnv, Throwable, A] =
     (for {
       _           <- cleanDb
       clock       <- ZIO.service[Clock]
@@ -263,7 +276,7 @@ object SpaWsS3Spec
           clock,
           sharedDevices = Some(sharedRepo),
         ) *>
-          body(port, ingest, bus, router)
+          body(port, ingest, bus, router, reg)
       }
     } yield out).provideSome[BootstrapEnv](Server.defaultWithPort(0), Client.default)
 
@@ -389,28 +402,28 @@ object SpaWsS3Spec
           )
       }
     },
-    test("a `sharedDevices` change in another household is not delivered") {
-      withHarness { (port, _, bus, _) =>
+    test("a `sharedDevices` body built for another household is not delivered") {
+      withRegistryHarness { (port, _, bus, _, reg) =>
         for {
           childTok <- ZIO.serviceWithZIO[Clock](makeAuth).flatMap(a => tokenFor(a, "child", "kid"))
           dr       <- ZIO.service[DeviceRepo]
           dev      <- dr.findByMac(MacAddress.unsafe(knownMac)).someOrFailException
           _        <- dr.patch(HouseholdId.Default, dev.id, dev.name, Some(true), None, None)
+          leaked = HouseholdScoped(HouseholdId(999L), Json.Arr(Json.Str("other-household-device")))
           (matched, all) <- flow(
             port,
             childTok,
             List("""{"op":"subscribe","payload":{"topic":"sharedDevices"}}"""),
-            // The other household's change goes first; our own household's change is the liveness
-            // anchor that proves the push path is up, so the absence of the first is meaningful.
-            trigger = bus.publish(SpaEvent.SharedDevicesChanged(HouseholdId(999L))) *>
+            // Drives the fan-out itself with another household's body, so a fan-out that lost
+            // its household gate would deliver it. This household's change, published after, is
+            // the liveness anchor: the push path is up, so the absence of the first is meaningful.
+            trigger = reg.fanOutSharedDevices(leaked) *>
               bus.publish(SpaEvent.SharedDevicesChanged(HouseholdId.Default)),
-            until = _.contains("\"op\":\"sharedDevices\""),
+            until = _.contains(knownMac),
             wait = 20.seconds,
           )
-        } yield
-        // The consumer handles events in publish order, so a leaked frame for household 999 (an
-        // empty list) would arrive, and match, before this household's frame.
-        assertTrue(matched.exists(_.contains(knownMac))) &&
+        } yield assertTrue(matched.isDefined) &&
+          assertTrue(!all.exists(_.contains("other-household-device"))) &&
           assertTrue(all.count(_.contains("\"op\":\"sharedDevices\"")) == 1)
       }
     },

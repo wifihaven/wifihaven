@@ -194,8 +194,12 @@ object DeviceAssignment {
    * rename or a re-sent PUT does not churn history; `devices.profile_id` is still re-synced. The
    * new row's `household_id` is the device row's, never the caller's: `household` only scopes the
    * lookup, and a device outside it fails with [[DeviceAssignmentError.DeviceNotInHousehold]].
-   * Refuses an `assigned` row on a shared device with
-   * [[DeviceAssignmentError.SharedDeviceRefused]].
+   *
+   * On a shared device an `assigned` write never moves the holder (design §9: the existing writers
+   * must not bypass check-in). A profile is refused with
+   * [[DeviceAssignmentError.SharedDeviceRefused]]; no profile is a no-op returning false, so a `PUT
+   * /api/devices` that omits `profileId` leaves the check-in open. Check-in, check-out and the
+   * sharing toggle are the transitions below, each with its own end cause.
    */
   def assign(
       household: HouseholdId,
@@ -206,23 +210,42 @@ object DeviceAssignment {
       by: Option[UserId],
       cause: AssignmentEndCause,
   ): ConnectionIO[Boolean] =
-    for {
-      dev     <- lockDevice(household, device)
-      current <- openRow(device)
-      changed <-
-        if (current.map(_.profile) == newProfile) setCurrent(device, newProfile).as(false)
-        else
-          for {
-            _  <- FC
-              .raiseError[Unit](DeviceAssignmentError.SharedDeviceRefused(device))
-              .whenA(dev.shared && kind == AssignmentKind.Assigned && newProfile.isDefined)
-            _  <- newProfile.traverse_(checkProfile(dev.household, _))
-            ts <- transitionAt(device, at)
-            _  <- current.traverse_(close(_, ts, by, cause))
-            _  <- newProfile.traverse_(open(dev.household, device, _, ts, kind, by))
-            _  <- setCurrent(device, newProfile)
-          } yield true
-    } yield changed
+    lockDevice(household, device).flatMap { dev =>
+      if (dev.shared && kind == AssignmentKind.Assigned)
+        openRow(device).flatMap { current =>
+          newProfile match {
+            case None                                          => false.pure[ConnectionIO]
+            case Some(p) if current.map(_.profile).contains(p) =>
+              setCurrent(device, newProfile).as(false)
+            case Some(_)                                       =>
+              FC.raiseError[Boolean](DeviceAssignmentError.SharedDeviceRefused(device))
+          }
+        }
+      else transition(dev, device, newProfile, at, kind, by, cause)
+    }
+
+  // The body of every write: the caller holds the device row lock (`dev`) and has applied any
+  // shared-device rule. A no-op when the open row already holds `newProfile`.
+  private def transition(
+      dev: DeviceRow,
+      device: DeviceId,
+      newProfile: Option[ProfileId],
+      at: Instant,
+      kind: AssignmentKind,
+      by: Option[UserId],
+      cause: AssignmentEndCause,
+  ): ConnectionIO[Boolean] =
+    openRow(device).flatMap { current =>
+      if (current.map(_.profile) == newProfile) setCurrent(device, newProfile).as(false)
+      else
+        for {
+          _  <- newProfile.traverse_(checkProfile(dev.household, _))
+          ts <- transitionAt(device, at)
+          _  <- current.traverse_(close(_, ts, by, cause))
+          _  <- newProfile.traverse_(open(dev.household, device, _, ts, kind, by))
+          _  <- setCurrent(device, newProfile)
+        } yield true
+    }
 
   /**
    * The user `username` names in `household`, recorded as a history row's started_by / ended_by.
@@ -253,8 +276,7 @@ object DeviceAssignment {
         for {
           current <- openRow(device)
           cause = if (shared) AssignmentEndCause.MadeShared else AssignmentEndCause.Unshared
-          // Clearing the profile is allowed on a shared device, so `kind` is never checked here.
-          _ <- assign(household, device, None, at, AssignmentKind.Assigned, by, cause)
+          _ <- transition(dev, device, None, at, AssignmentKind.Assigned, by, cause)
           _ <- sql"UPDATE devices SET shared = $shared WHERE id = $device".update.run
         } yield current.exists(_.kind == AssignmentKind.CheckIn.db)
     }
@@ -278,8 +300,8 @@ object DeviceAssignment {
           case Some(_) => CheckInOutcome.Held.pure[ConnectionIO]
           // Nothing is open, so there is no row for the end cause to close.
           case None    =>
-            assign(
-              household,
+            transition(
+              dev,
               device,
               Some(profile),
               at,
@@ -309,7 +331,7 @@ object DeviceAssignment {
       else
         openRow(device).flatMap {
           case Some(o) if o.kind == AssignmentKind.CheckIn.db && o.profile == holder =>
-            assign(household, device, None, at, AssignmentKind.CheckIn, by, cause)
+            transition(dev, device, None, at, AssignmentKind.CheckIn, by, cause)
               .as(CheckOutOutcome.CheckedOut)
           case _                                                                     =>
             CheckOutOutcome.NotHeld.pure[ConnectionIO]

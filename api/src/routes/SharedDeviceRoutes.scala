@@ -52,9 +52,6 @@ object SharedDeviceRoutes {
   private val BlockingReasons: Set[MacBlockReason] =
     Set(MacBlockReason.Paused, MacBlockReason.Schedule, MacBlockReason.TimeLimit)
 
-  private def isWriter(claims: JwtClaims): Boolean =
-    claims.role == "admin" || claims.role == "adult"
-
   def routes(
       auth: AuthService,
       deviceRepo: DeviceRepo,
@@ -107,7 +104,7 @@ object SharedDeviceRoutes {
             _        <- requireProfileInHousehold(claims, pid, profileRepo)
             _        <- requireNotGlobalProfile(profileRepo, pid, "profileId")
             // Design §15 Q5a / Q9: a child only on a linked profile; an adult or admin on any.
-            _        <- ZIO.unlessZIO(ZIO.succeed(isWriter(claims)))(
+            _        <- ZIO.unless(isWriterRole(claims))(
               linkedProfiles(claims).flatMap(ls =>
                 ZIO.unless(ls.contains(pid))(reject(Rejection.NotLinked)),
               ),
@@ -152,7 +149,7 @@ object SharedDeviceRoutes {
             linked  <- linkedProfiles(claims)
             cause   <-
               if (linked.contains(holder)) ZIO.succeed(AssignmentEndCause.CheckOut)
-              else if (isWriter(claims)) ZIO.succeed(AssignmentEndCause.Forced)
+              else if (isWriterRole(claims)) ZIO.succeed(AssignmentEndCause.Forced)
               else reject(Rejection.NotLinked)
             now     <- clock.instant
             outcome <- sharedDeviceRepo

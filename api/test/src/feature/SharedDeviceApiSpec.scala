@@ -171,6 +171,36 @@ object SharedDeviceApiSpec
         .transact(xa)
     }
 
+  /**
+   * `minutes` of active traffic on `mac` from midnight of the fixture day, in 5-minute reports
+   * above the heartbeat byte floor, so it counts as screen time for whichever profile holds `mac`.
+   */
+  private def seedUsage(mac: MacAddress, minutes: Int) =
+    for {
+      rid <- ZIO.serviceWithZIO[RouterRepo](_.create("gw-2848", Sha256Hex.unsafe("c" * 64)))
+      day = TestClock.schoolDayAfternoon.toLocalDate
+      t0  = day.atStartOfDay(ZoneOffset.UTC).toInstant
+      _ <- ZIO.serviceWithZIO[TrafficReportRepo](
+        _.insertBatch(
+          (0 until minutes / 5).toList.map { i =>
+            val start = t0.plusSeconds(i * 300L)
+            TrafficReportInsert(
+              rid,
+              mac,
+              None,
+              HostId.Fqdn(Hostname.unsafe("example.com")),
+              day,
+              start,
+              start.plusSeconds(300),
+              300,
+              500_000L,
+              500_000L,
+            )
+          },
+        ),
+      )
+    } yield ()
+
   private def snapshotDevice(mac: MacAddress) =
     for {
       pr   <- ZIO.service[ProfileRepo]
@@ -320,6 +350,22 @@ object SharedDeviceApiSpec
           dev.profileId.isEmpty,
         )
       },
+      test("a profile out of daily time: 409 profile_blocked (TimeLimit)") {
+        for {
+          fx   <- setup
+          _    <- ZIO.serviceWithZIO[TimeLimitRepo](_.upsert(fx.kid1, 30))
+          // Kid1's own phone has used an hour today.
+          _    <- seedUsage(PlainMac, 60)
+          resp <- checkIn(fx, fx.child1, fx.kid1)
+          body <- errorOf(resp)
+          dev  <- device(SharedMac)
+        } yield assertTrue(
+          resp.status == Status.Conflict,
+          body.contains("profile_blocked"),
+          body.contains("TimeLimit"),
+          dev.profileId.isEmpty,
+        )
+      },
       test("a default-deny profile is a baseline, not a block: check-in succeeds") {
         for {
           fx   <- setup
@@ -404,6 +450,18 @@ object SharedDeviceApiSpec
         } yield assertTrue(
           resp.status == Status.Ok,
           hist == List(("check_in", fx.kid1.value, Some("forced"))),
+        )
+      },
+      test("a device that is not shared: 409 not_shared, its assignment untouched") {
+        for {
+          fx   <- setup
+          resp <- checkOut(fx, fx.admin, PlainMac)
+          body <- errorOf(resp)
+          dev  <- device(PlainMac)
+        } yield assertTrue(
+          resp.status == Status.Conflict,
+          body.contains("not_shared"),
+          dev.profileId.contains(fx.kid1),
         )
       },
       test("nobody holds the device: 409 not_held") {
@@ -501,6 +559,38 @@ object SharedDeviceApiSpec
           resp.status == Status.Conflict,
           body.contains("device_shared"),
           dev.profileId.isEmpty,
+        )
+      },
+      test("PUT without a profileId on a checked-in shared device leaves the check-in open") {
+        for {
+          fx   <- setup
+          _    <- checkIn(fx, fx.child1, fx.kid1)
+          resp <- send(
+            fx.devices,
+            Request.put(
+              url("/api/devices"),
+              Body.fromString(s"""{"mac":"${SharedMac.value}","name":"Family Mac"}"""),
+            ),
+            fx.admin,
+          )
+          dev  <- device(SharedMac)
+          hist <- history(SharedMac)
+        } yield assertTrue(
+          resp.status == Status.Ok,
+          dev.name == "Family Mac",
+          dev.profileId.contains(fx.kid1),
+          hist == List(("check_in", fx.kid1.value, None)),
+        )
+      },
+      test("PATCH profileId:null on a checked-in shared device leaves the check-in open") {
+        for {
+          fx   <- setup
+          _    <- checkIn(fx, fx.child1, fx.kid1)
+          resp <- patchDevice(fx, fx.admin, SharedMac, """{"profileId":null}""")
+          hist <- history(SharedMac)
+        } yield assertTrue(
+          resp.status == Status.Ok,
+          hist == List(("check_in", fx.kid1.value, None)),
         )
       },
       test("a rename of a checked-in shared device leaves the check-in alone") {

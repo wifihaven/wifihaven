@@ -801,8 +801,9 @@ trait DeviceRepo {
    * `shared` is applied first (see [[DeviceAssignment.setShared]]), then `name`, then `profile`:
    * `None` leaves the assignment alone, `Some(Some(p))` assigns `p` (refused with
    * [[DeviceAssignmentError.SharedDeviceRefused]] on a shared device), `Some(None)` unassigns a
-   * device that is not shared and is ignored on a shared one, whose holder only check-out changes.
-   * `device` must already belong to `household`.
+   * device that is not shared and is a no-op on a shared one, whose holder only check-out changes
+   * (both rules live in [[DeviceAssignment.assign]], so `upsert` follows them too). `device` must
+   * already belong to `household`.
    */
   def patch(
       household: HouseholdId,
@@ -2349,39 +2350,25 @@ class DeviceRepoLive(xa: Transactor[Task], clock: wifihaven.shared.Clock) extend
     clock.instant.flatMap { at =>
       DbMetrics.timed("device.patch")(
         (for {
-          by       <- DeviceAssignment.actor(household, byUsername)
-          closed   <- shared.fold(false.pure[ConnectionIO])(
+          by     <- DeviceAssignment.actor(household, byUsername)
+          closed <- shared.fold(false.pure[ConnectionIO])(
             DeviceAssignment.setShared(household, device, _, at, by),
           )
-          _        <-
+          _      <-
             sql"UPDATE devices SET name=$name WHERE id=$device AND household_id=$household".update.run
-          isShared <- sql"SELECT shared FROM devices WHERE id=$device".query[Boolean].unique
-          _        <- profile match {
-            case Some(Some(p))           =>
-              DeviceAssignment
-                .assign(
-                  household,
-                  device,
-                  Some(p),
-                  at,
-                  AssignmentKind.Assigned,
-                  by,
-                  AssignmentEndCause.Reassigned,
-                )
-                .void
-            case Some(None) if !isShared =>
-              DeviceAssignment
-                .assign(
-                  household,
-                  device,
-                  None,
-                  at,
-                  AssignmentKind.Assigned,
-                  by,
-                  AssignmentEndCause.Unassigned,
-                )
-                .void
-            case _                       => FC.unit
+          // `assign` applies the shared-device rule under the row lock: a profile on a shared device
+          // is refused, and no profile leaves its check-in alone.
+          _      <- profile.traverse_ { newProfile =>
+            DeviceAssignment.assign(
+              household,
+              device,
+              newProfile,
+              at,
+              AssignmentKind.Assigned,
+              by,
+              if (newProfile.isDefined) AssignmentEndCause.Reassigned
+              else AssignmentEndCause.Unassigned,
+            )
           }
         } yield DevicePatchOutcome(closedCheckIn = closed)).transact(xa),
       )
