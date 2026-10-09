@@ -533,6 +533,35 @@ cloud users override it per the steps above.
   in the admin UI and re-run steps 3–5; the router will overwrite its
   stored credentials.
 
+### 5.2 Moving an enrolled router to a different API
+
+To move a router from one API to another (for example from production to
+staging), re-enroll it against the new API. The package stays installed; only
+the UCI settings change. Credentials from one API are not valid on another,
+so you need a fresh enrollment token from the new API's admin UI.
+
+1. Stop the agent: `/etc/init.d/wifihaven stop`.
+2. Point the router at the new API **and** its dashboard:
+
+   ```sh
+   uci set wifihaven.@wifihaven[0].api_url='https://api-staging.wifihaven.net'
+   uci set wifihaven.@wifihaven[0].block_page_url='https://app-staging.wifihaven.net'
+   uci commit wifihaven
+   ```
+
+   Change `block_page_url` too. The block page is served by the dashboard
+   host in `block_page_url`, and the agent only falls back to `api_url` when
+   that key is empty
+   ([`block_page.lua`](../openwrt/files/usr/lib/lua/wifihaven/block_page.lua),
+   `resolve_base`). If you leave it set to the old dashboard, blocked
+   devices are sent to the old environment's block page.
+3. Run steps 3–5 above against the new API: generate a token,
+   `POST /api/router/register`, then write the new `router_id` and
+   `router_token` and start the agent.
+
+The router row on the old API is not removed. Delete it from that API's
+**Routers** page if you no longer need it.
+
 ## 6. (Optional) Auto-update
 
 Routers running unattended should pull new agent releases automatically. The
