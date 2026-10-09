@@ -53,6 +53,7 @@ beforeEach(() => {
     ambientMinIsolatedDays: 3,
     ambientLearningWindowDays: 14,
     notifyEmail: null,
+    sharedDeviceIdleMinutes: 15,
   }
   ;(api.household.get as unknown as ReturnType<typeof vi.fn>).mockImplementation(
     async () => ({
@@ -311,6 +312,44 @@ describe('AdminPage — ambient anchor-gate toggle (#2077)', () => {
     await waitFor(() =>
       expect((screen.getByTestId('ambient-gate-enabled') as HTMLInputElement).checked).toBe(true),
     )
+  })
+})
+
+describe('AdminPage — shared-device idle auto-checkout (#2849)', () => {
+  it('renders the stored threshold in minutes', async () => {
+    render(<AdminPage />)
+    const input = await screen.findByTestId('shared-device-idle-minutes') as HTMLInputElement
+    expect(input.value).toBe('15')
+  })
+
+  it('editing the threshold fires PATCH {sharedDeviceIdleMinutes} and persists', async () => {
+    render(<AdminPage />)
+    const input = await screen.findByTestId('shared-device-idle-minutes') as HTMLInputElement
+    await act(async () => {})
+
+    fireEvent.change(input, { target: { value: '30' } })
+    expect(api.household.patch).not.toHaveBeenCalled()
+
+    await waitFor(() =>
+      expect(api.household.patch).toHaveBeenCalledWith({ sharedDeviceIdleMinutes: 30 }),
+    )
+    await waitFor(() =>
+      expect((screen.getByTestId('shared-device-idle-minutes') as HTMLInputElement).value).toBe('30'),
+    )
+  })
+
+  it('a value outside 5–1440 is flagged and never sent', async () => {
+    render(<AdminPage />)
+    const input = await screen.findByTestId('shared-device-idle-minutes') as HTMLInputElement
+    await act(async () => {})
+
+    fireEvent.change(input, { target: { value: '4' } })
+
+    expect(await screen.findByTestId('shared-device-idle-validation')).toBeTruthy()
+    await waitFor(() =>
+      expect(screen.getByTestId('shared-device-idle-save-status').getAttribute('data-status')).toBe('error'),
+    )
+    expect(api.household.patch).not.toHaveBeenCalled()
   })
 })
 
