@@ -356,7 +356,10 @@ end
 -- #2208: per-phase apply-latency observer for policy.apply's opts.phase_timer
 -- seam. Emits policy_apply_duration_seconds{phase} where `phase` is the bounded
 -- enum policy.apply produces (render_dnsmasq / render_nft / dnsmasq_restart /
--- nft_load / ea_backfill / smoke_probe) — never per-mac/per-host. The existing
+-- nft_load / ea_backfill / smoke_probe) — never per-mac/per-host. #2893 adds
+-- the two agent-side steps around it: blocklist_refresh (before nft -f on a
+-- pushed apply) and update_shared (after it), which together were ~8.5 s of a
+-- prod push-apply and showed up on no panel. The existing
 -- unlabeled total observation at each call site is unchanged; this adds the
 -- breakdown that pinpoints where a slow apply spends its time (the ea_backfill
 -- per-element spawn regression was invisible without it).
@@ -916,7 +919,7 @@ local BLOCKLIST_SHARD_DIR = render.SHARD_DIR
 -- #2893: what the last clean shard + member-index render was built from, so a
 -- refresh that changes no list skips rewriting them (blocklists.render_outputs).
 local bl_render_state = {}
-local function refresh_blocklists(snap)
+local function refresh_blocklists_untimed(snap)
   -- Step 1: fetch any list version not yet cached.
   -- #2785: blocklist bodies are the one bulk fetch here (up to
   -- blocklist_max_list_bytes), so they get the longer bound — still finite.
@@ -978,6 +981,14 @@ local function refresh_blocklists(snap)
   if out.index and out.index.error then
     log.warn("blocklist member index: %s", tostring(out.index.error))
   end
+end
+
+-- #2893: timed as policy_apply_duration_seconds{phase="blocklist_refresh"}. On a
+-- pushed apply this runs before `nft -f`, so it delays enforcement directly.
+local function refresh_blocklists(snap)
+  local t0 = clock.monotonic_seconds()
+  refresh_blocklists_untimed(snap)
+  apply_phase_timer("blocklist_refresh", clock.monotonic_seconds() - t0)
 end
 
 -- make_bl_member_iterator(snap) → iterator(id) → {host,...}
@@ -1208,10 +1219,12 @@ local function apply_and_publish(snap, reason)
     -- mislabelled on POST /api/router/events. nft_sets (hostname attribution)
     -- is untouched by update_shared, so per-device usage attribution survives.
     local shared_snap = enf_disabled and { devices = {}, profiles = {} } or snap
+    local ut0 = clock.monotonic_seconds()
     render.update_shared(shared_snap, nft_sets, blocked_macs, blocked_reason,
                          eb_hosts_by_mac, ea_hosts_by_mac, bl_hosts_by_mac,
                          make_bl_member_iterator(shared_snap), bl_ids_by_mac,
                          bl_member_maps)
+    apply_phase_timer("update_shared", clock.monotonic_seconds() - ut0)
     -- update_shared just rebuilt the tables the eb_/bl_ sweep flattens, so a
     -- sweep in flight is now walking a stale snapshot of them (#2785).
     note_inventory_change()
