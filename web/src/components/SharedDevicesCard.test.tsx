@@ -163,6 +163,20 @@ describe('SharedDevicesCard — loading states (#2850)', () => {
   })
 })
 
+describe('SharedDevicesCard — actions error (#2850 review)', () => {
+  it('says so, with Retry, when the profiles needed for the actions fail to load', async () => {
+    signIn('child', { profileIds: [1] })
+    mocked(api.sharedDevices.list).mockResolvedValue([checkedOutIpad])
+    mocked(api.profiles.list).mockRejectedValueOnce(new Error('boom')).mockResolvedValue([kids])
+    renderCard()
+    const err = await screen.findByTestId('shared-devices-actions-error')
+    expect(err).toHaveTextContent(/couldn't load your profiles/i)
+    expect(screen.queryByTestId(`shared-device-checkin-${IPAD}`)).not.toBeInTheDocument()
+    await userEvent.click(within(err).getByRole('button', { name: 'Retry' }))
+    expect(await screen.findByTestId(`shared-device-checkin-${IPAD}`)).toBeInTheDocument()
+  })
+})
+
 describe('SharedDevicesCard — child check in / check out (#2850)', () => {
   it('a child linked to one profile checks in with no picker', async () => {
     signIn('child', { profileIds: [1] })
