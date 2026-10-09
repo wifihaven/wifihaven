@@ -1141,3 +1141,178 @@ describe("blocklists.render_member_index (#1782)", function()
   end)
 
 end)
+
+-- ── #2893: no-parse refresh + skip an unchanged re-render ───────────────────
+--
+-- The ws push-apply path runs refresh_blocklists before `nft -f`. On the prod
+-- family router, with every list already cached, that cost 4.7 s per push:
+-- 2.06 s parsing cache files whose result the agent never reads, 1.53 s
+-- rewriting the dnsmasq shards and 1.14 s rewriting the member index, all
+-- byte-identical to what was already on disk.
+describe("blocklists no-op refresh and render (#2893)", function()
+
+  local CACHE, SHARDS, INDEX = "/c", "/s", "/i/members.txt"
+
+  local function stream_fs()
+    local files, counts = {}, { read = 0, open_write = 0 }
+    local function reader(content)
+      local pos = 1
+      return {
+        read = function(_, fmt)
+          if pos > #content then return nil end
+          local nl = content:find("\n", pos, true) or (#content + 1)
+          local line = content:sub(pos, nl - 1)
+          pos = nl + 1
+          return line
+        end,
+        close = function() end,
+      }
+    end
+    return {
+      _files = files, _counts = counts,
+      read = function(p) counts.read = counts.read + 1; return files[p] end,
+      exists = function(p) return files[p] ~= nil end,
+      write = function(p, c) files[p] = c; return true end,
+      mkdir = function() return true end,
+      open_read = function(p) return files[p] and reader(files[p]) or nil end,
+      open_write = function(p)
+        counts.open_write = counts.open_write + 1
+        files[p] = ""
+        return { write = function(_, c) files[p] = files[p] .. c end, close = function() end }
+      end,
+      rename = function(a, b)
+        if not files[a] then return nil, "missing " .. a end
+        files[b] = files[a]; files[a] = nil; return true
+      end,
+      remove = function(p) files[p] = nil; return true end,
+      fsync = function() return true end,
+      list = function(dir)
+        local out = {}
+        for k in pairs(files) do
+          if k:sub(1, #dir + 1) == dir .. "/" then out[#out + 1] = k:sub(#dir + 2) end
+        end
+        return out
+      end,
+    }
+  end
+
+  local function lists()
+    return snap({
+      ads   = { version = "a1", url = "/api/blocklists/ads" },
+      adult = { version = "b1", url = "/api/blocklists/adult" },
+    })
+  end
+
+  local function seed(fs)
+    fs._files[CACHE .. "/ads-a1.txt"]   = "ad.example\ntracker.example\n"
+    fs._files[CACHE .. "/adult-b1.txt"] = "porn.example\n"
+    fs._files[CACHE .. "/ads-a2.txt"]   = "ad.example\nnew.example\n"
+  end
+
+  local function outputs(fs)
+    local out = {}
+    for k, v in pairs(fs._files) do
+      if k:sub(1, #SHARDS) == SHARDS or k == INDEX then out[k] = v end
+    end
+    return out
+  end
+
+  local function render(s, fs, state, global_ids)
+    return blocklists.render_outputs(s, fs, CACHE, SHARDS, INDEX, 1000000,
+                                     global_ids or {}, state)
+  end
+
+  local function fresh(s, global_ids)
+    local fs = stream_fs(); seed(fs)
+    render(s, fs, {}, global_ids)
+    return outputs(fs)
+  end
+
+  it("refresh with parse=false reads no cached list and returns no host map", function()
+    local fs = stream_fs(); seed(fs)
+    local fetched = {}
+    local function http_get(url) fetched[#fetched + 1] = url; return 200, "x.example\n" end
+    local s = lists()
+    s.blocklists.games = { version = "g1", url = "/api/blocklists/games" }
+    local res = blocklists.refresh(s, http_get, fs, CACHE, "http://api", nil, nil, { parse = false })
+    assert.equal(0, fs._counts.read)
+    assert.is_nil(res.hosts)
+    assert.same({ "http://api/api/blocklists/games" }, fetched)
+    assert.equal("x.example\n", fs._files[CACHE .. "/games-g1.txt"])
+    assert.equal(0, #res.failures)
+  end)
+
+  it("refresh with parse=false still reports a failed fetch", function()
+    local fs = stream_fs()
+    local res = blocklists.refresh(lists(), function() return 503 end, fs, CACHE, nil, nil, nil,
+                                   { parse = false })
+    assert.equal(2, #res.failures)
+  end)
+
+  it("renders on the first call and skips an identical second call", function()
+    local fs = stream_fs(); seed(fs)
+    local state = {}
+    assert.is_true(render(lists(), fs, state).rendered)
+    local writes = fs._counts.open_write
+    assert.is_false(render(lists(), fs, state).rendered)
+    assert.equal(writes, fs._counts.open_write)
+  end)
+
+  it("leaves outputs identical to a fresh render when it skips", function()
+    local fs = stream_fs(); seed(fs)
+    local state = {}
+    render(lists(), fs, state)
+    render(lists(), fs, state)
+    assert.same(fresh(lists()), outputs(fs))
+  end)
+
+  it("re-renders when a list version changes", function()
+    local fs = stream_fs(); seed(fs)
+    local state = {}
+    render(lists(), fs, state)
+    local s = lists(); s.blocklists.ads.version = "a2"
+    assert.is_true(render(s, fs, state).rendered)
+    assert.same(fresh(s), outputs(fs))
+  end)
+
+  it("re-renders and garbage-collects when a list is dropped", function()
+    local fs = stream_fs(); seed(fs)
+    local state = {}
+    render(lists(), fs, state)
+    local s = lists(); s.blocklists.adult = nil
+    assert.is_true(render(s, fs, state).rendered)
+    assert.same(fresh(s), outputs(fs))
+  end)
+
+  it("re-renders when the global list ids change", function()
+    local fs = stream_fs(); seed(fs)
+    local state = {}
+    render(lists(), fs, state)
+    assert.is_true(render(lists(), fs, state, { ads = true }).rendered)
+    assert.same(fresh(lists(), { ads = true }), outputs(fs))
+  end)
+
+  it("re-renders when a shard or the index has gone missing", function()
+    local fs = stream_fs(); seed(fs)
+    local state = {}
+    render(lists(), fs, state)
+    fs._files[SHARDS .. "/wifihaven-blocklist-ads.conf"] = nil
+    assert.is_true(render(lists(), fs, state).rendered)
+    fs._files[INDEX] = nil
+    assert.is_true(render(lists(), fs, state).rendered)
+    assert.same(fresh(lists()), outputs(fs))
+  end)
+
+  it("keeps re-rendering while a list's cache file is missing, then settles", function()
+    local fs = stream_fs(); seed(fs)
+    fs._files[CACHE .. "/adult-b1.txt"] = nil
+    local state = {}
+    render(lists(), fs, state)
+    assert.is_true(render(lists(), fs, state).rendered)
+    fs._files[CACHE .. "/adult-b1.txt"] = "porn.example\n"
+    assert.is_true(render(lists(), fs, state).rendered)
+    assert.is_false(render(lists(), fs, state).rendered)
+    assert.same(fresh(lists()), outputs(fs))
+  end)
+
+end)

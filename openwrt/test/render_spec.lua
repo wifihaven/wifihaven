@@ -1609,6 +1609,206 @@ describe("render.update_shared", function()
 
 end)
 
+-- ── bl_hosts_by_mac: shared member maps (#2893) ─────────────────────────────
+--
+-- update_shared used to expand every member host of every subscribed list into
+-- a fresh per-MAC table on every apply: 3.76 s on the prod family router
+-- (180k members, ~30 MACs), all of it after `nft -f` and inside the
+-- ws_push_apply_latency window. It now builds one map per (sorted list ids,
+-- versions), shares it across the MACs that subscribe to that set, and keeps it
+-- across applies in a caller-held cache until a version changes. These specs
+-- pin that the result is IDENTICAL to the old per-MAC expansion.
+describe("render.update_shared bl_hosts_by_mac sharing (#2893)", function()
+
+  -- The pre-#2893 per-MAC expansion, kept verbatim as the oracle.
+  local function reference_bl_hosts(snapshot, iterator)
+    local eb, out, cache = {}, {}, {}
+    local function get(id)
+      if cache[id] == nil then cache[id] = iterator(id) or {} end
+      return cache[id]
+    end
+    for mac, dev in pairs(snapshot.devices) do
+      local r = dev.rules or (snapshot.profiles[tostring(dev.profileId)] or {}).rules
+      if r and type(r.extraBlocked) == "table" and #r.extraBlocked > 0 then
+        eb[mac] = {}
+        for _, h in ipairs(r.extraBlocked) do eb[mac][h] = true end
+      end
+      if r and type(r.blocklistIds) == "table" and #r.blocklistIds > 0 then
+        local ids = {}
+        for _, id in ipairs(r.blocklistIds) do ids[#ids + 1] = id end
+        table.sort(ids)
+        for _, id in ipairs(ids) do
+          for _, host in ipairs(get(id)) do
+            if not out[mac] then out[mac] = {} end
+            if not (eb[mac] and eb[mac][host]) and not out[mac][host] then
+              out[mac][host] = id
+            end
+          end
+        end
+      end
+    end
+    return out
+  end
+
+  local function rules(ids, eb, blocked)
+    return { blocked = blocked or false, extraBlocked = eb or {}, extraAllowed = {},
+             blocklistIds = ids, blockIpOnly = false }
+  end
+
+  -- Several MACs over a few list sets: shared sets, an extraBlocked overlap, a
+  -- host in two lists, a list whose only member extraBlocked claims, an empty
+  -- list, a blocked MAC, an inline-rules device, and a MAC with no lists.
+  local function fleet_snap()
+    return {
+      devices = {
+        ["00:00:00:00:00:01"] = { profileId = 1 },
+        ["00:00:00:00:00:02"] = { profileId = 1 },
+        ["00:00:00:00:00:03"] = { profileId = 2 },
+        ["00:00:00:00:00:04"] = { profileId = 3 },
+        ["00:00:00:00:00:05"] = { profileId = 4 },
+        ["00:00:00:00:00:06"] = { profileId = 5 },
+        ["00:00:00:00:00:07"] = { rules = rules({ "ads" }, {}, true) },
+        ["00:00:00:00:00:08"] = { profileId = 6 },
+      },
+      profiles = {
+        ["1"] = { rules = rules({ "ads", "adult" }) },
+        ["2"] = { rules = rules({ "adult", "ads" }, { "dup.example", "tiktok.com" }) },
+        ["3"] = { rules = rules({ "ads" }, {}, true) },
+        ["4"] = { rules = rules({ "solo" }, { "only.example" }) },
+        ["5"] = { rules = rules({ "empty" }) },
+        ["6"] = { rules = rules({}) },
+      },
+      blocklists = {
+        ads   = { version = "a1" }, adult = { version = "b1" },
+        solo  = { version = "s1" }, empty = { version = "e1" },
+      },
+    }
+  end
+
+  local members = {
+    a1 = { "ad.example", "dup.example", "tracker.example" },
+    a2 = { "ad.example", "new-ad.example" },
+    b1 = { "porn.example", "dup.example" },
+    s1 = { "only.example" },
+    e1 = {},
+  }
+
+  local function counting_iterator(snapshot, calls)
+    return function(id)
+      calls[id] = (calls[id] or 0) + 1
+      local bl = snapshot.blocklists[id]
+      local hosts = bl and members[bl.version] or {}
+      local copy = {}
+      for i, h in ipairs(hosts) do copy[i] = h end
+      return copy
+    end
+  end
+
+  local function run(snapshot, iterator, bl_cache)
+    local eb, ea, bl, ids = {}, {}, {}, {}
+    render.update_shared(snapshot, {}, {}, {}, eb, ea, bl, iterator, ids, bl_cache)
+    return bl
+  end
+
+  it("matches the per-MAC expansion exactly, with and without a cache", function()
+    local s = fleet_snap()
+    local expected = reference_bl_hosts(s, counting_iterator(s, {}))
+    assert.same(expected, run(s, counting_iterator(s, {}), nil))
+    assert.same(expected, run(s, counting_iterator(s, {}), {}))
+  end)
+
+  it("still matches after a list version changes, and drops the stale map", function()
+    local s = fleet_snap()
+    local cache = {}
+    run(s, counting_iterator(s, {}), cache)
+    s.blocklists.ads.version = "a2"
+    local expected = reference_bl_hosts(s, counting_iterator(s, {}))
+    assert.same(expected, run(s, counting_iterator(s, {}), cache))
+    assert.is_not_nil(next(cache), "the cache was never filled")
+    for key in pairs(cache) do
+      assert.is_nil(key:find("ads@a1", 1, true), "stale map kept for " .. key)
+    end
+  end)
+
+  it("reads each list once per apply, however many MACs subscribe", function()
+    local s = fleet_snap()
+    local calls = {}
+    run(s, counting_iterator(s, calls), nil)
+    for id, n in pairs(calls) do
+      assert.equal(1, n, "list " .. id .. " read " .. n .. " times")
+    end
+  end)
+
+  it("reads no list on a repeat apply when no version changed", function()
+    local s = fleet_snap()
+    local cache = {}
+    run(s, counting_iterator(s, {}), cache)
+    local calls = {}
+    local bl = run(s, counting_iterator(s, calls), cache)
+    assert.same({}, calls)
+    assert.same(reference_bl_hosts(s, counting_iterator(s, {})), bl)
+  end)
+
+  it("re-reads only the list whose version changed", function()
+    local s = fleet_snap()
+    local cache = {}
+    run(s, counting_iterator(s, {}), cache)
+    s.blocklists.solo.version = "s2"
+    local calls = {}
+    run(s, counting_iterator(s, calls), cache)
+    assert.same({ solo = 1 }, calls)
+  end)
+
+  it("never lets one MAC's extraBlocked exclusion leak into a sibling sharing the list set", function()
+    local s = fleet_snap()
+    local cache = {}
+    for _ = 1, 2 do
+      local bl = run(s, counting_iterator(s, {}), cache)
+      assert.is_nil(bl["00:00:00:00:00:03"]["dup.example"])
+      assert.equal("ads", bl["00:00:00:00:00:01"]["dup.example"])
+    end
+  end)
+
+  it("does not keep a map built while a list's cache file was missing", function()
+    -- The agent's iterator returns nil when <id>-<version>.txt is absent (the
+    -- fetch has not landed yet). Keeping that map would hide the list until its
+    -- next version; the per-MAC expansion picked it up on the next apply.
+    local s = fleet_snap()
+    local cache = {}
+    local missing = true
+    local function iterator(id)
+      if id == "solo" and missing then return nil end
+      return counting_iterator(s, {})(id)
+    end
+    local bl = run(s, iterator, cache)
+    assert.is_nil(bl["00:00:00:00:00:05"])
+    missing = false
+    bl = run(s, iterator, cache)
+    assert.same(reference_bl_hosts(s, counting_iterator(s, {})), bl)
+  end)
+
+  it("reuses a MAC's extraBlocked-trimmed copy across applies, and rebuilds it when extraBlocked changes", function()
+    local s = fleet_snap()
+    local cache = {}
+    local first = run(s, counting_iterator(s, {}), cache)["00:00:00:00:00:03"]
+    assert.equal(first, run(s, counting_iterator(s, {}), cache)["00:00:00:00:00:03"])
+    s.profiles["2"].rules.extraBlocked = { "porn.example" }
+    local bl = run(s, counting_iterator(s, {}), cache)
+    assert.same(reference_bl_hosts(s, counting_iterator(s, {})), bl)
+    assert.is_nil(bl["00:00:00:00:00:03"]["porn.example"])
+    assert.equal("ads", bl["00:00:00:00:00:03"]["dup.example"])
+  end)
+
+  it("keeps an empty map for a MAC whose every member extraBlocked claims", function()
+    local s = fleet_snap()
+    local bl = run(s, counting_iterator(s, {}), {})
+    assert.same({}, bl["00:00:00:00:00:05"])
+    assert.is_nil(bl["00:00:00:00:00:06"])
+    assert.is_nil(bl["00:00:00:00:00:08"])
+  end)
+
+end)
+
 -- ── blocklist enforcement (#352) ─────────────────────────────────────────────
 --
 -- Category blocklists are enforced at the connection layer (not DNS) via
