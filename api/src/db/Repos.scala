@@ -3836,9 +3836,17 @@ class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo 
       // #2873 tracks. Daily-limit math does not read these tables (it uses presence, §6.1).
       SqlFragments.deviceLabelJoin("cer.mac", tsBin)
     val anchor    = f.until.fold(fr"NOW()")(u => fr"$u::TIMESTAMPTZ")
+    val lower     = anchor ++ fr"- make_interval(hours => ${f.hours})"
+    // #2874: for daily, compare the bare `cer.date` so the planner can range-scan
+    // idx_ce_daily_date (the `tsBin` expression forced a seq scan). A date's UTC midnight is
+    // > L iff the date is > L's UTC date, and <= U iff the date is <= U's UTC date, so this
+    // admits exactly the rows the `tsBin` comparison did.
     val window    =
-      fr"AND " ++ tsBin ++ fr"> " ++ anchor ++ fr"- make_interval(hours => ${f.hours}) AND " ++
-        tsBin ++ fr"<= " ++ anchor
+      if (isDaily)
+        fr"AND cer.date > ((" ++ lower ++ fr") AT TIME ZONE 'UTC')::date" ++
+          fr"AND cer.date <= (" ++ anchor ++ fr"AT TIME ZONE 'UTC')::date"
+      else
+        fr"AND " ++ tsBin ++ fr"> " ++ lower ++ fr"AND " ++ tsBin ++ fr"<= " ++ anchor
     val byMac     = cats.data.NonEmptyList
       .fromList(f.macs)
       .fold(fr"")(nel => fr"AND " ++ Fragments.in(fr"cer.mac", nel))
