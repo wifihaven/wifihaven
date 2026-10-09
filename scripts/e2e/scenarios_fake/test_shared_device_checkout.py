@@ -11,8 +11,9 @@ This scenario drives both states through the real OpenWRT agent against the
 Gate-2 fake API and asserts, at the connection layer:
 
   1. Checked out — the client's forwarded traffic is dropped by a per-MAC
-     `wh_drop:<mac>:CheckedOut` rule, and the nflog-synthesized drop event the
-     agent posts carries `reason = CheckedOut`.
+     `wh_drop:<mac>:CheckedOut` rule (its counter rises and the kernel logs the
+     dropped flow under that prefix), and the blocked events the agent posts
+     carry `reason = CheckedOut`.
   2. A host in `global.extraAllowed` (standing in for app.wifihaven.net) is
      still reachable from the blocked client, so a child can reach WifiHaven to
      check in (§3 F2).
@@ -95,20 +96,23 @@ def _snapshot(*, etag: str, mac: str, checked_in: bool) -> dict:
     return b.build(etag=etag)
 
 
-def _checked_out_drop_present(mac: str) -> bool:
-    """True iff the live ruleset carries the whole-MAC `CheckedOut` drop.
+def _checked_out_drop_state(mac: str) -> bool | None:
+    """Whether the live ruleset carries the whole-MAC `CheckedOut` drop.
+
+    Returns None when the router could not be read (ssh failure, or no
+    `inet wifihaven` table mid-reload), so a failed read is never mistaken for
+    "the rule is gone". Callers wait on True or False explicitly.
 
     Keyed on the reason suffix, not on @blocked_macs: with a non-empty
     global.extraAllowed, render.lua routes a blocked MAC to per-family rules
     carrying `!= @global_allow` instead of the set, so the set can be empty
     while the device is fully blocked (see test_ws_push_apply).
     """
-    needle = f"wh_drop:{norm_mac(mac)}:{CHECKED_OUT}"
-    res = router_ssh(
-        f'nft list table inet wifihaven 2>/dev/null | grep -iF "{needle}" || true',
-        check=False, timeout=10,
-    )
-    return bool((res.stdout or "").strip())
+    res = router_ssh("nft list table inet wifihaven", check=False, timeout=10)
+    out = (res.stdout or "").lower()
+    if res.returncode != 0 or "table inet wifihaven" not in out:
+        return None
+    return f"wh_drop:{norm_mac(mac)}:{CHECKED_OUT}".lower() in out
 
 
 def _checked_out_drop_packets(mac: str) -> int:
@@ -118,11 +122,25 @@ def _checked_out_drop_packets(mac: str) -> int:
     rules contribute (render.lua `drop_suffix`).
     """
     needle = f"wh_drop:{norm_mac(mac)}:{CHECKED_OUT}"
-    res = router_ssh(
-        f'nft list chain inet wifihaven wifihaven_block 2>/dev/null | grep -iF "{needle}" || true',
-        check=False, timeout=10,
+    res = router_ssh("nft list chain inet wifihaven wifihaven_block", check=False, timeout=10)
+    if res.returncode != 0:
+        raise RuntimeError(f"nft list chain failed (rc={res.returncode}): {res.stderr!r}")
+    lines = [ln for ln in (res.stdout or "").splitlines() if needle.lower() in ln.lower()]
+    return sum(int(n) for ln in lines for n in re.findall(r"counter packets (\d+)", ln))
+
+
+def _forward_drop_logged(mac: str, port: int) -> bool:
+    """True iff the kernel log has a `wh_drop:<mac>:CheckedOut` line for a flow
+    to `port`. That prefix is written only by the forward-chain log rule ahead of
+    the drop (render.lua `log_suffix`), and it is what the agent's nflog reader
+    turns into a blocked event, so this pins the forward-drop leg on its own.
+    """
+    needle = f"wh_drop:{norm_mac(mac)}:{CHECKED_OUT} "
+    res = router_ssh("logread", check=False, timeout=10)
+    return any(
+        needle.lower() in ln.lower() and f"DPT={port} " in ln
+        for ln in (res.stdout or "").splitlines()
     )
-    return sum(int(n) for n in re.findall(r"counter packets (\d+)", res.stdout or ""))
 
 
 def test_checked_out_device_is_blocked_and_check_in_unblocks(router, client, fake_api):
@@ -134,13 +152,13 @@ def test_checked_out_device_is_blocked_and_check_in_unblocks(router, client, fak
     )
     fake_api.wait_for_etag_served(etag=etag, timeout_s=240)
     wait_until(
-        lambda: True if _checked_out_drop_present(mac) else None,
+        lambda: True if _checked_out_drop_state(mac) is True else None,
         timeout_s=180, interval_s=2,
         description=f"nft carries wh_drop:{mac}:{CHECKED_OUT}",
     )
 
     # F2: the global-allowed host is reachable from the blocked client. This is
-    # also the liveness anchor for the HTTPS check below: it proves this client
+    # also the liveness anchor for the drop checks below: it proves this client
     # has DNS, a forward path and upstream egress right now.
     probe = wait_http_succeeds(client, host=GLOBAL_ALLOW_HOST, timeout_s=120)
     assert probe.http_code is not None and 200 <= probe.http_code < 400
@@ -154,8 +172,9 @@ def test_checked_out_device_is_blocked_and_check_in_unblocks(router, client, fak
 
     # Forwarded traffic is dropped. Ports 80/443 from a blocked MAC are
     # redirected to the router's block page rather than dropped, so drive a
-    # port that is neither: the packets must land on the CheckedOut drop rule
-    # and bump its counter. The allow-host probe above is the liveness anchor.
+    # port that is neither. The rule is whole-MAC, so its counter rising shows
+    # it is dropping this client's traffic; the kernel-log line below ties the
+    # drop to this 8080 flow. The allow-host probe above is the liveness anchor.
     other_v4 = dig_ipv4_answers(client, OTHER_HOST)
     assert other_v4, f"no A records for {OTHER_HOST}; cannot drive a forwarded flow"
     before = _checked_out_drop_packets(mac)
@@ -169,11 +188,18 @@ def test_checked_out_device_is_blocked_and_check_in_unblocks(router, client, fak
         timeout_s=30, interval_s=2,
         description=f"wh_drop:{mac}:{CHECKED_OUT} counter rises past {before}",
     )
+    wait_until(
+        lambda: True if _forward_drop_logged(mac, FORWARD_PORT) else None,
+        timeout_s=30, interval_s=2,
+        description=f"kernel log has wh_drop:{mac}:{CHECKED_OUT} for DPT={FORWARD_PORT}",
+    )
 
-    # The blocked-flow events the agent posts carry the snapshot's reason. Both
-    # producers label a per-MAC block with blocked_reason[mac]: nflog for the
-    # forward drop, conntrack for the block-page redirect. Filtering on the
-    # other host's IPs keeps the carved-out allow-host flows out of the match.
+    # The blocked-flow events the agent posts carry the snapshot's reason. Two
+    # producers label a per-MAC block with blocked_reason[mac], nflog for the
+    # forward drop and conntrack for the block-page redirect, and events carry
+    # no port, so this accepts either; the kernel-log check above is what pins
+    # the forward drop. Filtering on the other host's IPs keeps the carved-out
+    # allow-host flows out of the match.
     def _drop_event():
         http_get(client, f"http://{OTHER_HOST}:{FORWARD_PORT}/", timeout_s=3, ipv4_only=True)
         evs = fake_api.events_for_mac(mac, allowed=False, reason=CHECKED_OUT)
@@ -197,24 +223,29 @@ def test_checked_out_device_is_blocked_and_check_in_unblocks(router, client, fak
 
     # Tight poll so the measurement is not dominated by the poll interval. Each
     # sample is one ssh round trip, so the figure is an upper bound on apply.
+    # Unreadable samples (None) are skipped, never counted as "rule gone".
     applied_at: float | None = None
+    unreadable = 0
     deadline = pushed_at + CI_APPLY_BOUND_S
     while time.monotonic() < deadline:
-        if not _checked_out_drop_present(mac):
+        state = _checked_out_drop_state(mac)
+        if state is False:
             applied_at = time.monotonic()
             break
+        if state is None:
+            unreadable += 1
         time.sleep(0.25)
 
     delivered = fake_api.wait_for_etag_served(etag=ETAG_CHECKED_IN, timeout_s=10)
     assert applied_at is not None, (
         f"the CheckedOut drop was still in nft {CI_APPLY_BOUND_S:.0f}s after the "
-        f"check-in push (delivery record: {delivered!r})"
+        f"check-in push ({unreadable} unreadable samples; delivery record: {delivered!r})"
     )
     latency = applied_at - pushed_at
     log.info(
         "check-in push→apply: %.2fs (design target %.1fs p95, CI bound %.0fs, "
-        "transport=%s; one sample, upper bound incl. ssh poll)",
-        latency, DESIGN_TARGET_P95_S, CI_APPLY_BOUND_S, delivered.get("transport"),
+        "transport=%s, %d unreadable samples; one sample, upper bound incl. ssh poll)",
+        latency, DESIGN_TARGET_P95_S, CI_APPLY_BOUND_S, delivered.get("transport"), unreadable,
     )
     if latency > DESIGN_TARGET_P95_S:
         log.warning(
