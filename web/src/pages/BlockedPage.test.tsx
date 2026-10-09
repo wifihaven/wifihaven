@@ -188,6 +188,24 @@ describe('BlockedPage — ask-a-parent CTA (#960)', () => {
     expect(screen.queryByTestId('ask-parent')).not.toBeInTheDocument()
   })
 
+  // #2850: the Check in action. It leads to the dashboard's shared-devices card with this device
+  // pre-selected (design §15 Q1: the MAC only pre-selects; the check-in itself is the normal flow).
+  // An unauthenticated child goes through login first and comes back to it (RequireAuth/LoginPage).
+  it('offers a Check in action for reasonClass=checked_out that leads to the check-in flow', async () => {
+    mockBlockedInfo({ blocked: true, reasonClass: 'checked_out' })
+    renderBlocked({ mac: 'aa:bb:cc:11:22:33', host: 'example.com' })
+    const link = await screen.findByTestId('block-checkin')
+    expect(link).toHaveTextContent('Check in')
+    expect(link).toHaveAttribute('href', `/dashboard?checkin=${encodeURIComponent('aa:bb:cc:11:22:33')}`)
+  })
+
+  it('offers no Check in action for other reasons', async () => {
+    mockBlockedInfo({ blocked: true, reasonClass: 'paused', profileName: 'Kids' })
+    renderBlocked({ mac: 'aa:bb:cc:11:22:33', host: 'example.com' })
+    await waitFor(() => expect(screen.getByText(/profile is paused/i)).toBeInTheDocument())
+    expect(screen.queryByTestId('block-checkin')).not.toBeInTheDocument()
+  })
+
   // #2867: a device with no profile under an unmanaged-device `block` policy. The API reports it
   // as the generic `blocked` class with no profileName; the access request would be stored without
   // a profile, and AlertRoutes rejects approving any kind without one. Offer none, and tell the

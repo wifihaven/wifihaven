@@ -124,6 +124,36 @@ describe('LoginPage', () => {
     await waitFor(() => expect(navigateMock).toHaveBeenCalledWith('/dashboard'))
   })
 
+  // #2850: the block page's Check in action sends a signed-out child through login; RequireAuth
+  // records where they were going and login returns them there.
+  it('returns to the page RequireAuth recorded after a successful login', async () => {
+    loginMock.mockResolvedValue({ mustChangePassword: false })
+    const user = userEvent.setup()
+    render(
+      <MemoryRouter initialEntries={[{ pathname: '/login', state: { from: '/dashboard?checkin=aa%3Abb' } }]}>
+        <LoginPage />
+      </MemoryRouter>,
+    )
+    await user.type(screen.getByPlaceholderText(/you@example.com/), 'emma')
+    await user.type(screen.getByPlaceholderText('••••••••'), 'secret123')
+    await user.click(screen.getByRole('button', { name: /Sign in/ }))
+    await waitFor(() => expect(navigateMock).toHaveBeenCalledWith('/dashboard?checkin=aa%3Abb'))
+  })
+
+  it('ignores a recorded destination that is not an in-app path', async () => {
+    loginMock.mockResolvedValue({ mustChangePassword: false })
+    const user = userEvent.setup()
+    render(
+      <MemoryRouter initialEntries={[{ pathname: '/login', state: { from: '//evil.example/x' } }]}>
+        <LoginPage />
+      </MemoryRouter>,
+    )
+    await user.type(screen.getByPlaceholderText(/you@example.com/), 'emma')
+    await user.type(screen.getByPlaceholderText('••••••••'), 'secret123')
+    await user.click(screen.getByRole('button', { name: /Sign in/ }))
+    await waitFor(() => expect(navigateMock).toHaveBeenCalledWith('/dashboard'))
+  })
+
   it('#2164: composes a bare username with the wh_household cookie slug before posting', async () => {
     document.cookie = `${HOUSEHOLD_COOKIE_NAME}=smith-family; Path=/`
     loginMock.mockResolvedValue({ mustChangePassword: false })
