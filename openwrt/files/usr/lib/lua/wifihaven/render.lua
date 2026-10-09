@@ -1642,7 +1642,7 @@ end
 -- ---------------------------------------------------------------------------
 -- render.update_shared(snapshot, nft_sets, blocked_macs, blocked_reason,
 --                      eb_hosts_by_mac, ea_hosts_by_mac, bl_hosts_by_mac,
---                      bl_member_iterator)
+--                      bl_member_iterator, bl_ids_by_mac, bl_cache)
 -- ---------------------------------------------------------------------------
 -- Rebuilds blocked_macs / blocked_reason in place from each device's
 -- effective BlockRules. nft_sets is left intact — population is driven by
@@ -1676,13 +1676,28 @@ end
 -- The returned value must be iterable with `ipairs` OR be a 0-arg function
 -- returning successive host strings (then nil when done). For simplicity
 -- the agent passes a closure that returns a Lua table (streamed from disk).
+-- nil means the list has no cache file yet (#2893); it reads as an empty list.
 -- The residual memory cost is one flat list of hosts per subscribed blocklist id
 -- (no MAC multiplier), which is acceptable for update_shared's transient call
 -- scope — the steady-state OOM was the per-snapshot _blocklist_hosts table held
 -- across the agent's lifetime.
+--
+-- bl_cache (optional, #2893): a table the caller keeps across calls. Every MAC
+-- that subscribes to the same list set gets the same member map, so the map is
+-- built once per (sorted ids, versions) rather than once per MAC, and kept in
+-- bl_cache until a version changes. A list version names immutable content
+-- (the agent's cache file is <id>-<version>.txt), so a cached map can only go
+-- stale through a version change, which changes its key. Maps whose key no
+-- MAC used in this call are dropped. Only used with bl_member_iterator; the
+-- legacy snapshot._blocklist_hosts path has no versions to key on. The per-MAC
+-- expansion this replaces cost 3.76 s per apply on the prod family router.
+--
+-- The shared maps are read-only to every consumer: a MAC whose extraBlocked
+-- overlaps its map gets its own copy without those hosts, never an edit of the
+-- shared one.
 function M.update_shared(snapshot, nft_sets, blocked_macs, blocked_reason,
                          eb_hosts_by_mac, ea_hosts_by_mac, bl_hosts_by_mac,
-                         bl_member_iterator, bl_ids_by_mac)
+                         bl_member_iterator, bl_ids_by_mac, bl_cache)
   if blocked_macs then
     for k in pairs(blocked_macs) do blocked_macs[k] = nil end
   end
@@ -1709,16 +1724,52 @@ function M.update_shared(snapshot, nft_sets, blocked_macs, blocked_reason,
   -- so multiple MACs sharing the same blocklist id only trigger one read. The
   -- in-memory cost is one flat host list per subscribed id — no MAC multiplier.
   local bl_hosts_cache = {}
+  -- #2893: ids whose iterator returned nil (no cache file yet). A map built
+  -- from one is used for this call but never kept in bl_cache.
+  local bl_missing = {}
   local function get_bl_hosts(id)
     if bl_hosts_cache[id] ~= nil then return bl_hosts_cache[id] end
     if bl_member_iterator then
       local hosts = bl_member_iterator(id)
+      if hosts == nil then bl_missing[id] = true end
       bl_hosts_cache[id] = hosts or {}
     else
       local legacy = (snapshot and snapshot._blocklist_hosts) or {}
       bl_hosts_cache[id] = legacy[id] or {}
     end
     return bl_hosts_cache[id]
+  end
+
+  -- #2893: one member map per list set. `ids` is sorted, so the first id that
+  -- lists a host claims it, exactly as the per-MAC loop did. `any` records
+  -- whether the set has any member at all: the per-MAC loop created the MAC's
+  -- table as soon as it saw a member, even one extraBlocked then claimed.
+  local versioned = bl_member_iterator ~= nil and bl_cache ~= nil
+  local maps_this_call = {}
+  local function bl_map_for(ids)
+    local parts = {}
+    for i, id in ipairs(ids) do
+      local bl = snapshot.blocklists and snapshot.blocklists[id]
+      parts[i] = id .. "@" .. tostring(bl and bl.version)
+    end
+    local key = table.concat(parts, "\n")
+    local entry = maps_this_call[key] or (versioned and bl_cache[key])
+    if not entry then
+      local map, any, complete = {}, false, true
+      for _, id in ipairs(ids) do
+        local hosts = get_bl_hosts(id)
+        if bl_missing[id] then complete = false end
+        if type(hosts) == "table" then
+          for _, host in ipairs(hosts) do
+            any = true
+            if not map[host] then map[host] = id end
+          end
+        end
+      end
+      entry = { map = map, any = any, complete = complete }
+    end
+    maps_this_call[key] = entry
+    return entry
   end
 
   for mac, dev in pairs(snapshot.devices or {}) do
@@ -1765,17 +1816,23 @@ function M.update_shared(snapshot, nft_sets, blocked_macs, blocked_reason,
         local ids = {}
         for _, id in ipairs(r.blocklistIds) do ids[#ids + 1] = id end
         table.sort(ids)
-        for _, id in ipairs(ids) do
-          local hosts = get_bl_hosts(id)
-          if type(hosts) == "table" then
-            for _, host in ipairs(hosts) do
-              local eb_for_mac = eb_hosts_by_mac and eb_hosts_by_mac[mac]
-              local already_eb = eb_for_mac and eb_for_mac[host]
-              if not bl_hosts_by_mac[mac] then bl_hosts_by_mac[mac] = {} end
-              if not already_eb and not bl_hosts_by_mac[mac][host] then
-                bl_hosts_by_mac[mac][host] = id
-              end
+        local entry = bl_map_for(ids)
+        if entry.any then
+          local eb_for_mac = eb_hosts_by_mac and eb_hosts_by_mac[mac]
+          local overlap = false
+          if eb_for_mac then
+            for host in pairs(eb_for_mac) do
+              if entry.map[host] then overlap = true; break end
             end
+          end
+          if overlap then
+            local own = {}
+            for host, id in pairs(entry.map) do
+              if not eb_for_mac[host] then own[host] = id end
+            end
+            bl_hosts_by_mac[mac] = own
+          else
+            bl_hosts_by_mac[mac] = entry.map
           end
         end
       end
@@ -1789,6 +1846,13 @@ function M.update_shared(snapshot, nft_sets, blocked_macs, blocked_reason,
           ea_hosts_by_mac[mac][host] = true
         end
       end
+    end
+  end
+
+  if versioned then
+    for key in pairs(bl_cache) do bl_cache[key] = nil end
+    for key, entry in pairs(maps_this_call) do
+      if entry.complete then bl_cache[key] = entry end
     end
   end
 end

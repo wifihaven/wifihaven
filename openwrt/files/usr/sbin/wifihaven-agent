@@ -566,6 +566,10 @@ local blocked_reason = {}   -- { mac -> reason_string }
 local eb_hosts_by_mac = {}  -- { mac -> { hostname -> true } } (extraBlocked)
 local ea_hosts_by_mac = {}  -- { mac -> { hostname -> true } } (extraAllowed carve-outs)
 local bl_hosts_by_mac = {}  -- { mac -> { hostname -> blocklist_id } } (category blocklist) (#594)
+-- #2893: update_shared's member maps, one per (list set, versions), kept across
+-- applies so an apply that changes no list version re-reads no cache file.
+-- Every MAC on the same list set shares one map in bl_hosts_by_mac.
+local bl_member_maps = {}
 -- #2719: the blocklist ids assigned to each MAC, without their membership.
 -- conntrack's DNS-attribution-miss path probes one bl_<id>/bl6_<id> nft set per
 -- id here instead of one eb_-style set per member host (180,343 forks for a
@@ -982,13 +986,15 @@ end
 -- avoids holding the full member set in memory between calls — each invocation
 -- reads the file fresh, and the per-id result table is only alive during the
 -- update_shared call scope (no MAC multiplier at steady state).
+-- Returns nil when the list has no cache file yet, so update_shared knows not to
+-- keep a member map built without it (#2893).
 local function make_bl_member_iterator(snap)
   return function(id)
     local bl = (snap and snap.blocklists or {})[id]
-    if not bl then return {} end
+    if not bl then return nil end
     local path = BLOCKLIST_CACHE_DIR .. "/" .. id .. "-" .. tostring(bl.version) .. ".txt"
     local f = io.open(path, "r")
-    if not f then return {} end
+    if not f then return nil end
     local hosts = {}
     for line in f:lines() do
       line = line:match("^%s*(.-)%s*$")
@@ -1203,7 +1209,8 @@ local function apply_and_publish(snap, reason)
     local shared_snap = enf_disabled and { devices = {}, profiles = {} } or snap
     render.update_shared(shared_snap, nft_sets, blocked_macs, blocked_reason,
                          eb_hosts_by_mac, ea_hosts_by_mac, bl_hosts_by_mac,
-                         make_bl_member_iterator(shared_snap), bl_ids_by_mac)
+                         make_bl_member_iterator(shared_snap), bl_ids_by_mac,
+                         bl_member_maps)
     -- update_shared just rebuilt the tables the eb_/bl_ sweep flattens, so a
     -- sweep in flight is now walking a stale snapshot of them (#2785).
     note_inventory_change()
@@ -1354,7 +1361,7 @@ do
                     clock.monotonic_seconds() - t0)
     if applied then
       local boot_shared = enf_boot and ts.empty_snapshot or cached
-      render.update_shared(boot_shared, nft_sets, blocked_macs, blocked_reason, eb_hosts_by_mac, ea_hosts_by_mac, bl_hosts_by_mac, make_bl_member_iterator(boot_shared), bl_ids_by_mac)
+      render.update_shared(boot_shared, nft_sets, blocked_macs, blocked_reason, eb_hosts_by_mac, ea_hosts_by_mac, bl_hosts_by_mac, make_bl_member_iterator(boot_shared), bl_ids_by_mac, bl_member_maps)
       ts.last_snapshot = cached
       -- #2736: record the applied etag so the ws apply-on-push tick dedups
       -- against it and does not immediately re-apply what boot just applied.

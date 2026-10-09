@@ -1769,6 +1769,24 @@ describe("render.update_shared bl_hosts_by_mac sharing (#2893)", function()
     end
   end)
 
+  it("does not keep a map built while a list's cache file was missing", function()
+    -- The agent's iterator returns nil when <id>-<version>.txt is absent (the
+    -- fetch has not landed yet). Keeping that map would hide the list until its
+    -- next version; the per-MAC expansion picked it up on the next apply.
+    local s = fleet_snap()
+    local cache = {}
+    local missing = true
+    local function iterator(id)
+      if id == "solo" and missing then return nil end
+      return counting_iterator(s, {})(id)
+    end
+    local bl = run(s, iterator, cache)
+    assert.is_nil(bl["00:00:00:00:00:05"])
+    missing = false
+    bl = run(s, iterator, cache)
+    assert.same(reference_bl_hosts(s, counting_iterator(s, {})), bl)
+  end)
+
   it("keeps an empty map for a MAC whose every member extraBlocked claims", function()
     local s = fleet_snap()
     local bl = run(s, counting_iterator(s, {}), {})
