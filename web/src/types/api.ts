@@ -122,6 +122,9 @@ export interface HouseholdSettings {
   // nothing when the Resend transport itself is unconfigured). A notification
   // preference, not a login identity.
   notifyEmail: string | null
+  // #2849 — minutes without engaged presence (the screen-time definition) after which a
+  // checked-in shared device is checked out automatically. 5–1440, default 15.
+  sharedDeviceIdleMinutes: number
 }
 
 // #2382 — the server-level per-household "disable enforcement" escape hatch. When

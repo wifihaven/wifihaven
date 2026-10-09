@@ -402,16 +402,29 @@ the device is released; that is intended, since the released device belongs to n
 the shared device is blocked too, because it resolves to the holder's rules. Auto-checkout only
 *releases* the device so another child can check in.
 
-Mechanism: `SharedDeviceCheckoutJob`, run on the existing per-household reevaluate tick. It reads the
-day states the snapshot build already computes (`timeStatusService.dayStateAll`), and for each open
-`check_in` whose holder matches an enabled trigger (Q3), it calls the §5.3 primitive with the
-matching `end_cause` and then `invalidate(household)`. Writes stay out of the snapshot build itself.
+Mechanism: `SharedDeviceCheckoutJob`, run on the existing per-household reevaluate tick, before the
+snapshot build so a release is in the same tick's snapshot. For each open `check_in` whose holder
+matches an enabled trigger (Q3), it closes that row through the §5.3 primitive with the matching
+`end_cause` and bumps the household's snapshot version (what `invalidate` does). Writes stay out of
+the snapshot build itself. (Amended on #2849: the job reads each holder's day state through
+`TimeStatusService.todaysState`, the same primitive the build's `dayStateAll` and the check-in
+route's `profile_blocked` guard fold through, rather than sharing the build's batched read, which
+would put the writes inside the build. The extra read is one profile per open check-in, only in
+households that have one, and is metered by `shared_device_checkout_job_duration_seconds`.)
+
+The tick covers the households the reevaluate sweep rebuilds (connected routers plus the default
+household) and every household a mutation invalidates. A household whose router is offline keeps a
+device held across the daily reset until its router reconnects or its policy is next edited;
+attribution is unaffected, because `day_reset` still stamps `ended_at` at the reset instant.
 
 - `time_limit` / `schedule` / `paused`: the holder's `ProfileDayState.blockReason`. Precedence when
   several hold at once follows the existing `Paused > Schedule > TimeLimit` order.
 - `idle`: the latest row of `TimeStatusService.gatedPresence(holderAppLimits, rows, settings, ambient)`
   for the device inside the open interval (or the interval start if none) is
-  older than `shared_device_idle_minutes`.
+  older than `shared_device_idle_minutes`. Heartbeat rows (`Presence.isHeartbeat`, the predicate
+  every screen-time count drops first) do not count, so an OS probe does not keep a check-in alive;
+  exempt-from-daily rows do, since exemption is about the budget, not engagement. The read is
+  `TimeStatusService.lastEngagedAt` (amended on #2849).
 - `day_reset`: the interval started before the household's most recent daily reset
   (`PolicyService.nextDailyResetAfter` / `householdLocalDate`, the same reset everything else uses).
   The `ended_at` is stamped at the reset instant, not the tick instant, so no post-reset presence is

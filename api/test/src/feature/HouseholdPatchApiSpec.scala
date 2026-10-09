@@ -390,6 +390,65 @@ object HouseholdPatchApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPos
         after <- repo.getForHousehold(HouseholdId.Default)
       } yield assertTrue(resp.status == Status.Ok) && assertTrue(after.notifyEmail.isEmpty)
     },
+    test("#2849 PATCH sharedDeviceIdleMinutes sets it; a PATCH that omits it preserves it") {
+      for {
+        _            <- setupHousehold
+        (routes, tk) <- routesAndToken
+        resp         <- patch(routes, tk, """{"sharedDeviceIdleMinutes":45}""")
+        _            <- patch(routes, tk, """{"dailyResetTime":"03:30:00"}""")
+        repo         <- ZIO.service[HouseholdSettingsRepo]
+        after        <- repo.getForHousehold(HouseholdId.Default)
+      } yield assertTrue(
+        resp.status == Status.Ok,
+        after.sharedDeviceIdleMinutes == 45,
+        after.dailyResetTime == LocalTime.of(3, 30),
+      )
+    },
+    test("#2849 sharedDeviceIdleMinutes accepts both bounds and refuses 4, 1441 and null") {
+      for {
+        _            <- setupHousehold
+        (routes, tk) <- routesAndToken
+        floor        <- patch(routes, tk, """{"sharedDeviceIdleMinutes":5}""")
+        ceiling      <- patch(routes, tk, """{"sharedDeviceIdleMinutes":1440}""")
+        tooLow       <- patch(routes, tk, """{"sharedDeviceIdleMinutes":4}""")
+        tooHigh      <- patch(routes, tk, """{"sharedDeviceIdleMinutes":1441}""")
+        cleared      <- patch(routes, tk, """{"sharedDeviceIdleMinutes":null}""")
+        repo         <- ZIO.service[HouseholdSettingsRepo]
+        after        <- repo.getForHousehold(HouseholdId.Default)
+      } yield assertTrue(
+        floor.status == Status.Ok,
+        ceiling.status == Status.Ok,
+        tooLow.status == Status.BadRequest,
+        tooHigh.status == Status.BadRequest,
+        cleared.status == Status.BadRequest,
+        after.sharedDeviceIdleMinutes == 1440,
+      )
+    },
+    test("#2849 the default idle threshold is 15 minutes") {
+      for {
+        _     <- cleanDb
+        repo  <- ZIO.service[HouseholdSettingsRepo]
+        after <- repo.getForHousehold(HouseholdId.Default)
+      } yield assertTrue(after.sharedDeviceIdleMinutes == 15)
+    },
+    test("#2849 PUT sets sharedDeviceIdleMinutes, and a PUT that omits it preserves it") {
+      for {
+        _            <- setupHousehold
+        (routes, tk) <- routesAndToken
+        base =
+          """"dailyResetTime":"00:00:00","dailyResetTz":"America/Los_Angeles","heartbeatFilter":{"enabled":false,"bytesThreshold":1024,"heartbeatHostPatterns":[]},"unmanagedMacPolicy":{"policy":"allow","blockPage":true}"""
+        set   <- put(routes, tk, s"""{$base,"sharedDeviceIdleMinutes":30}""")
+        omit  <- put(routes, tk, s"""{$base}""")
+        bad   <- put(routes, tk, s"""{$base,"sharedDeviceIdleMinutes":2}""")
+        repo  <- ZIO.service[HouseholdSettingsRepo]
+        after <- repo.getForHousehold(HouseholdId.Default)
+      } yield assertTrue(
+        set.status == Status.Ok,
+        omit.status == Status.Ok,
+        bad.status == Status.BadRequest,
+        after.sharedDeviceIdleMinutes == 30,
+      )
+    },
     // #2522: household settings are parenting, so PATCH is adult-or-admin now. A child is still
     // refused; the adult's positive half lives in AdultEditBoundarySpec.
     test("403 when a child tries to PATCH (#2522)") {

@@ -116,6 +116,7 @@ object PolicySnapshotCacheSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedP
         buildBarrier = buildBarrier,
         reconcileBarrier = reconcileBarrier,
         repairAssignmentDrift = PolicyServiceLive.NoDriftCheck,
+        autoCheckout = PolicyServiceLive.NoAutoCheckout,
       )
       pushed <- Ref.make(List.empty[(HouseholdId, PolicySnapshot)])
       _      <- svc.setPublisher(new ProbePublisher(pushed, pushTargets, probeAlsoTry))

@@ -102,7 +102,8 @@ object MetricGuard {
       "topic",
       // #2848 — shared-device check-in vocabulary for `shared_device_checkin_total`. `action` is a
       // fixed 2-value enum (check_in | check_out); `cause` is `user` for a check-in, or the
-      // assignment end cause for a check-out (check_out | forced | unshared — `AssignmentEndCause`,
+      // assignment end cause for a check-out (check_out | forced | unshared, and #2849's
+      // auto-checkout causes time_limit | schedule | paused | idle | day_reset — `AssignmentEndCause`,
       // a fixed enum). Bounded by the code, never by device / profile / user growth.
       "action",
       "cause",
@@ -161,30 +162,30 @@ object MetricGuard {
    */
   val Allowed: Map[String, Set[String]] = Map(
     // §5.2 API self-metrics.
-    "http_requests_total"                       -> Set("route", "method", "status"),
-    "http_request_duration_seconds"             -> Set("route", "method"),
+    "http_requests_total"                         -> Set("route", "method", "status"),
+    "http_request_duration_seconds"               -> Set("route", "method"),
     // #1570 — error responses metered at the server boundary (ErrorBoundary). A dedicated,
     // operator-facing error series sliced by templated route + status code, so the error-rate
     // panel queries one obvious counter rather than filtering the all-requests counter. Bounded
     // labels only (route ~40 templated paths, status the HTTP code).
-    "api_errors_total"                          -> Set("route", "status"),
-    "db_query_duration_seconds"                 -> Set("op"),
-    "db_queries_total"                          -> Set("op", "status"),
-    "auth_failures_total"                       -> Set("reason"),
-    "agent_connected_routers"                   -> Set.empty[String],
-    "traffic_reports_filtered_zero_bytes_total" -> Set.empty[String],
+    "api_errors_total"                            -> Set("route", "status"),
+    "db_query_duration_seconds"                   -> Set("op"),
+    "db_queries_total"                            -> Set("op", "status"),
+    "auth_failures_total"                         -> Set("reason"),
+    "agent_connected_routers"                     -> Set.empty[String],
+    "traffic_reports_filtered_zero_bytes_total"   -> Set.empty[String],
     // #1569 — usage-ingest records dropped at decode. A single malformed record
     // (e.g. a host that fails Hostname validation — a CDN CNAME target with
     // underscores, see #1572) is skipped + metered here instead of 400-ing the
     // whole batch. `reason` is a small fixed enum (currently just `decode_error`).
-    "usage_records_rejected_total"              -> Set("reason"),
+    "usage_records_rejected_total"                -> Set("reason"),
     // #1757 — events-ingest records dropped at decode. Same shape as
     // usage_records_rejected_total: a single malformed RouterEvent (bad host /
     // mac / ts / unknown enum value) is skipped + metered instead of 400-ing
     // the whole batch (which would drop every valid connection_attempt /
     // dhcp_lease / first_seen_mac with it). `reason` is a small fixed enum
     // (currently just `decode_error`).
-    "events_records_rejected_total"             -> Set("reason"),
+    "events_records_rejected_total"               -> Set("reason"),
     // #1585 — write-time FQDN backfill for traffic_reports. Counts each
     // UsageRecord at ingest by what the backfill decided: `filled` (race-loser
     // ipv4/ipv6 rewritten to a fqdn from a recent connection_event),
@@ -192,7 +193,7 @@ object MetricGuard {
     // was already fqdn, or carried no dest_ip — not a candidate). `result` is
     // a small fixed enum; bounded. Reuses the existing `result` label key
     // rather than introducing `outcome` (#1210 keeps the vocabulary small).
-    "traffic_reports_backfill_total"            -> Set("result"),
+    "traffic_reports_backfill_total"              -> Set("result"),
     // #1318/#1775 — global-policy-layer visibility. `global_allow_hosts` is the size of the
     // fleet-wide always-reachable set (a host here bypasses every block). #1775 removed the
     // DB-backed authoring path, so the set is now sourced entirely from compile-time config
@@ -200,8 +201,8 @@ object MetricGuard {
     // the deployment's allow set was loaded. `default_deny_profiles` counts profiles running the
     // block-all baseline. Both are unlabelled household-scoped gauges, set each time the policy
     // snapshot is assembled.
-    "wifihaven_global_allow_hosts"              -> Set.empty[String],
-    "wifihaven_default_deny_profiles"           -> Set.empty[String],
+    "wifihaven_global_allow_hosts"                -> Set.empty[String],
+    "wifihaven_default_deny_profiles"             -> Set.empty[String],
     // #1676 — per-(mac, app) sessions dropped by the #1666 phantom-suppression
     // guard inside Presence.appSpansForProfile. Unlabelled counter: the guard
     // is unconditional, so a reason enum would only ever carry one value, and
@@ -209,24 +210,30 @@ object MetricGuard {
     // rate-alert on threshold drift — a sustained rise means the threshold is
     // too aggressive (real sessions vanishing), a flat zero while phantom
     // inflation returns means it is too lax.
-    "presence_app_sessions_dropped_total"       -> Set.empty[String],
+    "presence_app_sessions_dropped_total"         -> Set.empty[String],
     // #2843 — devices whose `devices.profile_id` disagreed with their open assignment-history row
     // and were repaired by the standing drift check on the reevaluate tick. Unlabelled: any
     // non-zero rate after a rollout settles means a writer is bypassing `DeviceAssignment.assign`,
     // and the WARN log names the household; a per-device/household label would break the firewall.
-    "device_assignment_drift_repaired_total"    -> Set.empty[String],
+    "device_assignment_drift_repaired_total"      -> Set.empty[String],
     // #2848 — shared-device check-ins opened and closed through the API, and the requests refused
     // (`reason` ∈ held | not_linked | profile_blocked | not_shared | not_held). No device, profile
     // or household label (design §12).
-    "shared_device_checkin_total"               -> Set("action", "cause"),
-    "shared_device_checkin_rejected_total"      -> Set("reason"),
+    "shared_device_checkin_total"                 -> Set("action", "cause"),
+    "shared_device_checkin_rejected_total"        -> Set("reason"),
+    // #2849 — the auto-checkout job on the per-household reevaluate tick: runs by `outcome`
+    // (ok | error), their duration, and the fleet-wide count of open check-ins. No household or
+    // device label (design §12).
+    "shared_device_checkout_job_total"            -> Set("outcome"),
+    "shared_device_checkout_job_duration_seconds" -> Set.empty[String],
+    "shared_device_checkins_open"                 -> Set.empty[String],
     // #2077 ambient anchor-gate observability (unlabelled).
-    "presence_ambient_spans_dropped_total"      -> Set.empty[String],
-    "presence_ambient_hosts"                    -> Set.empty[String],
+    "presence_ambient_spans_dropped_total"        -> Set.empty[String],
+    "presence_ambient_hosts"                      -> Set.empty[String],
     // #1898 — outcome of attributing a SHARED host's stitched span in usage-by-app
     // by temporal co-presence with apps' distinctive sessions. `outcome` is a
     // bounded 3-value enum (attributed / split / other); no per-mac/host/app label.
-    "usage_shared_host_attribution_total"       -> Set("outcome"),
+    "usage_shared_host_attribution_total"         -> Set("outcome"),
     // #1885 — log events the loki4j appender shed because its bounded send queue
     // (sendQueueMaxBytes) was full while Loki was slow/unreachable. The appender
     // is async/drop-on-backpressure by construction (fail-open: the request path
@@ -235,7 +242,7 @@ object MetricGuard {
     // appender-wide cumulative count, and any per-mac/route label would breach the
     // §4 cardinality firewall (service/env/level already ride the Loki stream
     // labels, not this Prometheus series).
-    "loki_logs_dropped_total"                   -> Set.empty[String],
+    "loki_logs_dropped_total"                     -> Set.empty[String],
     // #1972 — log batches the loki4j appender SENT to Grafana Cloud Loki that came
     // back as an error (HTTP 401/403 wrong-scope token, 4xx/5xx, connection/timeout).
     // Distinct from loki_logs_dropped_total, which only counts queue-full drops on
@@ -244,22 +251,22 @@ object MetricGuard {
     // invisible second half of #1972. loki4j is fail-open and routes these to the
     // logback StatusManager only, so without this counter the loss is silent.
     // Unlabelled (same cardinality firewall as the drop series).
-    "loki_logs_send_errors_total"               -> Set.empty[String],
+    "loki_logs_send_errors_total"                 -> Set.empty[String],
     // §5.1 router-sourced, pushed via POST /api/router/metrics (#1205). Every one carries the
     // server-attached `router_id` + `installation_id` plus its own bounded enum label.
-    "dnsmasq_restarts_total"                    -> Set("reason", "router_id", "installation_id"),
-    "policy_apply_total"                        -> Set("result", "router_id", "installation_id"),
+    "dnsmasq_restarts_total"                      -> Set("reason", "router_id", "installation_id"),
+    "policy_apply_total"                          -> Set("result", "router_id", "installation_id"),
     // #2208 — `phase` breaks the apply down into its internal steps so a slow
     // apply is attributable (render_dnsmasq / render_nft / dnsmasq_restart /
     // nft_load / ea_backfill / smoke_probe — the bounded enum policy.apply's
     // phase_timer seam emits). The agent still emits the unlabeled total.
-    "policy_apply_duration_seconds"             -> Set("phase", "router_id", "installation_id"),
-    "snapshot_poll_total"                       -> Set("result", "router_id", "installation_id"),
-    "snapshot_poll_duration_seconds"            -> Set("router_id", "installation_id"),
+    "policy_apply_duration_seconds"               -> Set("phase", "router_id", "installation_id"),
+    "snapshot_poll_total"                         -> Set("result", "router_id", "installation_id"),
+    "snapshot_poll_duration_seconds"              -> Set("router_id", "installation_id"),
     // #2229 — ws push→apply latency (persist→apply) the agent observes from the
     // sidecar's /proc/uptime trigger stamp. Emitted unlabeled; ingest injects
     // router_id/installation_id (same shape as snapshot_poll_duration_seconds).
-    "ws_push_apply_latency_seconds"             -> Set("router_id", "installation_id"),
+    "ws_push_apply_latency_seconds"               -> Set("router_id", "installation_id"),
     // #2037 — policy-poll dormancy. When the ws transport is enabled AND its
     // health sentinel is fresh (within ws_fallback_after), the agent's 5 s HTTP
     // `GET /api/router/policy` poll goes dormant — the push channel is the live
@@ -268,7 +275,7 @@ object MetricGuard {
     // enabling ws is directly visible (a climbing rate on a ws router with a flat
     // snapshot_poll_total is the dormancy working). `reason` is a fixed 1-value
     // enum today (`ws_healthy`) — bounded, no per-mac/host dimension.
-    "policy_poll_skipped_total"                 -> Set("reason", "router_id", "installation_id"),
+    "policy_poll_skipped_total"                   -> Set("reason", "router_id", "installation_id"),
     // #2731 — seconds since the ws sidecar last touched its health sentinel, the
     // sole input to the dormancy gate above. #2731 was that sentinel sitting 80
     // minutes stale under a live, heartbeating socket: ws_state read 1, frames
@@ -277,17 +284,17 @@ object MetricGuard {
     // it took an SSH. -1 means the sentinel is absent (ws off, or cleared on
     // disconnect); any non-negative value is a real age in seconds. Unlabelled
     // beyond the fleet dimensions — no per-mac/host dimension.
-    "ws_health_age_seconds"                     -> Set("router_id", "installation_id"),
-    "agent_uptime_seconds"                      -> Set("router_id", "installation_id"),
-    "agent_version"                             -> Set("version", "router_id", "installation_id"),
+    "ws_health_age_seconds"                       -> Set("router_id", "installation_id"),
+    "agent_uptime_seconds"                        -> Set("router_id", "installation_id"),
+    "agent_version"                               -> Set("version", "router_id", "installation_id"),
     // #2381 — the local enforcement escape hatch. 1 = this router is in bypass
     // (all blocking + block-page DNAT torn down locally, e.g. via
     // wifihaven-disable / the LuCI toggle), 0 = normal enforcement. Reports the
     // APPLIED state so the gauge tracks what enforcement is actually doing. No
     // per-mac/host dimension — router_id/installation_id only. Lets the fleet
     // dashboard flag a router silently running unfiltered (a support signal).
-    "enforcement_disabled"                      -> Set("router_id", "installation_id"),
-    "dns_queries_total"                         -> Set("result", "router_id", "installation_id"),
+    "enforcement_disabled"                        -> Set("router_id", "installation_id"),
+    "dns_queries_total"                           -> Set("result", "router_id", "installation_id"),
     // #573 / #1650 / #1653 — TLS ClientHello SNI capture outcomes from the wifihaven-sni-tail
     // sidecar. `result` ∈ {parsed, reassembled, incomplete, dropped_byte_cap, not_handshake,
     // truncated, no_sni, not_ip, not_tcp, malformed, ech} plus QUIC buckets (quic_*, including
@@ -298,8 +305,8 @@ object MetricGuard {
     // added `ech` / `quic_ech` — the share of ClientHellos using Encrypted ClientHello (real
     // server_name is encrypted; attribution falls back to the outer/public SNI when present).
     // (Pre-#1652 agents also emit `ipv6_skipped`; the bucket ages out as the fleet rolls forward.)
-    "sni_clienthellos_total"                    -> Set("result", "router_id", "installation_id"),
-    "blocklist_fetch_failures_total"            -> Set("status", "router_id", "installation_id"),
+    "sni_clienthellos_total"                      -> Set("result", "router_id", "installation_id"),
+    "blocklist_fetch_failures_total"              -> Set("status", "router_id", "installation_id"),
     // #1785 — per-id counter incremented when the agent's render_shards hits the
     // #1434 defensive byte cap and drops a list on the floor (cap_hit ⊆ skipped;
     // absent-cache skips are covered by blocklist_fetch_failures_total above).
@@ -308,7 +315,7 @@ object MetricGuard {
     // firewall. Parent design: #1435 (the cap stays as defense-in-depth even
     // after Option 2c streams large lists, so fleet-wide visibility of any
     // future cap hit must keep working).
-    "blocklist_render_skipped_total"            -> Set(
+    "blocklist_render_skipped_total"              -> Set(
       "blocklist_id",
       "router_id",
       "installation_id",
@@ -331,8 +338,8 @@ object MetricGuard {
     // not be told apart from the filter never running (the §826 "flat counter ⇒
     // nothing is looking" trap). `kept` carrying a plausible host count is what
     // distinguishes them — it is the liveness anchor.
-    "blocklist_ingest_hosts"                    -> Set("blocklist_id", "outcome"),
-    "enforcement_drops_total"                   -> Set("reason", "router_id", "installation_id"),
+    "blocklist_ingest_hosts"                      -> Set("blocklist_id", "outcome"),
+    "enforcement_drops_total"                     -> Set("reason", "router_id", "installation_id"),
     // #1658 — eb_/bl_ ipset re-resolve heartbeat. Each fire of the agent's
     // eb_refresh timer re-resolves the inventory of (extraBlocked, blocklist)
     // hosts against the local dnsmasq and adds answered IPs back into the
@@ -352,7 +359,7 @@ object MetricGuard {
     //                   blocklist members no longer resolve at all.
     //   resolve_failed  the resolver could not run at all, or the host failed
     //                   the hermetic allow-list
-    "eb_refresh_total"                          -> Set("result", "router_id", "installation_id"),
+    "eb_refresh_total"                            -> Set("result", "router_id", "installation_id"),
     // #2782 — nftables elements the re-resolve above actually added. This is
     // the series that would have caught #2782: `eb_refresh_total{result="ok"}`
     // read 179,349,241 on the prod family router while this quantity was zero,
@@ -361,7 +368,7 @@ object MetricGuard {
     // blocklist hosts shows a steady non-zero rate; `ok` climbing while this
     // stays flat zero means the sweep is running and achieving nothing, which
     // is the alarm condition. Unlabeled total — no per-host cardinality.
-    "eb_refresh_adds_total"                     -> Set("router_id", "installation_id"),
+    "eb_refresh_adds_total"                       -> Set("router_id", "installation_id"),
     // #2095 — extraAllowed carve re-seed heartbeat. policy.apply's `nft -f`
     // delete+recreates `table inet wifihaven`, emptying every per-(mac,host)
     // ea_/ea6_ carve set; the agent immediately backfills them from the
@@ -372,13 +379,13 @@ object MetricGuard {
     // cardinality). A healthy fleet shows a steady rate tracking applies; a
     // flatline while blocks-with-extraAllowed are active means the backfill
     // isn't firing and the transient v6 drop can recur.
-    "ea_carve_backfill_total"                   -> Set("router_id", "installation_id"),
+    "ea_carve_backfill_total"                     -> Set("router_id", "installation_id"),
     // #1033 — usage-POST retry-queue health. Depth = buckets currently waiting for a backoff to
     // elapse; `usage_post_total{result}` tracks the immediate-post outcome (`ok` | `queued`) and
     // drain outcome (`drained` | `drain_failed`). Gives operators a first-class view of "are
     // usage reports flowing or are they stacking up?" without grepping the ring-buffer syslog.
-    "usage_queue_depth"                         -> Set("router_id", "installation_id"),
-    "usage_post_total"                          -> Set("result", "router_id", "installation_id"),
+    "usage_queue_depth"                           -> Set("router_id", "installation_id"),
+    "usage_post_total"                            -> Set("result", "router_id", "installation_id"),
     // #2024 — idle-heartbeat stall indicator. The agent now drives its
     // cooperative timers (usage flush, activity sampler, …) on a wall-clock
     // heartbeat so on_tick fires even when conntrack is silent. This counter
@@ -387,7 +394,7 @@ object MetricGuard {
     // clock jump) and the bucket spanned un-monitored time, the #2016
     // over-count condition. A healthy fleet holds this flat at 0; a climbing
     // rate is the leading signal of the over-count regressing.
-    "usage_window_stall_total"                  -> Set("router_id", "installation_id"),
+    "usage_window_stall_total"                    -> Set("router_id", "installation_id"),
     // #2785 — the DIRECT on_tick liveness pair, and the reason the 2026-09-13
     // stall was found by a child not being able to open an app rather than by
     // us. `usage_window_stall_total` above is the OUTCOME signal: it speaks
@@ -404,8 +411,8 @@ object MetricGuard {
     // the fixed six-value enum in the agent's tick_guard.STEPS (ws_apply /
     // block_page_token / blocklist_refresh / eb_refresh / usage_report /
     // metrics_push) — code constants, never a per-mac/host/url value.
-    "agent_tick_stall_total"                    -> Set("router_id", "installation_id"),
-    "agent_slow_step_total"                     -> Set("step", "router_id", "installation_id"),
+    "agent_tick_stall_total"                      -> Set("router_id", "installation_id"),
+    "agent_slow_step_total"                       -> Set("step", "router_id", "installation_id"),
     // #2785 — how many entries the eb_/bl_ re-resolve sweep (#1658) has to walk
     // on this router: distinct extraBlocked hosts plus every member host of
     // every subscribed category blocklist. This is the number that turned a
@@ -415,7 +422,7 @@ object MetricGuard {
     // capacity signal: at ~160k on the prod family router the sweep cannot
     // complete inside the 1h nftables set ageing window it exists to beat,
     // which is a design question rather than a bug in the slicing.
-    "eb_refresh_inventory_hosts"                -> Set("router_id", "installation_id"),
+    "eb_refresh_inventory_hosts"                  -> Set("router_id", "installation_id"),
     // #2719 — the agent's conntrack DNS-attribution-miss path hit its per-flow
     // ceiling and stopped probing nftables set membership before it had checked
     // every candidate. Each of those probes is a fork+exec inside the watcher's
@@ -428,24 +435,24 @@ object MetricGuard {
     // candidate set outgrew the slow path's assumptions again, and that
     // router's connection_events are being labelled without a full membership
     // check — the label degrades, the agent keeps running.
-    "conntrack_slow_path_capped_total"          -> Set("reason", "router_id", "installation_id"),
+    "conntrack_slow_path_capped_total"            -> Set("reason", "router_id", "installation_id"),
     // Server-side ingest health for POST /api/router/metrics (#1205). Concrete, emitted now.
-    "router_metrics_batches_total"              -> Set("status"),
+    "router_metrics_batches_total"                -> Set("status"),
     // #1846 — websocket router transport (server side). `router_ws_connections_active` is the live
     // count of open channels (a household-scoped gauge, refreshed on every register/deregister so it
     // ages out cleanly on disconnect). `router_ws_frames_total` counts every frame demuxed/sent:
     // `op` ∈ {hello, usage, events, metrics, ping, pong, ack, unknown} (the fixed envelope
     // vocabulary), `direction` ∈ {in, out}, `result` ∈ {ok, reject, unknown_op}. All bounded enums —
     // no per-mac / per-host dimension ever rides a ws metric.
-    "router_ws_connections_active"              -> Set.empty[String],
-    "router_ws_frames_total"                    -> Set("op", "direction", "result"),
+    "router_ws_connections_active"                -> Set.empty[String],
+    "router_ws_frames_total"                      -> Set("op", "direction", "result"),
     // #2561 — a router re-connected while the server still held a channel for it, i.e. the previous
     // socket went half-open and its teardown never ran. The registry now evicts + shuts the stale
     // channel down, which is what keeps `router_ws_connections_active` honest; this counter is the
     // signal that it happened, so the underlying half-open-socket rate stays visible rather than
     // being silently absorbed by the fix. Unlabelled — a router id would be a fleet-sized dimension
     // and never rides a ws metric (§4 cardinality firewall).
-    "router_ws_connections_superseded_total"    -> Set.empty[String],
+    "router_ws_connections_superseded_total"      -> Set.empty[String],
     // #2168 — per-ws-message-process latency, the ws analog of http_request_duration_seconds.
     // Over the persistent socket (#1023) every logical operation is a frame on ONE connection, so
     // the per-HTTP-route duration histogram no longer observes it; without this we go blind to
@@ -453,15 +460,15 @@ object MetricGuard {
     // (#1850). Times decode → handle → ack (`direction=in`) and the outbound policy push
     // (`direction=out`). `op` is the SAME bounded envelope enum as router_ws_frames_total, so no
     // per-mac / per-router / per-household dimension ever rides it — the §4 cardinality firewall.
-    "router_ws_message_duration_seconds"        -> Set("op", "direction"),
+    "router_ws_message_duration_seconds"          -> Set("op", "direction"),
     // #2268 — server-side reassembly of fragmented inbound ws messages (an intermediary — Render's
     // edge — re-fragments large frames at ~4 KiB; mirror of the router-side reassembler #1959). Split
     // per surface into SEPARATE names (like router_ws_frames_total / spa_ws_frames_total) so no new
     // `surface` label key is needed. `result` ∈ {completed, overflow} — a fixed 2-value enum,
     // bounded, no per-mac / per-router dimension. Without these entries `check()` rejects the name as
     // unknown_name and the series never emits.
-    "router_ws_reassembly_total"                -> Set("result"),
-    "spa_ws_reassembly_total"                   -> Set("result"),
+    "router_ws_reassembly_total"                  -> Set("result"),
+    "spa_ws_reassembly_total"                     -> Set("result"),
     // #1849 — computed-snapshot cache + push-on-change. `policy_snapshot_build_total` splits policy
     // snapshot accesses into `result` ∈ {computed, cache_hit, failed} (proves the cache works;
     // #2635 added `failed`, a build that threw — a fixed 3-value enum);
@@ -470,27 +477,27 @@ object MetricGuard {
     // counter's own comment below. Both names are bounded, no per-mac / per-host / per-household
     // dimension. (Without these entries the firewall would reject both names as unknown_name and
     // the series would never emit.)
-    "policy_snapshot_build_total"               -> Set("result"),
+    "policy_snapshot_build_total"                 -> Set("result"),
     // #2635 — how long ONE household's snapshot build actually takes. The repo carried two
     // unmeasured figures for this (~2.5s at Main.scala, ~500ms at Config.scala) and the cost of the
     // per-household rebuild loop turns on which is right, so the number is now measured rather than
     // asserted. Unlabelled on purpose: a per-household label is exactly the unbounded tenant
     // dimension docs/process/instrumentation.md forbids, and the operational question ("is a build
     // approaching the tick period?") is answered by the distribution, not by which household.
-    "policy_snapshot_build_seconds"             -> Set.empty[String],
+    "policy_snapshot_build_seconds"               -> Set.empty[String],
     // #2382 — how often PolicyService serves a fully permissive (allow-all) snapshot instead of the
     // household's real policy, by `reason` ∈ {lapsed, enforcement_disabled} — a fixed 2-value enum,
     // bounded, no per-household dimension. A sustained rate on `enforcement_disabled` is the signal
     // that a household is running with all blocking OFF via the #2382 escape hatch.
-    "policy_permissive_snapshot_total"          -> Set("reason"),
-    "router_ws_policy_push_total"               -> Set("result"),
+    "policy_permissive_snapshot_total"            -> Set("reason"),
+    "router_ws_policy_push_total"                 -> Set("result"),
     // #2619 — the delivery-time `routers.last_etag` stamp, one sample per DELIVERED policy frame.
     // `outcome` ∈ {ok, error} — a fixed 2-value enum (#2630 retired `household_mismatch` and
     // `unregistered`; both moved onto `router_ws_policy_push_total`, see below), bounded, no
     // per-router / per-household dimension (a household id would be a tenant-sized label). It exists
     // because the stamp is a best-effort side-write off the push path, and
     // `docs/process/no-dark-by-default.md` forbids a sink that can fail invisibly.
-    "router_ws_etag_stamp_total"                -> Set("outcome"),
+    "router_ws_etag_stamp_total"                  -> Set("outcome"),
     // #1968 — SPA-websocket transport (server side, design `docs/design/spa-websocket.md` §7).
     // `spa_ws_connections_active` is the live count of open /api/ws channels per `role`
     // (admin|adult|child), refreshed on every register/deregister so a role's series ages out to 0
@@ -501,28 +508,28 @@ object MetricGuard {
     // is the live count of subscriptions per `topic` (the SpaTopic enum). All bounded enums — no
     // per-mac / per-profile / per-session / param dimension ever rides a ws metric. (#1970 added
     // spa_ws_push_total{op,result} below for the S3 change-source fan-out.)
-    "spa_ws_connections_active"                 -> Set("role"),
-    "spa_ws_frames_total"                       -> Set("op", "direction", "result"),
+    "spa_ws_connections_active"                   -> Set("role"),
+    "spa_ws_frames_total"                         -> Set("op", "direction", "result"),
     // #2168 — SPA per-ws-message-process latency, the browser-side twin of
     // router_ws_message_duration_seconds. Times decode → handle → ack for inbound frames
     // (`direction=in`) and the change-source push send (`direction=out`), labeled by the SAME
     // bounded op enum as spa_ws_frames_total / spa_ws_push_total. No per-mac / per-profile /
     // per-session / param dimension — the §4 cardinality firewall.
-    "spa_ws_message_duration_seconds"           -> Set("op", "direction"),
-    "spa_ws_subscriptions_active"               -> Set("topic"),
+    "spa_ws_message_duration_seconds"             -> Set("op", "direction"),
+    "spa_ws_subscriptions_active"                 -> Set("topic"),
     // #1969 (S2) — upgrade-auth outcomes for `GET /api/ws` (design §4/§7). `result` ∈
     // {ok, no_cookie, invalid_jwt, expired_jwt, bad_origin, jwt_expired_midconn} — the
     // cookie-verify + Origin-allowlist outcomes plus the mid-connection expiry close. A
     // fixed 6-value enum; bounded, no per-user/session dimension. A spike in
     // bad_origin/invalid_jwt is the CSWSH/forgery-probe tripwire (alert in spa-ws.json).
-    "spa_ws_auth_total"                         -> Set("result"),
+    "spa_ws_auth_total"                           -> Set("result"),
     // #1970 (S3) / #1974 (S6a) — per-topic fan-out health for the change-source push path (design
     // §6.3/§7). `op` ∈ {now, connectionEvents, stale} (S3), trafficUsage (S4), timeStatus, appUsage
     // (S6a — the per-recipient time-usage pushes via SpaWsRegistry.deliver); `result` ∈ {ok,
     // coalesced, dropped, channel_closed}. Both bounded enums — no per-mac / per-profile /
     // per-session / param dimension. A rising channel_closed/dropped is the slow-client tripwire
     // surfaced by spa-ws.json's push-health panel.
-    "spa_ws_push_total"                         -> Set("op", "result"),
+    "spa_ws_push_total"                           -> Set("op", "result"),
     // #1848 — AGENT-side websocket transport metrics. The wifihaven-ws sidecar has no metrics
     // registry of its own, so it writes a cumulative tally that the agent folds into its
     // /api/router/metrics push (the server attaches router_id / installation_id, as for every
@@ -532,11 +539,11 @@ object MetricGuard {
     //   ws_fallback_total{result}  result ∈ {to_http, back_to_ws}  (how often it fell back, §3.1)
     //   ws_frames_{sent,recv}_total{op}  op ∈ the fixed envelope vocabulary (usage/events/metrics/
     //                                    policy/ping/pong/ack/unknown)  (agent-side throughput)
-    "ws_connect_total"                          -> Set("result", "router_id", "installation_id"),
-    "ws_state"                                  -> Set("router_id", "installation_id"),
-    "ws_fallback_total"                         -> Set("result", "router_id", "installation_id"),
-    "ws_frames_sent_total"                      -> Set("op", "router_id", "installation_id"),
-    "ws_frames_recv_total"                      -> Set("op", "router_id", "installation_id"),
+    "ws_connect_total"                            -> Set("result", "router_id", "installation_id"),
+    "ws_state"                                    -> Set("router_id", "installation_id"),
+    "ws_fallback_total"                           -> Set("result", "router_id", "installation_id"),
+    "ws_frames_sent_total"                        -> Set("op", "router_id", "installation_id"),
+    "ws_frames_recv_total"                        -> Set("op", "router_id", "installation_id"),
     // #1718 — native OpenWRT OS-level metrics the agent collects from /proc/* and `iw dev`
     // and pushes through the existing #1205 batch transport. Gives operators the LuCI-style
     // view of router health (load / cpu / mem / bandwidth / conntrack / wifi clients) in
@@ -545,17 +552,17 @@ object MetricGuard {
     // wireless client list is NEVER a Prometheus dimension — only the aggregate
     // count-per-(iface,ssid) ships as a labeled series. Per-client drill-in would need a
     // separate DB-backed surface.
-    "router_host_load_m1"                       -> Set("router_id", "installation_id"),
-    "router_host_load_m5"                       -> Set("router_id", "installation_id"),
-    "router_host_load_m15"                      -> Set("router_id", "installation_id"),
-    "router_host_cpu_pct"                       -> Set("router_id", "installation_id"),
-    "router_host_mem_total_kb"                  -> Set("router_id", "installation_id"),
-    "router_host_mem_free_kb"                   -> Set("router_id", "installation_id"),
-    "router_host_mem_buffers_kb"                -> Set("router_id", "installation_id"),
-    "router_host_mem_cached_kb"                 -> Set("router_id", "installation_id"),
-    "router_host_conntrack_count"               -> Set("router_id", "installation_id"),
-    "router_host_iface_rx_bytes_total"          -> Set("iface", "router_id", "installation_id"),
-    "router_host_iface_tx_bytes_total"          -> Set("iface", "router_id", "installation_id"),
+    "router_host_load_m1"                         -> Set("router_id", "installation_id"),
+    "router_host_load_m5"                         -> Set("router_id", "installation_id"),
+    "router_host_load_m15"                        -> Set("router_id", "installation_id"),
+    "router_host_cpu_pct"                         -> Set("router_id", "installation_id"),
+    "router_host_mem_total_kb"                    -> Set("router_id", "installation_id"),
+    "router_host_mem_free_kb"                     -> Set("router_id", "installation_id"),
+    "router_host_mem_buffers_kb"                  -> Set("router_id", "installation_id"),
+    "router_host_mem_cached_kb"                   -> Set("router_id", "installation_id"),
+    "router_host_conntrack_count"                 -> Set("router_id", "installation_id"),
+    "router_host_iface_rx_bytes_total"            -> Set("iface", "router_id", "installation_id"),
+    "router_host_iface_tx_bytes_total"            -> Set("iface", "router_id", "installation_id"),
     "router_host_wifi_clients"          -> Set("iface", "ssid", "router_id", "installation_id"),
     // #1243 rollup health — `rollup_job` is a handful of hand-named jobs (traffic_hourly,
     // traffic_daily, time_used_daily), `status` ∈ {ok, error}. Bounded; routed through the guard.
@@ -1922,6 +1929,23 @@ object AppMetrics {
 
   def recordSharedDeviceCheckinRejected(reason: String): UIO[Unit] =
     MetricGuard.counter("shared_device_checkin_rejected_total", Map("reason" -> reason))
+
+  // ── Shared-device auto-checkout (#2849) ──────────────────────────────────────────────────────
+  // One run of `SharedDeviceCheckoutJob` per household per reevaluate. A run is a couple of
+  // household-bounded reads plus, when a check-in is open, the day-state read the snapshot build
+  // also does, so it shares the snapshot build's buckets.
+  def recordSharedDeviceCheckoutJob(outcome: String, seconds: Double): UIO[Unit] =
+    MetricGuard.counter("shared_device_checkout_job_total", Map("outcome" -> outcome)) *>
+      MetricGuard.histogram(
+        "shared_device_checkout_job_duration_seconds",
+        Map.empty,
+        math.max(0.0, seconds),
+        SnapshotBuildDurationBoundaries,
+      )
+
+  // Open check-ins across the fleet, refreshed by every job run.
+  def setSharedDeviceCheckinsOpen(open: Long): UIO[Unit] =
+    MetricGuard.gauge("shared_device_checkins_open", Map.empty, open.toDouble)
 
   /**
    * #2553 — one household's slice of an all-tenant rollup tick was skipped

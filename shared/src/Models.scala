@@ -1104,9 +1104,23 @@ case class HouseholdSettings(
     // *preference*, deliberately not coupled to any admin's `users.email` login
     // identity. Column V69 (household_settings.notify_email); nullable.
     notifyEmail: Option[String] = None,
+    // #2849: minutes without engaged presence after which a checked-in shared device is checked
+    // out automatically (design docs/design/shared-devices.md §7.3, §15 Q3a). Column V90
+    // (household_settings.shared_device_idle_minutes, CHECK 5–1440).
+    sharedDeviceIdleMinutes: Int = HouseholdSettings.DefaultSharedDeviceIdleMinutes,
 ) derives JsonCodec
 
 object HouseholdSettings {
+
+  /**
+   * #2849: the idle auto-checkout threshold's default and bounds, mirroring V90's column default
+   * and `household_settings_shared_device_idle_minutes_check`. The floor keeps the threshold well
+   * above one usage-report period plus ingest and tick lag (design §5.1), so an active device is
+   * never released between two reports.
+   */
+  val DefaultSharedDeviceIdleMinutes: Int = 15
+  val MinSharedDeviceIdleMinutes: Int     = 5
+  val MaxSharedDeviceIdleMinutes: Int     = 1440
 
   /**
    * #2643: the value "Block encrypted DNS & relays" takes for a NEWLY created household — the ONE
@@ -1185,6 +1199,10 @@ case class UpdateHouseholdSettingsRequest(
     // CLEARS it; the SPA autosave path uses PATCH, which preserves absent fields
     // (and supports explicit null to clear). Mirrors the blockEncryptedDns precedent.
     notifyEmail: Option[String] = None,
+    // #2849: preserve-on-absence. A full-replace PUT that omits it keeps the stored threshold
+    // rather than resetting it to the default (the asymmetry the blockEncryptedDns note above
+    // describes).
+    sharedDeviceIdleMinutes: Option[Int] = None,
 ) derives JsonCodec
 
 /**

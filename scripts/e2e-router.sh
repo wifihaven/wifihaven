@@ -1471,11 +1471,11 @@ print(t.isoformat(timespec='microseconds').replace('+00:00', 'Z'))
 # Report one 5-minute usage row for the device on <host>, starting at <start>.
 # The window runs past "now" so the row carries whole minutes without the test
 # waiting them out; only period_start decides which profile it belongs to.
-sd_post_usage() {  # $1=periodStart  $2=host
-  local end; end=$(sd_plus "$1" 300)
+sd_post_usage() {  # $1=periodStart  $2=host  [$3=seconds, default 300]
+  local secs="${3:-300}" end; end=$(sd_plus "$1" "$secs")
   curl -fsS -X POST "$BASE/api/router/usage" "${RAUTH[@]}" \
     -H 'content-type: application/json' \
-    -d "{\"routerId\":\"$RID\",\"periodStart\":\"$1\",\"periodEnd\":\"$end\",\"records\":[{\"mac\":\"$SD_MAC\",\"ip\":\"192.168.28.78\",\"host\":{\"type\":\"fqdn\",\"value\":\"$2\"},\"activeSeconds\":300,\"bytesIn\":200000,\"bytesOut\":20000}]}" \
+    -d "{\"routerId\":\"$RID\",\"periodStart\":\"$1\",\"periodEnd\":\"$end\",\"records\":[{\"mac\":\"$SD_MAC\",\"ip\":\"192.168.28.78\",\"host\":{\"type\":\"fqdn\",\"value\":\"$2\"},\"activeSeconds\":$secs,\"bytesIn\":200000,\"bytesOut\":20000}]}" \
     >/dev/null
 }
 
@@ -1619,6 +1619,54 @@ got="$(sd_profiles_with_host "$SD_HOST_OUT")"
 [ "$(sd_used_mins "$SD_FORMER")" = "0" ] \
   || fail "#2878: former profile $SD_FORMER picked up usage after check-out"
 pass "#2878: usage after check-out counts toward no profile (in traffic, on no profile's hostUsage)"
+
+# ── #2849: auto-checkout when the holder's daily limit runs out (design §7.2 row 5, §7.3) ──
+#
+# The child checks the device in again under a daily limit, usage reported on the
+# device itself uses the limit up, and the reevaluate tick's auto-checkout job
+# releases the device with no request from anyone: the holder goes to none and
+# the snapshot returns to blocked/CheckedOut. The usage rows run into the
+# future, so the device is never idle here and the release can only be the
+# time-limit trigger. The other triggers (schedule, pause, idle, the day reset
+# with its exact end instant) need control of the server's clock, which Gate 1
+# lacks; SharedDeviceAutoCheckoutSpec covers them with an injected clock.
+step "#2849: holder's daily limit runs out → device auto-checked-out"
+# 10 minutes: above the ~5 the profile already used in the #2878 block, so the
+# check-in itself is allowed (a TimeLimit-blocked profile is refused 409).
+curl -fsS -X PUT "$BASE/api/profiles/$SD_KID" "${AUTH[@]}" -H 'content-type: application/json' \
+  -d "{\"name\":\"e2e-2878-kid-${RUN_ID}\",\"blockedCategories\":[],\"extraBlocked\":[],\"extraAllowed\":[],\"paused\":false,\"schedules\":[],\"timeLimit\":10,\"siteTimeLimits\":[]}" \
+  >/dev/null
+CODE=$(sd_post "$SD_CHILD" "/api/shared-devices/$SD_MAC/check-in" "{\"profileId\":$SD_KID}")
+[ "$CODE" = "200" ] || fail "#2849: check-in under a 10-minute limit expected 200, got $CODE: $(cat "$TMP/sd_resp.json")"
+read -r SD_HOLDER SD_SINCE2 <<<"$(sd_holder)"
+[ "$SD_HOLDER" = "$SD_KID" ] || fail "#2849: holder after check-in expected $SD_KID, got $SD_HOLDER"
+sd_wait_snapshot "profileId=$SD_KID rules=None"
+pass "#2849: checked in on $SD_KID at $SD_SINCE2 under a 10-minute daily limit"
+
+# One 15-minute row starting at the check-in instant: ~15 minutes against 10. One
+# row, not several: a row whose period_start is still in the future belongs to
+# the holder only while the check-in is open, so once the job closed it the
+# profile would drop back under the limit, which no real report can do.
+SD_HOST_LIMIT="limit2849-${RUN_ID}.example.com"
+sd_post_usage "$SD_SINCE2" "$SD_HOST_LIMIT" 900
+
+# The job runs on the reevaluate tick (snapshotCacheRefreshSeconds, default 5 s,
+# api/src/Config.scala); allow a few ticks plus a Render rollover.
+got=""; deadline=$(( $(date +%s) + 45 ))
+while (( $(date +%s) < deadline )); do
+  got="$(sd_holder)"
+  [ "$got" = "none" ] && break
+  sleep 2
+done
+[ "$got" = "none" ] \
+  || fail "#2849: device still held after the limit ran out (holder '$got', usedMins=$(sd_used_mins "$SD_KID"))"
+sd_wait_snapshot "profileId=None rules=blocked=True reason=CheckedOut"
+pass "#2849: auto-checked-out → no holder, snapshot back to blocked/CheckedOut (usedMins=$(sd_used_mins "$SD_KID"))"
+# And the check-in route agrees why: the profile is out of time.
+CODE=$(sd_post "$SD_CHILD" "/api/shared-devices/$SD_MAC/check-in" "{\"profileId\":$SD_KID}")
+grep -q '"error":"profile_blocked"' "$TMP/sd_resp.json" && grep -q 'TimeLimit' "$TMP/sd_resp.json" && [ "$CODE" = "409" ] \
+  || fail "#2849: check-in after the release expected 409 profile_blocked/TimeLimit, got $CODE: $(cat "$TMP/sd_resp.json")"
+pass "#2849: checking back in is refused 409 profile_blocked (TimeLimit)"
 
 echo
 echo "All router e2e checks passed."

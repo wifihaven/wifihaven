@@ -109,6 +109,14 @@ trait SpaEventBus {
    * are delivered; the subscription is released when the enclosing scope closes.
    */
   def subscribe: ZIO[Scope, Nothing, Dequeue[SpaEvent]]
+
+  /**
+   * #2848 / #2849: a device's holder changed in `household` (a check-in or check-out through the
+   * API, a sharing toggle, an auto-checkout): nudge the Devices page and the household's
+   * `sharedDevices` subscribers. The one place this pair is published.
+   */
+  final def deviceHolderChanged(household: HouseholdId): UIO[Unit] =
+    publish(SpaEvent.Stale(StaleTopic.Devices)) *> publish(SpaEvent.SharedDevicesChanged(household))
 }
 
 object SpaEventBus {

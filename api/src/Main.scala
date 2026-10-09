@@ -315,6 +315,9 @@ object Main extends ZIOAppDefault {
             ),
           ),
         )
+        // #2849: an auto-checkout on the tick below nudges the SPA like any other holder change.
+        checkoutJob   <- ZIO.service[SharedDeviceCheckoutJob]
+        _             <- checkoutJob.setOnReleased(spaEventBus.deviceHolderChanged)
         _             <- policyForPush.reevaluate
           .repeat(Schedule.fixed(cfg.policy.snapshotCacheRefreshInterval))
           .forkScoped
@@ -470,6 +473,8 @@ object Main extends ZIOAppDefault {
       // per-app cap reads `app_used_daily` + a live tail on the rollup path.
       wifihaven.api.usage.AppUsedRollupService.layer >+>
       TimeStatusService.layer >+>
+      // #2849: the shared-device auto-checkout, run by PolicyService on each per-household tick.
+      wifihaven.api.policy.SharedDeviceCheckoutJob.layer >+>
       PolicyService.layer >+>
       TimeStatusCache.live() >+>
       BlocklistCache.live >+>

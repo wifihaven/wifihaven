@@ -136,6 +136,21 @@ trait TimeStatusService {
       date: LocalDate,
       settings: HouseholdSettings,
   ): Task[Map[ProfileId, ProfileDayState]]
+
+  /**
+   * #2849 (design `docs/design/shared-devices.md` §7.3): when the last engaged presence on `mac`
+   * ended, among the rows in `[since, now)` that `holder` is credited with; `None` if there were
+   * none. The shared-device idle auto-checkout reads this. "Engaged" is the screen-time definition,
+   * so idle has no second definition of activity: see [[TimeStatusService.lastEngagedAt]].
+   */
+  def lastEngagedAt(
+      household: HouseholdId,
+      now: Instant,
+      settings: HouseholdSettings,
+      holder: ProfileId,
+      mac: MacAddress,
+      since: Instant,
+  ): Task[Option[Instant]]
 }
 
 class TimeStatusServiceLive(
@@ -314,6 +329,27 @@ class TimeStatusServiceLive(
         )
       }.toMap
     }
+
+  // #2849: the presence read is the holder's attribution scope for today, narrowed to the one
+  // device, over `[since, now)`: the window `listPresenceRowsInWindow` prunes partitions on.
+  def lastEngagedAt(
+      household: HouseholdId,
+      now: Instant,
+      settings: HouseholdSettings,
+      holder: ProfileId,
+      mac: MacAddress,
+      since: Instant,
+  ): Task[Option[Instant]] =
+    for {
+      atls    <- appTimeLimitRepo.listForProfile(holder)
+      scope   <- scopeForDay(household, PolicyService.householdLocalDate(now, settings), settings)
+      rows    <- trafficRepo.listPresenceRowsInWindow(
+        scope.spansFor(holder).restrictTo(Set(mac)),
+        since,
+        now,
+      )
+      ambient <- ambientGateFor(now, settings)
+    } yield TimeStatusService.lastEngagedAt(atls, rows, settings, ambient)
 
   // Today single-profile read: rolled seconds + live aggregation of buckets the rollup hasn't
   // absorbed yet (period_start >= rolledThrough). Truncation to minutes happens once at the end so
@@ -788,6 +824,28 @@ object TimeStatusService {
       settings.presenceContinuationSeconds,
       appHostPatterns(appLimits),
     )
+
+  /**
+   * #2849: the end of the latest engaged row in `presence`, or `None`. Engaged means the rows
+   * screen time counts: past the ambient gate ([[gatedPresence]], with the holder's app limits) and
+   * not a heartbeat ([[Presence.isHeartbeat]], the same predicate every counting path drops first),
+   * so background OS traffic does not keep a shared device's check-in alive (design §15 Q3a).
+   * Exempt-from-daily rows still count: exemption is about the budget, not engagement. A row's end
+   * is its activity envelope's end ([[Presence.spanOf]]).
+   */
+  def lastEngagedAt(
+      appLimits: List[AppTimeLimit],
+      presence: List[PresenceRow],
+      settings: HouseholdSettings,
+      ambient: AmbientGate,
+  ): Option[Instant] = {
+    val appPats = appHostPatterns(appLimits)
+    gatedPresence(appLimits, presence, settings, ambient).iterator
+      .filterNot(r => Presence.isHeartbeat(r, settings.heartbeatFilter, appPats))
+      .map(r => Presence.spanOf(r).endEpoch)
+      .maxOption
+      .map(Instant.ofEpochSecond)
+  }
 
   /** Rows-only projection of [[gatedPresenceWithDropCount]] for read paths without a metric. */
   def gatedPresence(

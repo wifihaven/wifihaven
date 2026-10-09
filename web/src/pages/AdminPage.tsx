@@ -45,6 +45,7 @@ export function AdminPage() {
       {hs && <NotifyEmailCard value={hs} reload={reload} />}
       {hs && <BlockEncryptedDnsCard value={hs} reload={reload} />}
       {hs && <AmbientGateCard value={hs} reload={reload} />}
+      {hs && <SharedDeviceIdleCard value={hs} reload={reload} />}
       {hs && <UnmanagedMacPolicyCard value={hs} reload={reload} />}
     </div>
   )
@@ -412,6 +413,80 @@ function AmbientGateCard({
         />
         Ignore idle background traffic
       </label>
+    </div>
+  )
+}
+
+// #2849 — a checked-in shared device is checked out automatically once it has shown no engaged
+// presence (the same definition screen time uses) for this many minutes, so the next child can
+// check in. Bounds mirror the API's 5–1440 check.
+const IDLE_MIN = 5
+const IDLE_MAX = 1440
+
+function SharedDeviceIdleCard({
+  value, reload,
+}: {
+  value: HouseholdSettings
+  reload: () => Promise<void>
+}) {
+  const [minutes, setMinutes] = useState(value.sharedDeviceIdleMinutes)
+  useEffect(() => { setMinutes(value.sharedDeviceIdleMinutes) }, [value.sharedDeviceIdleMinutes])
+
+  const valid = (m: number) => Number.isInteger(m) && m >= IDLE_MIN && m <= IDLE_MAX
+
+  const save = useDebouncedSave(
+    minutes,
+    async (next) => {
+      if (!valid(next)) throw new Error(`Idle time must be a whole number between ${IDLE_MIN} and ${IDLE_MAX} minutes.`)
+      await api.household.patch({ sharedDeviceIdleMinutes: next })
+      await reload()
+    },
+  )
+
+  return (
+    <div
+      data-testid="shared-device-idle-card"
+      className="bg-white rounded-2xl border border-brand-border p-5 space-y-3"
+    >
+      <div className="flex items-center justify-between gap-3">
+        <h2 className="font-bold text-brand-ink">Shared devices</h2>
+        <SaveStatusBadge
+          testId="shared-device-idle-save-status"
+          status={save.status}
+          error={save.error}
+          onRetry={save.retry}
+        />
+      </div>
+
+      <p className="text-xs text-brand-text">
+        A shared device is checked out automatically when nobody has used it for this long, so
+        someone else can check in. It is also checked out when the person holding it is paused,
+        enters a schedule block, runs out of daily time, or at the daily reset.
+      </p>
+      {!valid(minutes) && (
+        <div
+          data-testid="shared-device-idle-validation"
+          className="bg-amber-500/10 border border-amber-500/30 text-amber-700 text-sm rounded-xl px-4 py-2"
+        >
+          Idle time must be between {IDLE_MIN} and {IDLE_MAX} minutes.
+        </div>
+      )}
+      <div>
+        <label htmlFor="shared-device-idle-minutes" className="block text-xs text-brand-text-muted mb-1">
+          Check out after (minutes idle)
+        </label>
+        <input
+          id="shared-device-idle-minutes"
+          type="number"
+          min={IDLE_MIN}
+          max={IDLE_MAX}
+          step={1}
+          value={minutes}
+          onChange={e => setMinutes(Number(e.target.value))}
+          data-testid="shared-device-idle-minutes"
+          className="bg-white border border-brand-border-strong rounded-lg px-3 py-2 text-brand-ink text-sm w-32"
+        />
+      </div>
     </div>
   )
 }
