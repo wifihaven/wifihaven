@@ -105,20 +105,22 @@ final class SharedDeviceCheckoutJob(
                 case None              => ZIO.succeed(false)
                 case Some((cause, at)) => release(household, ci, cause, at)
               }
-              .either
+              // `exit`, not `either`: a defect in one release must not fail the run either, or a
+              // release that already committed would skip the caller's version bump.
+              .exit
               .tap {
-                case Left(e) =>
+                case Exit.Failure(cause) =>
                   LogContext.annotate(LogContext.Mac, ci.mac.value) {
                     ZIO.logErrorCause(
                       s"shared device auto-checkout failed: household=${household.value} " +
                         s"profileId=${ci.holder.value}",
-                      Cause.fail(e),
+                      cause,
                     )
                   }
-                case _       => ZIO.unit
+                case _                   => ZIO.unit
               }
           }
-        } yield (results.count(_ == Right(true)), results.count(_.isLeft))
+        } yield (results.count(_ == Exit.Success(true)), results.count(_.isFailure))
     }
 
   private def dueRelease(
