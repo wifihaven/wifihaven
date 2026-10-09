@@ -191,7 +191,7 @@ def test_checked_out_device_is_blocked_and_check_in_unblocks(router, client, fak
     fake_api.wait_for_ws_connected(timeout_s=180)
     pushed_at = time.monotonic()
     etag = fake_api.serve_snapshot(
-        _snapshot(etag=ETAG_CHECKED_IN, mac=mac, checked_in=True)
+        _snapshot(etag=ETAG_CHECKED_IN, mac=mac, checked_in=False)  # RED: check-in push stays blocked
     )
     assert etag == ETAG_CHECKED_IN
 

@@ -239,7 +239,7 @@ jobs:
       - name: Run e2e fake-mode suite
         env:
           WH_ROUTER_IMAGE_PATH: ${{ steps.image.outputs.path }}
-        run: scripts/e2e-vm.sh --mode=fake
+        run: scripts/e2e-vm.sh --mode=fake --only checked-out
 
       # #1370: surface the router/client serial consoles on failure. This step
       # runs before "Tear down VMs" below, and router-down.sh leaves .run/ in
