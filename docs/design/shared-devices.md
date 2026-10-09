@@ -209,12 +209,15 @@ it is the holder while checked in and `NULL` while checked out.
 `DeviceAssignment.assign(household, deviceId, newProfile: Option[ProfileId], at, kind, by, cause)`
 is the **only** code that writes `devices.profile_id`. In one transaction it closes the open
 interval (`ended_at = at`, `end_cause`), opens the new one, and updates `devices.profile_id`.
-The new row starts at `at` with one exception: a device's first-ever `assigned` row (no history
-rows at all, open or closed) gets `started_at = NULL`, the same open-ended shape as the backfill
-(§5.1). Without it, a new device's first usage report, whose `period_start` falls slightly before
-the assignment instant, was credited to no profile, so the daily limit never counted it
-(#2889, fixed in #2890). A reassignment, an assignment after an unassignment gap (closed rows
-exist), and every `check_in` start at `at`.
+The new row starts at the transition instant (`at`, clamped forward to the device's latest
+existing bound) with one exception: a device's first-ever `assigned` row (no history rows at all,
+open or closed) gets `started_at = NULL`, the same open-ended shape as the backfill (§5.1).
+Without the exception, a new device's first usage report, whose `period_start` falls slightly
+before the assignment instant, was credited to no profile, so the daily limit never counted it
+(#2889, fixed in #2890). "First-ever" means no surviving rows: deleting a profile cascades away its
+rows, so a device whose only history was on a deleted profile also gets an open-ended row on its
+next assignment. A reassignment, an assignment after an unassignment gap (closed rows exist), and
+every `check_in` start at the transition instant.
 The existing writers (`Repos.scala:2274,2320` upserts) are routed through it; a CI guard
 (`.github/scripts/check-device-profile-writers.sh`) rejects an `UPDATE devices ... profile_id` /
 `INSERT INTO devices(... profile_id ...)` outside it, and a
