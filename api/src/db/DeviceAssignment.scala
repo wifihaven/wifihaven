@@ -44,6 +44,26 @@ enum CheckInOutcome {
   case Held
 }
 
+/** Which open check-in [[DeviceAssignment.checkOut]] expects to close. */
+enum CheckInRef {
+
+  /**
+   * #2848: whichever check-in `profile` holds: a user's check-out, authorised against the holder.
+   */
+  case HeldBy(profile: ProfileId)
+
+  /**
+   * #2849: exactly the row the auto-checkout job evaluated, so a check-out and re-check-in by the
+   * same profile between the job's read and its write leaves the fresh check-in alone.
+   */
+  case Row(id: Long)
+
+  private[db] def matches(open: DeviceAssignment.OpenRow): Boolean = this match {
+    case HeldBy(p) => open.profile == p
+    case Row(id)   => open.id == id
+  }
+}
+
 /** #2848: the result of [[DeviceAssignment.checkOut]]. */
 enum CheckOutOutcome {
   case CheckedOut
@@ -314,14 +334,16 @@ object DeviceAssignment {
     }
 
   /**
-   * #2848 (design §9): close the open check-in on a shared device with `cause` (`check_out` or
-   * `forced`), in the caller's transaction. `holder` is the profile the caller authorised against;
-   * if the open check-in is no longer that profile's, nothing is written.
+   * #2848 / #2849 (design §9, §7.3): close the open check-in on a shared device with `cause`, in
+   * the caller's transaction. The one close path for a check-in: a user's check-out (`check_out` /
+   * `forced`) and the auto-checkout job's release both come through here, and differ only in
+   * `which` check-in they expect to find open. If the open row is not that one, nothing is written
+   * (`NotHeld`).
    */
   def checkOut(
       household: HouseholdId,
       device: DeviceId,
-      holder: ProfileId,
+      which: CheckInRef,
       at: Instant,
       by: Option[UserId],
       cause: AssignmentEndCause,
@@ -330,35 +352,10 @@ object DeviceAssignment {
       if (!dev.shared) CheckOutOutcome.NotShared.pure[ConnectionIO]
       else
         openRow(device).flatMap {
-          case Some(o) if o.kind == AssignmentKind.CheckIn.db && o.profile == holder =>
+          case Some(o) if o.kind == AssignmentKind.CheckIn.db && which.matches(o) =>
             transition(dev, device, None, at, AssignmentKind.CheckIn, by, cause)
               .as(CheckOutOutcome.CheckedOut)
-          case _                                                                     =>
-            CheckOutOutcome.NotHeld.pure[ConnectionIO]
-        }
-    }
-
-  /**
-   * #2849 (design §7.3): close the open check-in row `checkIn` by the system (no `ended_by`), in
-   * the caller's transaction: the auto-checkout job's write. Keyed by the row the job evaluated,
-   * not by the holder, so a check-out and re-check-in by the same profile between the job's read
-   * and this write leaves the fresh check-in alone (`NotHeld`).
-   */
-  def closeCheckIn(
-      household: HouseholdId,
-      device: DeviceId,
-      checkIn: Long,
-      at: Instant,
-      cause: AssignmentEndCause,
-  ): ConnectionIO[CheckOutOutcome] =
-    lockDevice(household, device).flatMap { dev =>
-      if (!dev.shared) CheckOutOutcome.NotShared.pure[ConnectionIO]
-      else
-        openRow(device).flatMap {
-          case Some(o) if o.id == checkIn && o.kind == AssignmentKind.CheckIn.db =>
-            transition(dev, device, None, at, AssignmentKind.CheckIn, None, cause)
-              .as(CheckOutOutcome.CheckedOut)
-          case _                                                                 =>
+          case _                                                                  =>
             CheckOutOutcome.NotHeld.pure[ConnectionIO]
         }
     }

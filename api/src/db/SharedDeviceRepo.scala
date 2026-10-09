@@ -47,9 +47,9 @@ trait SharedDeviceRepo {
   def openCheckIns(household: HouseholdId): Task[List[OpenCheckIn]]
 
   /**
-   * #2849: [[DeviceAssignment.closeCheckIn]] in its own transaction, for the auto-checkout job's
-   * `time_limit` / `schedule` / `paused` / `idle` / `day_reset` causes. Closes `checkIn` only if it
-   * is still the device's open row.
+   * #2849: [[DeviceAssignment.checkOut]] of exactly `checkIn`'s row, by the system (no `ended_by`),
+   * in its own transaction, for the auto-checkout job's `time_limit` / `schedule` / `paused` /
+   * `idle` / `day_reset` causes. Closes `checkIn` only if it is still the device's open row.
    */
   def autoCheckOut(
       checkIn: OpenCheckIn,
@@ -145,7 +145,9 @@ class SharedDeviceRepoLive(xa: Transactor[Task]) extends SharedDeviceRepo {
     DbMetrics.timed("sharedDevice.checkOut")(
       DeviceAssignment
         .actor(household, Some(byUsername))
-        .flatMap(DeviceAssignment.checkOut(household, device, holder, at, _, cause))
+        .flatMap(
+          DeviceAssignment.checkOut(household, device, CheckInRef.HeldBy(holder), at, _, cause),
+        )
         .transact(xa),
     )
 
@@ -166,7 +168,14 @@ class SharedDeviceRepoLive(xa: Transactor[Task]) extends SharedDeviceRepo {
   def autoCheckOut(checkIn: OpenCheckIn, at: Instant, cause: AssignmentEndCause) =
     DbMetrics.timed("sharedDevice.autoCheckOut")(
       DeviceAssignment
-        .closeCheckIn(checkIn.household, checkIn.deviceId, checkIn.id, at, cause)
+        .checkOut(
+          checkIn.household,
+          checkIn.deviceId,
+          CheckInRef.Row(checkIn.id),
+          at,
+          None,
+          cause,
+        )
         .transact(xa),
     )
 

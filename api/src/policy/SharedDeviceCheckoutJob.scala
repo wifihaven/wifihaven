@@ -30,8 +30,8 @@ import java.util.concurrent.atomic.AtomicReference
  *   - `idle`: no engaged presence on the device for the household's `sharedDeviceIdleMinutes`,
  *     measured from [[TimeStatusService.lastEngagedAt]] (or the check-in start if none).
  *
- * The write is [[SharedDeviceRepo.autoCheckOut]] (`DeviceAssignment.closeCheckIn`), the one
- * assignment writer, keyed by the row evaluated here: a check-in released or re-taken since the
+ * The write is [[SharedDeviceRepo.autoCheckOut]] (`DeviceAssignment.checkOut` keyed by row), the
+ * one assignment writer, keyed by the row evaluated here: a check-in released or re-taken since the
  * read is a `NotHeld` no-op, so a user's check-out racing the tick, or two overlapping ticks, never
  * close the wrong row.
  */
