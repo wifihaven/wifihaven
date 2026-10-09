@@ -179,7 +179,15 @@ object UsageTrafficSqlPreAggSpec extends ZIOSpec[TestDatabase.AllRepos & Embedde
       newRows <- tRepo.listRawAggregatedInRange(HouseholdId.Default, macs, dayStart, dayEnd, step)
       build = (rows: List[wifihaven.api.usage.TrafficUsageDbRow]) =>
         UsageTraffic
-          .buildAggregate(rows, bucket, ZoneOffset.UTC, groupBy, deviceByMac, profileNames)
+          .buildAggregate(
+            rows,
+            bucket,
+            ZoneOffset.UTC,
+            groupBy,
+            deviceByMac,
+            profileNames,
+            wifihaven.api.db.AttributionScope.empty(HouseholdId.Default),
+          )
           .toSet
     } yield (build(oldRows), build(newRows))
 
@@ -276,6 +284,7 @@ object UsageTrafficSqlPreAggSpec extends ZIOSpec[TestDatabase.AllRepos & Embedde
           ZoneOffset.UTC,
           deviceByMac,
           profileNames,
+          wifihaven.api.db.AttributionScope.empty(HouseholdId.Default),
           Map.empty,
         )
         oldRows <- tRepo.listRawInRange(HouseholdId.Default, Nil, dayStart, dayEnd)
@@ -286,6 +295,7 @@ object UsageTrafficSqlPreAggSpec extends ZIOSpec[TestDatabase.AllRepos & Embedde
           Set(UsageTraffic.GroupBy.Domain),
           deviceByMac,
           profileNames,
+          wifihaven.api.db.AttributionScope.empty(HouseholdId.Default),
         )
       } yield assertTrue(core.nonEmpty, core.toSet == expected.toSet)
     },

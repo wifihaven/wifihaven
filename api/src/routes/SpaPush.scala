@@ -469,11 +469,11 @@ object SpaPush {
         // selected nothing" from "no filter was supplied" — the pairing this call site used to
         // reconstruct from `parsed.filterRequested && resolvedMacs.isEmpty`.
         // #2844: a profile filter selects what the profiles held during the head window, by
-        // interval — the same resolution the GET makes over its window.
-        val attributionZ         =
-          if (parsed.profileIds.isEmpty)
-            ZIO.succeed(AttributionScope.empty(household))
-          else deviceRepo.attributionScope(household, headStart, headEnd)
+        // interval — the same resolution the GET makes over its window. #2875: the same scope
+        // labels the pushed rows by the profile that held each device then, as the GET does, so it
+        // is read for every param-set. `headStart` is already the bucket's start, so this is the
+        // GET's `UsageTrafficQuery.labelWindow` for the head bucket.
+        val attributionZ         = deviceRepo.attributionScope(household, headStart, headEnd)
         attributionZ.flatMap { attribution =>
           val scope          =
             UsageTrafficQuery.resolveMacs(parsed.macs, parsed.profileIds, devices, attribution)
@@ -503,7 +503,7 @@ object SpaPush {
                   from = headStart.toString,
                   to = headEnd.toString,
                   tz = parsed.zone.getId,
-                  rawRows = UsageTraffic.buildRaw(rows, devByMac, profNames),
+                  rawRows = UsageTraffic.buildRaw(rows, devByMac, profNames, attribution),
                   aggregateRows = Nil,
                   nextCursor = None,
                 ),
@@ -522,6 +522,7 @@ object SpaPush {
                   parsed.zone,
                   devByMac,
                   profNames,
+                  attribution,
                   appsByHost,
                 )
               aggZ.map(rows =>

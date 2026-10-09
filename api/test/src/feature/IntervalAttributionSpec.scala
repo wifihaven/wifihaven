@@ -193,6 +193,7 @@ object IntervalAttributionSpec
         ZoneOffset.UTC,
         devs.map(d => d.mac -> d).toMap,
         Map.empty,
+        scope,
         Map.empty,
       )
     } yield (raw.map(_.activeSeconds.toLong).sum, agg.map(_.totalSeconds).sum)

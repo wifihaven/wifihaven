@@ -396,12 +396,12 @@ object SpaWsS4Spec
       // Teens; the period started while Kids held the device.
       withHarness { (port, ingest, router) =>
         for {
-          tok    <- ZIO.serviceWithZIO[Clock](makeAuth).flatMap(adminToken)
-          teens  <- ZIO.serviceWithZIO[ProfileRepo](_.create("Teens", Nil))
-          dev    <- ZIO
+          tok   <- ZIO.serviceWithZIO[Clock](makeAuth).flatMap(adminToken)
+          teens <- ZIO.serviceWithZIO[ProfileRepo](_.create("Teens", Nil))
+          dev   <- ZIO
             .serviceWithZIO[DeviceRepo](_.findByMac(MacAddress.unsafe(knownMac)))
             .someOrFail(new RuntimeException("device not seeded"))
-          _      <- ZIO.serviceWithZIO[DeviceAssignmentRepo](
+          _     <- ZIO.serviceWithZIO[DeviceAssignmentRepo](
             _.assign(
               HouseholdId.Default,
               dev.id,
@@ -412,23 +412,34 @@ object SpaWsS4Spec
               AssignmentEndCause.Reassigned,
             ),
           )
-          frames <- collect(
+          // One connection per param-set (a connection holds one `trafficUsage` subscription), each
+          // triggered by its own ingest into the same period.
+          rawFr <- collect(
             port,
             tok,
             List(
-              """{"op":"subscribe","payload":{"topic":"trafficUsage","params":{"groupBy":[],"bucket":"raw"}}}""",
-              """{"op":"subscribe","payload":{"topic":"trafficUsage","params":{"groupBy":["profile"],"bucket":"1m"}}}""",
+              """{"op":"subscribe","payload":{"topic":"trafficUsage","params":{"bucket":"raw"}}}""",
             ),
             trigger = ingestUsage(ingest, router, usageRecord("youtube.com", 1000, 2000)),
             wait = 4.seconds,
           )
-          pushed <- ZIO
-            .foreach(trafficFrames(frames))(f => ZIO.fromEither(parsePush(f)))
-            .mapError(e => new RuntimeException(e))
-          rawPush = pushed.filter(_.bucket == "raw").flatMap(_.rawRows)
-          aggPush = pushed.filter(_.bucket == "1m").lastOption.toList.flatMap(_.aggregateRows)
-          rawGet <- getTraffic(port, tok, s"bucket=raw&from=$headFrom&to=$headTo&tz=UTC")
-          aggGet <- getTraffic(
+          aggFr <- collect(
+            port,
+            tok,
+            List(
+              """{"op":"subscribe","payload":{"topic":"trafficUsage","params":{"groupBy":["profile"],"bucket":"1m"}}}""",
+            ),
+            trigger = ingestUsage(ingest, router, usageRecord("example.com", 10, 20)),
+            wait = 4.seconds,
+          )
+          parse = (fs: Chunk[String]) =>
+            ZIO
+              .foreach(trafficFrames(fs))(f => ZIO.fromEither(parsePush(f)))
+              .mapError(e => new RuntimeException(e))
+          rawPush <- parse(rawFr).map(_.flatMap(_.rawRows))
+          aggPush <- parse(aggFr).map(_.lastOption.toList.flatMap(_.aggregateRows))
+          rawGet  <- getTraffic(port, tok, s"bucket=raw&from=$headFrom&to=$headTo&tz=UTC")
+          aggGet  <- getTraffic(
             port,
             tok,
             s"bucket=1m&groupBy=profile&from=$headFrom&to=$headTo&tz=UTC",
@@ -436,7 +447,7 @@ object SpaWsS4Spec
         } yield assertTrue(
           rawPush.nonEmpty,
           rawPush.forall(_.profileName.contains("Kids")),
-          rawGet.rawRows.map(_.profileName) == List(Some("Kids")),
+          rawGet.rawRows.map(_.profileName) == List(Some("Kids"), Some("Kids")),
           aggPush.map(_.groups.get("profile")) == List(Some("Kids")),
           aggPush.toSet == aggGet.aggregateRows.toSet,
         )
