@@ -517,6 +517,48 @@ ships with `api_url='http://192.168.1.1:8080'`. That is intentionally the
 safe default for someone bringing up a fresh on-prem install on the LAN —
 cloud users override it per the steps above.
 
+### 5.2 Moving an enrolled router to a different API
+
+To move a router from one API to another (for example from production to
+staging), re-enroll it against the new API. The package stays installed; only
+the UCI settings change. Credentials from one API are not valid on another,
+so you need a fresh enrollment token from the new API's admin UI.
+
+1. Stop the agent: `/etc/init.d/wifihaven stop`.
+2. Clear the outbound spool so usage and events recorded under the old API
+   are not sent to the new one:
+
+   ```sh
+   rm -f /tmp/wifihaven-ws-outbound.jsonl /tmp/wifihaven-ws-outbound.jsonl.written
+   ```
+
+   The spool is not emptied after a successful send, and a restarted ws
+   sidecar reads it from the start
+   ([`ws_spool.lua`](../openwrt/files/usr/lib/lua/wifihaven/ws_spool.lua)).
+3. Point the router at the new API **and** its dashboard:
+
+   ```sh
+   uci set wifihaven.@wifihaven[0].api_url='https://api-staging.wifihaven.net'
+   uci set wifihaven.@wifihaven[0].block_page_url='https://app-staging.wifihaven.net'
+   uci commit wifihaven
+   ```
+
+   Change `block_page_url` too. The block page is served by the dashboard
+   host in `block_page_url`, and the agent only falls back to `api_url` when
+   that key is empty
+   ([`block_page.lua`](../openwrt/files/usr/lib/lua/wifihaven/block_page.lua),
+   `resolve_base`). If you leave it set to the old dashboard, blocked
+   devices are sent to the old environment's block page. When moving to a
+   self-hosted API, which serves its own dashboard, delete the key instead:
+   `uci delete wifihaven.@wifihaven[0].block_page_url`.
+4. Run steps 3–5 above against the new API, replacing
+   `app.wifihaven.net` and `api.wifihaven.net` in those steps with the new
+   hosts: generate a token, `POST /api/router/register`, then write the new
+   `router_id` and `router_token` and start the agent.
+
+The router row on the old API is not removed. Delete it from that API's
+**Routers** page if you no longer need it.
+
 ### Common issues
 
 - **TLS / certificate errors on `/api/router/register`.** Almost always
