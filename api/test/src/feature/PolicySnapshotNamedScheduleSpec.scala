@@ -75,6 +75,7 @@ object PolicySnapshotNamedScheduleSpec
       clk,
       namedScheduleRepo = nsr,
       repairAssignmentDrift = PolicyServiceLive.NoDriftCheck,
+      autoCheckout = PolicyServiceLive.NoAutoCheckout,
     ): PolicyService
 
   // A profile with NO legacy schedules, linked to a named schedule with a bedtime window.

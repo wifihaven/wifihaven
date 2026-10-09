@@ -849,7 +849,7 @@
         "uid": "${datasource}"
       },
       "title": "Shared-device check-ins and check-outs (#2848)",
-      "description": "sum by (action, cause) (increase(shared_device_checkin_total[$__rate_interval])) — check-ins opened and closed through the API (SharedDeviceRoutes, and DeviceRoutes when turning sharing off ends a check-in). action=check_in|check_out; cause=user for a check-in, else check_out (the holder) | forced (an adult on someone else's check-in) | unshared. Auto-checkout (#2849) is not counted here. From AppMetrics.recordSharedDeviceCheckin.",
+      "description": "sum by (action, cause) (increase(shared_device_checkin_total[$__rate_interval])) — check-ins opened and closed through the API (SharedDeviceRoutes, and DeviceRoutes when turning sharing off ends a check-in). action=check_in|check_out; cause=user for a check-in, else check_out (the holder) | forced (an adult on someone else's check-in) | unshared, or the auto-checkout causes time_limit | schedule | paused | idle | day_reset (#2849, SharedDeviceCheckoutJob). From AppMetrics.recordSharedDeviceCheckin.",
       "type": "timeseries",
       "gridPos": {
         "h": 8,
@@ -953,6 +953,190 @@
           },
           "expr": "sum by (reason) (increase(shared_device_checkin_rejected_total{env=\"$env\"}[$__rate_interval]))",
           "legendFormat": "{{reason}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "title": "Shared-device auto-checkout job runs, by outcome (#2849)",
+      "description": "sum by (outcome) (rate(shared_device_checkout_job_total[5m])) — runs of SharedDeviceCheckoutJob, one per household per reevaluate (the snapshot reconcile tick and every policy mutation). outcome=ok|error; any sustained error rate means held shared devices are not being released (enforcement is unaffected: a held device follows its holder's rules). From AppMetrics.recordSharedDeviceCheckoutJob.",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 96
+      },
+      "id": 26,
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "ops",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 20,
+            "showPoints": "never",
+            "lineWidth": 1
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (outcome) (rate(shared_device_checkout_job_total{env=\"$env\"}[5m]))",
+          "legendFormat": "{{outcome}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "title": "Auto-checkout job duration p50 / p95 (#2849)",
+      "description": "histogram_quantile over shared_device_checkout_job_duration_seconds_bucket. A run with no open check-ins is one indexed read; one with check-ins adds the day-state read the snapshot build also does, so it should sit well under policy_snapshot_build_seconds. Same buckets as the snapshot build (SnapshotBuildDurationBoundaries).",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 12,
+        "y": 96
+      },
+      "id": 27,
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "s",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 20,
+            "showPoints": "never",
+            "lineWidth": 1
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(shared_device_checkout_job_duration_seconds_bucket{env=\"$env\"}[5m])))",
+          "legendFormat": "p50",
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(shared_device_checkout_job_duration_seconds_bucket{env=\"$env\"}[5m])))",
+          "legendFormat": "p95",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "title": "Open shared-device check-ins (#2849)",
+      "description": "shared_device_checkins_open — open check-ins across every household (no household label, design §12), refreshed by each auto-checkout job run. From AppMetrics.setSharedDeviceCheckinsOpen.",
+      "type": "stat",
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 18,
+        "y": 96
+      },
+      "id": 28,
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "unit": "short",
+          "min": 0,
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max(shared_device_checkins_open{env=\"$env\"})",
+          "legendFormat": "open",
           "refId": "A"
         }
       ]

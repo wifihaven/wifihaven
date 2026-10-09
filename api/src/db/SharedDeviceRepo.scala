@@ -42,7 +42,36 @@ trait SharedDeviceRepo {
       byUsername: String,
       cause: AssignmentEndCause,
   ): Task[CheckOutOutcome]
+
+  /** #2849: every open check-in in `household`, for the auto-checkout job. */
+  def openCheckIns(household: HouseholdId): Task[List[OpenCheckIn]]
+
+  /**
+   * #2849: [[DeviceAssignment.checkOut]] by the system (no `ended_by`), for the auto-checkout job's
+   * `time_limit` / `schedule` / `paused` / `idle` / `day_reset` causes.
+   */
+  def autoCheckOut(
+      household: HouseholdId,
+      device: DeviceId,
+      holder: ProfileId,
+      at: Instant,
+      cause: AssignmentEndCause,
+  ): Task[CheckOutOutcome]
+
+  /**
+   * #2849: open check-ins across every household, for the `shared_device_checkins_open` gauge. A
+   * bare count with no household dimension (design §12), so it returns no tenant's rows.
+   */
+  def countOpenCheckInsFleet: Task[Long]
 }
+
+/** #2849: one open `check_in` row: which profile holds which shared device, since when. */
+final case class OpenCheckIn(
+    deviceId: DeviceId,
+    mac: MacAddress,
+    holder: ProfileId,
+    startedAt: Instant,
+)
 
 class SharedDeviceRepoLive(xa: Transactor[Task]) extends SharedDeviceRepo {
 
@@ -116,6 +145,40 @@ class SharedDeviceRepoLive(xa: Transactor[Task]) extends SharedDeviceRepo {
       DeviceAssignment
         .actor(household, Some(byUsername))
         .flatMap(DeviceAssignment.checkOut(household, device, holder, at, _, cause))
+        .transact(xa),
+    )
+
+  // Read on every per-household reevaluate tick. Open rows are served by V90's partial
+  // `uq_dpa_device_open`; a check-in's `started_at` is never NULL (V90 `dpa_open_start_is_assigned`).
+  def openCheckIns(household: HouseholdId) =
+    DbMetrics.timed("sharedDevice.openCheckIns")(
+      sql"""SELECT o.device_id, d.mac, o.profile_id, o.started_at
+              FROM device_profile_assignments o JOIN devices d ON d.id = o.device_id
+             WHERE o.household_id = $household AND o.ended_at IS NULL AND o.kind = 'check_in'
+             ORDER BY o.device_id"""
+        .query[(DeviceId, MacAddress, ProfileId, Instant)]
+        .map(OpenCheckIn.apply.tupled)
+        .to[List]
+        .transact(xa),
+    )
+
+  def autoCheckOut(
+      household: HouseholdId,
+      device: DeviceId,
+      holder: ProfileId,
+      at: Instant,
+      cause: AssignmentEndCause,
+  ) =
+    DbMetrics.timed("sharedDevice.autoCheckOut")(
+      DeviceAssignment.checkOut(household, device, holder, at, None, cause).transact(xa),
+    )
+
+  def countOpenCheckInsFleet =
+    DbMetrics.timed("sharedDevice.countOpenCheckInsFleet")(
+      sql"""SELECT count(*) FROM device_profile_assignments
+             WHERE ended_at IS NULL AND kind = 'check_in'"""
+        .query[Long]
+        .unique
         .transact(xa),
     )
 }

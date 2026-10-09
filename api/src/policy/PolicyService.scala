@@ -150,6 +150,12 @@ object PolicyServiceLive {
   val NoDriftCheck: (HouseholdId, Instant) => Task[Int] = (_, _) => ZIO.succeed(0)
 
   /**
+   * #2849: a shared-device auto-checkout that releases nothing, for test constructions that do not
+   * exercise it. Production wires `SharedDeviceCheckoutJob.run` in [[PolicyService.layer]].
+   */
+  val NoAutoCheckout: HouseholdId => Task[Int] = _ => ZIO.succeed(0)
+
+  /**
    * #1104: test-friendly factory that wires a default `TimeStatusServiceLive` over the same repos.
    * Lets the existing PolicySnapshot* specs and Router* specs continue passing the old positional
    * args; production wiring still goes through `PolicyService.layer`, which injects an explicit
@@ -182,6 +188,9 @@ object PolicyServiceLive {
       billingStatusOf: HouseholdId => Task[Option[String]] = _ => ZIO.succeed(Some("active")),
       // #2382: the escape-hatch reader; see the class-level doc. Defaulted to "never disabled".
       enforcementDisabledOf: HouseholdId => Task[Boolean] = _ => ZIO.succeed(false),
+      // #2849: the auto-checkout to run on each per-household reevaluate (only reached with
+      // `cacheEnabled`). Specs that drive it pass `SharedDeviceCheckoutJob.run`.
+      autoCheckout: HouseholdId => Task[Int] = NoAutoCheckout,
   ): PolicyServiceLive = {
     val tss = new TimeStatusServiceLive(
       profileRepo,
@@ -213,6 +222,7 @@ object PolicyServiceLive {
       billingStatusOf = billingStatusOf,
       enforcementDisabledOf = enforcementDisabledOf,
       repairAssignmentDrift = NoDriftCheck,
+      autoCheckout = autoCheckout,
     )
   }
 }
@@ -286,6 +296,12 @@ class PolicyServiceLive(
     // The production layer wires `DeviceAssignmentRepo.repairDrift`; the `apply` test factory and
     // specs that construct directly pass [[PolicyServiceLive.NoDriftCheck]] by name.
     repairAssignmentDrift: (HouseholdId, Instant) => Task[Int],
+    // #2849: the shared-device auto-checkout (design `docs/design/shared-devices.md` §7.3), run on
+    // every per-household reevaluate after the drift check and before the build; returns how many
+    // check-ins it released. Not defaulted, for the same reason as the drift check: production
+    // wires `SharedDeviceCheckoutJob.run`, test constructions name
+    // [[PolicyServiceLive.NoAutoCheckout]].
+    autoCheckout: HouseholdId => Task[Int],
 ) extends PolicyService {
 
   // #1849: the cached snapshot. Process-local `AtomicReference` (matching the existing
@@ -541,47 +557,48 @@ class PolicyServiceLive(
   // fiber [[invalidateMany]] forks) and both apply the `cacheEnabled` guard upstream, so this stays
   // private: a public overload would be trait surface every implementor has to stub for no caller.
   private def reevaluateHousehold(household: HouseholdId): UIO[Unit] =
-    repairDrift(household) *> ZIO.succeed(versionOf(household)).flatMap { gen =>
-      // `foldCauseZIO`, not `foldZIO`: a DEFECT (not just a typed failure) in one household's build
-      // would otherwise escape the `foreachDiscard` above and kill the reconcile ticker fiber
-      // outright — `Main` runs it as `.repeat(...).forkScoped` with nothing to restart it, so the
-      // whole fleet would then sit on stale policy until a redeploy, with the REST poll dormant on
-      // a healthy ws link (#2037). Same reasoning AND the same shape as the stamp sink in
-      // `RouterWsRegistry`: `suspendSucceed` so a build that throws while its effect is being
-      // BUILT is caught by this fold too, rather than escaping into the loop before there is an
-      // effect to fold over.
-      ZIO
-        .suspendSucceed(buildSnapshot(household))
-        .foldCauseZIO(
-          cause =>
-            // Keep the last good cache on a transient build failure (e.g. a DB blip) so the REST poll
-            // keeps serving the previous snapshot rather than a cold rebuild storm; the next tick
-            // retries. Per household, so one household's blip cannot skip another's push.
-            ZIO.logWarningCause(
-              s"policy reevaluate: snapshot rebuild failed for household=$household, keeping cache",
-              cause,
-            ),
-          snap => {
-            installSnapshot(household, gen, snap)
-            // Push only when the ETag actually moved since the last PUSH FOR THIS HOUSEHOLD — the
-            // same "change is exactly an ETag move" semantics the REST 200-vs-304 path uses (design
-            // §6.2), so we never fan out a frame the routers would treat as unchanged. Keyed off
-            // `lastPublishedEtag` (not the cache slot) so a racing REST poll repopulating the cache
-            // can't suppress the push.
-            //
-            // The snapshot goes out WRAPPED in its household (#2630): the publisher cannot read it
-            // without naming a recipient, so a sink physically cannot deliver it to another
-            // household's router. That is the guard — not this comment, and not a filter downstream
-            // that someone can forget to write.
-            val prevPublished = swapPublishedEtag(household, snap.etag)
-            ZIO
-              .when(!prevPublished.contains(snap.etag))(
-                publisher.get.publish(HouseholdScoped(household, snap)),
-              )
-              .unit
-          },
-        )
-    }
+    repairDrift(household) *> releaseSharedDevices(household) *>
+      ZIO.succeed(versionOf(household)).flatMap { gen =>
+        // `foldCauseZIO`, not `foldZIO`: a DEFECT (not just a typed failure) in one household's build
+        // would otherwise escape the `foreachDiscard` above and kill the reconcile ticker fiber
+        // outright — `Main` runs it as `.repeat(...).forkScoped` with nothing to restart it, so the
+        // whole fleet would then sit on stale policy until a redeploy, with the REST poll dormant on
+        // a healthy ws link (#2037). Same reasoning AND the same shape as the stamp sink in
+        // `RouterWsRegistry`: `suspendSucceed` so a build that throws while its effect is being
+        // BUILT is caught by this fold too, rather than escaping into the loop before there is an
+        // effect to fold over.
+        ZIO
+          .suspendSucceed(buildSnapshot(household))
+          .foldCauseZIO(
+            cause =>
+              // Keep the last good cache on a transient build failure (e.g. a DB blip) so the REST poll
+              // keeps serving the previous snapshot rather than a cold rebuild storm; the next tick
+              // retries. Per household, so one household's blip cannot skip another's push.
+              ZIO.logWarningCause(
+                s"policy reevaluate: snapshot rebuild failed for household=$household, keeping cache",
+                cause,
+              ),
+            snap => {
+              installSnapshot(household, gen, snap)
+              // Push only when the ETag actually moved since the last PUSH FOR THIS HOUSEHOLD — the
+              // same "change is exactly an ETag move" semantics the REST 200-vs-304 path uses (design
+              // §6.2), so we never fan out a frame the routers would treat as unchanged. Keyed off
+              // `lastPublishedEtag` (not the cache slot) so a racing REST poll repopulating the cache
+              // can't suppress the push.
+              //
+              // The snapshot goes out WRAPPED in its household (#2630): the publisher cannot read it
+              // without naming a recipient, so a sink physically cannot deliver it to another
+              // household's router. That is the guard — not this comment, and not a filter downstream
+              // that someone can forget to write.
+              val prevPublished = swapPublishedEtag(household, snap.etag)
+              ZIO
+                .when(!prevPublished.contains(snap.etag))(
+                  publisher.get.publish(HouseholdScoped(household, snap)),
+                )
+                .unit
+            },
+          )
+      }
 
   // #2843: repair device-assignment drift BEFORE the build, so a repair that changes
   // `devices.profile_id` (a shared device cleared or restored from its check-in) is in this tick's
@@ -595,6 +612,23 @@ class PolicyServiceLive(
       .catchAllCause(cause =>
         ZIO.logErrorCause(
           s"device assignment drift check failed for household=${household.value}",
+          cause,
+        ),
+      )
+
+  // #2849: release due shared-device check-ins BEFORE the build, so the release is in this tick's
+  // snapshot. A release is a policy mutation like any route's, so it bumps the household's version
+  // (as `invalidate` does), which stale-stamps any build that read the DB before the write; the
+  // build below is this household's reconcile, so nothing is forked. A failure is logged and never
+  // blocks the build: a held device already enforces its holder's rules, and the next tick retries.
+  private def releaseSharedDevices(household: HouseholdId): UIO[Unit] =
+    ZIO
+      .suspend(autoCheckout(household))
+      .flatMap(n => ZIO.when(n > 0)(ZIO.succeed(bumpVersion(household))))
+      .unit
+      .catchAllCause(cause =>
+        ZIO.logErrorCause(
+          s"shared-device auto-checkout failed for household=${household.value}",
           cause,
         ),
       )
@@ -1312,7 +1346,7 @@ object PolicyService {
     AppConfig & ProfileRepo & NamedScheduleRepo & HouseholdSettingsRepo & TimeLimitRepo &
       AppTimeLimitRepo & DeviceRepo & BlocklistRepo & TrafficReportRepo & TimeExtensionRepo &
       AppRepo & TimeStatusService & Clock & wifihaven.api.db.HouseholdBillingRepo &
-      DeviceAssignmentRepo,
+      DeviceAssignmentRepo & SharedDeviceCheckoutJob,
     Nothing,
     PolicyService,
   ] = ZLayer.fromFunction {
@@ -1332,6 +1366,7 @@ object PolicyService {
         clk: Clock,
         hbr: wifihaven.api.db.HouseholdBillingRepo,
         dar: DeviceAssignmentRepo,
+        job: SharedDeviceCheckoutJob,
     ) =>
       new PolicyServiceLive(
         pr,
@@ -1381,6 +1416,8 @@ object PolicyService {
             },
         // #2843: the standing drift check on every per-household reevaluate tick.
         repairAssignmentDrift = dar.repairDrift,
+        // #2849: release due shared-device check-ins on the same tick.
+        autoCheckout = job.run,
       )
   }
 

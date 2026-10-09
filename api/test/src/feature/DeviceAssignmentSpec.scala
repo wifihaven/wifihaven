@@ -209,6 +209,7 @@ object DeviceAssignmentSpec
       namedScheduleRepo = nsr,
       cacheEnabled = true,
       repairAssignmentDrift = f.assignments.repairDrift,
+      autoCheckout = PolicyServiceLive.NoAutoCheckout,
     )
 
   private def pinned(f: Fixture, result: TestResult): Task[TestResult] =

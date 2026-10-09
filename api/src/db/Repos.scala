@@ -1907,7 +1907,8 @@ class HouseholdSettingsRepoLive(xa: Transactor[Task]) extends HouseholdSettingsR
                  block_encrypted_dns,
                  ambient_gate_enabled, ambient_isolation_max_hosts,
                  ambient_min_isolated_days, ambient_learning_window_days,
-                 notify_email
+                 notify_email,
+                 shared_device_idle_minutes
             FROM household_settings WHERE""" ++ where)
       .query[
         (
@@ -1925,6 +1926,7 @@ class HouseholdSettingsRepoLive(xa: Transactor[Task]) extends HouseholdSettingsR
             Option[
               String,
             ],
+            Int,
         ),
       ]
       .option
@@ -1943,6 +1945,7 @@ class HouseholdSettingsRepoLive(xa: Transactor[Task]) extends HouseholdSettingsR
                 ambMinDays,
                 ambWindow,
                 notifyEmail,
+                idleMinutes,
               ) =>
             val umm = ummJson.fromJson[UnmanagedMacPolicy].getOrElse(UnmanagedMacPolicy.Default)
             HouseholdSettings(
@@ -1958,6 +1961,7 @@ class HouseholdSettingsRepoLive(xa: Transactor[Task]) extends HouseholdSettingsR
               ambWindow,
               // #578: NULL notify_email → None (no recipient configured).
               notifyEmail.map(_.trim).filter(_.nonEmpty),
+              idleMinutes,
             )
         }
       }
@@ -2042,6 +2046,7 @@ class HouseholdSettingsRepoLive(xa: Transactor[Task]) extends HouseholdSettingsR
                   ambient_min_isolated_days=${s.ambientMinIsolatedDays},
                   ambient_learning_window_days=${s.ambientLearningWindowDays},
                   notify_email=${s.notifyEmail},
+                  shared_device_idle_minutes=${s.sharedDeviceIdleMinutes},
                   updated_at=NOW()
             WHERE """ ++ SqlFragments.householdEq(household)).update.run
     // #2553: the invalidation is SCOPED to the writing household's profiles. #2533 deliberately

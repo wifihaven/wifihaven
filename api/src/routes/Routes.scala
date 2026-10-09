@@ -2364,6 +2364,17 @@ object HouseholdSettingsRoutes {
             _      <- ZIO
               .fromEither(validateUnmanagedMacPolicy(upd.unmanagedMacPolicy))
               .mapError(ApiError.BadRequest(_))
+            _      <- ZIO
+              .foreachDiscard(upd.sharedDeviceIdleMinutes)(validateIdleMinutes)
+            // #2849: absent preserves the stored idle threshold (see the request type).
+            idle   <- upd.sharedDeviceIdleMinutes match {
+              case Some(m) => ZIO.succeed(m)
+              case None    =>
+                repo
+                  .getForHousehold(claims.hh)
+                  .map(_.sharedDeviceIdleMinutes)
+                  .mapError(ApiError.Db(_))
+            }
             // #2533: full replace of THIS household's row.
             _      <- repo
               .update(
@@ -2382,6 +2393,7 @@ object HouseholdSettingsRoutes {
                   // #578: normalize blank → None so an empty field on a full-replace
                   // PUT means "no recipient", not the empty string.
                   upd.notifyEmail.map(_.trim).filter(_.nonEmpty),
+                  idle,
                 ),
               )
               .mapError(ApiError.Db(_))
@@ -2437,6 +2449,16 @@ object HouseholdSettingsRoutes {
             nePatch   <- ZIO
               .fromEither(FieldPatch.from[String](obj, "notifyEmail"))
               .mapError(ApiError.BadRequest(_))
+            // #2849: the shared-device idle threshold, 5–1440 minutes; never nullable.
+            idlePatch <- ZIO
+              .fromEither(FieldPatch.from[Int](obj, "sharedDeviceIdleMinutes"))
+              .mapError(ApiError.BadRequest(_))
+            _         <- idlePatch match {
+              case FieldPatch.Cleared =>
+                ZIO.fail(ApiError.BadRequest("sharedDeviceIdleMinutes cannot be cleared"))
+              case FieldPatch.Set(m)  => validateIdleMinutes(m)
+              case FieldPatch.Absent  => ZIO.unit
+            }
             _         <- timePatch match {
               case FieldPatch.Cleared =>
                 ZIO.fail(ApiError.BadRequest("dailyResetTime cannot be cleared"))
@@ -2483,6 +2505,7 @@ object HouseholdSettingsRoutes {
                 case FieldPatch.Cleared => None
                 case FieldPatch.Absent  => existing.notifyEmail
               },
+              sharedDeviceIdleMinutes = idlePatch.applyTo(existing.sharedDeviceIdleMinutes),
             )
             _            <- repo.update(claims.hh, merged).mapError(ApiError.Db(_))
             _            <- invalidateSnapshot(claims.hh)
@@ -2490,6 +2513,23 @@ object HouseholdSettingsRoutes {
           handle.mapError(ErrorMapper.errorToResponse)
         },
     )
+
+  // #2849: V90's `household_settings_shared_device_idle_minutes_check`, surfaced as a 400 before
+  // the write instead of a constraint violation.
+  private def validateIdleMinutes(m: Int): IO[ApiError, Unit] =
+    ZIO
+      .unless(
+        m >= HouseholdSettings.MinSharedDeviceIdleMinutes &&
+          m <= HouseholdSettings.MaxSharedDeviceIdleMinutes,
+      )(
+        ZIO.fail(
+          ApiError.BadRequest(
+            s"sharedDeviceIdleMinutes must be between ${HouseholdSettings.MinSharedDeviceIdleMinutes} " +
+              s"and ${HouseholdSettings.MaxSharedDeviceIdleMinutes}",
+          ),
+        ),
+      )
+      .unit
 
   // #1525: `heartbeatHostPatterns` is retired — host-identity suppression now lives in the
   // canonical `shared.types.InfraHosts` code constant. The field stays on the wire for back-compat

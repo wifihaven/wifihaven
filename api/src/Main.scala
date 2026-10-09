@@ -315,6 +315,13 @@ object Main extends ZIOAppDefault {
             ),
           ),
         )
+        // #2849: an auto-checkout on the tick below nudges the Devices page and the household's
+        // `sharedDevices` subscribers, as a check-in/out through the API does (HttpRoutes).
+        checkoutJob   <- ZIO.service[SharedDeviceCheckoutJob]
+        _             <- checkoutJob.setOnReleased(hh =>
+          spaEventBus.publish(SpaEvent.Stale(StaleTopic.Devices)) *>
+            spaEventBus.publish(SpaEvent.SharedDevicesChanged(hh)),
+        )
         _             <- policyForPush.reevaluate
           .repeat(Schedule.fixed(cfg.policy.snapshotCacheRefreshInterval))
           .forkScoped
@@ -470,6 +477,8 @@ object Main extends ZIOAppDefault {
       // per-app cap reads `app_used_daily` + a live tail on the rollup path.
       wifihaven.api.usage.AppUsedRollupService.layer >+>
       TimeStatusService.layer >+>
+      // #2849: the shared-device auto-checkout, run by PolicyService on each per-household tick.
+      wifihaven.api.policy.SharedDeviceCheckoutJob.layer >+>
       PolicyService.layer >+>
       TimeStatusCache.live() >+>
       BlocklistCache.live >+>
