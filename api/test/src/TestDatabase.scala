@@ -214,6 +214,14 @@ object TestDatabase {
       BetaCohortRepo & EntitlementsRepo & PressMessageRepo & PasswordResetTokenRepo &
       SupportConsentRepo
 
+  /**
+   * The instant fixture device writes record in assignment history (#2843). #2844 attributes usage
+   * by those intervals, so this sits before any traffic a spec seeds: a fixture device counts as
+   * held by its profile for the whole of every test day, as it did before #2844. A spec that moves
+   * a device at a specific time calls `DeviceAssignmentRepo.assign` with that time.
+   */
+  val FixtureAssignmentTime: java.time.LocalDateTime = java.time.LocalDateTime.of(2000, 1, 1, 0, 0)
+
   val layer: ZLayer[Any, Throwable, EmbeddedPostgres & TestDb & Transactor[Task] & AllRepos] = {
     val pg  = embeddedPg
     val td  = pg >>> testDb
@@ -224,7 +232,7 @@ object TestDatabase {
     // history bound, so mixing this clock with a spec's never inverts an interval.
     val clk = ZLayer.succeed[wifihaven.shared.Clock](
       new wifihaven.shared.Clock.TestClock(
-        Unsafe.unsafe(implicit u => Ref.unsafe.make(java.time.LocalDateTime.of(2025, 1, 6, 0, 0))),
+        Unsafe.unsafe(implicit u => Ref.unsafe.make(FixtureAssignmentTime)),
       ),
     )
     pg ++ td ++ xa ++ ((xa ++ clk) >>> Repos.all)

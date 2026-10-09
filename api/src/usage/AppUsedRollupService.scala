@@ -169,12 +169,12 @@ class AppUsedRollupServiceLive(
             case Nil  => ZIO.succeed(minutesFrom(rolled, Map.empty))
             case atls =>
               for {
-                devices <- deviceRepo.listForProfile(profileId)
-                macs = devices.map(_.mac)
+                // #2844: only the rows of the devices this profile held, while it held them.
+                scope <- AttributionScope.forDay(deviceRepo, household, date, settings)
+                spans = scope.spansFor(profileId)
                 raw     <- rolled.values.iterator.map(_.rolledThrough).minOption match {
-                  case Some(watermark) =>
-                    trafficRepo.listPresenceRowsSince(household, macs, date, watermark)
-                  case None            => trafficRepo.listPresenceRows(household, macs, date)
+                  case Some(watermark) => trafficRepo.listPresenceRowsSince(spans, date, watermark)
+                  case None            => trafficRepo.listPresenceRows(spans, date)
                 }
                 // #2077: gate the live slice the same way the rollup write path gates its input, so
                 // rolled + tail compose over one active-minute definition. Gating only the slice can

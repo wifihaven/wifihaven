@@ -719,14 +719,20 @@ trait DeviceRepo {
   def listAllForHousehold(household: HouseholdId): Task[List[Device]]
 
   /**
-   * #2257: the devices assigned to one profile. A profile belongs to exactly one household, so this
-   * is inherently household-scoped — it replaces the old `listAll.filter(_.profileId == pid)` in
-   * the per-profile `TimeStatusService` / `AppUsedRollupService` paths, which scanned every
-   * household's rows only to keep the ones for a single profile. `devices` is a small fleet-bounded
-   * table (one row per device, not a traffic-growth table), so the `WHERE profile_id=` filter
-   * strictly beats the prior whole-table scan even without a dedicated index.
+   * #2844 (design `docs/design/shared-devices.md` §6.1): every `device_profile_assignments`
+   * interval in `household` that overlaps `[from, until)`, grouped by profile. The one read
+   * per-profile usage attribution is built from; see [[wifihaven.api.db.AttributionScope]].
+   *
+   * Overlap is half-open on both sides, and a NULL bound is unbounded (design §5.1): a row with
+   * `started_at IS NULL` overlaps every window that starts before its `ended_at`. Zero-length rows
+   * (`started_at = ended_at`, written when a transition is clamped) cover no presence and are not
+   * returned. Bounds come back unclipped, as `None` for NULL.
    */
-  def listForProfile(profileId: ProfileId): Task[List[Device]]
+  def attributionScope(
+      household: HouseholdId,
+      from: Instant,
+      until: Instant,
+  ): Task[AttributionScope]
 
   /**
    * #2312: household-scoped. The old global `findByMac` (WHERE d.mac=$mac + `.option`) THREW ("more
@@ -1269,12 +1275,16 @@ trait TrafficReportRepo {
   /**
    * Minimal projection used by presence-based minute accounting (see
    * [[wifihaven.api.presence.Presence]]). One row per (mac, period_start, hostname) for the given
-   * macs/date; the caller deduplicates by `(mac, period_start)` so per-hostname rows in a single
-   * bucket don't inflate total screen time.
+   * date; the caller deduplicates by `(mac, period_start)` so per-hostname rows in a single bucket
+   * don't inflate total screen time.
+   *
+   * #2844: takes the spans of an [[wifihaven.api.db.AttributionScope]], not a MAC list, so the rows
+   * are the ones the scope's profile(s) held the device for (by `period_start`), never a device's
+   * whole day under whatever profile it is on now. `spans.household` scopes the `traffic_reports`
+   * read (#2313). A device's own presence, regardless of profile, is [[listDevicePresenceRows]].
    */
   def listPresenceRows(
-      household: HouseholdId,
-      macs: List[MacAddress],
+      spans: wifihaven.api.db.PresenceSpans,
       date: LocalDate,
   ): Task[List[wifihaven.api.presence.PresenceRow]]
 
@@ -1285,8 +1295,7 @@ trait TrafficReportRepo {
    * re-bucketing for the chart happens in the SPA against the UTC `periodStart` instants (#794).
    */
   def listPresenceRows(
-      household: HouseholdId,
-      macs: List[MacAddress],
+      spans: wifihaven.api.db.PresenceSpans,
       from: LocalDate,
       to: LocalDate,
   ): Task[List[wifihaven.api.presence.PresenceRow]]
@@ -1297,16 +1306,15 @@ trait TrafficReportRepo {
    * rollup hasn't yet absorbed.
    */
   def listPresenceRowsSince(
-      household: HouseholdId,
-      macs: List[MacAddress],
+      spans: wifihaven.api.db.PresenceSpans,
       date: LocalDate,
       since: Instant,
   ): Task[List[wifihaven.api.presence.PresenceRow]]
 
   /**
-   * #1099: presence rows whose `period_start` falls in `[fromInstant, toInstant)` for the given
-   * macs. Filtering on `period_start` (the table's RANGE partition key, V41) — rather than the
-   * non-key `date` column the day/range variants use — lets Postgres prune to the covering weekly
+   * #1099: presence rows whose `period_start` falls in `[fromInstant, toInstant)` within `spans`.
+   * Filtering on `period_start` (the table's RANGE partition key, V41) — rather than the non-key
+   * `date` column the day/range variants use — lets Postgres prune to the covering weekly
    * partitions instead of scanning all of history. This is the difference between a sub-second read
    * and the multi-minute full-table scan that wedged the /profiles page (see issue #1099). The
    * query is bounded by a per-statement timeout ([[QueryTimeout.PresenceWindow]]) so a pathological
@@ -1314,6 +1322,25 @@ trait TrafficReportRepo {
    * [[listPresenceRows]]; callers compute the window from the requested local day + zone.
    */
   def listPresenceRowsInWindow(
+      spans: wifihaven.api.db.PresenceSpans,
+      fromInstant: Instant,
+      toInstant: Instant,
+  ): Task[List[wifihaven.api.presence.PresenceRow]]
+
+  /**
+   * #2844: a DEVICE's own presence rows for `from`..`to` (inclusive dates), whichever profile held
+   * it — the per-device time-status views and the heartbeat explainer. Not for per-profile
+   * attribution: that is [[listPresenceRows]], which takes an attribution scope's spans.
+   */
+  def listDevicePresenceRows(
+      household: HouseholdId,
+      macs: List[MacAddress],
+      from: LocalDate,
+      to: LocalDate,
+  ): Task[List[wifihaven.api.presence.PresenceRow]]
+
+  /** [[listDevicePresenceRows]] over `[fromInstant, toInstant)`, partition-pruned (#1099). */
+  def listDevicePresenceRowsInWindow(
       household: HouseholdId,
       macs: List[MacAddress],
       fromInstant: Instant,
@@ -1333,6 +1360,8 @@ trait TrafficReportRepo {
       toInstant: Instant,
       cursor: Option[wifihaven.api.usage.RawTrafficCursorKey] = None,
       limit: Option[Int] = None,
+      // #2844: a profile filter's spans (`MacScope.Only`); rows outside them are excluded.
+      spans: Option[wifihaven.api.db.PresenceSpans] = None,
   ): Task[List[wifihaven.api.usage.TrafficUsageDbRow]]
 
   /**
@@ -1360,6 +1389,8 @@ trait TrafficReportRepo {
       fromInstant: Instant,
       toInstant: Instant,
       stepSeconds: Long,
+      // #2844: as [[listRawInRange]]; applied to each raw row before the GROUP BY.
+      spans: Option[wifihaven.api.db.PresenceSpans] = None,
   ): Task[List[wifihaven.api.usage.TrafficUsageDbRow]]
 
   /**
@@ -2161,7 +2192,7 @@ class DeviceRepoLive(xa: Transactor[Task], clock: wifihaven.shared.Clock) extend
   // #2107: same projection as listAll, AND-scoped to one household. `devices` is aliased `d`, so the
   // predicate is qualified `d.household_id`. Index-backed by V65's idx_devices_household (and the
   // leading column of uq_devices_household_mac).
-  def listAllForHousehold(household: HouseholdId) =
+  def listAllForHousehold(household: HouseholdId)                             =
     DbMetrics.timed("device.listAllForHousehold")(
       (fr"SELECT d.id,d.mac,d.name,d.profile_id,p.name,d.last_seen_ip,d.last_seen_at::TEXT,d.shared FROM devices d LEFT JOIN profiles p ON p.id=d.profile_id WHERE" ++
         SqlFragments.householdEq(household, "d.household_id") ++ fr"ORDER BY d.name")
@@ -2181,24 +2212,31 @@ class DeviceRepoLive(xa: Transactor[Task], clock: wifihaven.shared.Clock) extend
         .to[List]
         .transact(xa),
     )
-  def listForProfile(profileId: ProfileId)        =
-    DbMetrics.timed("device.listForProfile")(
-      sql"SELECT d.id,d.mac,d.name,d.profile_id,p.name,d.last_seen_ip,d.last_seen_at::TEXT,d.shared FROM devices d LEFT JOIN profiles p ON p.id=d.profile_id WHERE d.profile_id=$profileId ORDER BY d.name"
-        .query[
-          (
-              DeviceId,
-              MacAddress,
-              String,
-              Option[ProfileId],
-              Option[String],
-              Option[IpAddress],
-              Option[String],
-              Boolean,
-          ),
-        ]
-        .map(r => Device(r._1, r._2, r._3, r._4, r._5, r._6, r._7, r._8))
+  // #2844: served by V90's idx_dpa_household_profile (household_id leading). The table holds one
+  // row per device per assignment change, so a household's whole history is small; the overlap
+  // predicate is a filter over it. `d.household_id` is not re-checked: V90 copies the device's
+  // household onto every row (`DeviceAssignment.open`), and the FK pins the device.
+  def attributionScope(household: HouseholdId, from: Instant, until: Instant) =
+    DbMetrics.timed("device.attributionScope")(
+      sql"""SELECT dpa.profile_id, dpa.device_id, d.mac, dpa.started_at, dpa.ended_at
+              FROM device_profile_assignments dpa
+              JOIN devices d ON d.id = dpa.device_id
+             WHERE dpa.household_id = $household
+               AND (dpa.started_at IS NULL OR dpa.started_at < $until)
+               AND (dpa.ended_at IS NULL OR dpa.ended_at > $from)
+               AND (dpa.started_at IS NULL OR dpa.ended_at IS NULL OR dpa.ended_at > dpa.started_at)
+             ORDER BY dpa.profile_id, dpa.device_id, dpa.started_at NULLS FIRST"""
+        .query[(ProfileId, DeviceId, MacAddress, Option[Instant], Option[Instant])]
         .to[List]
-        .transact(xa),
+        .transact(xa)
+        .map { rows =>
+          AttributionScope(
+            household,
+            rows.groupMap(_._1) { case (_, dev, mac, f, u) =>
+              AttributionSpan(mac, dev, f, u)
+            },
+          )
+        },
     )
   def findByMac(mac: MacAddress, household: HouseholdId = HouseholdId.Default) =
     // #2312: delegate to the household-scoped primitive. The old global `WHERE d.mac=$mac` + `.option`
@@ -2214,7 +2252,7 @@ class DeviceRepoLive(xa: Transactor[Task], clock: wifihaven.shared.Clock) extend
   // predicate as an index scan. V74/V75 dropped the global `devices_mac_key` CONSTRAINT but left
   // that plain index in place, and it is what keeps this off a seq scan: don't retire it as
   // redundant. (`devices` is bounded by household size, not an unbounded-growth table.)
-  def findOwningHousehold(mac: MacAddress)        =
+  def findOwningHousehold(mac: MacAddress)                                    =
     DbMetrics.timed("device.findOwningHousehold")(
       sql"SELECT household_id FROM devices WHERE mac = $mac ORDER BY household_id LIMIT 1"
         .query[HouseholdId]
@@ -3049,28 +3087,91 @@ class TrafficReportRepoLive(xa: Transactor[Task]) extends TrafficReportRepo {
       .to[List]
       .transact(xa)
 
-  def listPresenceRows(household: HouseholdId, macs: List[MacAddress], date: LocalDate) =
-    listPresenceRowsBetween(household, macs, date, date, None)
+  def listPresenceRows(spans: wifihaven.api.db.PresenceSpans, date: LocalDate) =
+    listPresenceRowsBetween(
+      spans.household,
+      spans.macs,
+      dateSpanFilter(spans, date, date),
+      date,
+      date,
+      None,
+    )
 
-  def listPresenceRows(
+  def listPresenceRows(spans: wifihaven.api.db.PresenceSpans, from: LocalDate, to: LocalDate) =
+    listPresenceRowsBetween(
+      spans.household,
+      spans.macs,
+      dateSpanFilter(spans, from, to),
+      from,
+      to,
+      None,
+    )
+
+  def listPresenceRowsSince(
+      spans: wifihaven.api.db.PresenceSpans,
+      date: LocalDate,
+      since: Instant,
+  ) =
+    listPresenceRowsBetween(
+      spans.household,
+      spans.macs,
+      dateSpanFilter(spans, date, date),
+      date,
+      date,
+      Some(since),
+    )
+
+  def listPresenceRowsInWindow(
+      spans: wifihaven.api.db.PresenceSpans,
+      fromInstant: Instant,
+      toInstant: Instant,
+  ) =
+    presenceRowsInWindow(
+      spans.household,
+      spans.macs,
+      spanFilterOf(spans, fromInstant, toInstant),
+      fromInstant,
+      toInstant,
+    )
+
+  def listDevicePresenceRows(
       household: HouseholdId,
       macs: List[MacAddress],
       from: LocalDate,
       to: LocalDate,
   ) =
-    listPresenceRowsBetween(household, macs, from, to, None)
+    listPresenceRowsBetween(household, macs, Fragment.empty, from, to, None)
 
-  def listPresenceRowsSince(
+  def listDevicePresenceRowsInWindow(
       household: HouseholdId,
       macs: List[MacAddress],
-      date: LocalDate,
-      since: Instant,
+      fromInstant: Instant,
+      toInstant: Instant,
   ) =
-    listPresenceRowsBetween(household, macs, date, date, Some(since))
+    presenceRowsInWindow(household, macs, Fragment.empty, fromInstant, toInstant)
 
-  def listPresenceRowsInWindow(
+  // #2844: the attribution predicate for the presence reads below (`tr` is `traffic_reports`).
+  private def spanFilterOf(
+      spans: wifihaven.api.db.PresenceSpans,
+      windowStart: Instant,
+      windowEnd: Instant,
+  ): Fragment =
+    SqlFragments.spanFilter(spans, "tr.mac", "tr.period_start", windowStart, windowEnd)
+
+  // The date-keyed reads filter on `tr.date`, so their window is the settings-independent one.
+  private def dateSpanFilter(
+      spans: wifihaven.api.db.PresenceSpans,
+      from: LocalDate,
+      to: LocalDate,
+  ): Fragment = {
+    val (start, end) = SqlFragments.dateReadWindow(from, to)
+    spanFilterOf(spans, start, end)
+  }
+
+  private def presenceRowsInWindow(
       household: HouseholdId,
       macs: List[MacAddress],
+      spanFilter: Fragment,
       fromInstant: Instant,
       toInstant: Instant,
   ): Task[List[wifihaven.api.presence.PresenceRow]] = {
@@ -3109,7 +3210,7 @@ class TrafficReportRepoLive(xa: Transactor[Task]) extends TrafficReportRepo {
                WHERE tr.period_start >= $fromInstant AND tr.period_start < $toInstant
                  AND (tr.active_seconds > 0 OR tr.bytes_in > 0 OR tr.bytes_out > 0)
                  ${SqlFragments.householdRouterScope(household, "tr.router_id")}
-                 AND """ ++ Fragments.in(fr"tr.mac", nel)
+                 AND """ ++ Fragments.in(fr"tr.mac", nel) ++ spanFilter
         val cio =
           q.query[Row]
             .map { case (m, d, ps, host, secs, bin, bout, pStart, pEnd, aStart, aEnd) =>
@@ -3129,6 +3230,7 @@ class TrafficReportRepoLive(xa: Transactor[Task]) extends TrafficReportRepo {
   private def listPresenceRowsBetween(
       household: HouseholdId,
       macs: List[MacAddress],
+      spanFilter: Fragment,
       from: LocalDate,
       to: LocalDate,
       since: Option[Instant] = None,
@@ -3163,7 +3265,7 @@ class TrafficReportRepoLive(xa: Transactor[Task]) extends TrafficReportRepo {
                WHERE tr.date BETWEEN $from AND $to
                  AND (tr.active_seconds > 0 OR tr.bytes_in > 0 OR tr.bytes_out > 0)
                  ${SqlFragments.householdRouterScope(household, "tr.router_id")}
-                 AND """ ++ Fragments.in(fr"tr.mac", nel) ++
+                 AND """ ++ Fragments.in(fr"tr.mac", nel) ++ spanFilter ++
             since.fold(fr"")(s => fr"AND tr.period_start >= $s")
         DbMetrics.timed("traffic.listPresenceRows")(
           q.query[Row]
@@ -3188,6 +3290,7 @@ class TrafficReportRepoLive(xa: Transactor[Task]) extends TrafficReportRepo {
       toInstant: Instant,
       cursor: Option[wifihaven.api.usage.RawTrafficCursorKey] = None,
       limit: Option[Int] = None,
+      spans: Option[wifihaven.api.db.PresenceSpans] = None,
   ) = {
     type Row =
       (MacAddress, HostId, Instant, Instant, Int, Long, Long)
@@ -3220,7 +3323,8 @@ class TrafficReportRepoLive(xa: Transactor[Task]) extends TrafficReportRepo {
     // #846 audit: newest-first ordering so the SPA renders most-recent at top.
     // #862: add stable secondary keys for keyset cursor.
     val limitFr    = limit.fold(fr"")(n => fr"LIMIT $n")
-    val select     = baseSelect ++ macFilter ++ byCursor ++
+    val spanFilter = spans.fold(Fragment.empty)(spanFilterOf(_, fromInstant, toInstant))
+    val select     = baseSelect ++ macFilter ++ spanFilter ++ byCursor ++
       fr"ORDER BY tr.period_start DESC, tr.mac ASC, COALESCE(CASE WHEN tr.host_type IN ('ipv4','ipv6') THEN ce.resolved_host_value END, tr.host_value) ASC " ++ limitFr
     DbMetrics.timed("traffic.listRawInRange")(
       select
@@ -3247,6 +3351,7 @@ class TrafficReportRepoLive(xa: Transactor[Task]) extends TrafficReportRepo {
       fromInstant: Instant,
       toInstant: Instant,
       stepSeconds: Long,
+      spans: Option[wifihaven.api.db.PresenceSpans] = None,
   ) = {
     type Row = (MacAddress, HostId, Instant, Instant, Int, Long, Long)
     val step      = math.max(1L, stepSeconds)
@@ -3266,7 +3371,10 @@ class TrafficReportRepoLive(xa: Transactor[Task]) extends TrafficReportRepo {
            WHERE period_start >= $fromInstant AND period_start < $toInstant
              AND (active_seconds > 0 OR bytes_in > 0 OR bytes_out > 0)
            """ ++ SqlFragments.householdRouterScope(household, "router_id") ++ fr" " ++
-        macFilter ++ fr"GROUP BY mac, host_type, host_value, date, bucket_start"
+        macFilter ++ spans.fold(Fragment.empty)(
+          SqlFragments.spanFilter(_, "mac", "period_start", fromInstant, toInstant),
+        ) ++
+        fr"GROUP BY mac, host_type, host_value, date, bucket_start"
     val select    =
       fr"""SELECT tr.mac,
                   CASE WHEN tr.host_type IN ('ipv4','ipv6') AND ce.resolved_host_value IS NOT NULL

@@ -222,32 +222,41 @@ object SpaWsS6aSpec
     def listForDevice(household: HouseholdId, mac: MacAddress, date: java.time.LocalDate) =
       underlying.listForDevice(household, mac, date)
     def listForRouter(routerId: RouterId, limit: Int) = underlying.listForRouter(routerId, limit)
-    def listTrafficRollupRows(household: HouseholdId, f: TrafficRollupFilter) =
+    def listTrafficRollupRows(household: HouseholdId, f: TrafficRollupFilter)              =
       underlying.listTrafficRollupRows(household, f)
+    def listPresenceRows(spans: wifihaven.api.db.PresenceSpans, date: java.time.LocalDate) =
+      dayLoads.update(_ + 1) *> underlying.listPresenceRows(spans, date)
     def listPresenceRows(
-        household: HouseholdId,
-        macs: List[MacAddress],
-        date: java.time.LocalDate,
+        spans: wifihaven.api.db.PresenceSpans,
+        from: java.time.LocalDate,
+        to: java.time.LocalDate,
     ) =
-      dayLoads.update(_ + 1) *> underlying.listPresenceRows(household, macs, date)
-    def listPresenceRows(
+      underlying.listPresenceRows(spans, from, to)
+    def listPresenceRowsSince(
+        spans: wifihaven.api.db.PresenceSpans,
+        date: java.time.LocalDate,
+        since: java.time.Instant,
+    ) =
+      underlying.listPresenceRowsSince(spans, date, since)
+    def listPresenceRowsInWindow(
+        spans: wifihaven.api.db.PresenceSpans,
+        fromInstant: java.time.Instant,
+        toInstant: java.time.Instant,
+    ) =
+      underlying.listPresenceRowsInWindow(spans, fromInstant, toInstant)
+    def listDevicePresenceRows(
         household: HouseholdId,
         macs: List[MacAddress],
         from: java.time.LocalDate,
         to: java.time.LocalDate,
-    ) = underlying.listPresenceRows(household, macs, from, to)
-    def listPresenceRowsSince(
-        household: HouseholdId,
-        macs: List[MacAddress],
-        date: java.time.LocalDate,
-        since: java.time.Instant,
-    ) = underlying.listPresenceRowsSince(household, macs, date, since)
-    def listPresenceRowsInWindow(
+    ) =
+      underlying.listDevicePresenceRows(household, macs, from, to)
+    def listDevicePresenceRowsInWindow(
         household: HouseholdId,
         macs: List[MacAddress],
         fromInstant: java.time.Instant,
         toInstant: java.time.Instant,
-    ) = underlying.listPresenceRowsInWindow(household, macs, fromInstant, toInstant)
+    ) = underlying.listDevicePresenceRowsInWindow(household, macs, fromInstant, toInstant)
     def listRawInRange(
         household: HouseholdId,
         macs: List[MacAddress],
@@ -255,14 +264,23 @@ object SpaWsS6aSpec
         toInstant: java.time.Instant,
         cursor: Option[wifihaven.api.usage.RawTrafficCursorKey],
         limit: Option[Int],
-    ) = underlying.listRawInRange(household, macs, fromInstant, toInstant, cursor, limit)
+        spans: Option[wifihaven.api.db.PresenceSpans],
+    ) = underlying.listRawInRange(household, macs, fromInstant, toInstant, cursor, limit, spans)
     def listRawAggregatedInRange(
         household: HouseholdId,
         macs: List[MacAddress],
         fromInstant: java.time.Instant,
         toInstant: java.time.Instant,
         stepSeconds: Long,
-    ) = underlying.listRawAggregatedInRange(household, macs, fromInstant, toInstant, stepSeconds)
+        spans: Option[wifihaven.api.db.PresenceSpans],
+    ) = underlying.listRawAggregatedInRange(
+      household,
+      macs,
+      fromInstant,
+      toInstant,
+      stepSeconds,
+      spans,
+    )
     def listFqdnHostAggregatesForDevice(
         household: HouseholdId,
         mac: MacAddress,
@@ -567,6 +585,82 @@ object SpaWsS6aSpec
         } yield assertTrue(framesOf(frames, "timeStatus").isEmpty) &&
           assertTrue(framesOf(frames, "appUsage").isEmpty) &&
           assertTrue(afterT == beforeT) && assertTrue(afterA == beforeA)
+      }
+    },
+    // #2844: the push attributes each presence row to the profile that held the device at the row's
+    // `period_start`. `kid-ipad` is on Kids until 12:00, then on Teens: its 10:00-10:30 usage stays
+    // with Kids and its 12:30-12:50 usage (plus the ingest that triggers the push) goes to Teens.
+    // Attributing by current profile would put all 50 minutes on Teens and leave Kids at 0.
+    test("a device moved mid-day splits its usage across both profiles in the timeStatus push") {
+      withHarness { (port, ingest, router, _) =>
+        val day                                          = testClockAt.toLocalDate
+        def at(h: Int, m: Int)                           =
+          day.atTime(h, m).toInstant(java.time.ZoneOffset.UTC)
+        def rows(start: java.time.Instant, minutes: Int) =
+          (0 until minutes / 5).toList.map { i =>
+            val s = start.plusSeconds(i * 300L)
+            TrafficReportInsert(
+              router.id,
+              MacAddress.unsafe(knownMac),
+              None,
+              HostId.Fqdn(Hostname.unsafe("youtube.com")),
+              day,
+              s,
+              s.plusSeconds(300),
+              300,
+              // Well above the heartbeat filter's byte floor, so every period counts as engaged.
+              500_000L,
+              500_000L,
+            )
+          }
+        for {
+          hsr <- ZIO.service[HouseholdSettingsRepo]
+          cur <- hsr.getForHousehold(HouseholdId.Default)
+          _   <- hsr.update(HouseholdId.Default, cur.copy(dailyResetTz = java.time.ZoneOffset.UTC))
+          teens  <- ZIO.serviceWithZIO[ProfileRepo](_.create("Teens", Nil))
+          dev    <- ZIO
+            .serviceWithZIO[DeviceRepo](
+              _.findByMacInHousehold(MacAddress.unsafe(knownMac), HouseholdId.Default),
+            )
+            .someOrFail(new RuntimeException("kid-ipad not seeded"))
+          trr    <- ZIO.service[TrafficReportRepo]
+          _      <- trr.insertBatch(rows(at(10, 0), 30))
+          _      <- ZIO.serviceWithZIO[DeviceAssignmentRepo](
+            _.assign(
+              HouseholdId.Default,
+              dev.id,
+              Some(teens),
+              at(12, 0),
+              AssignmentKind.Assigned,
+              None,
+              AssignmentEndCause.Reassigned,
+            ),
+          )
+          _      <- trr.insertBatch(rows(at(12, 30), 20))
+          tok    <- ZIO.serviceWithZIO[Clock](makeAuth).flatMap(adminToken)
+          frames <- collect(
+            port,
+            tok,
+            List(subTimeStatus),
+            trigger = ingestUsage(ingest, router, usageRecord("youtube.com", 30)),
+            wait = 4.seconds,
+          )
+          tFrames = framesOf(frames, "timeStatus")
+          pushed <- ZIO.fromEither(parseTimeStatus(tFrames.last)).mapError(new RuntimeException(_))
+          byName = pushed.map(p => p.profileName -> p).toMap
+          getBody <- getStr(port, tok, "/api/time/status")
+          got     <- ZIO
+            .fromEither(getBody.fromJson[List[ProfileTimeStatus]])
+            .mapError(e => new RuntimeException(s"parse GET ($e): $getBody"))
+          devMins = (p: ProfileTimeStatus) => p.devices.map(d => d.deviceName -> d.usedMins).toMap
+        } yield assertTrue(
+          byName("Kids").usedMins == 30,
+          byName("Teens").usedMins == 20,
+          // The moved device is listed under both profiles, credited only its in-interval usage.
+          devMins(byName("Kids")) == Map("kid-ipad" -> 30),
+          devMins(byName("Teens")) == Map("kid-ipad" -> 20),
+          pushed.toSet == got.toSet,
+        )
       }
     },
   ) @@ TestAspect.withLiveClock @@ TestAspect.sequential @@ TestAspect.timeout(120.seconds)

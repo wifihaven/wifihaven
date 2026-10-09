@@ -4,6 +4,7 @@ import wifihaven.api.db.{
   AmbientHostsRepo,
   AppTimeLimitRepo,
   AppUsedRollupRepo,
+  AttributionScope,
   DeviceRepo,
   HouseholdSettingsRepo,
   NoopAmbientHostsRepo,
@@ -274,8 +275,19 @@ object TimeUsedRollupJob {
               atlsP    <- ZIO.foreach(profiles)(p =>
                 appTimeLimitRepo.listForProfile(p.id).map(p.id -> _),
               )
-              presence <- trafficRepo.listPresenceRows(hh, devices.map(_.mac), today)
-              rolls = computeRolls(profiles, devices, atlsP.toMap, presence, settings, now, ambient)
+              // #2844: each profile rolls only the rows of the devices it held, while it held them.
+              scope    <- AttributionScope.forDay(deviceRepo, hh, today, settings)
+              presence <- trafficRepo.listPresenceRows(scope.allProfiles, today)
+              rolls = computeRolls(
+                profiles,
+                devices,
+                scope,
+                atlsP.toMap,
+                presence,
+                settings,
+                now,
+                ambient,
+              )
               n <- rollup.upsertBatch(today, rolls._1)
               _ <- appRollup.upsertBatch(today, rolls._2)
             } yield (n, rolls._3, rolls._4)
@@ -292,22 +304,20 @@ object TimeUsedRollupJob {
   private def computeRolls(
       profiles: List[wifihaven.shared.Profile],
       devices: List[wifihaven.shared.Device],
+      scope: AttributionScope,
       atlMap: Map[ProfileId, List[wifihaven.shared.AppTimeLimit]],
       presence: List[wifihaven.api.presence.PresenceRow],
       settings: wifihaven.shared.HouseholdSettings,
       now: Instant,
       ambient: AmbientGate = AmbientGate.Off,
   ): (Map[ProfileId, RolledDay], Map[(ProfileId, AppId), RolledAppDay], Int, Int) = {
-    val devsByP                                                                         =
-      devices.groupBy(_.profileId).collect { case (Some(pid), devs) => pid -> devs }
     // #2077: gate each profile's slice ONCE per tick (the write side of the rollup is the
     // canonical active-minute definition), accumulating the dropped-span watchdog count.
     // Precomputed per profile so the two consumers below (per-profile total, per-app roll)
     // share one gating pass and the drop count isn't double-counted.
     val gatedByProfile: Map[ProfileId, (List[wifihaven.api.presence.PresenceRow], Int)] =
       profiles.iterator.map { p =>
-        val mac    = devsByP.getOrElse(p.id, Nil).map(_.mac).toSet
-        val scoped = presence.filter(r => mac.contains(r.mac))
+        val scoped = scope.spansFor(p.id).filter(presence)
         p.id -> TimeStatusService.gatedPresenceWithDropCount(
           atlMap.getOrElse(p.id, Nil),
           scoped,
@@ -322,7 +332,7 @@ object TimeUsedRollupJob {
     val perProfile    = profiles.iterator.map { p =>
       val secs = TimeStatusService.usedSecondsForProfile(
         p,
-        devsByP.getOrElse(p.id, Nil),
+        scope.devicesFor(p.id, devices),
         atlMap.getOrElse(p.id, Nil),
         presFor(p.id),
         settings,

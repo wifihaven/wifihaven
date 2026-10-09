@@ -1,6 +1,6 @@
 package wifihaven.api.usage
 
-import wifihaven.api.db.{RollupRepo, RollupRow, TrafficReportRepo}
+import wifihaven.api.db.{AttributionScope, PresenceSpans, RollupRepo, RollupRow, TrafficReportRepo}
 import wifihaven.shared.*
 import wifihaven.shared.types.*
 import zio.*
@@ -93,16 +93,20 @@ object UsageTrafficQuery {
       macs: List[MacAddress],
       profileIds: List[ProfileId],
       devices: List[Device],
-  ): MacScope =
+      // #2844: which profile held which device over the read's window. A profile filter selects
+      // the devices the profiles held in the window (not the ones on them now), and restricts the
+      // read to the spans they held them for. Unused when no profile is named.
+      scope: AttributionScope,
+  ): MacScope = {
+    def byProfile(spans: PresenceSpans): MacScope =
+      MacScope.filtered(spans.macs, Some(spans))
     if (macs.nonEmpty) {
-      val byMac = devices.filter(d => macs.contains(d.mac))
-      MacScope.filtered(
-        if (profileIds.isEmpty) byMac.map(_.mac)
-        else byMac.filter(d => d.profileId.exists(profileIds.contains)).map(_.mac),
-      )
-    } else if (profileIds.nonEmpty)
-      MacScope.filtered(devices.filter(d => d.profileId.exists(profileIds.contains)).map(_.mac))
+      val byMac = devices.filter(d => macs.contains(d.mac)).map(_.mac)
+      if (profileIds.isEmpty) MacScope.filtered(byMac)
+      else byProfile(scope.spansForProfiles(profileIds).restrictTo(byMac.toSet))
+    } else if (profileIds.nonEmpty) byProfile(scope.spansForProfiles(profileIds))
     else MacScope.AllInHousehold
+  }
 
   /**
    * Fetch raw / rollup rows for `scope` over `[from, to)` at the tier the bucket+window selects,
@@ -134,7 +138,7 @@ object UsageTrafficQuery {
     val tier                                 = pickTier(bucket, Duration.between(from, to))
     val fetch: Task[List[TrafficUsageDbRow]] = scope.fold(
       ZIO.succeed(List.empty[TrafficUsageDbRow]),
-    ) { macs =>
+    ) { (macs, spans) =>
       tier match {
         // #2174: a UTC-grid display bucket on the raw tier (1m / 10m / 1h) pre-aggregates in SQL —
         // one row per (mac, host, bucket) instead of one per raw report period (755k rows / 24h at
@@ -154,14 +158,15 @@ object UsageTrafficQuery {
                   UsageTraffic.Bucket.OneHour,
                   Some(step),
                 ) =>
-              trafficRepo.listRawAggregatedInRange(household, macs, from, to, step.toSeconds)
+              trafficRepo
+                .listRawAggregatedInRange(household, macs, from, to, step.toSeconds, spans)
             case _ =>
-              trafficRepo.listRawInRange(household, macs, from, to)
+              trafficRepo.listRawInRange(household, macs, from, to, spans = spans)
           }
         case SourceTier.Hourly =>
-          rollupRepo.listHourlyInRange(household, macs, from, to).map(asDbRows)
+          rollupRepo.listHourlyInRange(household, macs, from, to, spans).map(asDbRows)
         case SourceTier.Daily  =>
-          rollupRepo.listDailyInRange(household, macs, from, to).map(asDbRows)
+          rollupRepo.listDailyInRange(household, macs, from, to, spans).map(asDbRows)
       }
     }
     fetch.map(rows =>

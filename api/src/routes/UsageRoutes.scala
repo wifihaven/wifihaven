@@ -376,7 +376,7 @@ object UsageRoutes {
 
   // #1099: resolve the whole visible profile set in ONE partition-pruned scan.
   // Loads devices once, unions every requested profile's macs, runs a single
-  // fetchPresenceDayWindow, then partitions the rows by mac and assembles each
+  // listPresenceRowsInWindow, then partitions the rows by profile span and assembles each
   // profile's response exactly as buildForProfile would. Per-profile read-access
   // checks are preserved so a caller can't widen its reach via the batch route.
   private def buildBatch(
@@ -416,20 +416,21 @@ object UsageRoutes {
         .mapValues(sl => sl.filter(_.exemptFromDaily).map(_.domainPattern))
         .toMap
       ambient      <- ambientRepo.gateFor(settings, date).mapError(ApiError.Db(_))
-      devicesByPid = pids.iterator
-        .map(pid => pid -> allDevices.filter(_.profileId.contains(pid)))
-        .toMap
-      allMacs      = devicesByPid.valuesIterator.flatten.map(_.mac).toList.distinct
-      rows <- fetchPresenceDayWindow(claims.hh, trafficRepo, allMacs, date, zone)
+      (from, to) = dayWindowOf(date, zone)
+      // #2844: each profile's series covers the devices it held during the day, and only their
+      // in-interval rows.
+      scope <- deviceRepo.attributionScope(claims.hh, from, to).mapError(ApiError.Db(_))
+      rows  <- trafficRepo
+        .listPresenceRowsInWindow(scope.spansForProfiles(pids), from, to)
+        .mapError(ApiError.Db(_))
     } yield {
       val series = profiles.map { profile =>
-        val devices   = devicesByPid.getOrElse(profile.id, Nil)
-        val macSet    = devices.iterator.map(_.mac).toSet
+        val devices   = scope.devicesFor(profile.id, allDevices)
         val nameByMac = devices.iterator.map(d => d.mac -> d.name).toMap
         // #2077: gate each profile's slice with its own app-attribution context.
         val pRows     = wifihaven.api.policy.TimeStatusService.gatedPresence(
           appLimsByPid.getOrElse(profile.id, Nil),
-          rows.filter(r => macSet.contains(r.mac)),
+          scope.spansFor(profile.id).filter(rows),
           settings,
           ambient,
         )
@@ -515,14 +516,16 @@ object UsageRoutes {
   ): IO[ApiError, ProfileUsageByApp] = {
     val continuationSeconds = settings.presenceContinuationSeconds
     for {
-      profile <- profileRepo
+      profile   <- profileRepo
         .findById(pid)
         .mapError(ApiError.Db(_))
         .flatMap(ZIO.fromOption(_).orElseFail(ApiError.NotFound("Profile not found")))
-      allDevs <- deviceRepo.listAllForHousehold(household).mapError(ApiError.Db(_))
-      macs = allDevs.collect { case d if d.profileId.contains(pid) => d.mac }
-      raw       <- (if (macs.isEmpty) ZIO.succeed(Nil)
-              else trafficRepo.listPresenceRows(household, macs, from, to))
+      // #2844: the rows of the devices this profile held, while it held them.
+      scope     <- AttributionScope
+        .forRange(deviceRepo, household, from, to, settings)
+        .mapError(ApiError.Db(_))
+      raw       <- trafficRepo
+        .listPresenceRows(scope.spansFor(pid), from, to)
         .mapError(ApiError.Db(_))
       appList   <- appRepo.listAll.mapError(ApiError.Db(_))
       mappings  <- appRepo.listAllHostMappings.mapError(ApiError.Db(_))
@@ -940,7 +943,12 @@ object UsageRoutes {
         .mapError(ApiError.Db(_))
         .flatMap(ZIO.fromOption(_).orElseFail(ApiError.NotFound("Device not found")))
       _         <- requireProfileReadAccess(claims, device.profileId, userProfileRepo, profileRepo)
-      raw       <- fetchPresenceDayWindow(claims.hh, trafficRepo, List(mac), date, zone)
+      raw       <- {
+        val (from, to) = dayWindowOf(date, zone)
+        trafficRepo
+          .listDevicePresenceRowsInWindow(claims.hh, List(mac), from, to)
+          .mapError(ApiError.Db(_))
+      }
       appLimits <- device.profileId
         .fold(ZIO.succeed(List.empty[wifihaven.shared.AppTimeLimit]))(pid =>
           appTimeLimitRepo.listForProfile(pid),
@@ -1028,11 +1036,15 @@ object UsageRoutes {
       // instead of re-deriving the filter inline — the same §single-source-of-truth shape the
       // collapse exists to enforce. Both sides agree on the current input (the repo returns rows
       // for every mode), so this is a structural cleanup rather than a behavior change.
-      exempt    = wifihaven.api.policy.ProfileAppDispositions.from(appLimits).exemptPatterns
-      devices   = all.filter(_.profileId.contains(pid))
-      macs      = devices.map(_.mac)
+      exempt     = wifihaven.api.policy.ProfileAppDispositions.from(appLimits).exemptPatterns
+      (from, to) = dayWindowOf(date, zone)
+      // #2844: the devices the profile held during the day, and only their in-interval rows.
+      scope <- deviceRepo.attributionScope(claims.hh, from, to).mapError(ApiError.Db(_))
+      devices   = scope.devicesFor(pid, all)
       nameByMac = devices.iterator.map(d => d.mac -> d.name).toMap
-      raw     <- fetchPresenceDayWindow(claims.hh, trafficRepo, macs, date, zone)
+      raw     <- trafficRepo
+        .listPresenceRowsInWindow(scope.spansFor(pid), from, to)
+        .mapError(ApiError.Db(_))
       // #2077: gate the presence-derived series with the same definition as the daily headline.
       ambient <- ambientRepo.gateFor(settings, date).mapError(ApiError.Db(_))
       rows = wifihaven.api.policy.TimeStatusService
@@ -1085,21 +1097,11 @@ object UsageRoutes {
   // whose `tr.date` predicate defeated pruning and let one profile scan the
   // whole table for 90s. The row set is identical: both select exactly the
   // rows whose period_start falls in the local day.
-  private def fetchPresenceDayWindow(
-      household: HouseholdId,
-      trafficRepo: TrafficReportRepo,
-      macs: List[MacAddress],
-      date: LocalDate,
-      zone: ZoneId,
-  ): IO[ApiError, List[wifihaven.api.presence.PresenceRow]] =
-    if (macs.isEmpty) ZIO.succeed(Nil)
-    else {
-      val from = date.atStartOfDay(zone).toInstant
-      val to   = date.plusDays(1).atStartOfDay(zone).toInstant
-      trafficRepo
-        .listPresenceRowsInWindow(household, macs, from, to)
-        .mapError(ApiError.Db(_))
-    }
+  //
+  // #2844: the presence read and the attribution scope share this one window, so a profile's
+  // spans and its rows are bounded by the same instants.
+  private def dayWindowOf(date: LocalDate, zone: ZoneId): (Instant, Instant) =
+    (date.atStartOfDay(zone).toInstant, date.plusDays(1).atStartOfDay(zone).toInstant)
 
   // ── #846 Traffic Usage page ───────────────────────────────────────────────
   //
@@ -1201,7 +1203,7 @@ object UsageRoutes {
       // single value still works ("mac=aa:bb:cc:dd:ee:01"). Empty/absent =
       // no filter on that column.
       macsRaw = parseMultiValueParam(req, "mac").map(s => MacAddress.unsafe(normalizeMac(s)))
-      profileIds <- parseMultiProfileIdParam(req)
+      profileIds  <- parseMultiProfileIdParam(req)
       // Retention gating per #814 is not yet wired (rollup tables + horizons endpoint
       // are dependencies). We still expose the 409 contract by emitting it when the
       // window straddles a horizon we DO know about — but until #814, the only
@@ -1211,7 +1213,7 @@ object UsageRoutes {
       // Resolve mac filter from macs / profileIds / "all visible to admin".
       // When both lists are non-empty, intersect: devices that match any
       // selected mac AND belong to any selected profile.
-      allDevices <- deviceRepo.listAllForHousehold(claims.hh).mapError(ApiError.Db(_))
+      allDevices  <- deviceRepo.listAllForHousehold(claims.hh).mapError(ApiError.Db(_))
       // #1971: the device-set RESULT is computed by the shared
       // `UsageTrafficQuery.resolveMacs` (one source, also used by the S4 live-edge stream so the two
       // can't drift on filter semantics). This handler keeps the HTTP-only guards around it: a
@@ -1221,7 +1223,11 @@ object UsageRoutes {
       // supplied" are distinct constructors, so the hand-rolled `macs.isEmpty && (macsRaw.nonEmpty
       // || profileIds.nonEmpty)` short-circuits below are gone. A household with ZERO devices is
       // the case those guards missed.
-      macScope   <- (macsRaw, profileIds) match {
+      // #2844: a profile filter selects what the profiles held during `[fromI, toI)`, by interval.
+      attribution <-
+        if (profileIds.isEmpty) ZIO.succeed(AttributionScope.empty(claims.hh))
+        else deviceRepo.attributionScope(claims.hh, fromI, toI).mapError(ApiError.Db(_))
+      macScope    <- (macsRaw, profileIds) match {
         case (ms, _) if ms.nonEmpty     =>
           for {
             devs <- ZIO.foreach(ms) { mac =>
@@ -1232,17 +1238,17 @@ object UsageRoutes {
             _    <- ZIO.foreach(devs.flatMap(_.profileId).distinct) { pid =>
               requireProfileReadAccess(claims, Some(pid), userProfileRepo, profileRepo)
             }
-          } yield UsageTrafficQuery.resolveMacs(ms, profileIds, allDevices)
+          } yield UsageTrafficQuery.resolveMacs(ms, profileIds, allDevices, attribution)
         case (_, pids) if pids.nonEmpty =>
           ZIO
             .foreach(pids)(pid =>
               requireProfileReadAccess(claims, Some(pid), userProfileRepo, profileRepo),
             )
-            .as(UsageTrafficQuery.resolveMacs(Nil, pids, allDevices))
+            .as(UsageTrafficQuery.resolveMacs(Nil, pids, allDevices, attribution))
         case _                          =>
           // No filter: admin/adult only. Children must scope to their profile.
           if (claims.role == "admin" || claims.role == "adult")
-            ZIO.succeed(UsageTrafficQuery.resolveMacs(Nil, Nil, allDevices))
+            ZIO.succeed(UsageTrafficQuery.resolveMacs(Nil, Nil, allDevices, attribution))
           else
             ZIO.fail(
               ApiError.Forbidden("mac or profileId required for non-admin"),
@@ -1253,7 +1259,7 @@ object UsageRoutes {
       // at ingest into traffic_reports_filtered_zero_bytes_total (see
       // RouterIngestRoutes.handleUsage), so a return of the #858 regression is
       // now a metric rather than a per-request log.
-      profiles   <- profileRepo.listAllForHousehold(claims.hh).mapError(ApiError.Db(_))
+      profiles    <- profileRepo.listAllForHousehold(claims.hh).mapError(ApiError.Db(_))
       profNames = profiles.iterator.map(p => p.id -> p.name).toMap
       devByMac  = allDevices.iterator.map(d => d.mac -> d).toMap
       // #769: load (host → app memberships) for app grouping. Only fetched
@@ -1310,9 +1316,9 @@ object UsageRoutes {
             }
             pagedRows <- macScope.fold(
               ZIO.succeed(List.empty[wifihaven.api.usage.TrafficUsageDbRow]),
-            )(macs =>
+            )((macs, spans) =>
               trafficRepo
-                .listRawInRange(claims.hh, macs, fromI, toI, rawCursor, Some(rawLimit))
+                .listRawInRange(claims.hh, macs, fromI, toI, rawCursor, Some(rawLimit), spans)
                 .mapError(ApiError.Db(_)),
             )
             built   = UsageTraffic.buildRaw(pagedRows, devByMac, profNames)

@@ -3,6 +3,7 @@ package wifihaven.api.usage
 import wifihaven.api.db.{
   AmbientHostsRepo,
   AppTimeLimitRepo,
+  AttributionScope,
   DeviceRepo,
   HouseholdSettingsRepo,
   ProfileRepo,
@@ -13,7 +14,7 @@ import wifihaven.api.metrics.AppMetrics
 import wifihaven.api.policy.{PolicyService, TimeStatusService}
 import wifihaven.api.presence.Presence
 import wifihaven.shared.Clock
-import wifihaven.shared.types.HouseholdId
+import wifihaven.shared.types.{HouseholdId, ProfileId}
 import zio.*
 
 import java.time.{Duration, Instant, LocalDate}
@@ -273,19 +274,27 @@ object AmbientLearnJob {
                 atlsP    <- ZIO.foreach(profiles)(p =>
                   appTimeLimitRepo.listForProfile(p.id).map(p.id -> _),
                 )
-                presence <- trafficRepo.listPresenceRows(hh, devices.map(_.mac), yesterday)
+                // #2844: a row learns under the profile that held its device at the row's
+                // `period_start`. The scope's rows plus the household's unattributed remainder
+                // (a device with no profile for part or all of the day) cover every row once.
+                scope    <- AttributionScope.forDay(deviceRepo, hh, yesterday, settings)
+                presence <- trafficRepo
+                  .listDevicePresenceRows(hh, devices.map(_.mac), yesterday, yesterday)
               } yield {
-                val atlMap  = atlsP.toMap
-                val devsByP = devices.groupBy(_.profileId)
+                val atlMap     = atlsP.toMap
+                val byProfile  =
+                  profiles.map(p => Option(p.id) -> scope.spansFor(p.id).filter(presence))
+                val attributed = scope.allProfiles
+                val groups     =
+                  byProfile :+ (Option.empty[ProfileId] -> presence.filterNot(attributed.contains))
                 // Learn per profile-group so each device's spans see its own profile's
-                // app-attribution context; devices with no profile learn with none. Counts merge
+                // app-attribution context; rows no profile held learn with none. Counts merge
                 // across groups (the baseline is household-wide).
-                val acc     = scala.collection.mutable.Map.empty[String, Int]
-                devsByP.foreach { case (pidOpt, devs) =>
-                  val macSet  = devs.map(_.mac).toSet
+                val acc = scala.collection.mutable.Map.empty[String, Int]
+                groups.foreach { case (pidOpt, rows) =>
                   val appPats = pidOpt.map(pid => atlMap.getOrElse(pid, Nil)).getOrElse(Nil)
                   val learned = Presence.isolatedSpanHosts(
-                    presence.filter(r => macSet.contains(r.mac)),
+                    rows,
                     settings.ambientIsolationMaxHosts,
                     settings.heartbeatFilter,
                     settings.presenceContinuationSeconds,

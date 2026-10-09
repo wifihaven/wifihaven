@@ -207,6 +207,7 @@ object UsageTraffic {
   ): List[TrafficUsageRawRow] =
     rows.map { r =>
       val dev      = deviceByMac.get(r.mac)
+      // TODO(#2875): label by the profile whose span covers `periodStart`, not the current one.
       val profId   = dev.flatMap(_.profileId)
       val profName = profId.flatMap(profileNameById.get)
       TrafficUsageRawRow(
@@ -260,6 +261,7 @@ object UsageTraffic {
 
     def deviceLabel(mac: MacAddress): String              =
       deviceByMac.get(mac).map(_.name).getOrElse(mac.value)
+    // TODO(#2875): label by the profile whose span covers the row's bucket, not the current one.
     def profileLabel(mac: MacAddress): String             =
       deviceByMac
         .get(mac)
