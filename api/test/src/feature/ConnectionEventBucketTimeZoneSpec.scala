@@ -5,7 +5,6 @@ import cats.syntax.all.*
 import doobie.implicits.*
 import doobie.postgres.implicits.*
 import io.zonky.test.db.postgres.embedded.EmbeddedPostgres
-import wifihaven.api.DbConfig
 import wifihaven.api.db.*
 import wifihaven.api.policy.PolicyService
 import wifihaven.shared.*
@@ -29,7 +28,7 @@ import java.time.{Instant, LocalDate}
  */
 object ConnectionEventBucketTimeZoneSpec
     extends ZIOSpec[
-      TestDatabase.AllRepos & EmbeddedPostgres & TestDatabase.TestDb & Transactor[Task],
+      TestDatabase.AllRepos & EmbeddedPostgres & Transactor[Task],
     ] {
 
   override val bootstrap = TestDatabase.layer
@@ -122,25 +121,6 @@ object ConnectionEventBucketTimeZoneSpec
         ),
         windows(rows) == List(("2026-03-02T01:00:00Z", 1), ("2026-03-02T10:00:00Z", 1)),
       )
-    },
-    // The production pool pins every connection to UTC, so other session-zone-dependent SQL
-    // (`date_trunc` on a timestamptz, `::DATE` -> `::TIMESTAMPTZ` casts) behaves the same on a
-    // developer laptop as on a UTC server. pgjdbc sends the JVM's default zone as the session
-    // `TimeZone` at connect, so without the pin this fails on any non-UTC JVM (a laptop); on a UTC
-    // CI runner it passes either way, and the `SET TIME ZONE` cases above are the ones CI can fail.
-    test("the production transactor's connections run in UTC") {
-      for {
-        pg <- ZIO.service[EmbeddedPostgres]
-        db <- ZIO.service[TestDatabase.TestDb]
-        cfg = DbConfig("localhost", pg.getPort, db.name, "postgres", "", 2)
-        zone <- ZIO.scoped(
-          Database.transactorLayer.build
-            .provideSomeLayer[Scope](ZLayer.succeed(cfg))
-            .flatMap(env =>
-              sql"SHOW TimeZone".query[String].unique.transact(env.get[Transactor[Task]]),
-            ),
-        )
-      } yield assertTrue(zone == "UTC")
     },
   ) @@ TestAspect.sequential
 }

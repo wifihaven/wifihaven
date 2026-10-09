@@ -22,12 +22,6 @@ object Database {
    */
   final case class DbPool(dataSource: HikariDataSource, maxSize: Int)
 
-  // #2872: every pooled connection runs in UTC. pgjdbc otherwise sends the JVM's default zone as
-  // the session `TimeZone`, and SQL that converts between `timestamp`/`date` and `timestamptz`
-  // (`date_trunc` on a timestamptz, `::DATE` -> `::TIMESTAMPTZ` casts) would then bucket by the
-  // host's local zone: a developer laptop and a UTC server would compute different boundaries.
-  private[db] val SessionInitSql = "SET TIME ZONE 'UTC'"
-
   private def makeDataSource(cfg: DbConfig): HikariDataSource = {
     val ds = new HikariDataSource()
     ds.setJdbcUrl(s"jdbc:postgresql://${cfg.host}:${cfg.port}/${cfg.database}")
@@ -46,7 +40,6 @@ object Database {
     ds.setInitializationFailTimeout(cfg.resilience.initializationFailTimeoutMillis)
     ds.setIdleTimeout(600000)
     ds.setMaxLifetime(1800000)
-    ds.setConnectionInitSql(SessionInitSql)
     ds
   }
 

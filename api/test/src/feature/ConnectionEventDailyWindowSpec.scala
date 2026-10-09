@@ -23,8 +23,7 @@ import java.time.{Instant, LocalDate}
  * `idx_ce_daily_date`) without changing the result.
  *
  * Each date gets its own hostname and the series is grouped by domain, so the assertion is the set
- * of dates the window admitted. `windowStart` is not asserted: it follows date_bin's origin in the
- * session time zone (#2872).
+ * of dates the window admitted, each with the UTC-midnight `windowStart` of its own date.
  */
 object ConnectionEventDailyWindowSpec
     extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Transactor[Task]] {
@@ -50,7 +49,8 @@ object ConnectionEventDailyWindowSpec
       )
     } yield ()
 
-  // The hostnames (one per date) the daily series admits for a window ending at `until`.
+  // The (windowStart, hostname) pairs (one per date) the daily series admits for a window ending at
+  // `until`.
   private def admitted(until: String, hours: Int) =
     ZIO
       .serviceWithZIO[ConnectionEventRepo](
@@ -65,9 +65,10 @@ object ConnectionEventDailyWindowSpec
           BucketGrain.Daily,
         ),
       )
-      .map(_.flatMap(_.groups.get("domain")).toSet)
+      .map(_.flatMap(r => r.groups.get("domain").map(h => (r.windowStart, h))).toSet)
 
-  private def hosts(days: Int*) = days.map(d => host(LocalDate.of(2026, 3, d))).toSet
+  private def hosts(days: Int*) =
+    days.map(d => LocalDate.of(2026, 3, d)).map(d => (s"${d}T00:00:00Z", host(d))).toSet
 
   def spec = suite("daily-rollup /series window edges (#2874)")(
     test("anchor at UTC midnight: the anchor's date is in, the lower bound's date is out") {
