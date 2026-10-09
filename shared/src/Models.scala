@@ -1344,14 +1344,14 @@ object ConnectionEventBucket {
 }
 
 // #846: groupBy is now a comma-separated set. Apex is deferred to #856
-// (needs PSL), App to #857 (needs apps track). Device/Profile/Domain are
+// (needs PSL), App to #857 (needs apps track). Device/Domain/App are
 // composable — e.g. groupBy=device,domain returns one row per
-// (window, device, domain).
+// (window, device, domain). #2873 removed profile grouping; the route
+// rejects `groupBy=profile` with a 400 that says so.
 enum ConnectionEventGroupBy(val wire: String) {
-  case Domain  extends ConnectionEventGroupBy("domain")
-  case Device  extends ConnectionEventGroupBy("device")
-  case Profile extends ConnectionEventGroupBy("profile")
-  case App     extends ConnectionEventGroupBy("app")
+  case Domain extends ConnectionEventGroupBy("domain")
+  case Device extends ConnectionEventGroupBy("device")
+  case App    extends ConnectionEventGroupBy("app")
 }
 
 object ConnectionEventGroupBy {

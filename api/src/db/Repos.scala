@@ -1439,7 +1439,7 @@ trait ConnectionEventRepo {
   def listForRouter(routerId: RouterId, limit: Int): Task[List[ConnectionEvent]]
   def query(f: LogFilter): Task[List[QueryLog]]
   // #846: multi-column grouping. `groupBy` is the set of column names from
-  // {"domain","device","profile"}; the repo returns one row per
+  // {"domain","device","app"}; the repo returns one row per
   // (window, *grouped-column-values*) with distinct-counts for the rest.
   def querySeries(
       f: LogFilter,
@@ -3888,8 +3888,9 @@ class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo 
       // that held the device at the start of its STORED bucket (`tsBin`: the hour for hourly, the
       // UTC day for daily). A bucket that straddles a reassignment or check-in is attributed whole
       // to the earlier holder: off by at most one stored bucket on the series chart. For a shared
-      // device on the daily grain that miss recurs every day it has no holder at 00:00 UTC, which
-      // #2873 tracks. Daily-limit math does not read these tables (it uses presence, §6.1).
+      // device on the daily grain that miss would recur every day it has no holder at 00:00 UTC, so
+      // `LogRoutes.seriesGrain` serves profile reads from hourly (#2873). Daily-limit math does not
+      // read these tables (it uses presence, §6.1).
       SqlFragments.deviceLabelJoin("cer.mac", tsBin)
     val anchor    = f.until.fold(fr"NOW()")(u => fr"$u::TIMESTAMPTZ")
     val lower     = anchor ++ fr"- make_interval(hours => ${f.hours})"
@@ -3987,11 +3988,13 @@ class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo 
     val profileExpr = fr"COALESCE(p.name, '(unassigned)')"
 
     // #917: strictly additive — empty set = no drill, one row per window.
-    // Multi-group composes freely across {domain, device, profile, app}.
-    val wantsDomain  = groupBy.contains("domain")
-    val wantsDevice  = groupBy.contains("device")
-    val wantsProfile = groupBy.contains("profile")
-    val wantsApp     = groupBy.contains("app")
+    // Multi-group composes freely across {domain, device, app}. #2873: no profile grouping — a
+    // rollup row's profile is its holder at bucket start, so on the daily rollup a shared device's
+    // whole day would be grouped under its 00:00 UTC holder. `distinctProfiles`/`soleProfile` still
+    // carry that bucket-start label; they are exact only on the raw path.
+    val wantsDomain = groupBy.contains("domain")
+    val wantsDevice = groupBy.contains("device")
+    val wantsApp    = groupBy.contains("app")
 
     // #862: the window bucket uses the full date_bin/to_char expression (not
     // the SELECT alias) so the HAVING clause for the keyset cursor below can
@@ -4059,7 +4062,6 @@ class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo 
         // the result tuple has a constant shape and doobie can decode it.
         val selDomain  = if (wantsDomain) domainExpr else fr"NULL::TEXT"
         val selDevice  = if (wantsDevice) deviceExpr else fr"NULL::TEXT"
-        val selProfile = if (wantsProfile) profileExpr else fr"NULL::TEXT"
         val selAppSlug = appSlugExpr
         val selAppName = appNameExpr
         val selAppIcon = appIconExpr
@@ -4076,7 +4078,6 @@ class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo 
           Some(winExpr),
           Option.when(wantsDomain)(domainExpr),
           Option.when(wantsDevice)(deviceExpr),
-          Option.when(wantsProfile)(profileExpr),
           Option.when(hasAppMap)(appSlugExpr),
           Option.when(hasAppMap)(appNameExpr),
           Option.when(hasAppMap)(appIconExpr),
@@ -4090,7 +4091,6 @@ class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo 
         val groupKeyParts = List(
           Option.when(wantsDomain)(fr"COALESCE(" ++ domainExpr ++ fr", '')"),
           Option.when(wantsDevice)(fr"COALESCE(" ++ deviceExpr ++ fr", '')"),
-          Option.when(wantsProfile)(fr"COALESCE(" ++ profileExpr ++ fr", '')"),
         ).flatten
         val groupKeyExpr  = groupKeyParts match {
           case Nil   => fr"''"
@@ -4117,7 +4117,6 @@ class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo 
         val base    =
           fr"""SELECT """ ++ selDomain ++ fr"AS grp_domain," ++
             selDevice ++ fr"AS grp_device," ++
-            selProfile ++ fr"AS grp_profile," ++
             selAppSlug ++ fr"AS grp_app_slug," ++
             selAppName ++ fr"AS grp_app_name," ++
             selAppIcon ++ fr"AS grp_app_icon," ++
@@ -4168,7 +4167,6 @@ class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo 
             (
                 Option[String], // grp_domain
                 Option[String], // grp_device
-                Option[String], // grp_profile
                 Option[String], // grp_app_slug
                 Option[String], // grp_app_name
                 Option[String], // grp_app_icon
@@ -4192,7 +4190,6 @@ class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo 
             case (
                   gd,
                   gv,
-                  gp,
                   gas,
                   gan,
                   gai,
@@ -4214,7 +4211,6 @@ class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo 
               val groupMap = scala.collection.mutable.LinkedHashMap.empty[String, String]
               gd.foreach(v => groupMap += ("domain" -> v))
               gv.foreach(v => groupMap += ("device" -> v))
-              gp.foreach(v => groupMap += ("profile" -> v))
               gas.foreach(v => groupMap += ("app" -> v))
               // Only surface sole* when the column is NOT in groupBy — when it IS,
               // the value is already in `groups`.
@@ -4230,7 +4226,7 @@ class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo 
                 distinctDomains = dm,
                 distinctApps = dap,
                 soleDevice = if (wantsDevice) None else sde,
-                soleProfile = if (wantsProfile) None else spr,
+                soleProfile = spr,
                 soleDomain = if (wantsDomain) None else sdo,
                 soleApp = if (wantsApp) None else sap,
                 // appId is the BIGINT primary key for the apps table; #1526:

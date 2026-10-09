@@ -484,7 +484,7 @@ object MultiTenantIsolationSpec
         cer <- ZIO.service[ConnectionEventRepo]
         up  <- ZIO.service[UserProfileRepo]
         ts = Instant.parse("2026-05-07T14:00:00Z")
-        _      <- cer.insertBatch(
+        _           <- cer.insertBatch(
           List(
             ConnectionEventInsert(
               two.routerIdA,
@@ -506,9 +506,9 @@ object MultiTenantIsolationSpec
             ),
           ),
         )
-        auth   <- makeAuth
-        tokenA <- login(auth, two.adminA, two.password)
-        routes = LogRoutes.routes(auth, cer, up)
+        auth        <- makeAuth
+        tokenA      <- login(auth, two.adminA, two.password)
+        routes      <- ZIO.serviceWith[Clock](LogRoutes.routes(auth, cer, up, _))
         // `hours` widens the connection_events window (anchored at SQL NOW(), real wall-clock) so it
         // reaches back to the fixed-instant events seeded above.
         (sA, bodyA) <- getJson(routes, "/api/logs?hours=1000000", tokenA)
@@ -547,7 +547,7 @@ object MultiTenantIsolationSpec
           dr.upsert(macM, "sharedB", Some(two.profileB), "", two.hhB)
         ts = Instant.parse("2026-05-07T14:00:00Z")
         // Exactly ONE event, behind household A's router.
-        _      <- cer.insertBatch(
+        _           <- cer.insertBatch(
           List(
             ConnectionEventInsert(
               two.routerIdA,
@@ -560,9 +560,9 @@ object MultiTenantIsolationSpec
             ),
           ),
         )
-        auth   <- makeAuth
-        tokenA <- login(auth, two.adminA, two.password)
-        routes = LogRoutes.routes(auth, cer, up)
+        auth        <- makeAuth
+        tokenA      <- login(auth, two.adminA, two.password)
+        routes      <- ZIO.serviceWith[Clock](LogRoutes.routes(auth, cer, up, _))
         (sA, bodyA) <- getJson(routes, "/api/logs?hours=1000000", tokenA)
         pageA <- ZIO.fromEither(bodyA.fromJson[QueryLogPage]).mapError(new RuntimeException(_))
       } yield assertTrue(sA == Status.Ok) &&
@@ -598,7 +598,7 @@ object MultiTenantIsolationSpec
         devIdB <-
           dr.upsert(macM, "sharedB", Some(two.profileB), "", two.hhB)
         ts = Instant.parse("2026-05-07T14:00:00Z")
-        _      <- cer.insertBatch(
+        _               <- cer.insertBatch(
           List(
             ConnectionEventInsert(
               two.routerIdA,
@@ -611,9 +611,9 @@ object MultiTenantIsolationSpec
             ),
           ),
         )
-        auth   <- makeAuth
-        tokenA <- login(auth, two.adminA, two.password)
-        routes = LogRoutes.routes(auth, cer, up)
+        auth            <- makeAuth
+        tokenA          <- login(auth, two.adminA, two.password)
+        routes          <- ZIO.serviceWith[Clock](LogRoutes.routes(auth, cer, up, _))
         // Household A filters by household B's deviceId, then by B's profileId.
         (sDev, bodyDev) <- getJson(
           routes,
@@ -654,7 +654,7 @@ object MultiTenantIsolationSpec
           dr.upsert(macM, "sharedB", Some(two.profileB), "", two.hhB)
         // The series window is anchored on SQL NOW() (real wall-clock), not the injected TestClock.
         now = Instant.now()
-        _      <- cer.insertBatch(
+        _           <- cer.insertBatch(
           List(
             ConnectionEventInsert(
               two.routerIdA,
@@ -667,20 +667,20 @@ object MultiTenantIsolationSpec
             ),
           ),
         )
-        auth   <- makeAuth
-        tokenA <- login(auth, two.adminA, two.password)
-        routes = LogRoutes.routes(auth, cer, up)
-        // bucket=1h + default hours=24 stays on the raw `querySeries` path. Group by BOTH labels:
-        // `p.name` rides the same `d.profile_id`, so the profile label is scoped by the same join
-        // and is worth asserting directly rather than inferring.
+        auth        <- makeAuth
+        tokenA      <- login(auth, two.adminA, two.password)
+        routes      <- ZIO.serviceWith[Clock](LogRoutes.routes(auth, cer, up, _))
+        // bucket=1h + default hours=24 stays on the raw `querySeries` path. Group by device and read
+        // the row's sole profile: `p.name` rides the same label join, so the profile label is scoped
+        // by it too and is worth asserting directly rather than inferring.
         (sA, bodyA) <- getJson(
           routes,
-          "/api/connection-events/series?bucket=1h&groupBy=device,profile",
+          "/api/connection-events/series?bucket=1h&groupBy=device",
           tokenA,
         )
         pageA       <- ZIO.fromEither(bodyA.fromJson[ConnectionEventSeriesPage])
         devices  = pageA.rows.flatMap(_.groups.get("device"))
-        profiles = pageA.rows.flatMap(_.groups.get("profile"))
+        profiles = pageA.rows.flatMap(_.soleProfile)
       } yield assertTrue(sA == Status.Ok) &&
         assertTrue(devices == List("sharedA"), profiles == List("A-Kids")) &&
         assertTrue(pageA.rows.map(_.countSucceeded).sum == 1)
@@ -699,7 +699,7 @@ object MultiTenantIsolationSpec
         _   <-
           dr.upsert(macM, "sharedB", Some(two.profileB), "", two.hhB)
         now = Instant.now()
-        _      <- cer.insertBatch(
+        _           <- cer.insertBatch(
           List(
             ConnectionEventInsert(
               two.routerIdA,
@@ -712,10 +712,10 @@ object MultiTenantIsolationSpec
             ),
           ),
         )
-        _      <- cer.rerollConnEventsHourly(now.minus(java.time.Duration.ofHours(2)))
-        auth   <- makeAuth
-        tokenA <- login(auth, two.adminA, two.password)
-        routes = LogRoutes.routes(auth, cer, up)
+        _           <- cer.rerollConnEventsHourly(now.minus(java.time.Duration.ofHours(2)))
+        auth        <- makeAuth
+        tokenA      <- login(auth, two.adminA, two.password)
+        routes      <- ZIO.serviceWith[Clock](LogRoutes.routes(auth, cer, up, _))
         // bucket=1h + hours=48 routes to the hourly rollup (querySeriesRollup).
         (sA, bodyA) <- getJson(
           routes,
@@ -746,7 +746,7 @@ object MultiTenantIsolationSpec
         // Real wall-clock now: the series window is anchored on SQL NOW() (real time), not the
         // injected TestClock, so the seeded events must be near real now to land in a raw-path window.
         now = Instant.now()
-        _      <- cer.insertBatch(
+        _           <- cer.insertBatch(
           List(
             // Household A: 2 succeeded to `a-series.example.com` behind A's router, MAC macA.
             ConnectionEventInsert(
@@ -780,9 +780,9 @@ object MultiTenantIsolationSpec
             ),
           ),
         )
-        auth   <- makeAuth
-        tokenA <- login(auth, two.adminA, two.password)
-        routes = LogRoutes.routes(auth, cer, up)
+        auth        <- makeAuth
+        tokenA      <- login(auth, two.adminA, two.password)
+        routes      <- ZIO.serviceWith[Clock](LogRoutes.routes(auth, cer, up, _))
         // bucket=1h + default hours=24 stays on the raw `querySeries` path (BucketPolicy: Raw grain).
         (sA, bodyA) <- getJson(
           routes,
@@ -811,7 +811,7 @@ object MultiTenantIsolationSpec
         cer <- ZIO.service[ConnectionEventRepo]
         up  <- ZIO.service[UserProfileRepo]
         now = Instant.now()
-        _      <- cer.insertBatch(
+        _           <- cer.insertBatch(
           List(
             ConnectionEventInsert(
               two.routerIdA,
@@ -844,10 +844,10 @@ object MultiTenantIsolationSpec
           ),
         )
         // Populate the hourly rollup so the rollup-backed path (querySeriesRollup) has data.
-        _      <- cer.rerollConnEventsHourly(now.minus(java.time.Duration.ofHours(2)))
-        auth   <- makeAuth
-        tokenA <- login(auth, two.adminA, two.password)
-        routes = LogRoutes.routes(auth, cer, up)
+        _           <- cer.rerollConnEventsHourly(now.minus(java.time.Duration.ofHours(2)))
+        auth        <- makeAuth
+        tokenA      <- login(auth, two.adminA, two.password)
+        routes      <- ZIO.serviceWith[Clock](LogRoutes.routes(auth, cer, up, _))
         // bucket=1h + hours=48 routes to the hourly rollup (querySeriesRollup) per BucketPolicy.
         (sA, bodyA) <- getJson(
           routes,

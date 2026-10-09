@@ -27,11 +27,14 @@ const AGG_HOURS_BAND = 24 * 30
 
 // #846 — Connection Events page. Same look/feel as Traffic Usage; column
 // headers double as group-by toggles. apex deferred to #856; app turned on
-// by #769 (server-side join through app_hosts).
-type EventsGroupBy = 'domain' | 'device' | 'profile' | 'app'
+// by #769 (server-side join through app_hosts). #2873: no profile grouping or
+// Profile column in the aggregated view. A rollup row's profile is whoever held
+// the device at the bucket's start, so a shared device's day would show as
+// unassigned. The profile filter stays, in the Device header.
+type EventsGroupBy = 'domain' | 'device' | 'app'
 type EventsBucket  = TrafficUsageBucket  // shared with Traffic page; raw = /api/logs path
 
-const EVENTS_GROUP_KEYS: EventsGroupBy[] = ['domain', 'device', 'profile', 'app']
+const EVENTS_GROUP_KEYS: EventsGroupBy[] = ['domain', 'device', 'app']
 
 // #1432 — result/status filter, lives in the Status column header as a funnel
 // popover, exactly like the Device / Profile header filters. "Blocked" = the
@@ -582,12 +585,7 @@ function AggregatedEventsView({
                   onChange={onMacsChange}
                   searchable={devices.length > 12}
                 />
-              </span>
-            </th>
-            <th className="text-left px-2 py-1 hidden md:table-cell">
-              <span className="inline-flex items-center gap-1">
-                <GroupableHeader label="Profile" groupKey="profile" groupBy={groupBy}
-                  onToggle={onToggleGroup} testIdPrefix="ce-group" />
+                <span className="ml-2">Profile</span>
                 <HeaderFilter
                   testId="ce-filter-profile"
                   title="Filter profile"
@@ -618,7 +616,7 @@ function AggregatedEventsView({
         <tbody className="text-brand-text">
           {rows.length === 0 && !loading && (
             <tr>
-              <td colSpan={8} className="text-center text-brand-text-muted py-4">
+              <td colSpan={7} className="text-center text-brand-text-muted py-4">
                 No events in window.
               </td>
             </tr>
@@ -636,13 +634,6 @@ function AggregatedEventsView({
                   groupedValue={groupBy.includes('device') ? r.groups.device : undefined}
                   sole={r.soleDevice}
                   count={r.distinctDevices}
-                />
-              </td>
-              <td className="px-2 py-1 hidden md:table-cell">
-                <NonGroupedCell
-                  groupedValue={groupBy.includes('profile') ? r.groups.profile : undefined}
-                  sole={r.soleProfile}
-                  count={r.distinctProfiles}
                 />
               </td>
               <td className="px-2 py-1 max-w-[160px] sm:max-w-[280px] truncate">

@@ -1,5 +1,6 @@
 package wifihaven.api.usage
 
+import wifihaven.api.db.AttributionScope
 import wifihaven.shared.*
 import wifihaven.shared.types.*
 
@@ -198,17 +199,19 @@ object UsageTraffic {
 
   /**
    * Build raw rows for the page. Each `TrafficReport` becomes one `TrafficUsageRawRow`, decorated
-   * with device + profile names looked up from the supplied maps.
+   * with the device's name and the name of the profile that held the device at the row's
+   * `periodStart` (#2875: `attribution.profileAt`, not the device's current profile), so a device
+   * moved from A to B keeps its earlier rows under A. `attribution` must cover the rows' window.
    */
   def buildRaw(
       rows: List[TrafficUsageDbRow],
       deviceByMac: Map[MacAddress, Device],
       profileNameById: Map[ProfileId, String],
+      attribution: AttributionScope,
   ): List[TrafficUsageRawRow] =
     rows.map { r =>
       val dev      = deviceByMac.get(r.mac)
-      // TODO(#2875): label by the profile whose span covers `periodStart`, not the current one.
-      val profId   = dev.flatMap(_.profileId)
+      val profId   = attribution.profileAt(r.mac, r.periodStart)
       val profName = profId.flatMap(profileNameById.get)
       TrafficUsageRawRow(
         mac = r.mac,
@@ -239,9 +242,11 @@ object UsageTraffic {
    * carries the count of distinct values in `distinct*` fields so the SPA can render "{n} devices"
    * / "{n} profiles" in their place (drill-down deferred to #859).
    *
-   * Device/profile attribution uses the device list passed in — rows whose MAC has no matching
-   * device get attributed to a synthetic device row keyed by the MAC string; their profile is
-   * "(unassigned)".
+   * Device labels use the device list passed in — rows whose MAC has no matching device get a
+   * synthetic device label keyed by the MAC string. #2875: the profile label is the profile that
+   * held the device at the row's `periodStart` (`attribution.profileAt`), which for the rollup and
+   * SQL pre-aggregated tiers is the bucket's start (design `shared-devices.md` §6.3); a row no span
+   * covers is "(unassigned)". `attribution` must cover the rows' `periodStart`s.
    */
   def buildAggregate(
       rows: List[TrafficUsageDbRow],
@@ -250,6 +255,7 @@ object UsageTraffic {
       groupBy: Set[GroupBy],
       deviceByMac: Map[MacAddress, Device],
       profileNameById: Map[ProfileId, String],
+      attribution: AttributionScope,
       // #769: apex → membership list. Keys are apex-form (app_hosts already
       // canonicalizes at create/edit). #1085 added suffix-aware lookup so
       // traffic rows on `www.youtube.com` attribute to the `youtube.com` apex
@@ -261,11 +267,9 @@ object UsageTraffic {
 
     def deviceLabel(mac: MacAddress): String              =
       deviceByMac.get(mac).map(_.name).getOrElse(mac.value)
-    // TODO(#2875): label by the profile whose span covers the row's bucket, not the current one.
-    def profileLabel(mac: MacAddress): String             =
-      deviceByMac
-        .get(mac)
-        .flatMap(_.profileId)
+    def profileLabel(r: TrafficUsageDbRow): String        =
+      attribution
+        .profileAt(r.mac, r.periodStart)
         .flatMap(profileNameById.get)
         .getOrElse("(unassigned)")
     // #1085: app_hosts rows are stored apex-form (`youtube.com`), but traffic
@@ -297,7 +301,7 @@ object UsageTraffic {
         // Stable ordering: domain, device, profile, app.
         if (groupBy.contains(GroupBy.Domain)) keyParts += ("domain"   -> r.host.value)
         if (groupBy.contains(GroupBy.Device)) keyParts += ("device"   -> deviceLabel(r.mac))
-        if (groupBy.contains(GroupBy.Profile)) keyParts += ("profile" -> profileLabel(r.mac))
+        if (groupBy.contains(GroupBy.Profile)) keyParts += ("profile" -> profileLabel(r))
         appOpt.foreach(a => keyParts += ("app" -> a.slug))
         (windowStart, keyParts.toMap)
       }
@@ -312,7 +316,7 @@ object UsageTraffic {
           bucketRows.iterator.map(_.periodEnd).reduceLeft((a, b) => if (b.isAfter(a)) b else a)
         val windowEnd     = windowFor(windowStart, maxPeriodEnd, bucket, zone)._2
         val devices       = bucketRows.iterator.map(r => deviceLabel(r.mac)).toSet
-        val profiles      = bucketRows.iterator.map(r => profileLabel(r.mac)).toSet
+        val profiles      = bucketRows.iterator.map(profileLabel).toSet
         val domains       = bucketRows.iterator.map(_.host.value).toSet
         // distinctApps spans all memberships contributing to the bucket. When
         // grouping by app the bucket is per-membership so this is always 1;

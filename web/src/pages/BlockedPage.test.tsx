@@ -55,7 +55,7 @@ describe('BlockedPage — API-driven reason copy (#1615)', () => {
   })
 
   it('renders out-of-time copy when API returns reasonClass=time_limit', async () => {
-    mockBlockedInfo({ blocked: true, reasonClass: 'time_limit' })
+    mockBlockedInfo({ blocked: true, reasonClass: 'time_limit', profileName: 'Kids' })
     renderBlocked({ mac: 'aa:bb:cc:11:22:33', host: 'youtube.com' })
     await waitFor(() => expect(screen.getByText(/out of time today/i)).toBeInTheDocument())
   })
@@ -94,7 +94,7 @@ describe('BlockedPage — API-driven reason copy (#1615)', () => {
   })
 
   it('shows the blocked hostname prominently', async () => {
-    mockBlockedInfo({ blocked: true, reasonClass: 'time_limit' })
+    mockBlockedInfo({ blocked: true, reasonClass: 'time_limit', profileName: 'Kids' })
     renderBlocked({ mac: 'aa:bb:cc:11:22:33', host: 'youtube.com' })
     expect(screen.getByText('youtube.com')).toBeInTheDocument()
   })
@@ -103,8 +103,10 @@ describe('BlockedPage — API-driven reason copy (#1615)', () => {
 describe('BlockedPage — unrecognised reasonClass (#2846)', () => {
   // The API can ship a reasonClass this SPA build predates. It must still render the generic
   // blocked copy and every ask-a-parent option, not a blank body or the raw class string.
+  // #2867: the payload carries a profileName. Without one no request could be granted, so the
+  // page hides the CTAs regardless of class (covered below); this test is about the class only.
   it('renders generic blocked copy and all CTAs for a reasonClass it does not know', async () => {
-    mockBlockedInfo({ blocked: true, reasonClass: 'not_yet_known_reason' })
+    mockBlockedInfo({ blocked: true, reasonClass: 'not_yet_known_reason', profileName: 'Kids' })
     renderBlocked({ mac: 'aa:bb:cc:11:22:33', host: 'example.com' })
     await waitFor(() => expect(screen.getByText('Access blocked.')).toBeInTheDocument())
     expect(screen.queryByText(/not_yet_known_reason/)).not.toBeInTheDocument()
@@ -147,14 +149,14 @@ describe('BlockedPage — URL reason param is ignored (#1615)', () => {
 
 describe('BlockedPage — ask-a-parent CTA (#960)', () => {
   it('still has no parent-login dialog (no kid-side credentials)', async () => {
-    mockBlockedInfo({ blocked: true, reasonClass: 'time_limit' })
+    mockBlockedInfo({ blocked: true, reasonClass: 'time_limit', profileName: 'Kids' })
     renderBlocked({ mac: 'aa:bb:cc:11:22:33', host: 'youtube.com' })
     await waitFor(() => expect(screen.getByTestId('ask-parent')).toBeInTheDocument())
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
   })
 
   it('shows an extension CTA when API returns reasonClass=time_limit', async () => {
-    mockBlockedInfo({ blocked: true, reasonClass: 'time_limit' })
+    mockBlockedInfo({ blocked: true, reasonClass: 'time_limit', profileName: 'Kids' })
     renderBlocked({ mac: 'aa:bb:cc:11:22:33', host: 'youtube.com' })
     await waitFor(() =>
       expect(screen.getByTestId('ask-parent-extension')).toBeInTheDocument(),
@@ -162,7 +164,7 @@ describe('BlockedPage — ask-a-parent CTA (#960)', () => {
   })
 
   it('shows an exemption CTA when API returns reasonClass=extra_blocked', async () => {
-    mockBlockedInfo({ blocked: true, reasonClass: 'extra_blocked' })
+    mockBlockedInfo({ blocked: true, reasonClass: 'extra_blocked', profileName: 'Kids' })
     renderBlocked({ mac: 'aa:bb:cc:11:22:33', host: 'foo.com' })
     await waitFor(() =>
       expect(screen.getByTestId('ask-parent-exemption')).toBeInTheDocument(),
@@ -170,7 +172,7 @@ describe('BlockedPage — ask-a-parent CTA (#960)', () => {
   })
 
   it('shows unpause + extension CTAs when API returns reasonClass=paused', async () => {
-    mockBlockedInfo({ blocked: true, reasonClass: 'paused' })
+    mockBlockedInfo({ blocked: true, reasonClass: 'paused', profileName: 'Kids' })
     renderBlocked({ mac: 'aa:bb:cc:11:22:33', host: 'example.com' })
     await waitFor(() => expect(screen.getByTestId('ask-parent-unpause')).toBeInTheDocument())
     expect(screen.getByTestId('ask-parent-extension')).toBeInTheDocument()
@@ -186,6 +188,47 @@ describe('BlockedPage — ask-a-parent CTA (#960)', () => {
     expect(screen.queryByTestId('ask-parent')).not.toBeInTheDocument()
   })
 
+  // #2867: a device with no profile under an unmanaged-device `block` policy. The API reports it
+  // as the generic `blocked` class with no profileName; the access request would be stored without
+  // a profile, and AlertRoutes rejects approving any kind without one. Offer none, and tell the
+  // child what would actually help.
+  it('offers no ask-a-parent CTAs when the blocked device has no profile', async () => {
+    mockBlockedInfo({ blocked: true, reasonClass: 'blocked' })
+    renderBlocked({ mac: 'aa:bb:cc:11:22:33', host: 'example.com' })
+    await waitFor(() =>
+      expect(screen.getByText(/ask a parent to set up this device/i)).toBeInTheDocument(),
+    )
+    expect(screen.queryByTestId('ask-parent')).not.toBeInTheDocument()
+  })
+
+  // #2867: the gate is the missing profile, not the class — a known class with no profile is
+  // just as ungrantable.
+  it('offers no ask-a-parent CTAs for a known reasonClass when there is no profile', async () => {
+    mockBlockedInfo({ blocked: true, reasonClass: 'extra_blocked' })
+    renderBlocked({ mac: 'aa:bb:cc:11:22:33', host: 'example.com' })
+    await waitFor(() => expect(screen.getByText(/blocked by your parent/i)).toBeInTheDocument())
+    expect(screen.queryByTestId('ask-parent')).not.toBeInTheDocument()
+  })
+
+  // #2867: the profiled counterpart — the same generic class with a profile still gets every CTA.
+  it('offers all ask-a-parent CTAs for the generic blocked class when the device has a profile', async () => {
+    mockBlockedInfo({ blocked: true, reasonClass: 'blocked', profileName: 'Kids' })
+    renderBlocked({ mac: 'aa:bb:cc:11:22:33', host: 'example.com' })
+    await waitFor(() => expect(screen.getByTestId('ask-parent-extension')).toBeInTheDocument())
+    expect(screen.getByTestId('ask-parent-exemption')).toBeInTheDocument()
+    expect(screen.getByTestId('ask-parent-unpause')).toBeInTheDocument()
+    expect(screen.queryByText(/set up this device/i)).not.toBeInTheDocument()
+  })
+
+  // #2867 keeps #2847's copy: a checked-out shared device has no profile either, but its fix is
+  // checking it in, not setting it up.
+  it('keeps the shared-device copy, not the set-up copy, for reasonClass=checked_out', async () => {
+    mockBlockedInfo({ blocked: true, reasonClass: 'checked_out' })
+    renderBlocked({ mac: 'aa:bb:cc:11:22:33', host: 'example.com' })
+    await waitFor(() => expect(screen.getByText(/shared device/i)).toBeInTheDocument())
+    expect(screen.queryByText(/set up this device/i)).not.toBeInTheDocument()
+  })
+
   it('falls back to the static instruction when the mac param is missing', () => {
     // The block-page redirect always supplies mac=, but be tolerant: when it
     // is missing we cannot identify the kid's profile, so hide the CTA and
@@ -197,7 +240,7 @@ describe('BlockedPage — ask-a-parent CTA (#960)', () => {
 
   describe('posting the request', () => {
     it('POSTs the kid-known (mac, host, kind) and shows a confirmation', async () => {
-      mockBlockedInfo({ blocked: true, reasonClass: 'time_limit' })
+      mockBlockedInfo({ blocked: true, reasonClass: 'time_limit', profileName: 'Kids' })
       const create = vi
         .spyOn(api.alerts, 'createAccessRequest')
         .mockResolvedValue({} as never)
@@ -217,7 +260,7 @@ describe('BlockedPage — ask-a-parent CTA (#960)', () => {
     })
 
     it('surfaces a network error inline without leaving the CTA disabled forever', async () => {
-      mockBlockedInfo({ blocked: true, reasonClass: 'time_limit' })
+      mockBlockedInfo({ blocked: true, reasonClass: 'time_limit', profileName: 'Kids' })
       vi.spyOn(api.alerts, 'createAccessRequest').mockRejectedValue(new Error('offline'))
       renderBlocked({ mac: 'aa:bb:cc:11:22:33', host: 'youtube.com' })
       await waitFor(() =>

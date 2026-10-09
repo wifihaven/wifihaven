@@ -68,7 +68,8 @@ object BlockedMacEventIngestSpec extends ZIOSpec[TestDatabase.AllRepos & Embedde
     for {
       cRepo  <- ZIO.service[ConnectionEventRepo]
       upRepo <- ZIO.service[UserProfileRepo]
-    } yield LogRoutes.routes(auth, cRepo, upRepo)
+      clock  <- ZIO.service[Clock]
+    } yield LogRoutes.routes(auth, cRepo, upRepo, clock)
 
   private def post(
       routes: Routes[Any, Response],

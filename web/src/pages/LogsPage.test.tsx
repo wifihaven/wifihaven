@@ -182,6 +182,21 @@ describe('LogsPage — aggregation', () => {
     })
   })
 
+  // #2873: the aggregated view no longer groups by profile (the API 400s it). An
+  // old ?groupBy=profile link is dropped rather than sent; the filter remains.
+  it('drops groupBy=profile from the URL and offers no profile toggle', async () => {
+    renderAt('/usage/events?groupBy=profile&groupBy=domain')
+    await screen.findByText('example.com')
+    await userEvent.click(screen.getByTestId('bucket-1h'))
+    await waitFor(() => {
+      const calls = (api.logs.series as ReturnType<typeof vi.fn>).mock.calls
+      expect(calls[calls.length - 1][0].groupBy).toEqual(['domain'])
+    })
+    expect(await screen.findByTestId('ce-agg-table')).toBeInTheDocument()
+    expect(screen.queryByTestId('ce-group-profile')).not.toBeInTheDocument()
+    expect(screen.getByTestId('ce-filter-profile')).toBeInTheDocument()
+  })
+
   // #769: when groupBy=app is active but no apps exist, render the empty-state
   // instead of the aggregate table. The link points the operator at /apps.
   it('renders empty-state when groupBy=app but household has no apps', async () => {

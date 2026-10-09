@@ -129,10 +129,10 @@ object LogApiSpec
             ),
           ),
         )
-        routes = LogRoutes.routes(auth, connRepo, upRepo)
-        resp <- getJson(routes, "/api/logs", token)
-        body <- resp.body.asString
-        page <- ZIO.fromEither(body.fromJson[QueryLogPage])
+        routes   <- ZIO.serviceWith[Clock](LogRoutes.routes(auth, connRepo, upRepo, _))
+        resp     <- getJson(routes, "/api/logs", token)
+        body     <- resp.body.asString
+        page     <- ZIO.fromEither(body.fromJson[QueryLogPage])
         logs = page.rows
       } yield assertTrue(resp.status == Status.Ok) &&
         assertTrue(logs.length == 3) &&
@@ -171,10 +171,10 @@ object LogApiSpec
             ),
           ),
         )
-        routes = LogRoutes.routes(auth, connRepo, upRepo)
-        resp <- getJson(routes, "/api/logs?blocked=true", token)
-        body <- resp.body.asString
-        page <- ZIO.fromEither(body.fromJson[QueryLogPage])
+        routes   <- ZIO.serviceWith[Clock](LogRoutes.routes(auth, connRepo, upRepo, _))
+        resp     <- getJson(routes, "/api/logs?blocked=true", token)
+        body     <- resp.body.asString
+        page     <- ZIO.fromEither(body.fromJson[QueryLogPage])
         logs = page.rows
       } yield assertTrue(logs.length == 1) &&
         assertTrue(logs.head.host.value == "blocked.com") &&
@@ -204,7 +204,7 @@ object LogApiSpec
             BlockReason.fromWire(if (allowed) "allowed" else "category:adult"),
             ts,
           )
-        _ <- connRepo.insertBatch(
+        _      <- connRepo.insertBatch(
           List(
             ce("aa:bb:cc:dd:ee:01", "allowed-newest.com", true, base.plusSeconds(500)),
             ce("aa:bb:cc:dd:ee:02", "blocked-newest.com", false, base.plusSeconds(400)),
@@ -212,10 +212,10 @@ object LogApiSpec
             ce("aa:bb:cc:dd:ee:04", "blocked-oldest.com", false, base.plusSeconds(100)),
           ),
         )
-        routes = LogRoutes.routes(auth, connRepo, upRepo)
-        resp <- getJson(routes, "/api/logs?blocked=true&limit=2", token)
-        body <- resp.body.asString
-        page <- ZIO.fromEither(body.fromJson[QueryLogPage])
+        routes <- ZIO.serviceWith[Clock](LogRoutes.routes(auth, connRepo, upRepo, _))
+        resp   <- getJson(routes, "/api/logs?blocked=true&limit=2", token)
+        body   <- resp.body.asString
+        page   <- ZIO.fromEither(body.fromJson[QueryLogPage])
         logs = page.rows
       } yield assertTrue(resp.status == Status.Ok) &&
         // limit honoured
@@ -261,10 +261,10 @@ object LogApiSpec
             ),
           ),
         )
-        routes = LogRoutes.routes(auth, connRepo, upRepo)
-        resp <- getJson(routes, "/api/logs?location=home", token)
-        body <- resp.body.asString
-        page <- ZIO.fromEither(body.fromJson[QueryLogPage])
+        routes     <- ZIO.serviceWith[Clock](LogRoutes.routes(auth, connRepo, upRepo, _))
+        resp       <- getJson(routes, "/api/logs?location=home", token)
+        body       <- resp.body.asString
+        page       <- ZIO.fromEither(body.fromJson[QueryLogPage])
         logs = page.rows
       } yield assertTrue(logs.length == 1) &&
         assertTrue(logs.head.host.value == "home-site.com")
@@ -299,10 +299,10 @@ object LogApiSpec
             ),
           ),
         )
-        routes = LogRoutes.routes(auth, connRepo, upRepo)
-        resp <- getJson(routes, "/api/logs?mac=aa:bb:cc:dd:ee:01", token)
-        body <- resp.body.asString
-        page <- ZIO.fromEither(body.fromJson[QueryLogPage])
+        routes   <- ZIO.serviceWith[Clock](LogRoutes.routes(auth, connRepo, upRepo, _))
+        resp     <- getJson(routes, "/api/logs?mac=aa:bb:cc:dd:ee:01", token)
+        body     <- resp.body.asString
+        page     <- ZIO.fromEither(body.fromJson[QueryLogPage])
         logs = page.rows
       } yield assertTrue(logs.length == 1) &&
         assertTrue(logs.head.mac.contains(MacAddress.unsafe("aa:bb:cc:dd:ee:01")))
@@ -349,10 +349,10 @@ object LogApiSpec
         // #1837: 24h aggregations now read connection_events_hourly — roll the
         // just-inserted events into the hourly tier so the rollup-backed read sees them.
         _        <- connRepo.rerollConnEventsHourly(Instant.now().minusSeconds(7200))
-        routes = LogRoutes.routes(auth, connRepo, upRepo)
-        resp  <- getJson(routes, "/api/stats", token)
-        body  <- resp.body.asString
-        stats <- ZIO.fromEither(body.fromJson[DashboardStats])
+        routes   <- ZIO.serviceWith[Clock](LogRoutes.routes(auth, connRepo, upRepo, _))
+        resp     <- getJson(routes, "/api/stats", token)
+        body     <- resp.body.asString
+        stats    <- ZIO.fromEither(body.fromJson[DashboardStats])
       } yield assertTrue(resp.status == Status.Ok) &&
         assertTrue(stats.totalToday == 3) &&
         assertTrue(stats.blockedToday == 2) &&
@@ -383,10 +383,10 @@ object LogApiSpec
         _        <- connRepo.rerollConnEventsHourly(Instant.now().minusSeconds(7200))
         xa       <- ZIO.service[Transactor[Task]]
         _        <- sql"DELETE FROM connection_events".update.run.transact(xa)
-        routes = LogRoutes.routes(auth, connRepo, upRepo)
-        resp  <- getJson(routes, "/api/stats", token)
-        body  <- resp.body.asString
-        stats <- ZIO.fromEither(body.fromJson[DashboardStats])
+        routes   <- ZIO.serviceWith[Clock](LogRoutes.routes(auth, connRepo, upRepo, _))
+        resp     <- getJson(routes, "/api/stats", token)
+        body     <- resp.body.asString
+        stats    <- ZIO.fromEither(body.fromJson[DashboardStats])
       } yield assertTrue(resp.status == Status.Ok) &&
         assertTrue(stats.totalToday == 3) &&
         assertTrue(stats.blockedToday == 2) &&
@@ -425,10 +425,10 @@ object LogApiSpec
             .unique
             .transact(xa)
         _          <- connRepo.rerollConnEventsHourly(Instant.now().minusSeconds(7200))
-        routes = LogRoutes.routes(auth, connRepo, upRepo)
-        resp  <- getJson(routes, "/api/stats", token)
-        body  <- resp.body.asString
-        stats <- ZIO.fromEither(body.fromJson[DashboardStats])
+        routes     <- ZIO.serviceWith[Clock](LogRoutes.routes(auth, connRepo, upRepo, _))
+        resp       <- getJson(routes, "/api/stats", token)
+        body       <- resp.body.asString
+        stats      <- ZIO.fromEither(body.fromJson[DashboardStats])
       } yield assertTrue(stats.totalToday == rawTotal) &&
         assertTrue(stats.blockedToday == rawBlocked) &&
         assertTrue(stats.totalToday == 5 && stats.blockedToday == 3)
@@ -483,10 +483,10 @@ object LogApiSpec
         )
         // #1837: topBlocked now reads connection_events_hourly — roll first.
         _        <- connRepo.rerollConnEventsHourly(Instant.now().minusSeconds(7200))
-        routes = LogRoutes.routes(auth, connRepo, upRepo)
-        resp  <- getJson(routes, "/api/stats", token)
-        body  <- resp.body.asString
-        stats <- ZIO.fromEither(body.fromJson[DashboardStats])
+        routes   <- ZIO.serviceWith[Clock](LogRoutes.routes(auth, connRepo, upRepo, _))
+        resp     <- getJson(routes, "/api/stats", token)
+        body     <- resp.body.asString
+        stats    <- ZIO.fromEither(body.fromJson[DashboardStats])
       } yield assertTrue(stats.topBlocked.nonEmpty) &&
         assertTrue(stats.topBlocked.head.host.value == "frequent.com") &&
         assertTrue(stats.topBlocked.head.count == 3) &&
@@ -517,8 +517,8 @@ object LogApiSpec
             ),
           ),
         )
-        routes = LogRoutes.routes(auth, connRepo, upRepo)
-        pager  = (cursor: Option[String]) => {
+        routes   <- ZIO.serviceWith[Clock](LogRoutes.routes(auth, connRepo, upRepo, _))
+        pager = (cursor: Option[String]) => {
           val q =
             cursor.fold(s"/api/logs?limit=$PageSize")(c => s"/api/logs?limit=$PageSize&cursor=$c")
           getJson(routes, q, token)
@@ -560,8 +560,8 @@ object LogApiSpec
         upRepo   <- ZIO.service[UserProfileRepo]
         auth     <- makeAuth
         token    <- auth.login("admin", "changeme").map(_.token.value)
-        routes = LogRoutes.routes(auth, connRepo, upRepo)
-        resp <- getJson(routes, "/api/logs?cursor=not-base64-json", token)
+        routes   <- ZIO.serviceWith[Clock](LogRoutes.routes(auth, connRepo, upRepo, _))
+        resp     <- getJson(routes, "/api/logs?cursor=not-base64-json", token)
       } yield assertTrue(resp.status == Status.BadRequest)
     },
     test("GET /api/logs cursor + filter composes (#862)") {
@@ -587,7 +587,7 @@ object LogApiSpec
             ),
           ),
         )
-        routes = LogRoutes.routes(auth, connRepo, upRepo)
+        routes   <- ZIO.serviceWith[Clock](LogRoutes.routes(auth, connRepo, upRepo, _))
         p1       <- getJson(routes, "/api/logs?limit=2&blocked=true", token)
           .flatMap(_.body.asString)
           .flatMap(b => ZIO.fromEither(b.fromJson[QueryLogPage]))
@@ -615,7 +615,7 @@ object LogApiSpec
         now       = Instant.now()
         oldTs     = now.minusSeconds(7200)  // 2h ago
         veryOldTs = now.minusSeconds(86400) // 1d ago
-        _ <- connRepo.insertBatch(
+        _      <- connRepo.insertBatch(
           List(
             ConnectionEventInsert(
               routerId,
@@ -646,7 +646,7 @@ object LogApiSpec
             ),
           ),
         )
-        routes = LogRoutes.routes(auth, connRepo, upRepo)
+        routes <- ZIO.serviceWith[Clock](LogRoutes.routes(auth, connRepo, upRepo, _))
         // Anchor at 3h ago with 6h lookback — should see only `c.com` (and
         // exclude `a.com` and `b.com` which are inside the past 3h).
         anchor = now.minusSeconds(3 * 3600)
@@ -663,8 +663,8 @@ object LogApiSpec
         upRepo   <- ZIO.service[UserProfileRepo]
         auth     <- makeAuth
         token    <- auth.login("admin", "changeme").map(_.token.value)
-        routes = LogRoutes.routes(auth, connRepo, upRepo)
-        resp <- getJson(routes, "/api/logs?limit=9999", token)
+        routes   <- ZIO.serviceWith[Clock](LogRoutes.routes(auth, connRepo, upRepo, _))
+        resp     <- getJson(routes, "/api/logs?limit=9999", token)
       } yield assertTrue(resp.status == Status.BadRequest)
     },
     test("GET /api/logs?deviceId= filters to events whose mac belongs to that device (#342)") {
@@ -712,10 +712,10 @@ object LogApiSpec
             ),
           ),
         )
-        routes = LogRoutes.routes(auth, connRepo, upRepo)
-        resp <- getJson(routes, s"/api/logs?deviceId=${ipadId.value}", token)
-        body <- resp.body.asString
-        page <- ZIO.fromEither(body.fromJson[QueryLogPage])
+        routes      <- ZIO.serviceWith[Clock](LogRoutes.routes(auth, connRepo, upRepo, _))
+        resp        <- getJson(routes, s"/api/logs?deviceId=${ipadId.value}", token)
+        body        <- resp.body.asString
+        page        <- ZIO.fromEither(body.fromJson[QueryLogPage])
         logs = page.rows
       } yield assertTrue(logs.length == 1) &&
         assertTrue(logs.head.host.value == "ipad-site.com")
@@ -766,46 +766,46 @@ object LogApiSpec
             ),
           ),
         )
-        routes = LogRoutes.routes(auth, connRepo, upRepo)
-        resp <- getJson(routes, s"/api/logs?profileId=${kidsPid.value}", token)
-        body <- resp.body.asString
-        page <- ZIO.fromEither(body.fromJson[QueryLogPage])
+        routes      <- ZIO.serviceWith[Clock](LogRoutes.routes(auth, connRepo, upRepo, _))
+        resp        <- getJson(routes, s"/api/logs?profileId=${kidsPid.value}", token)
+        body        <- resp.body.asString
+        page        <- ZIO.fromEither(body.fromJson[QueryLogPage])
         logs = page.rows
       } yield assertTrue(logs.length == 1) &&
         assertTrue(logs.head.host.value == "kids-site.com")
     },
     test("GET /api/logs?profileId=A,B accepts comma-separated multi-value (#865)") {
       for {
-        _           <- cleanDb
-        routerId    <- seedRouter()
-        profileRepo <- ZIO.service[ProfileRepo]
-        deviceRepo  <- ZIO.service[DeviceRepo]
-        connRepo    <- ZIO.service[ConnectionEventRepo]
-        upRepo      <- ZIO.service[UserProfileRepo]
-        auth        <- makeAuth
-        token       <- auth.login("admin", "changeme").map(_.token.value)
-        kidsPid     <- profileRepo.create("Kids", List.empty)
-        adultsPid   <- profileRepo.create("Adults", List.empty)
-        guestsPid   <- profileRepo.create("Guests", List.empty)
-        _           <- deviceRepo.upsert(
+        _             <- cleanDb
+        routerId      <- seedRouter()
+        profileRepo   <- ZIO.service[ProfileRepo]
+        deviceRepo    <- ZIO.service[DeviceRepo]
+        connRepo      <- ZIO.service[ConnectionEventRepo]
+        upRepo        <- ZIO.service[UserProfileRepo]
+        auth          <- makeAuth
+        token         <- auth.login("admin", "changeme").map(_.token.value)
+        kidsPid       <- profileRepo.create("Kids", List.empty)
+        adultsPid     <- profileRepo.create("Adults", List.empty)
+        guestsPid     <- profileRepo.create("Guests", List.empty)
+        _             <- deviceRepo.upsert(
           MacAddress.unsafe("aa:bb:cc:dd:ee:01"),
           "Kid's iPad",
           Some(kidsPid),
           "10.0.0.1",
         )
-        _           <- deviceRepo.upsert(
+        _             <- deviceRepo.upsert(
           MacAddress.unsafe("aa:bb:cc:dd:ee:02"),
           "Adult Phone",
           Some(adultsPid),
           "10.0.0.2",
         )
-        _           <- deviceRepo.upsert(
+        _             <- deviceRepo.upsert(
           MacAddress.unsafe("aa:bb:cc:dd:ee:03"),
           "Guest Laptop",
           Some(guestsPid),
           "10.0.0.3",
         )
-        _           <- connRepo.insertBatch(
+        _             <- connRepo.insertBatch(
           List(
             ConnectionEventInsert(
               routerId,
@@ -836,7 +836,7 @@ object LogApiSpec
             ),
           ),
         )
-        routes = LogRoutes.routes(auth, connRepo, upRepo)
+        routes        <- ZIO.serviceWith[Clock](LogRoutes.routes(auth, connRepo, upRepo, _))
         // Two profiles selected — should include only kids + adults rows.
         respMulti     <- getJson(
           routes,
@@ -871,10 +871,10 @@ object LogApiSpec
         upRepo     <- ZIO.service[UserProfileRepo]
         auth       <- makeAuth
         token      <- auth.login("admin", "changeme").map(_.token.value)
-        _ <- deviceRepo.upsert(MacAddress.unsafe("aa:bb:cc:dd:ee:01"), "A", None, "10.0.0.1")
-        _ <- deviceRepo.upsert(MacAddress.unsafe("aa:bb:cc:dd:ee:02"), "B", None, "10.0.0.2")
-        _ <- deviceRepo.upsert(MacAddress.unsafe("aa:bb:cc:dd:ee:03"), "C", None, "10.0.0.3")
-        _ <- connRepo.insertBatch(
+        _        <- deviceRepo.upsert(MacAddress.unsafe("aa:bb:cc:dd:ee:01"), "A", None, "10.0.0.1")
+        _        <- deviceRepo.upsert(MacAddress.unsafe("aa:bb:cc:dd:ee:02"), "B", None, "10.0.0.2")
+        _        <- deviceRepo.upsert(MacAddress.unsafe("aa:bb:cc:dd:ee:03"), "C", None, "10.0.0.3")
+        _        <- connRepo.insertBatch(
           List(
             ConnectionEventInsert(
               routerId,
@@ -905,7 +905,7 @@ object LogApiSpec
             ),
           ),
         )
-        routes = LogRoutes.routes(auth, connRepo, upRepo)
+        routes   <- ZIO.serviceWith[Clock](LogRoutes.routes(auth, connRepo, upRepo, _))
         resp     <- getJson(routes, "/api/logs?mac=aa:bb:cc:dd:ee:01,aa:bb:cc:dd:ee:02", token)
         body     <- resp.body.asString
         pageLogs <- ZIO.fromEither(body.fromJson[QueryLogPage])
@@ -960,10 +960,10 @@ object LogApiSpec
             ),
           ),
         )
-        routes = LogRoutes.routes(auth, connRepo, upRepo)
-        resp <- getJson(routes, "/api/connection-events/series?bucket=1h&groupBy=domain", token)
-        body <- resp.body.asString
-        page <- ZIO.fromEither(body.fromJson[ConnectionEventSeriesPage])
+        routes   <- ZIO.serviceWith[Clock](LogRoutes.routes(auth, connRepo, upRepo, _))
+        resp     <- getJson(routes, "/api/connection-events/series?bucket=1h&groupBy=domain", token)
+        body     <- resp.body.asString
+        page     <- ZIO.fromEither(body.fromJson[ConnectionEventSeriesPage])
         rows = page.rows
         yt   = rows.find(_.groups.getOrElse("domain", "") == "youtube.com").get
         fb   = rows.find(_.groups.getOrElse("domain", "") == "facebook.com").get
@@ -1016,7 +1016,7 @@ object LogApiSpec
             ),
           ),
         )
-        routes = LogRoutes.routes(auth, connRepo, upRepo)
+        routes   <- ZIO.serviceWith[Clock](LogRoutes.routes(auth, connRepo, upRepo, _))
         resp     <- getJson(routes, "/api/connection-events/series?bucket=1h", token)
         body     <- resp.body.asString
         pageRows <- ZIO.fromEither(body.fromJson[ConnectionEventSeriesPage])
@@ -1069,7 +1069,7 @@ object LogApiSpec
             ),
           ),
         )
-        routes = LogRoutes.routes(auth, connRepo, upRepo)
+        routes   <- ZIO.serviceWith[Clock](LogRoutes.routes(auth, connRepo, upRepo, _))
         resp     <- getJson(
           routes,
           "/api/connection-events/series?bucket=1h&groupBy=device&groupBy=domain",
@@ -1090,9 +1090,9 @@ object LogApiSpec
         upRepo   <- ZIO.service[UserProfileRepo]
         auth     <- makeAuth
         token    <- auth.login("admin", "changeme").map(_.token.value)
-        routes = LogRoutes.routes(auth, connRepo, upRepo)
-        resp <- getJson(routes, "/api/connection-events/series?bucket=1h&groupBy=bogus", token)
-        body <- resp.body.asString
+        routes   <- ZIO.serviceWith[Clock](LogRoutes.routes(auth, connRepo, upRepo, _))
+        resp     <- getJson(routes, "/api/connection-events/series?bucket=1h&groupBy=bogus", token)
+        body     <- resp.body.asString
       } yield assertTrue(resp.status == Status.BadRequest) &&
         assertTrue(body.contains("unknown groupBy"))
     },
@@ -1126,14 +1126,14 @@ object LogApiSpec
             ),
           ),
         )
-        routes = LogRoutes.routes(auth, connRepo, upRepo)
-        resp <- getJson(
+        routes   <- ZIO.serviceWith[Clock](LogRoutes.routes(auth, connRepo, upRepo, _))
+        resp     <- getJson(
           routes,
           "/api/connection-events/series?bucket=1d&groupBy=domain&blocked=true",
           token,
         )
-        body <- resp.body.asString
-        page <- ZIO.fromEither(body.fromJson[ConnectionEventSeriesPage])
+        body     <- resp.body.asString
+        page     <- ZIO.fromEither(body.fromJson[ConnectionEventSeriesPage])
         rows = page.rows
       } yield assertTrue(rows.length == 1) &&
         assertTrue(rows.head.groups.getOrElse("domain", "") == "bad.com") &&
@@ -1146,8 +1146,8 @@ object LogApiSpec
         upRepo   <- ZIO.service[UserProfileRepo]
         auth     <- makeAuth
         token    <- auth.login("admin", "changeme").map(_.token.value)
-        routes = LogRoutes.routes(auth, connRepo, upRepo)
-        resp <- getJson(routes, "/api/connection-events/series?bucket=1h&groupBy=apex", token)
+        routes   <- ZIO.serviceWith[Clock](LogRoutes.routes(auth, connRepo, upRepo, _))
+        resp     <- getJson(routes, "/api/connection-events/series?bucket=1h&groupBy=apex", token)
       } yield assertTrue(resp.status == Status.BadRequest)
     },
     // #769: groupBy=app is now accepted — rows join through app_hosts.
@@ -1208,10 +1208,10 @@ object LogApiSpec
             ),
           ),
         )
-        routes = LogRoutes.routes(auth, connRepo, upRepo)
-        resp <- getJson(routes, "/api/connection-events/series?bucket=1h&groupBy=app", token)
-        body <- resp.body.asString
-        page <- ZIO.fromEither(body.fromJson[ConnectionEventSeriesPage])
+        routes   <- ZIO.serviceWith[Clock](LogRoutes.routes(auth, connRepo, upRepo, _))
+        resp     <- getJson(routes, "/api/connection-events/series?bucket=1h&groupBy=app", token)
+        body     <- resp.body.asString
+        page     <- ZIO.fromEither(body.fromJson[ConnectionEventSeriesPage])
         rows = page.rows
         yt   = rows.find(_.groups.getOrElse("app", "") == "youtube").get
         // #1526: facebook.com isn't in any app → single-host app keyed by the host.
@@ -1255,10 +1255,10 @@ object LogApiSpec
             ),
           ),
         )
-        routes = LogRoutes.routes(auth, connRepo, upRepo)
-        resp <- getJson(routes, "/api/connection-events/series?bucket=1h&groupBy=app", token)
-        body <- resp.body.asString
-        page <- ZIO.fromEither(body.fromJson[ConnectionEventSeriesPage])
+        routes   <- ZIO.serviceWith[Clock](LogRoutes.routes(auth, connRepo, upRepo, _))
+        resp     <- getJson(routes, "/api/connection-events/series?bucket=1h&groupBy=app", token)
+        body     <- resp.body.asString
+        page     <- ZIO.fromEither(body.fromJson[ConnectionEventSeriesPage])
         rows  = page.rows
         slugs = rows.map(_.groups.getOrElse("app", ""))
       } yield assertTrue(resp.status == Status.Ok) &&
@@ -1312,10 +1312,10 @@ object LogApiSpec
             ),
           ),
         )
-        routes = LogRoutes.routes(auth, connRepo, upRepo)
-        resp <- getJson(routes, "/api/connection-events/series?bucket=1h&groupBy=app", token)
-        body <- resp.body.asString
-        page <- ZIO.fromEither(body.fromJson[ConnectionEventSeriesPage])
+        routes   <- ZIO.serviceWith[Clock](LogRoutes.routes(auth, connRepo, upRepo, _))
+        resp     <- getJson(routes, "/api/connection-events/series?bucket=1h&groupBy=app", token)
+        body     <- resp.body.asString
+        page     <- ZIO.fromEither(body.fromJson[ConnectionEventSeriesPage])
         rows = page.rows
         yt   = rows.find(_.groups.getOrElse("app", "") == "youtube")
         // #1526: notyoutube.com → its own single-host app keyed by the host.
@@ -1338,7 +1338,7 @@ object LogApiSpec
         upRepo   <- ZIO.service[UserProfileRepo]
         auth     <- makeAuth
         token    <- auth.login("admin", "changeme").map(_.token.value)
-        routes = LogRoutes.routes(auth, connRepo, upRepo)
+        routes   <- ZIO.serviceWith[Clock](LogRoutes.routes(auth, connRepo, upRepo, _))
         resp <- getJson(routes, "/api/connection-events/series?bucket=off&groupBy=domain", token)
       } yield assertTrue(resp.status == Status.BadRequest)
     },
@@ -1349,8 +1349,8 @@ object LogApiSpec
         upRepo   <- ZIO.service[UserProfileRepo]
         auth     <- makeAuth
         token    <- auth.login("admin", "changeme").map(_.token.value)
-        routes = LogRoutes.routes(auth, connRepo, upRepo)
-        resp <- getJson(routes, "/api/connection-events/series?bucket=5m&groupBy=domain", token)
+        routes   <- ZIO.serviceWith[Clock](LogRoutes.routes(auth, connRepo, upRepo, _))
+        resp     <- getJson(routes, "/api/connection-events/series?bucket=5m&groupBy=domain", token)
       } yield assertTrue(resp.status == Status.BadRequest)
     },
     test("GET /api/connection-events/series buckets across multiple windows (10m)") {
@@ -1363,7 +1363,7 @@ object LogApiSpec
         token    <- auth.login("admin", "changeme").map(_.token.value)
         now = Instant.now()
         // Two events 25 min apart → land in different 10-minute buckets
-        _ <- connRepo.insertBatch(
+        _      <- connRepo.insertBatch(
           List(
             ConnectionEventInsert(
               routerId,
@@ -1385,10 +1385,10 @@ object LogApiSpec
             ),
           ),
         )
-        routes = LogRoutes.routes(auth, connRepo, upRepo)
-        resp <- getJson(routes, "/api/connection-events/series?bucket=10m&groupBy=domain", token)
-        body <- resp.body.asString
-        page <- ZIO.fromEither(body.fromJson[ConnectionEventSeriesPage])
+        routes <- ZIO.serviceWith[Clock](LogRoutes.routes(auth, connRepo, upRepo, _))
+        resp   <- getJson(routes, "/api/connection-events/series?bucket=10m&groupBy=domain", token)
+        body   <- resp.body.asString
+        page   <- ZIO.fromEither(body.fromJson[ConnectionEventSeriesPage])
         rows = page.rows
       } yield assertTrue(rows.length == 2) &&
         assertTrue(rows.forall(_.groups.getOrElse("domain", "") == "a.com"))
@@ -1403,7 +1403,7 @@ object LogApiSpec
         auth     <- makeAuth
         token    <- auth.login("admin", "changeme").map(_.token.value)
         now = Instant.now()
-        _ <- connRepo.insertBatch(
+        _      <- connRepo.insertBatch(
           List("alpha", "bravo", "charlie", "delta", "echo").map(d =>
             ConnectionEventInsert(
               routerId,
@@ -1416,8 +1416,8 @@ object LogApiSpec
             ),
           ),
         )
-        routes = LogRoutes.routes(auth, connRepo, upRepo)
-        pager  = (cursor: Option[String]) => {
+        routes <- ZIO.serviceWith[Clock](LogRoutes.routes(auth, connRepo, upRepo, _))
+        pager = (cursor: Option[String]) => {
           val q =
             cursor.fold(s"/api/connection-events/series?bucket=1h&groupBy=domain&limit=2")(c =>
               s"/api/connection-events/series?bucket=1h&groupBy=domain&limit=2&cursor=$c",
@@ -1501,13 +1501,13 @@ object LogApiSpec
             ),
           ),
         )
-        routes = LogRoutes.routes(auth, connRepo, upRepo)
-        respDef <- getJson(routes, "/api/logs", token)
-        bodyDef <- respDef.body.asString
-        pageDef <- ZIO.fromEither(bodyDef.fromJson[QueryLogPage])
-        respInc <- getJson(routes, "/api/logs?includeMulticast=true", token)
-        bodyInc <- respInc.body.asString
-        pageInc <- ZIO.fromEither(bodyInc.fromJson[QueryLogPage])
+        routes   <- ZIO.serviceWith[Clock](LogRoutes.routes(auth, connRepo, upRepo, _))
+        respDef  <- getJson(routes, "/api/logs", token)
+        bodyDef  <- respDef.body.asString
+        pageDef  <- ZIO.fromEither(bodyDef.fromJson[QueryLogPage])
+        respInc  <- getJson(routes, "/api/logs?includeMulticast=true", token)
+        bodyInc  <- respInc.body.asString
+        pageInc  <- ZIO.fromEither(bodyInc.fromJson[QueryLogPage])
       } yield assertTrue(pageDef.rows.length == 1) &&
         assertTrue(pageDef.rows.head.host.value == "youtube.com") &&
         assertTrue(pageInc.rows.length == 5) &&
@@ -1555,17 +1555,17 @@ object LogApiSpec
             ),
           ),
         )
-        routes = LogRoutes.routes(auth, connRepo, upRepo)
-        respDef <- getJson(routes, "/api/connection-events/series?bucket=1h&groupBy=domain", token)
-        bodyDef <- respDef.body.asString
-        pageDef <- ZIO.fromEither(bodyDef.fromJson[ConnectionEventSeriesPage])
-        respInc <- getJson(
+        routes   <- ZIO.serviceWith[Clock](LogRoutes.routes(auth, connRepo, upRepo, _))
+        respDef  <- getJson(routes, "/api/connection-events/series?bucket=1h&groupBy=domain", token)
+        bodyDef  <- respDef.body.asString
+        pageDef  <- ZIO.fromEither(bodyDef.fromJson[ConnectionEventSeriesPage])
+        respInc  <- getJson(
           routes,
           "/api/connection-events/series?bucket=1h&groupBy=domain&includeMulticast=true",
           token,
         )
-        bodyInc <- respInc.body.asString
-        pageInc <- ZIO.fromEither(bodyInc.fromJson[ConnectionEventSeriesPage])
+        bodyInc  <- respInc.body.asString
+        pageInc  <- ZIO.fromEither(bodyInc.fromJson[ConnectionEventSeriesPage])
         defDomains = pageDef.rows.flatMap(_.groups.get("domain"))
         incDomains = pageInc.rows.flatMap(_.groups.get("domain"))
       } yield assertTrue(defDomains == List("youtube.com")) &&
@@ -1597,15 +1597,15 @@ object LogApiSpec
           ),
         )
         _        <- rollAndWipeRaw(connRepo)
-        routes = LogRoutes.routes(auth, connRepo, upRepo)
+        routes   <- ZIO.serviceWith[Clock](LogRoutes.routes(auth, connRepo, upRepo, _))
         // bucket=1d → Daily cap; hours=720 (30d) → Daily window preference.
-        resp <- getJson(
+        resp     <- getJson(
           routes,
           "/api/connection-events/series?bucket=1d&groupBy=domain&hours=720",
           token,
         )
-        body <- resp.body.asString
-        page <- ZIO.fromEither(body.fromJson[ConnectionEventSeriesPage])
+        body     <- resp.body.asString
+        page     <- ZIO.fromEither(body.fromJson[ConnectionEventSeriesPage])
         rows = page.rows
         yt   = rows.find(_.groups.getOrElse("domain", "") == "youtube.com")
         fb   = rows.find(_.groups.getOrElse("domain", "") == "facebook.com")
@@ -1630,15 +1630,15 @@ object LogApiSpec
           ),
         )
         _        <- rollAndWipeRaw(connRepo)
-        routes = LogRoutes.routes(auth, connRepo, upRepo)
+        routes   <- ZIO.serviceWith[Clock](LogRoutes.routes(auth, connRepo, upRepo, _))
         // bucket=1h → Hourly cap; hours=48 (2d) → Hourly window preference.
-        resp <- getJson(
+        resp     <- getJson(
           routes,
           "/api/connection-events/series?bucket=1h&groupBy=domain&hours=48",
           token,
         )
-        body <- resp.body.asString
-        page <- ZIO.fromEither(body.fromJson[ConnectionEventSeriesPage])
+        body     <- resp.body.asString
+        page     <- ZIO.fromEither(body.fromJson[ConnectionEventSeriesPage])
         rows = page.rows
         yt   = rows.find(_.groups.getOrElse("domain", "") == "youtube.com")
         fb   = rows.find(_.groups.getOrElse("domain", "") == "facebook.com")
@@ -1648,17 +1648,17 @@ object LogApiSpec
     },
     test("#1265: fine bucket + short window stays on RAW (empty after raw wiped)") {
       for {
-        _        <- cleanDb
-        routerId <- seedRouter()
-        connRepo <- ZIO.service[ConnectionEventRepo]
-        upRepo   <- ZIO.service[UserProfileRepo]
-        auth     <- makeAuth
-        token    <- auth.login("admin", "changeme").map(_.token.value)
-        _        <- connRepo.insertBatch(
+        _          <- cleanDb
+        routerId   <- seedRouter()
+        connRepo   <- ZIO.service[ConnectionEventRepo]
+        upRepo     <- ZIO.service[UserProfileRepo]
+        auth       <- makeAuth
+        token      <- auth.login("admin", "changeme").map(_.token.value)
+        _          <- connRepo.insertBatch(
           List(ceFqdn(routerId, "aa:bb:cc:00:00:01", "youtube.com", allowed = true)),
         )
-        _        <- rollAndWipeRaw(connRepo)
-        routes = LogRoutes.routes(auth, connRepo, upRepo)
+        _          <- rollAndWipeRaw(connRepo)
+        routes     <- ZIO.serviceWith[Clock](LogRoutes.routes(auth, connRepo, upRepo, _))
         // bucket=10m → Raw cap; default hours=24 → Raw. Must NOT touch a rollup.
         respFine   <- getJson(
           routes,
@@ -1694,25 +1694,25 @@ object LogApiSpec
           ),
         )
         _        <- rollAndWipeRaw(connRepo)
-        routes = LogRoutes.routes(auth, connRepo, upRepo)
+        routes   <- ZIO.serviceWith[Clock](LogRoutes.routes(auth, connRepo, upRepo, _))
         // Default (multicast excluded) coarse+wide read is served by the rollup,
         // and the rollup excludes multicast at write time → only youtube.
-        respDef <- getJson(
+        respDef  <- getJson(
           routes,
           "/api/connection-events/series?bucket=1d&groupBy=domain&hours=720",
           token,
         )
-        bodyDef <- respDef.body.asString
-        pageDef <- ZIO.fromEither(bodyDef.fromJson[ConnectionEventSeriesPage])
+        bodyDef  <- respDef.body.asString
+        pageDef  <- ZIO.fromEither(bodyDef.fromJson[ConnectionEventSeriesPage])
         // includeMulticast=true cannot be served by the rollup (no host_type), so
         // it must fall back to raw — which we wiped → empty.
-        respInc <- getJson(
+        respInc  <- getJson(
           routes,
           "/api/connection-events/series?bucket=1d&groupBy=domain&hours=720&includeMulticast=true",
           token,
         )
-        bodyInc <- respInc.body.asString
-        pageInc <- ZIO.fromEither(bodyInc.fromJson[ConnectionEventSeriesPage])
+        bodyInc  <- respInc.body.asString
+        pageInc  <- ZIO.fromEither(bodyInc.fromJson[ConnectionEventSeriesPage])
       } yield assertTrue(pageDef.rows.flatMap(_.groups.get("domain")) == List("youtube.com")) &&
         assertTrue(pageInc.rows.isEmpty)
     },
@@ -1732,21 +1732,21 @@ object LogApiSpec
           ),
         )
         _        <- rollAndWipeRaw(connRepo)
-        routes = LogRoutes.routes(auth, connRepo, upRepo)
-        respB <- getJson(
+        routes   <- ZIO.serviceWith[Clock](LogRoutes.routes(auth, connRepo, upRepo, _))
+        respB    <- getJson(
           routes,
           "/api/connection-events/series?bucket=1d&groupBy=domain&hours=720&blocked=true",
           token,
         )
-        bodyB <- respB.body.asString
-        pageB <- ZIO.fromEither(bodyB.fromJson[ConnectionEventSeriesPage])
-        respA <- getJson(
+        bodyB    <- respB.body.asString
+        pageB    <- ZIO.fromEither(bodyB.fromJson[ConnectionEventSeriesPage])
+        respA    <- getJson(
           routes,
           "/api/connection-events/series?bucket=1d&groupBy=domain&hours=720&blocked=false",
           token,
         )
-        bodyA <- respA.body.asString
-        pageA <- ZIO.fromEither(bodyA.fromJson[ConnectionEventSeriesPage])
+        bodyA    <- respA.body.asString
+        pageA    <- ZIO.fromEither(bodyA.fromJson[ConnectionEventSeriesPage])
         ytB = pageB.rows.find(_.groups.getOrElse("domain", "") == "youtube.com")
         ytA = pageA.rows.find(_.groups.getOrElse("domain", "") == "youtube.com")
       } yield assertTrue(ytB.exists(r => r.countBlocked == 1 && r.countSucceeded == 0)) &&
@@ -1764,14 +1764,14 @@ object LogApiSpec
           List(ceFqdn(routerId, "aa:bb:cc:00:00:01", "youtube.com", allowed = true)),
         )
         _        <- rollAndWipeRaw(connRepo)
-        routes = LogRoutes.routes(auth, connRepo, upRepo)
-        resp <- getJson(
+        routes   <- ZIO.serviceWith[Clock](LogRoutes.routes(auth, connRepo, upRepo, _))
+        resp     <- getJson(
           routes,
           "/api/connection-events/series?bucket=1d&groupBy=domain&hours=720",
           token,
         )
-        body <- resp.body.asString
-        page <- ZIO.fromEither(body.fromJson[ConnectionEventSeriesPage])
+        body     <- resp.body.asString
+        page     <- ZIO.fromEither(body.fromJson[ConnectionEventSeriesPage])
         yt = page.rows.find(_.groups.getOrElse("domain", "") == "youtube.com")
       } yield assertTrue(yt.exists(r => r.lastSeen == r.windowStart))
     },

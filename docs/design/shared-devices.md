@@ -159,11 +159,14 @@ this section only summarises it.
   started_by, ended_by, end_cause, created_at)`. `kind` is `assigned` or `check_in`. `end_cause` is
   one of `reassigned`, `unassigned`, `check_out`, `forced`, `time_limit`, `schedule`, `paused`,
   `idle`, `day_reset`, `made_shared`, `unshared`, and is set exactly when `ended_at` is.
-- `started_at IS NULL` means an open-ended start (the row covers everything before `ended_at`). Only
-  the backfill writes it. NULL is used instead of `'-infinity'` so no reader maps an infinite
+- `started_at IS NULL` means an open-ended start (the row covers everything before `ended_at`). Two
+  writers produce it, and only for `kind = 'assigned'`: the backfill, and the §5.3 primitive when it
+  opens a device's first-ever row (the device has no history rows at all). Every other row starts
+  at its transition instant (amended on #2889/#2890; this section first said only the backfill
+  writes a NULL start). NULL is used instead of `'-infinity'` so no reader maps an infinite
   timestamp through JDBC. **Every reader treats a NULL `started_at` as unbounded**: a point-in-time
   match is `(started_at IS NULL OR ts >= started_at)`, never a bare `ts >= started_at` (which is NULL
-  for a backfilled row and would silently drop it). The scope read returns NULL bounds to Scala as
+  for an open-ended row and would silently drop it). The scope read returns NULL bounds to Scala as
   `None` (unbounded), never as a sentinel instant (amended on #2844; this section first proposed
   clipping in SQL with `GREATEST(COALESCE(started_at, :windowStart), :windowStart)`).
 - `uq_dpa_device_open`: a partial unique index allowing one open row per device, which is also the
@@ -178,7 +181,10 @@ this section only summarises it.
   `usage_report_interval`, default 60 s, `openwrt/files/etc/config/wifihaven:47`) plus ingest and
   tick lag, so idle cannot fire between two reports of an active device.
 - Backfill: every device with a profile gets one open, open-ended `assigned` row. That reproduces
-  today's attribution exactly, so the migration changes no behaviour.
+  today's attribution exactly, so the migration changes no behaviour. A device assigned for the
+  first time after the migration gets the same open-ended row (§5.3), so it attributes exactly like
+  a backfilled one. Q7 only changes what a *reassignment* does; a first assignment has no earlier
+  profile whose usage it could move.
 
 `devices` is a small table (one row per device per household); the backfill is metadata-scale,
 not a growth-table rewrite (#migrations-prod-data-volume does not apply). Row count to be
@@ -203,6 +209,15 @@ it is the holder while checked in and `NULL` while checked out.
 `DeviceAssignment.assign(household, deviceId, newProfile: Option[ProfileId], at, kind, by, cause)`
 is the **only** code that writes `devices.profile_id`. In one transaction it closes the open
 interval (`ended_at = at`, `end_cause`), opens the new one, and updates `devices.profile_id`.
+The new row starts at the transition instant (`at`, clamped forward to the device's latest
+existing bound) with one exception: a device's first-ever `assigned` row (no history rows at all,
+open or closed) gets `started_at = NULL`, the same open-ended shape as the backfill (§5.1).
+Without the exception, a new device's first usage report, whose `period_start` falls slightly
+before the assignment instant, was credited to no profile, so the daily limit never counted it
+(#2889, fixed in #2890). "First-ever" means no surviving rows: deleting a profile cascades away its
+rows, so a device whose only history was on a deleted profile also gets an open-ended row on its
+next assignment. A reassignment, an assignment after an unassignment gap (closed rows exist), and
+every `check_in` start at the transition instant.
 The existing writers (`Repos.scala:2274,2320` upserts) are routed through it; a CI guard
 (`.github/scripts/check-device-profile-writers.sh`) rejects an `UPDATE devices ... profile_id` /
 `INSERT INTO devices(... profile_id ...)` outside it, and a
@@ -215,7 +230,8 @@ and during any Render deploy where an old instance overlaps a new one, old code 
 `devices.profile_id` without history. So reconciliation is a **standing invariant check** that runs
 on every per-household reevaluate tick: the primitive compares each device's `devices.profile_id`
 with its open row and, on a mismatch, closes and reopens at the tick instant
-(`end_cause = reassigned` / `unassigned`). A non-shared device reopens as `assigned`. A shared device
+(`end_cause = reassigned` / `unassigned`). A non-shared device reopens as `assigned`; if it has no
+history rows at all, that row is its first-ever one and is open-ended, as above. A shared device
 never gets an `assigned` row. If it has an open `check_in`, the check-in is the truth (only the
 primitive writes one), so the repair restores `devices.profile_id` from it and leaves the row open.
 Otherwise (a `profile_id` with no open check-in, or an open `assigned` row) the repair clears
@@ -266,6 +282,17 @@ drop. Then:
   `usedSecondsByMac`) is the set of devices with any span in the window, so a shared device appears
   under every profile that held it that day, credited only its in-interval presence.
 - `MacScope.Only` grows span bounds, so the traffic/usage-series routes inherit the same rule.
+- **Traffic usage labels** (#2875): `GET /api/usage/traffic` and its `trafficUsage` ws live edge
+  label each row's profile with `AttributionScope.profileAt(mac, period_start)`, the same
+  `covers` test the profile filter applies, and `groupBy=profile` groups on that label. A row no
+  span covers is "(unassigned)", never the device's current profile. Rows from the SQL
+  pre-aggregated and rollup tiers carry their bucket's start as `period_start`, so they are
+  labelled by bucket start (§6.3). A daily-rollup row's start is UTC midnight of its stored
+  household-local `date`, the same instant the #2844 filter tests, so label and filter agree there.
+  A SQL pre-aggregated bucket can begin before the request's `from`, so the scope is read from the
+  first bucket's start (`UsageTrafficQuery.labelWindow`). On that tier the profile filter still
+  tests each raw row while the label tests the bucket start, so `?profileId=B&groupBy=profile`
+  can return the bucket that straddles a move from A to B holding only B's traffic but labelled A.
 
 Membership is decided by `period_start` (report periods are the agent's `usage_report_interval`,
 default 60 s), so a check-in boundary is attributed to within one report period. Accepted and
@@ -283,6 +310,7 @@ stated, not hidden.
 | Time status / rollup routes | `Routes.scala:1203,1283,1338` | day / range |
 | Dashboard "now" | `DashboardNowRoutes.scala:115,176` | now (current read; already right via §5.2) |
 | SPA ws time-status push | `SpaPush.scala:587` | day |
+| Traffic usage row labels, `groupBy=profile` (GET + ws live edge) | `UsageTraffic.buildRaw` / `buildAggregate` | per row `period_start` (bucket start on rollup / pre-aggregated tiers) |
 | Logs + series profile label/filter | `SqlFragments.deviceLabelJoin`, `Repos.scala:3547,3577,3644,3724` | per event `ts` |
 
 The inventory is a starting list, not proof of completeness (grep cannot prove a sweep). The
@@ -308,6 +336,15 @@ The join target is tiny and indexed on `(device_id, started_at)`.
 The hourly / daily `connection_events_*` rollups are keyed by `(mac, bucket)`. A bucket that
 straddles a check-in boundary is attributed by **bucket start**: off by at most one bucket on the
 series chart, never in the daily-limit math (that uses presence, §6.1).
+
+A shared device is usually checked out overnight, so the daily rollup would label its whole day with
+the 00:00 UTC holder, usually nobody. Profile-filtered `/series` reads therefore read the hourly
+rollup instead of the daily one (`LogRoutes.seriesGrain`, #2873), which bounds the error to the hour
+holding a check-in or check-out. Unfiltered reads keep the daily rollup, and so does a profile read
+whose window reaches past the hourly rollup's 90-day retention. `/series` no longer groups by
+profile: on the hourly rollup that read took 10-17 s on prod, and on the daily rollup it mislabels
+shared devices. The per-profile and per-device usage pages are unaffected; they read
+`traffic_reports`, attributed per report (§6.1).
 
 ### 6.4 What does NOT change
 

@@ -149,6 +149,14 @@ object DeviceAssignment {
       .option
       .map(_.map(OpenRow.apply.tupled))
 
+  // Whether this device has ANY assignment history row (open or closed). Distinguishes a genuine
+  // first-ever assignment (no rows at all) from a re-assignment after an unassignment gap (closed
+  // rows exist) — only the former gets an open-ended start (see [[startFor]]).
+  private def hasAnyRow(device: DeviceId): ConnectionIO[Boolean] =
+    sql"SELECT EXISTS(SELECT 1 FROM device_profile_assignments WHERE device_id = $device)"
+      .query[Boolean]
+      .unique
+
   private def currentProfile(device: DeviceId): ConnectionIO[Option[ProfileId]] =
     sql"SELECT profile_id FROM devices WHERE id = $device".query[Option[ProfileId]].unique
 
@@ -179,13 +187,31 @@ object DeviceAssignment {
       household: HouseholdId,
       device: DeviceId,
       profile: ProfileId,
-      at: Instant,
+      start: Option[Instant],
       kind: AssignmentKind,
       by: Option[UserId],
   ): ConnectionIO[Unit] =
     sql"""INSERT INTO device_profile_assignments
             (household_id, device_id, profile_id, started_at, kind, started_by)
-          VALUES ($household, $device, $profile, $at, ${kind.db}, $by)""".update.run.void
+          VALUES ($household, $device, $profile, $start, ${kind.db}, $by)""".update.run.void
+
+  // The `started_at` a newly opened row gets. A device's FIRST-EVER `assigned` row is open-ended
+  // (NULL), exactly like the V90 backfill row every pre-existing device received: the profile owns
+  // the device's history up to any later reassignment. That is the pre-#2844 attribution the
+  // migration preserves ("changes no behaviour") and keeps an API-created device attributing the
+  // same as a backfilled one; design `docs/design/shared-devices.md` §5.1 / Q7 scopes the
+  // "reassigning no longer moves past usage" change to a *reassignment*, not a first assignment.
+  // Everything else — a reassignment (an open row is being closed), a re-assignment after an
+  // unassignment gap (closed rows exist), and every `check_in` (a point-in-time hold) — is stamped
+  // at the transition instant. `check_in` is never open-ended (V90 `dpa_open_start_is_assigned`).
+  private def startFor(
+      device: DeviceId,
+      closing: Option[OpenRow],
+      kind: AssignmentKind,
+      ts: Instant,
+  ): ConnectionIO[Option[Instant]] =
+    if (kind != AssignmentKind.Assigned || closing.isDefined) Option(ts).pure[ConnectionIO]
+    else hasAnyRow(device).map(if (_) Some(ts) else None)
 
   private def setCurrent(device: DeviceId, profile: Option[ProfileId]): ConnectionIO[Unit] =
     sql"UPDATE devices SET profile_id = $profile WHERE id = $device".update.run.void
@@ -259,11 +285,12 @@ object DeviceAssignment {
       if (current.map(_.profile) == newProfile) setCurrent(device, newProfile).as(false)
       else
         for {
-          _  <- newProfile.traverse_(checkProfile(dev.household, _))
-          ts <- transitionAt(device, at)
-          _  <- current.traverse_(close(_, ts, by, cause))
-          _  <- newProfile.traverse_(open(dev.household, device, _, ts, kind, by))
-          _  <- setCurrent(device, newProfile)
+          _     <- newProfile.traverse_(checkProfile(dev.household, _))
+          ts    <- transitionAt(device, at)
+          start <- startFor(device, current, kind, ts)
+          _     <- current.traverse_(close(_, ts, by, cause))
+          _     <- newProfile.traverse_(open(dev.household, device, _, start, kind, by))
+          _     <- setCurrent(device, newProfile)
         } yield true
     }
 
@@ -403,13 +430,14 @@ object DeviceAssignment {
           if (current.map(_.profile) == cached) false.pure[ConnectionIO]
           else
             for {
-              ts <- transitionAt(device, at)
+              ts    <- transitionAt(device, at)
+              start <- startFor(device, current, AssignmentKind.Assigned, ts)
               cause =
                 if (cached.isDefined) AssignmentEndCause.Reassigned
                 else AssignmentEndCause.Unassigned
               _ <- current.traverse_(close(_, ts, None, cause))
               _ <- cached.traverse_(
-                open(dev.household, device, _, ts, AssignmentKind.Assigned, None),
+                open(dev.household, device, _, start, AssignmentKind.Assigned, None),
               )
             } yield true
       }

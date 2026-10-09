@@ -91,7 +91,11 @@ object IntervalAttributionSpec
       router: RouterId,
   )
 
-  private val seed = for {
+  private val seed = seedWith(gap = false)
+
+  // #2875: `gap = true` also takes `moved` off A at 12:00 for no profile and seeds it active
+  // 12:30-13:00 before the 14:00 move to B, so it has traffic no span covers.
+  private def seedWith(gap: Boolean) = for {
     _   <- cleanDb
     hsr <- ZIO.service[HouseholdSettingsRepo]
     pr  <- ZIO.service[ProfileRepo]
@@ -114,6 +118,17 @@ object IntervalAttributionSpec
     rid   <- ZIO.serviceWithZIO[RouterRepo](_.create("gw-2844", Sha256Hex.unsafe("i" * 64)))
     _     <- seedTraffic(rid, stayMac, at(8), 15)
     _     <- seedTraffic(rid, movedMac, at(10), 30)
+    _     <- ZIO.when(gap)(
+      dar.assign(
+        HouseholdId.Default,
+        moved,
+        None,
+        at(12),
+        AssignmentKind.Assigned,
+        None,
+        AssignmentEndCause.Reassigned,
+      ) *> seedTraffic(rid, movedMac, at(12, 30), 30),
+    )
     _     <- dar.assign(
       HouseholdId.Default,
       moved,
@@ -178,6 +193,7 @@ object IntervalAttributionSpec
         ZoneOffset.UTC,
         devs.map(d => d.mac -> d).toMap,
         Map.empty,
+        scope,
         Map.empty,
       )
     } yield (raw.map(_.activeSeconds.toLong).sum, agg.map(_.totalSeconds).sum)
@@ -218,6 +234,17 @@ object IntervalAttributionSpec
 
   private def appMins(s: ProfileDayState): Int = s.perApp.map(_.usedMinutes).sum
 
+  // #2875: `GET /api/usage/traffic?<query>&tz=UTC` as the default admin.
+  private def trafficGet(query: String) =
+    getJson[TrafficUsageResponse](s"/api/usage/traffic?$query&tz=UTC")
+
+  // Seconds per `groups.profile` label across every window of an aggregated response.
+  private def secondsByProfile(r: TrafficUsageResponse): Map[String, Long] =
+    r.aggregateRows.groupMapReduce(_.groups.getOrElse("profile", "<none>"))(_.totalSeconds)(_ + _)
+
+  private val dayFrom = at(0)
+  private val dayTo   = at(0).plusSeconds(86400)
+
   def spec = suite("IntervalAttributionSpec (#2844)")(
     test("the scope read returns each profile's spans, bounded by the window it overlaps") {
       for {
@@ -227,12 +254,14 @@ object IntervalAttributionSpec
         scope <- dr.attributionScope(HouseholdId.Default, window._1, window._2)
         prev  <- dr.attributionScope(HouseholdId.Default, window._1.minusSeconds(86400), window._1)
         next  <- dr.attributionScope(HouseholdId.Default, window._2, window._2.plusSeconds(86400))
-        fixtureStart = Some(TestDatabase.FixtureAssignmentTime.toInstant(ZoneOffset.UTC))
+        // Both devices' FIRST-EVER assignment (to A) is open-ended (NULL start), the V90 backfill
+        // shape: a first assignment has no prior profile to protect, so A owns the history up to
+        // `moved`'s 14:00 reassignment. Only that reassignment stamps a start (B's).
       } yield assertTrue(
         window == (at(0), at(0).plusSeconds(86400)),
         scope.byProfile(f.a).toSet == Set(
-          AttributionSpan(movedMac, f.moved, fixtureStart, Some(at(14))),
-          AttributionSpan(stayMac, f.stay, fixtureStart, None),
+          AttributionSpan(movedMac, f.moved, None, Some(at(14))),
+          AttributionSpan(stayMac, f.stay, None, None),
         ),
         scope.byProfile(f.b) == List(AttributionSpan(movedMac, f.moved, Some(at(14)), None)),
         // The day before the move only A held `moved`; the day after, only B.
@@ -368,6 +397,73 @@ object IntervalAttributionSpec
         trf.map(_.aggregateRows.map(_.totalSeconds).sum) == List(2700L, 1200L),
       )
     },
+    test("#2875: raw traffic rows are labelled by the profile that held the device then") {
+      for {
+        f   <- seed
+        raw <- trafficGet(s"bucket=raw&from=$dayFrom&to=$dayTo&limit=500")
+        labels = raw.rawRows.map { r =>
+          (r.mac, Instant.parse(r.periodStart).isBefore(at(14)), r.profileId, r.profileName)
+        }.toSet
+      } yield assertTrue(
+        raw.rawRows.size == 13,
+        labels == Set(
+          (movedMac, true, Some(f.a), Some("A")),
+          (movedMac, false, Some(f.b), Some("B")),
+          (stayMac, true, Some(f.a), Some("A")),
+        ),
+      )
+    },
+    test("#2875: groupBy=profile groups traffic under the profile that held the device") {
+      // Raw per-row (the dashboard gauge's `raw&groupBy=profile`), the SQL pre-aggregated 1h
+      // bucket, and the hourly rollup tier (a 72h window routes 1h to `traffic_hourly`).
+      for {
+        _    <- seed
+        _    <- ZIO.serviceWithZIO[RollupRepo](_.rerollHourly(at(0)))
+        raw  <- trafficGet(s"bucket=raw&groupBy=profile&from=$dayFrom&to=$dayTo")
+        oneH <- trafficGet(s"bucket=1h&groupBy=profile&from=$dayFrom&to=$dayTo")
+        hrly <- trafficGet(
+          s"bucket=1h&groupBy=profile&from=${dayFrom.minusSeconds(86400 * 2)}&to=$dayTo",
+        )
+      } yield assertTrue(
+        secondsByProfile(raw) == Map("A" -> 2700L, "B" -> 1200L),
+        secondsByProfile(oneH) == Map("A" -> 2700L, "B" -> 1200L),
+        secondsByProfile(hrly) == Map("A" -> 2700L, "B" -> 1200L),
+      )
+    },
+    test("#2875: traffic while the device was on no profile is unassigned, not the current one") {
+      for {
+        _   <- seedWith(gap = true)
+        raw <- trafficGet(s"bucket=raw&from=$dayFrom&to=$dayTo&limit=500")
+        agg <- trafficGet(s"bucket=1h&groupBy=profile&from=$dayFrom&to=$dayTo")
+        gapRows = raw.rawRows.filter { r =>
+          val ps = Instant.parse(r.periodStart)
+          r.mac == movedMac && !ps.isBefore(at(12)) && ps.isBefore(at(14))
+        }
+      } yield assertTrue(
+        gapRows.size == 6,
+        gapRows.forall(r => r.profileId.isEmpty && r.profileName.isEmpty),
+        secondsByProfile(agg) == Map("A" -> 2700L, "(unassigned)" -> 1800L, "B" -> 1200L),
+      )
+    },
+    test("#2875: a 1h bucket that starts before `from` is labelled by its start") {
+      // `stay` moves A -> B at 08:05. Reading from 08:07 pre-aggregates its 08:10 period into the
+      // 08:00 bucket, which A held at its start: labelled A (bucket-start rule, design §6.3), not
+      // "(unassigned)" because the read's window began after A's span ended.
+      for {
+        f   <- seed
+        dar <- ZIO.service[DeviceAssignmentRepo]
+        _   <- dar.assign(
+          HouseholdId.Default,
+          f.stay,
+          Some(f.b),
+          at(8, 5),
+          AssignmentKind.Assigned,
+          None,
+          AssignmentEndCause.Reassigned,
+        )
+        agg <- trafficGet(s"bucket=1h&groupBy=profile&from=${at(8, 7)}&to=${at(9)}")
+      } yield assertTrue(secondsByProfile(agg) == Map("A" -> 300L))
+    },
     test("a backfilled open-ended row (NULL started_at) still attributes the whole day") {
       for {
         f   <- seed
@@ -391,13 +487,14 @@ object IntervalAttributionSpec
         f     <- seed
         dr    <- ZIO.service[DeviceRepo]
         scope <- AttributionScope.forDay(dr, HouseholdId.Default, day, f.settings)
-        // Days later every span still has a finite start (the writer stamps every row), but no
-        // change falls in that read's window.
+        // Days later no assignment change falls in that read's window: `stay`'s open-ended start and
+        // `moved`'s 14:00 start both lie before it, so every bound is dropped and nothing is bounded.
         later = day.plusDays(5)
         lscope <- AttributionScope.forDay(dr, HouseholdId.Default, later, f.settings)
         moveDay = sqlOn(scope.allProfiles, day)
       } yield assertTrue(
-        // `stay` was assigned long before the window: it matches on the IN disjunct alone.
+        // `stay`'s first-ever assignment is open-ended (NULL start): it matches on the IN disjunct
+        // alone, with no `period_start` predicate.
         sqlOn(scope.allProfiles.restrictTo(Set(stayMac)), day).isEmpty,
         moveDay.contains(" IN ("),
         // `moved` changed at 14:00: A's span ends there, B's starts there. Nothing else is bounded.

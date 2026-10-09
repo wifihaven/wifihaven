@@ -80,11 +80,25 @@ final case class AttributionScope private[db] (
     val ids = byProfile.getOrElse(profile, Nil).iterator.map(_.deviceId).toSet
     devices.filter(d => ids.contains(d.id))
   }
+
+  /**
+   * #2875: the profile that held `mac` at `ts` — the profile whose span covers it, by the same
+   * [[AttributionSpan.covers]] the per-profile filter applies (labels the traffic-usage rows). For
+   * a row aggregated in SQL, `ts` is its bucket's start while the filter tested each raw row, so a
+   * bucket straddling a reassignment is labelled by whoever held the device at its start (design
+   * §6.3). `None` when no span in the scope covers `ts` (the device was on no profile then, or `ts`
+   * is outside the window the scope was read over).
+   */
+  def profileAt(mac: MacAddress, ts: Instant): Option[ProfileId] =
+    spansByMac.getOrElse(mac, Nil).collectFirst { case (p, s) if s.covers(ts) => p }
+
+  private lazy val spansByMac: Map[MacAddress, List[(ProfileId, AttributionSpan)]] =
+    byProfile.toList.flatMap((p, spans) => spans.map(s => s.mac -> (p, s))).groupMap(_._1)(_._2)
 }
 
 object AttributionScope {
 
-  /** A scope with no spans: what a read that named no profile resolves against. */
+  /** A scope with no spans: every profile filter selects nothing and every row is unassigned. */
   def empty(household: HouseholdId): AttributionScope = AttributionScope(household, Map.empty)
 
   /**

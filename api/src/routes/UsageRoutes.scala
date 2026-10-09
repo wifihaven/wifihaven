@@ -1203,7 +1203,7 @@ object UsageRoutes {
       // single value still works ("mac=aa:bb:cc:dd:ee:01"). Empty/absent =
       // no filter on that column.
       macsRaw = parseMultiValueParam(req, "mac").map(s => MacAddress.unsafe(normalizeMac(s)))
-      profileIds  <- parseMultiProfileIdParam(req)
+      profileIds <- parseMultiProfileIdParam(req)
       // Retention gating per #814 is not yet wired (rollup tables + horizons endpoint
       // are dependencies). We still expose the 409 contract by emitting it when the
       // window straddles a horizon we DO know about — but until #814, the only
@@ -1213,7 +1213,7 @@ object UsageRoutes {
       // Resolve mac filter from macs / profileIds / "all visible to admin".
       // When both lists are non-empty, intersect: devices that match any
       // selected mac AND belong to any selected profile.
-      allDevices  <- deviceRepo.listAllForHousehold(claims.hh).mapError(ApiError.Db(_))
+      allDevices <- deviceRepo.listAllForHousehold(claims.hh).mapError(ApiError.Db(_))
       // #1971: the device-set RESULT is computed by the shared
       // `UsageTrafficQuery.resolveMacs` (one source, also used by the S4 live-edge stream so the two
       // can't drift on filter semantics). This handler keeps the HTTP-only guards around it: a
@@ -1223,10 +1223,13 @@ object UsageRoutes {
       // supplied" are distinct constructors, so the hand-rolled `macs.isEmpty && (macsRaw.nonEmpty
       // || profileIds.nonEmpty)` short-circuits below are gone. A household with ZERO devices is
       // the case those guards missed.
-      // #2844: a profile filter selects what the profiles held during `[fromI, toI)`, by interval.
-      attribution <-
-        if (profileIds.isEmpty) ZIO.succeed(AttributionScope.empty(claims.hh))
-        else deviceRepo.attributionScope(claims.hh, fromI, toI).mapError(ApiError.Db(_))
+      // #2844: a profile filter selects what the profiles held during the window, by interval.
+      // #2875: the same scope labels every row by the profile that held its device then, so it is
+      // read for every request, over the window widened to the first bucket's start.
+      (labelFrom, labelTo) = UsageTrafficQuery.labelWindow(fromI, toI, bucket, zone)
+      attribution <- deviceRepo
+        .attributionScope(claims.hh, labelFrom, labelTo)
+        .mapError(ApiError.Db(_))
       macScope    <- (macsRaw, profileIds) match {
         case (ms, _) if ms.nonEmpty     =>
           for {
@@ -1321,7 +1324,7 @@ object UsageRoutes {
                 .listRawInRange(claims.hh, macs, fromI, toI, rawCursor, Some(rawLimit), spans)
                 .mapError(ApiError.Db(_)),
             )
-            built   = UsageTraffic.buildRaw(pagedRows, devByMac, profNames)
+            built   = UsageTraffic.buildRaw(pagedRows, devByMac, profNames, attribution)
             nextCur =
               if (pagedRows.size < rawLimit) None
               else
@@ -1368,6 +1371,7 @@ object UsageRoutes {
                 zone,
                 devByMac,
                 profNames,
+                attribution,
                 appsByHost,
               )
               .mapError(ApiError.Db(_))

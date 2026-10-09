@@ -217,16 +217,19 @@ object DeviceAssignmentSpec
 
   def spec = suite("DeviceAssignment (#2843)")(
     suite("routes write history through the primitive")(
-      test("PUT with a profile opens one assigned row at the clock instant, by the caller") {
+      test("PUT with a profile opens one open-ended assigned row (NULL start), by the caller") {
         for {
           f     <- fixture
           resp  <- put(f, Some(f.kids))
           rows  <- history(f.xa)
           admin <- adminId(f.xa)
           opened = rows.map(r => (r.profileId, r.startedAt, r.endedAt, r.kind, r.startedBy))
+          // #2876: a device's FIRST-EVER assignment is open-ended (NULL start), the V90 backfill
+          // shape — the profile owns the device's history up to any later reassignment. Only a
+          // reassignment (below) stamps a start.
           res    = assertTrue(
             resp.status == Status.Ok,
-            opened == List((f.kids.value, Some(instantOf(T0)), None, "assigned", Some(admin))),
+            opened == List((f.kids.value, None, None, "assigned", Some(admin))),
             rows.map(_.householdId) == List(1L),
           )
           out <- pinned(f, res)
@@ -252,7 +255,8 @@ object DeviceAssignmentSpec
           res = assertTrue(
             resp.status == Status.Ok,
             rows.map(r => (r.profileId, r.startedAt, r.endedAt, r.endCause, r.endedBy)) == List(
-              (f.kids.value, Some(instantOf(T0)), Some(t1), Some("reassigned"), Some(admin)),
+              // kids' first-ever row is open-ended (NULL start); the reassignment stamps adults'.
+              (f.kids.value, None, Some(t1), Some("reassigned"), Some(admin)),
               (f.adults.value, Some(t1), None, None, None),
             ),
           )
@@ -419,14 +423,22 @@ object DeviceAssignmentSpec
       ) {
         for {
           f    <- fixture
+          // First-ever assignment is open-ended (NULL start), so reassign once to get a FINITE
+          // start (adults @ T0+40) for the clamp to protect — then move the clock behind it.
           _    <- put(f, Some(f.kids))
-          _    <- f.clock.setTo(T0.minusMinutes(10))
+          _    <- f.clock.advance(java.time.Duration.ofMinutes(40))
           _    <- patch(f, s"""{"profileId":${f.adults.value}}""")
+          _    <- f.clock.setTo(T0) // behind adults' start (T0+40)
+          _    <- patch(f, s"""{"profileId":${f.kids.value}}""")
           rows <- history(f.xa)
+          t1  = instantOf(T0.plusMinutes(40))
           res = assertTrue(
+            // Clamped to T0+40, not the behind clock: adults closes at its own start (an empty
+            // interval), kids reopens there — never before it opened, never overlapping.
             rows.map(r => (r.startedAt, r.endedAt)) == List(
-              (Some(instantOf(T0)), Some(instantOf(T0))),
-              (Some(instantOf(T0)), None),
+              (None, Some(t1)),
+              (Some(t1), Some(t1)),
+              (Some(t1), None),
             ),
           )
           out <- pinned(f, res)
@@ -454,7 +466,8 @@ object DeviceAssignmentSpec
             mid - before == 1.0,
             after == mid,
             rows.map(r => (r.profileId, r.startedAt, r.endedAt, r.endCause, r.kind)) == List(
-              (f.kids.value, Some(instantOf(T0)), Some(t1), Some("reassigned"), "assigned"),
+              // kids' first-ever row is open-ended (NULL start); the repair stamps adults' reopen.
+              (f.kids.value, None, Some(t1), Some("reassigned"), "assigned"),
               (f.adults.value, Some(t1), None, None, "assigned"),
             ),
           )
