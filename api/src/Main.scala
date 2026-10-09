@@ -315,13 +315,9 @@ object Main extends ZIOAppDefault {
             ),
           ),
         )
-        // #2849: an auto-checkout on the tick below nudges the Devices page and the household's
-        // `sharedDevices` subscribers, as a check-in/out through the API does (HttpRoutes).
+        // #2849: an auto-checkout on the tick below nudges the SPA like any other holder change.
         checkoutJob   <- ZIO.service[SharedDeviceCheckoutJob]
-        _             <- checkoutJob.setOnReleased(hh =>
-          spaEventBus.publish(SpaEvent.Stale(StaleTopic.Devices)) *>
-            spaEventBus.publish(SpaEvent.SharedDevicesChanged(hh)),
-        )
+        _             <- checkoutJob.setOnReleased(spaEventBus.deviceHolderChanged)
         _             <- policyForPush.reevaluate
           .repeat(Schedule.fixed(cfg.policy.snapshotCacheRefreshInterval))
           .forkScoped

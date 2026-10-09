@@ -387,9 +387,11 @@ object SharedDeviceAutoCheckoutSpec
         _  <- fx.clock.setTo(at(15, 30))
         _  <- tick(fx)
         t  <- history(SharedMac)
-        // Checked in at 23:00 Monday, ticked after midnight: day_reset beats idle.
+        // Checked in at 23:00 Monday, paused, ticked after midnight: day_reset beats paused and
+        // idle.
         _  <- fx.clock.setTo(at(23, 0))
         _  <- checkIn(fx, SharedMac, fx.kid1)
+        _  <- ZIO.serviceWithZIO[ProfileRepo](_.setPaused(fx.kid1, true))
         _  <- fx.clock.setTo(Monday.plusDays(1).atTime(0, 0, 5))
         _  <- tick(fx)
         d  <- history(SharedMac)
@@ -404,6 +406,33 @@ object SharedDeviceAutoCheckoutSpec
           Some("day_reset"),
         ),
         d.lastOption.flatMap(_._4).contains(utc(Monday.plusDays(1).atTime(0, 0))),
+      )
+    },
+    test("a release keyed to a stale row leaves the same profile's fresh check-in open") {
+      for {
+        fx    <- setup(at(14, 0))
+        sdr   <- ZIO.service[SharedDeviceRepo]
+        _     <- checkIn(fx, SharedMac, fx.kid1)
+        stale <- sdr.openCheckIns(HouseholdId.Default).map(_.head)
+        // Between the job's read and its write, kid1 checks out and back in.
+        _     <- sdr.checkOut(
+          HouseholdId.Default,
+          stale.deviceId,
+          fx.kid1,
+          utc(at(14, 5)),
+          "admin",
+          AssignmentEndCause.CheckOut,
+        )
+        _     <- fx.clock.setTo(at(14, 6))
+        _     <- checkIn(fx, SharedMac, fx.kid1)
+        out   <- sdr.autoCheckOut(stale, utc(at(14, 7)), AssignmentEndCause.Idle)
+        hist  <- history(SharedMac)
+      } yield assertTrue(
+        out == CheckOutOutcome.NotHeld,
+        hist.map(r => (r._3, r._4)) == List(
+          (Some("check_out"), Some(utc(at(14, 5)))),
+          (None, None),
+        ),
       )
     },
     test("an unrestricted, active holder stays checked in and nothing is notified") {

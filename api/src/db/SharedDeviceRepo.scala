@@ -47,13 +47,12 @@ trait SharedDeviceRepo {
   def openCheckIns(household: HouseholdId): Task[List[OpenCheckIn]]
 
   /**
-   * #2849: [[DeviceAssignment.checkOut]] by the system (no `ended_by`), for the auto-checkout job's
-   * `time_limit` / `schedule` / `paused` / `idle` / `day_reset` causes.
+   * #2849: [[DeviceAssignment.closeCheckIn]] in its own transaction, for the auto-checkout job's
+   * `time_limit` / `schedule` / `paused` / `idle` / `day_reset` causes. Closes `checkIn` only if it
+   * is still the device's open row.
    */
   def autoCheckOut(
-      household: HouseholdId,
-      device: DeviceId,
-      holder: ProfileId,
+      checkIn: OpenCheckIn,
       at: Instant,
       cause: AssignmentEndCause,
   ): Task[CheckOutOutcome]
@@ -67,6 +66,8 @@ trait SharedDeviceRepo {
 
 /** #2849: one open `check_in` row: which profile holds which shared device, since when. */
 final case class OpenCheckIn(
+    id: Long,
+    household: HouseholdId,
     deviceId: DeviceId,
     mac: MacAddress,
     holder: ProfileId,
@@ -152,25 +153,21 @@ class SharedDeviceRepoLive(xa: Transactor[Task]) extends SharedDeviceRepo {
   // `uq_dpa_device_open`; a check-in's `started_at` is never NULL (V90 `dpa_open_start_is_assigned`).
   def openCheckIns(household: HouseholdId) =
     DbMetrics.timed("sharedDevice.openCheckIns")(
-      sql"""SELECT o.device_id, d.mac, o.profile_id, o.started_at
+      sql"""SELECT o.id, o.household_id, o.device_id, d.mac, o.profile_id, o.started_at
               FROM device_profile_assignments o JOIN devices d ON d.id = o.device_id
              WHERE o.household_id = $household AND o.ended_at IS NULL AND o.kind = 'check_in'
              ORDER BY o.device_id"""
-        .query[(DeviceId, MacAddress, ProfileId, Instant)]
+        .query[(Long, HouseholdId, DeviceId, MacAddress, ProfileId, Instant)]
         .map(OpenCheckIn.apply.tupled)
         .to[List]
         .transact(xa),
     )
 
-  def autoCheckOut(
-      household: HouseholdId,
-      device: DeviceId,
-      holder: ProfileId,
-      at: Instant,
-      cause: AssignmentEndCause,
-  ) =
+  def autoCheckOut(checkIn: OpenCheckIn, at: Instant, cause: AssignmentEndCause) =
     DbMetrics.timed("sharedDevice.autoCheckOut")(
-      DeviceAssignment.checkOut(household, device, holder, at, None, cause).transact(xa),
+      DeviceAssignment
+        .closeCheckIn(checkIn.household, checkIn.deviceId, checkIn.id, at, cause)
+        .transact(xa),
     )
 
   def countOpenCheckInsFleet =

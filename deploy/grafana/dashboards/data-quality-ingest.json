@@ -1020,7 +1020,7 @@
         "uid": "${datasource}"
       },
       "title": "Auto-checkout job duration p50 / p95 (#2849)",
-      "description": "histogram_quantile over shared_device_checkout_job_duration_seconds_bucket. A run with no open check-ins is one indexed read; one with check-ins adds the day-state read the snapshot build also does, so it should sit well under policy_snapshot_build_seconds. Same buckets as the snapshot build (SnapshotBuildDurationBoundaries).",
+      "description": "histogram_quantile over shared_device_checkout_job_duration_seconds_bucket. A run with no open check-ins is two small indexed reads (the household's open check-ins and the fleet count for the open gauge); one with check-ins adds each holder's day state (TimeStatusService.todaysState) and, if not blocked, one device's presence for the idle test. Same buckets as the snapshot build (SnapshotBuildDurationBoundaries).",
       "type": "timeseries",
       "gridPos": {
         "h": 8,

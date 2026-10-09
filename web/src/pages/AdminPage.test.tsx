@@ -338,18 +338,33 @@ describe('AdminPage — shared-device idle auto-checkout (#2849)', () => {
     )
   })
 
-  it('a value outside 5–1440 is flagged and never sent', async () => {
+  it.each(['4', '1441'])('%s is outside 5–1440: flagged and never sent', async (bad) => {
     render(<AdminPage />)
     const input = await screen.findByTestId('shared-device-idle-minutes') as HTMLInputElement
     await act(async () => {})
 
-    fireEvent.change(input, { target: { value: '4' } })
+    fireEvent.change(input, { target: { value: bad } })
 
     expect(await screen.findByTestId('shared-device-idle-validation')).toBeTruthy()
     await waitFor(() =>
       expect(screen.getByTestId('shared-device-idle-save-status').getAttribute('data-status')).toBe('error'),
     )
     expect(api.household.patch).not.toHaveBeenCalled()
+  })
+  it('accepts both bounds', async () => {
+    render(<AdminPage />)
+    const input = await screen.findByTestId('shared-device-idle-minutes') as HTMLInputElement
+    await act(async () => {})
+
+    fireEvent.change(input, { target: { value: '1440' } })
+    await waitFor(() =>
+      expect(api.household.patch).toHaveBeenCalledWith({ sharedDeviceIdleMinutes: 1440 }),
+    )
+    fireEvent.change(screen.getByTestId('shared-device-idle-minutes'), { target: { value: '5' } })
+    await waitFor(() =>
+      expect(api.household.patch).toHaveBeenCalledWith({ sharedDeviceIdleMinutes: 5 }),
+    )
+    expect(screen.queryByTestId('shared-device-idle-validation')).toBeNull()
   })
 })
 

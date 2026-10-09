@@ -506,9 +506,7 @@ object HttpRoutes {
     // `devices.profile_id`: invalidate the snapshot and nudge both the Devices page and the
     // household's `sharedDevices` subscribers.
     val deviceChanged: wifihaven.shared.types.HouseholdId => UIO[Unit] = hh =>
-      policy.invalidate(hh) <*
-        spaEventBus.publish(SpaEvent.Stale(StaleTopic.Devices)) <*
-        spaEventBus.publish(SpaEvent.SharedDevicesChanged(hh))
+      policy.invalidate(hh) <* spaEventBus.deviceHolderChanged(hh)
     VersionRoutes.routes(wifihaven.api.BuildInfo.fromEnv) ++
       AuthRoutes.routes(auth, userRepo, upRepo, loginRateLimiter) ++
       // #2308: forgot-password request (public) + token consume / reset (public). Both rate-

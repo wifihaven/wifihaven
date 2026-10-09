@@ -338,6 +338,31 @@ object DeviceAssignment {
         }
     }
 
+  /**
+   * #2849 (design §7.3): close the open check-in row `checkIn` by the system (no `ended_by`), in
+   * the caller's transaction: the auto-checkout job's write. Keyed by the row the job evaluated,
+   * not by the holder, so a check-out and re-check-in by the same profile between the job's read
+   * and this write leaves the fresh check-in alone (`NotHeld`).
+   */
+  def closeCheckIn(
+      household: HouseholdId,
+      device: DeviceId,
+      checkIn: Long,
+      at: Instant,
+      cause: AssignmentEndCause,
+  ): ConnectionIO[CheckOutOutcome] =
+    lockDevice(household, device).flatMap { dev =>
+      if (!dev.shared) CheckOutOutcome.NotShared.pure[ConnectionIO]
+      else
+        openRow(device).flatMap {
+          case Some(o) if o.id == checkIn && o.kind == AssignmentKind.CheckIn.db =>
+            transition(dev, device, None, at, AssignmentKind.CheckIn, None, cause)
+              .as(CheckOutOutcome.CheckedOut)
+          case _                                                                 =>
+            CheckOutOutcome.NotHeld.pure[ConnectionIO]
+        }
+    }
+
   // Devices in `household` whose two stores disagree, or that are shared and hold an `assigned`
   // row. Only a candidate list: each one is re-read under its row lock before it is repaired.
   private def driftCandidates(household: HouseholdId): ConnectionIO[List[DeviceId]] =
