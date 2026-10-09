@@ -255,6 +255,27 @@ class AdminAPI:
     def delete_device(self, mac: str) -> None:
         self._request("DELETE", f"/api/devices/{mac}")
 
+    def patch_device(self, mac: str, **fields: Any) -> Any:
+        """PATCH /api/devices/{mac}. Absent fields keep their value; pass e.g.
+        `shared=True`, or `shared=False, profileId=pid` to unshare and reassign
+        in one request (`shared` applies first, #2848)."""
+        return self._request("PATCH", f"/api/devices/{mac}", body=fields)
+
+    # ── shared devices (#2848) ────────────────────────────────────────────
+
+    def check_in_shared_device(self, mac: str, *, profile_id: int) -> None:
+        """POST /api/shared-devices/{mac}/check-in {profileId}. The device must
+        be shared and unheld; 409 `held` / `profile_blocked` / `not_shared`."""
+        self._request(
+            "POST", f"/api/shared-devices/{mac}/check-in",
+            body={"profileId": profile_id},
+        )
+
+    def check_out_shared_device(self, mac: str) -> None:
+        """POST /api/shared-devices/{mac}/check-out. 409 `not_held` if nobody
+        has it checked in."""
+        self._request("POST", f"/api/shared-devices/{mac}/check-out")
+
     # ── apps (#761/#764/#1798) ────────────────────────────────────────────
     # Post-#764, extraAllowed/extraBlocked are sourced exclusively from
     # app_policy_assignments — the legacy `extraBlocked`/`extraAllowed`
