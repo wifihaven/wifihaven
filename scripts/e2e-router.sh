@@ -90,6 +90,9 @@ pass "profile id=$PID name=$PROFILE_NAME"
 # trap-fire time, so appending anywhere before exit is sufficient.
 EXTRA_DEVICES=()
 EXTRA_PROFILES=()
+# User ids created by a scenario (the #2878 shared-device lifecycle creates a
+# child user). Deleted after devices and profiles.
+EXTRA_USERS=()
 
 # Original household blockEncryptedDns, captured by the #1912 step before it
 # round-trips the singleton, so cleanup() can restore staging to as-we-found-it
@@ -109,6 +112,9 @@ cleanup() {
   done
   for p in "${EXTRA_PROFILES[@]:-}"; do
     [ -n "$p" ] && curl -s -X DELETE "$BASE/api/profiles/$p" "${AUTH[@]}" >/dev/null 2>&1 || true
+  done
+  for u in "${EXTRA_USERS[@]:-}"; do
+    [ -n "$u" ] && curl -s -X DELETE "$BASE/api/users/$u" "${AUTH[@]}" >/dev/null 2>&1 || true
   done
   # Restore the household blockEncryptedDns singleton to its pre-run value (#1912
   # round-trips it). Skipped only if the step never ran (BED_ORIG unset); when it
@@ -1348,6 +1354,262 @@ set_bed false
 pass "#1912: household setting → wire blockEncryptedDns=false"
 set_bed true
 pass "#1912: household setting → wire blockEncryptedDns=true"
+
+# ── #2878: shared-device check-in lifecycle (design shared-devices.md §6, §7, §9) ──
+#
+# An adult marks a device shared; a child checks it in on their linked profile;
+# usage reported while it is held counts toward that profile and none toward the
+# profile the device was on before; check-in refusals (409 held, 403 not_linked);
+# an adult force-checks it out; usage after that counts toward no profile.
+#
+# Layout for follow-on cases (e.g. auto-checkout, #2849): `sd_setup` builds the
+# fixtures once (two profiles, the device and a child user, all torn down by
+# cleanup(); the adult is the household admin, see sd_make_child), and every case is a `step` block below that drives the
+# `sd_*` helpers. A new case appends after the last block. Each block must leave
+# the device CHECKED OUT, which is the state `sd_setup` hands over.
+#
+# Attribution is by each usage row's `period_start` against the check-in interval
+# (design §6.1), so the timestamps below are derived from the server's own
+# check-in instant (`holder.since` on GET /api/shared-devices) plus elapsed
+# runner time, never from the runner's wall clock alone: a skew between this
+# host and the API would otherwise put a row on the wrong side of a boundary.
+
+# Echo the HTTP status of a POST and leave the body in $TMP/sd_resp.json.
+# Args: <bearer token> <path> [json body].
+sd_post() {
+  local body="${3:-}"
+  [ -n "$body" ] || body='{}'
+  curl -s -o "$TMP/sd_resp.json" -w '%{http_code}' -X POST "$BASE$2" \
+    -H "authorization: Bearer $1" -H 'content-type: application/json' -d "$body"
+}
+
+# Create a child user linked to <profileId>, rotate the forced first-login
+# password (admin-created users must change it, Repos.scala UserRepo.create; the
+# rotation bumps token_version, so it logs in again), and set SD_CHILD to the
+# token. Sets globals rather than echoing so EXTRA_USERS survives (a $(...)
+# caller would append in a subshell and the user would never be deleted).
+#
+# Logins are rate-limited to 10 per source IP per 15 min
+# (api/src/HttpRoutes.scala loginRateLimiter), and the compose e2e job's three
+# scripts share that budget, so this costs exactly the two logins it needs. The
+# adult side of the scenario uses the household admin's existing token: admin is
+# an adult-class writer, and a second user would cost two more logins.
+sd_make_child() {  # $1=profileId
+  local user="e2e-2878-kid-${RUN_ID}" pw1="sd-pw1-${RUN_ID}" pw2="sd-pw2-${RUN_ID}" uid tok
+  uid=$(curl -fsS -X POST "$BASE/api/users" "${AUTH[@]}" \
+    -H 'content-type: application/json' \
+    -d "{\"username\":\"$user\",\"password\":\"$pw1\",\"role\":\"child\",\"profileIds\":[$1]}" \
+    | sed -n 's/.*"id":\([0-9]*\).*/\1/p')
+  [ -n "$uid" ] || fail "#2878: could not create child user $user"
+  EXTRA_USERS+=("$uid")
+  tok=$(curl -fsS -X POST "$BASE/api/auth/login" -H 'content-type: application/json' \
+    -d "{\"username\":\"$user\",\"password\":\"$pw1\"}" | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')
+  [ -n "$tok" ] || fail "#2878: first login failed for $user"
+  curl -fsS -X POST "$BASE/api/auth/change-password" -H "authorization: Bearer $tok" \
+    -H 'content-type: application/json' \
+    -d "{\"currentPassword\":\"$pw1\",\"newPassword\":\"$pw2\"}" >/dev/null
+  SD_CHILD=$(curl -fsS -X POST "$BASE/api/auth/login" -H 'content-type: application/json' \
+    -d "{\"username\":\"$user\",\"password\":\"$pw2\"}" | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')
+  [ -n "$SD_CHILD" ] || fail "#2878: no token for child user $user"
+}
+
+# The device's entry in the router snapshot, as "profileId=<id|None> rules=<...>".
+sd_snapshot_device() {
+  curl -fsS "${RAUTH[@]}" "$BASE/api/router/policy" >"$TMP/sd_snap.json"
+  _py "
+import json
+d = json.load(open('$TMP/sd_snap.json'))['devices'].get('$SD_MAC')
+if d is None:
+    print('missing')
+else:
+    r = d.get('rules')
+    rs = 'None' if r is None else 'blocked=%s reason=%s' % (r.get('blocked'), r.get('blockReason'))
+    print('profileId=%s rules=%s' % (d.get('profileId'), rs))
+"
+}
+
+# Poll the snapshot until the device's entry equals $1 (Render rollover can serve
+# a stale instance briefly, same as the TimeLimit step above).
+sd_wait_snapshot() {
+  local want="$1" got="" deadline=$(( $(date +%s) + 15 ))
+  while (( $(date +%s) < deadline )); do
+    got="$(sd_snapshot_device)"
+    [ "$got" = "$want" ] && return 0
+    sleep 1
+  done
+  fail "#2878: snapshot device $SD_MAC: expected '$want', got '$got'"
+}
+
+# The device's holder on GET /api/shared-devices: "<profileId> <since>" or "none".
+sd_holder() {
+  curl -fsS "${AUTH[@]}" "$BASE/api/shared-devices" >"$TMP/sd_list.json"
+  _py "
+import json
+row = next((x for x in json.load(open('$TMP/sd_list.json')) if x['mac'] == '$SD_MAC'), None)
+if row is None:
+    raise SystemExit('shared device $SD_MAC missing from /api/shared-devices')
+h = row.get('holder')
+print('none' if h is None else '%s %s' % (h['profileId'], h['since']))
+"
+}
+
+# Instant <base> + <seconds>, for a usage periodStart. Args: <ISO instant> <seconds>.
+sd_plus() {
+  _py "
+from datetime import datetime, timedelta
+t = datetime.fromisoformat('$1'.replace('Z', '+00:00')) + timedelta(seconds=$2)
+print(t.isoformat(timespec='microseconds').replace('+00:00', 'Z'))
+"
+}
+
+# Report one 5-minute usage row for the device on <host>, starting at <start>.
+# The window runs past "now" so the row carries whole minutes without the test
+# waiting them out; only period_start decides which profile it belongs to.
+sd_post_usage() {  # $1=periodStart  $2=host
+  local end; end=$(sd_plus "$1" 300)
+  curl -fsS -X POST "$BASE/api/router/usage" "${RAUTH[@]}" \
+    -H 'content-type: application/json' \
+    -d "{\"routerId\":\"$RID\",\"periodStart\":\"$1\",\"periodEnd\":\"$end\",\"records\":[{\"mac\":\"$SD_MAC\",\"ip\":\"192.168.28.78\",\"host\":{\"type\":\"fqdn\",\"value\":\"$2\"},\"activeSeconds\":300,\"bytesIn\":200000,\"bytesOut\":20000}]}" \
+    >/dev/null
+}
+
+# Profiles whose /api/time/status hostUsage lists <host> today, comma-joined
+# ("" for none). With <profileId>, only that profile is read.
+sd_profiles_with_host() {  # $1=host  [$2=profileId]
+  curl -fsS "${AUTH[@]}" "$BASE/api/time/status${2:+?profileId=$2}" >"$TMP/sd_status.json"
+  _py "
+import json
+hits = [str(p['profileId']) for p in json.load(open('$TMP/sd_status.json'))
+        if any(h['host'].get('value') == '$1' for h in p.get('hostUsage', []))]
+print(','.join(hits))
+"
+}
+
+# usedMins for a profile on /api/time/status/summary, which reads day state
+# directly (dayStateAll) and so is not behind TimeStatusCache's 30 s TTL.
+sd_used_mins() {  # $1=profileId
+  curl -fsS "${AUTH[@]}" "$BASE/api/time/status/summary" >"$TMP/sd_summary.json"
+  _py "
+import json
+p = next((x for x in json.load(open('$TMP/sd_summary.json')) if x['profileId'] == $1), None)
+print('missing' if p is None else p['usedMins'])
+"
+}
+
+sd_setup() {
+  local mk='"blockedCategories":[],"extraBlocked":[],"extraAllowed":[],"paused":false,"schedules":[],"timeLimit":null,"siteTimeLimits":[]'
+  SD_FORMER=$(curl -fsS -X POST "$BASE/api/profiles" "${AUTH[@]}" -H 'content-type: application/json' \
+    -d "{\"name\":\"e2e-2878-former-${RUN_ID}\",$mk}" | sed -n 's/.*"id":\([0-9]*\).*/\1/p')
+  SD_KID=$(curl -fsS -X POST "$BASE/api/profiles" "${AUTH[@]}" -H 'content-type: application/json' \
+    -d "{\"name\":\"e2e-2878-kid-${RUN_ID}\",$mk}" | sed -n 's/.*"id":\([0-9]*\).*/\1/p')
+  [ -n "$SD_FORMER" ] && [ -n "$SD_KID" ] || fail "#2878: profile create failed"
+  EXTRA_PROFILES+=("$SD_FORMER" "$SD_KID")
+  # The device starts as an ordinary device on SD_FORMER, so "none of the usage
+  # counts toward the former profile" is about a profile it really was on.
+  SD_MAC="e2:28:78:${mac_suffix:0:2}:${mac_suffix:2:2}:${mac_suffix:4:2}"
+  curl -fsS -X PUT "$BASE/api/devices" "${AUTH[@]}" -H 'content-type: application/json' \
+    -d "{\"mac\":\"$SD_MAC\",\"name\":\"e2e-2878-tablet-${RUN_ID}\",\"profileId\":$SD_FORMER}" >/dev/null
+  EXTRA_DEVICES+=("$SD_MAC")
+  sd_make_child "$SD_KID"
+  sd_wait_snapshot "profileId=$SD_FORMER rules=None"
+  pass "#2878: setup — device $SD_MAC on profile $SD_FORMER, child user linked to $SD_KID"
+
+  # An adult turns Shared on; the device is now checked out (design §13).
+  curl -fsS -X PATCH "$BASE/api/devices/$SD_MAC" "${AUTH[@]}" -H 'content-type: application/json' \
+    -d '{"shared":true}' >/dev/null
+  sd_wait_snapshot "profileId=None rules=blocked=True reason=CheckedOut"
+  [ "$(sd_holder)" = "none" ] || fail "#2878: freshly shared device has a holder: $(sd_holder)"
+  pass "#2878: adult marks it shared → snapshot blocked/CheckedOut, no holder"
+}
+
+step "#2878: shared-device setup — adult marks a device shared"
+sd_setup
+
+step "#2878: child checks in → snapshot follows the child's profile, usage counts there"
+SD_T0=$(date +%s)
+CODE=$(sd_post "$SD_CHILD" "/api/shared-devices/$SD_MAC/check-in" "{\"profileId\":$SD_KID}")
+[ "$CODE" = "200" ] || fail "#2878: child check-in expected 200, got $CODE: $(cat "$TMP/sd_resp.json")"
+read -r SD_HOLDER SD_SINCE <<<"$(sd_holder)"
+[ "$SD_HOLDER" = "$SD_KID" ] || fail "#2878: holder after check-in expected $SD_KID, got $SD_HOLDER"
+sd_wait_snapshot "profileId=$SD_KID rules=None"
+pass "#2878: checked in on $SD_KID at $SD_SINCE → snapshot profileId=$SD_KID, rules from the profile"
+
+# Starts exactly at the check-in instant: membership is period_start >= started_at.
+SD_HOST_IN="in2878-${RUN_ID}.example.com"
+sd_post_usage "$SD_SINCE" "$SD_HOST_IN"
+got=""; deadline=$(( $(date +%s) + 40 ))   # 30 s TimeStatusCache TTL + slack
+while (( $(date +%s) < deadline )); do
+  got="$(sd_profiles_with_host "$SD_HOST_IN" "$SD_KID")"
+  [ "$got" = "$SD_KID" ] && break
+  sleep 2
+done
+[ "$got" = "$SD_KID" ] || fail "#2878: usage while checked in not on profile $SD_KID's hostUsage (got '$got')"
+KID_MINS=$(sd_used_mins "$SD_KID")
+case "$KID_MINS" in
+  4 | 5 | 6) ;;   # one 300 s row, ±1 min presence boundary jitter (see #928)
+  *) fail "#2878: expected ~5 usedMins on $SD_KID, got $KID_MINS" ;;
+esac
+pass "#2878: usage while held counts toward $SD_KID (hostUsage + usedMins=$KID_MINS)"
+# The former profile: the summary is uncached, and the hostUsage read happens
+# after the child's read above proved the row is visible.
+[ "$(sd_used_mins "$SD_FORMER")" = "0" ] \
+  || fail "#2878: former profile $SD_FORMER usedMins=$(sd_used_mins "$SD_FORMER"), expected 0"
+[ -z "$(sd_profiles_with_host "$SD_HOST_IN" "$SD_FORMER")" ] \
+  || fail "#2878: usage while checked in to $SD_KID shows on former profile $SD_FORMER"
+pass "#2878: none of it counts toward the former profile $SD_FORMER"
+
+step "#2878: check-in refusals while held"
+CODE=$(sd_post "$ADMIN" "/api/shared-devices/$SD_MAC/check-in" "{\"profileId\":$SD_FORMER}")
+grep -q '"error":"held"' "$TMP/sd_resp.json" && [ "$CODE" = "409" ] \
+  || fail "#2878: second check-in while held expected 409 held, got $CODE: $(cat "$TMP/sd_resp.json")"
+pass "#2878: second check-in while held → 409 held"
+CODE=$(sd_post "$SD_CHILD" "/api/shared-devices/$SD_MAC/check-in" "{\"profileId\":$SD_FORMER}")
+grep -q '"error":"not_linked"' "$TMP/sd_resp.json" && [ "$CODE" = "403" ] \
+  || fail "#2878: child on an unlinked profile expected 403 not_linked, got $CODE: $(cat "$TMP/sd_resp.json")"
+pass "#2878: child on a profile they aren't linked to → 403 not_linked"
+[ "$(sd_holder | cut -d' ' -f1)" = "$SD_KID" ] || fail "#2878: a refused check-in changed the holder"
+
+step "#2878: adult force check-out → CheckedOut, later usage counts toward no profile"
+CODE=$(sd_post "$ADMIN" "/api/shared-devices/$SD_MAC/check-out")
+[ "$CODE" = "200" ] || fail "#2878: adult force check-out expected 200, got $CODE: $(cat "$TMP/sd_resp.json")"
+SD_T1=$(date +%s)
+[ "$(sd_holder)" = "none" ] || fail "#2878: holder after check-out: $(sd_holder)"
+sd_wait_snapshot "profileId=None rules=blocked=True reason=CheckedOut"
+pass "#2878: adult forced check-out → snapshot back to blocked/CheckedOut"
+
+# The check-out instant is at most (T1 - T0) seconds after the check-in instant,
+# so this start is after it whatever the clock skew between here and the API.
+SD_HOST_OUT="out2878-${RUN_ID}.example.com"
+SD_OUT_POSTED=$(date +%s)
+sd_post_usage "$(sd_plus "$SD_SINCE" $(( SD_T1 - SD_T0 + 2 )))" "$SD_HOST_OUT"
+# Liveness: the row is stored against the device, so an absence below means it
+# was attributed to nobody, not that it never arrived.
+T2878_FROM=$(sd_plus "$SD_SINCE" -3600)
+T2878_TO=$(sd_plus "$SD_SINCE" 3600)
+got=""; deadline=$(( $(date +%s) + 20 ))
+while (( $(date +%s) < deadline )); do
+  curl -fsS "${AUTH[@]}" \
+    "$BASE/api/usage/traffic?mac=$SD_MAC&bucket=raw&from=$T2878_FROM&to=$T2878_TO" >"$TMP/sd_raw.json"
+  got=$(_py "
+import json
+rows = json.load(open('$TMP/sd_raw.json')).get('rawRows', [])
+print('ok' if any(r['host'].get('value') == '$SD_HOST_OUT' for r in rows) else 'absent')
+")
+  [ "$got" = "ok" ] && break
+  sleep 2
+done
+[ "$got" = "ok" ] || fail "#2878: post-check-out usage never reached /api/usage/traffic for $SD_MAC"
+# Let every TimeStatusCache entry loaded before the post expire (todayTtl 30 s,
+# api/src/cache/TimeStatusCache.scala) so the hostUsage read below is fresh.
+wait_s=$(( SD_OUT_POSTED + 32 - $(date +%s) ))
+(( wait_s > 0 )) && sleep "$wait_s"
+got="$(sd_profiles_with_host "$SD_HOST_OUT")"
+[ -z "$got" ] || fail "#2878: usage after check-out counted toward profile(s) $got"
+[ "$(sd_used_mins "$SD_KID")" = "$KID_MINS" ] \
+  || fail "#2878: $SD_KID usedMins moved after check-out: $KID_MINS → $(sd_used_mins "$SD_KID")"
+[ "$(sd_used_mins "$SD_FORMER")" = "0" ] \
+  || fail "#2878: former profile $SD_FORMER picked up usage after check-out"
+pass "#2878: usage after check-out counts toward no profile (in traffic, on no profile's hostUsage)"
 
 echo
 echo "All router e2e checks passed."
