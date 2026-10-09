@@ -1,8 +1,8 @@
 import React, { useState } from 'react'
-import { useNavigate, useLocation, Link } from 'react-router-dom'
+import { useNavigate, useLocation, useSearchParams, Link } from 'react-router-dom'
 import { useAuth } from '@/hooks/useAuth'
 import { getHouseholdCookie } from '@/api/householdCookie'
-import { ACCOUNT_PATH } from '@/routes'
+import { ACCOUNT_PATH, safeReturnPath } from '@/routes'
 
 /**
  * #2164 (single-identifier login, design §4): compose the string actually posted to the server from
@@ -52,14 +52,6 @@ export function householdHint(cookieSlug: string | null): HouseholdHint {
   }
 }
 
-/** #2850: an in-app path such as `/dashboard?checkin=…`, never `//host` or a full URL. */
-function safeReturnPath(from: unknown): string | null {
-  if (typeof from !== 'string') return null
-  if (!from.startsWith('/') || from.startsWith('//') || from.startsWith('/\\')) return null
-  if (from === '/login' || from.startsWith('/login?')) return null
-  return from
-}
-
 export function LoginPage() {
   const { login } = useAuth()
   const navigate  = useNavigate()
@@ -74,9 +66,10 @@ export function LoginPage() {
   // so the user has to sign in again — say why instead of dumping them on a bare login form).
   const locationState = useLocation().state as { passwordChanged?: boolean; from?: unknown } | null
   const passwordChanged = locationState?.passwordChanged ?? false
-  // #2850: where RequireAuth was sending this visitor (the block page's Check in action, say).
-  // Only an in-app path is honoured; anything else falls back to the dashboard.
-  const returnTo = safeReturnPath(locationState?.from)
+  // #2850: where RequireAuth was sending this visitor (the block page's Check in action, say), or
+  // the 401 handler's `?next=`. Only an in-app path is honoured; anything else goes to the dashboard.
+  const [searchParams] = useSearchParams()
+  const returnTo = safeReturnPath(locationState?.from) ?? safeReturnPath(searchParams.get('next'))
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()

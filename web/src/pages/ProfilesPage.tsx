@@ -2811,15 +2811,21 @@ function DevicesSubsection({
                   <span className="text-brand-text truncate">{d.name}</span>
                   <span className="ml-2 text-brand-text-muted font-mono text-xs">{d.mac}</span>
                 </div>
-                <button
-                  type="button"
-                  data-testid={`profile-device-${d.id}-detach`}
-                  disabled={busyMac === d.mac}
-                  onClick={() => setProfile(d, null)}
-                  className="text-xs text-red-700 hover:text-red-700 bg-red-500/10 px-2.5 py-1 rounded-lg disabled:opacity-50"
-                >
-                  Remove
-                </button>
+                {d.shared ? (
+                  // #2850: a shared device is held by a check-in, not assigned; PATCH {profileId:null}
+                  // is a no-op on it. It is checked out from the dashboard's Shared devices card.
+                  <span className="text-xs text-brand-text-muted">Shared · checked in</span>
+                ) : (
+                  <button
+                    type="button"
+                    data-testid={`profile-device-${d.id}-detach`}
+                    disabled={busyMac === d.mac}
+                    onClick={() => setProfile(d, null)}
+                    className="text-xs text-red-700 hover:text-red-700 bg-red-500/10 px-2.5 py-1 rounded-lg disabled:opacity-50"
+                  >
+                    Remove
+                  </button>
+                )}
               </div>
             ))}
           </div>

@@ -4,7 +4,7 @@ import { apiHealth } from '@/api/apiHealth'
 // mock wholesale, and a mocked module cannot supply a helper the component calls.
 import { HttpError } from '@/api/httpError'
 import { setMustChangePassword } from '@/api/mustChangePassword'
-import { ACCOUNT_PATH } from '@/routes'
+import { ACCOUNT_PATH, loginUrlReturningTo } from '@/routes'
 import type {
   AcceptInviteRequest, AcceptInviteResponse, ApproveBetaResponse, BetaRequestAck, BetaRequestStatus, BetaRequestSummary, CreateBetaRequest,
   ForgotPasswordAck, ForgotPasswordRequest, ResetPasswordRequest, ResetPasswordResponse,
@@ -200,7 +200,9 @@ async function req<T>(
     // next AuthProvider mount comes up with the flag set and no session behind it. Login rewrites
     // it from the server's answer anyway; this just closes the window.
     setMustChangePassword(false)
-    window.location.href = '/login'
+    // #2850: keep the page in `?next=` so login can return there (an expired token on the block
+    // page's Check in link would otherwise land on a bare dashboard).
+    window.location.href = loginUrlReturningTo(window.location.pathname, window.location.search)
     throw new UnauthorizedError(text || 'Unauthorised')
   }
 

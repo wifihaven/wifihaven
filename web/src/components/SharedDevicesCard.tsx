@@ -77,8 +77,22 @@ export function SharedDevicesCard() {
         }
       : null
 
+  const actionsFailed = profilesQuery.isError || meQuery.isError
   return (
     <CardFrame>
+      {actionsFailed && (
+        <div data-testid="shared-devices-actions-error" className="px-5 pb-2 flex items-center gap-3 text-xs">
+          <span className="text-red-700 flex-1">Couldn't load your profiles, so check in and check out are unavailable.</span>
+          <button
+            type="button"
+            onClick={() => {
+              if (profilesQuery.isError) void profilesQuery.refetch()
+              if (meQuery.isError) void meQuery.refetch()
+            }}
+            className="text-xs text-brand-text hover:text-brand-ink bg-brand-alt px-3 py-1.5 rounded-lg"
+          >Retry</button>
+        </div>
+      )}
       <ul>
         {devices.map(d => (
           <SharedDeviceRow

@@ -8,14 +8,16 @@ import type { SharedDeviceErrorCode } from '@/types/api'
 
 export type SharedDeviceAction = 'check-in' | 'check-out'
 
-const KNOWN_CODES: readonly SharedDeviceErrorCode[] = [
-  'held',
-  'not_linked',
-  'profile_blocked',
-  'not_shared',
-  'not_held',
-  'device_shared',
-]
+// Keyed by the `SharedDeviceErrorCode` union, so adding a code there fails to compile here until it
+// is listed.
+const KNOWN: Record<SharedDeviceErrorCode, true> = {
+  held: true,
+  not_linked: true,
+  profile_blocked: true,
+  not_shared: true,
+  not_held: true,
+  device_shared: true,
+}
 
 interface ParsedRejection {
   code: SharedDeviceErrorCode
@@ -27,7 +29,7 @@ function parseRejection(e: unknown): ParsedRejection | null {
   try {
     const body = JSON.parse(e.message) as { error?: unknown; reason?: unknown }
     const code = body?.error
-    if (typeof code !== 'string' || !(KNOWN_CODES as readonly string[]).includes(code)) return null
+    if (typeof code !== 'string' || !Object.prototype.hasOwnProperty.call(KNOWN, code)) return null
     return {
       code: code as SharedDeviceErrorCode,
       reason: typeof body.reason === 'string' ? body.reason : undefined,

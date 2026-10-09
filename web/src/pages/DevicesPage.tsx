@@ -243,6 +243,11 @@ export function DevicesPage() {
                       data-testid={`unmanaged-make-shared-${d.mac}`}
                       className="text-xs text-brand-text hover:text-brand-ink bg-brand-alt px-3 py-1.5 rounded-lg transition-colors disabled:opacity-60"
                     >Make shared</button>
+                    {makeSharedMutation.isError && makeSharedMutation.variables === d.mac && (
+                      <span data-testid={`unmanaged-make-shared-error-${d.mac}`} className="text-xs text-red-700 self-center">
+                        Couldn't make it shared.
+                      </span>
+                    )}
                   </div>
                 )}
               </div>
@@ -311,6 +316,9 @@ function DeviceRowEditor({
   // whoever checks it in, instead of being assigned to one profile.
   const serverShared = device.shared === true
   const [shared, setShared] = useState(serverShared)
+  // Synced in an effect on purpose, unlike profileId above: the one-render lag keeps
+  // `profileLocked` true in the render where a server-side unshare moves `serverProfileId`, so the
+  // profile save resets its baseline under the shared key and never sees the change as an edit.
   useEffect(() => { setShared(serverShared) }, [serverShared])
   // A shared device is checked in, never assigned (a profileId on it is a 409 `device_shared`), so
   // the profile picker is off while it is shared or about to be.
