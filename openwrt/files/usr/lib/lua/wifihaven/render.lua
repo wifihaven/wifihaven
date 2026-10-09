@@ -1818,21 +1818,36 @@ function M.update_shared(snapshot, nft_sets, blocked_macs, blocked_reason,
         table.sort(ids)
         local entry = bl_map_for(ids)
         if entry.any then
+          -- extraBlocked wins over a category for the same host, so a MAC whose
+          -- extraBlocked overlaps the map gets a copy without those hosts. The
+          -- copy is keyed by the overlapping hosts and kept on the entry, so
+          -- MACs with the same overlap share it and a repeat apply reuses it.
           local eb_for_mac = eb_hosts_by_mac and eb_hosts_by_mac[mac]
-          local overlap = false
+          local overlap = {}
           if eb_for_mac then
             for host in pairs(eb_for_mac) do
-              if entry.map[host] then overlap = true; break end
+              if entry.map[host] then overlap[#overlap + 1] = host end
             end
           end
-          if overlap then
-            local own = {}
-            for host, id in pairs(entry.map) do
-              if not eb_for_mac[host] then own[host] = id end
-            end
-            bl_hosts_by_mac[mac] = own
-          else
+          if #overlap == 0 then
             bl_hosts_by_mac[mac] = entry.map
+          else
+            table.sort(overlap)
+            local trim_key = table.concat(overlap, "\n")
+            entry.trimmed = entry.trimmed or {}
+            local own = entry.trimmed[trim_key]
+            if not own then
+              local drop = {}
+              for _, host in ipairs(overlap) do drop[host] = true end
+              own = {}
+              for host, id in pairs(entry.map) do
+                if not drop[host] then own[host] = id end
+              end
+              entry.trimmed[trim_key] = own
+            end
+            entry.trims_used = entry.trims_used or {}
+            entry.trims_used[trim_key] = true
+            bl_hosts_by_mac[mac] = own
           end
         end
       end
@@ -1852,7 +1867,16 @@ function M.update_shared(snapshot, nft_sets, blocked_macs, blocked_reason,
   if versioned then
     for key in pairs(bl_cache) do bl_cache[key] = nil end
     for key, entry in pairs(maps_this_call) do
-      if entry.complete then bl_cache[key] = entry end
+      if entry.complete then
+        -- Drop trimmed copies no MAC used in this call.
+        for trim_key in pairs(entry.trimmed or {}) do
+          if not (entry.trims_used and entry.trims_used[trim_key]) then
+            entry.trimmed[trim_key] = nil
+          end
+        end
+        entry.trims_used = nil
+        bl_cache[key] = entry
+      end
     end
   end
 end

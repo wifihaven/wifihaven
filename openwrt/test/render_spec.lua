@@ -1787,6 +1787,18 @@ describe("render.update_shared bl_hosts_by_mac sharing (#2893)", function()
     assert.same(reference_bl_hosts(s, counting_iterator(s, {})), bl)
   end)
 
+  it("reuses a MAC's extraBlocked-trimmed copy across applies, and rebuilds it when extraBlocked changes", function()
+    local s = fleet_snap()
+    local cache = {}
+    local first = run(s, counting_iterator(s, {}), cache)["00:00:00:00:00:03"]
+    assert.equal(first, run(s, counting_iterator(s, {}), cache)["00:00:00:00:00:03"])
+    s.profiles["2"].rules.extraBlocked = { "porn.example" }
+    local bl = run(s, counting_iterator(s, {}), cache)
+    assert.same(reference_bl_hosts(s, counting_iterator(s, {})), bl)
+    assert.is_nil(bl["00:00:00:00:00:03"]["porn.example"])
+    assert.equal("ads", bl["00:00:00:00:00:03"]["dup.example"])
+  end)
+
   it("keeps an empty map for a MAC whose every member extraBlocked claims", function()
     local s = fleet_snap()
     local bl = run(s, counting_iterator(s, {}), {})
