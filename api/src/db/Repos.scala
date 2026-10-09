@@ -3932,8 +3932,8 @@ class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo 
     // MAX(bucket) to the requested window so it equals window_start.
     val bucketIv     = Fragment.const(s"make_interval(secs => $bucketSeconds)")
     val lastSeenExpr =
-      fr"""to_char(date_bin($bucketIv, MAX(""" ++ tsBin ++ fr"""), TIMESTAMP '2000-01-01 00:00:00')
-                          AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')"""
+      fr"""to_char(date_bin($bucketIv, MAX(""" ++ tsBin ++ fr"), " ++ SqlFragments.BucketOrigin ++
+        fr""") AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')"""
 
     runSeries(
       f,
@@ -3996,9 +3996,8 @@ class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo 
     // reference the same expression — PG doesn't recognize SELECT aliases in
     // HAVING.
     val winExpr =
-      fr"""to_char(date_bin($bucketIv, """ ++ tsBin ++ fr""", TIMESTAMP '2000-01-01 00:00:00')
-                          AT TIME ZONE 'UTC',
-                          'YYYY-MM-DD"T"HH24:MI:SS"Z"')"""
+      fr"""to_char(date_bin($bucketIv, """ ++ tsBin ++ fr", " ++ SqlFragments.BucketOrigin ++
+        fr""") AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')"""
 
     // #857: resolve each in-window host to its app(s) in Scala via
     // HostMatch.lookupApex — the single host→apex matcher shared with the
@@ -4260,10 +4259,11 @@ class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo 
     tx.transact(xa)
   }
 
-  // date_bin anchor matches querySeries' '2000-01-01 00:00:00' origin so rolled
+  // date_bin anchor is querySeries' origin (SqlFragments.BucketOrigin) so rolled
   // hourly buckets line up exactly with what the on-the-fly read computes.
   def rerollConnEventsHourly(since: Instant): Task[Option[Int]] = {
     val truncSince = since.truncatedTo(java.time.temporal.ChronoUnit.HOURS)
+    val hourBin    = fr"date_bin(INTERVAL '1 hour', ce.ts, " ++ SqlFragments.BucketOrigin ++ fr")"
     // #1265 (PR3): exclude multicast/broadcast at write time so the rollup
     // matches /series's DEFAULT (includeMulticast=false) view. The rollup drops
     // host_type/host_value, so the read path can't re-filter — the only place to
@@ -4275,8 +4275,7 @@ class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo 
         SELECT
           ce.router_id,
           COALESCE(ce.mac, ''),
-          COALESCE(ce.resolved_host_value, ce.host_value),
-          date_bin(INTERVAL '1 hour', ce.ts, TIMESTAMP '2000-01-01 00:00:00'),
+          COALESCE(ce.resolved_host_value, ce.host_value),""" ++ hourBin ++ fr""",
           COUNT(*) FILTER (WHERE ce.allowed)::INT,
           COUNT(*) FILTER (WHERE NOT ce.allowed)::INT,
           COUNT(*)::INT,
@@ -4285,8 +4284,7 @@ class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo 
         WHERE ce.ts >= $truncSince"""
     val tail       =
       fr"""GROUP BY ce.router_id, COALESCE(ce.mac, ''),
-                 COALESCE(ce.resolved_host_value, ce.host_value),
-                 date_bin(INTERVAL '1 hour', ce.ts, TIMESTAMP '2000-01-01 00:00:00')
+                 COALESCE(ce.resolved_host_value, ce.host_value),""" ++ hourBin ++ fr"""
         ON CONFLICT (router_id, mac, hostname, bucket_start) DO UPDATE SET
           count_succeeded = EXCLUDED.count_succeeded,
           count_blocked   = EXCLUDED.count_blocked,
