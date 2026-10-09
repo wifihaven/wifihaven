@@ -42,4 +42,13 @@ describe('401 redirect carries the return path (#2850)', () => {
     await expect(api.auth.me()).rejects.toThrow()
     expect(window.location.href).toBe('/login')
   })
+
+  // A mistyped password is a 401 too, and the handler reloads the login page. The `?next=` the
+  // visitor arrived with has to survive that reload.
+  it('keeps ?next= when a login attempt 401s on the login page', async () => {
+    const next = `?next=${encodeURIComponent('/dashboard?checkin=aa%3Abb')}`
+    stubLocation('/login', next)
+    await expect(api.auth.login('emma', 'wrong')).rejects.toThrow()
+    expect(window.location.href).toBe(`/login${next}`)
+  })
 })

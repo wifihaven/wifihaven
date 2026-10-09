@@ -109,11 +109,10 @@ describe('RequireWriter — the policy-editing gate', () => {
 // page's Check in action lands on /dashboard?checkin=<mac>).
 describe('RequireAuth — return-to after login', () => {
   function LoginProbe() {
-    const state = useLocation().state as { from?: string } | null
-    return <div data-testid="login-probe">{state?.from ?? 'none'}</div>
+    return <div data-testid="login-probe">{new URLSearchParams(useLocation().search).get('next') ?? 'none'}</div>
   }
 
-  it('sends a signed-out visitor to /login with the path and query they asked for', async () => {
+  it('sends a signed-out visitor to /login?next= with the path and query they asked for', async () => {
     render(
       withQuery(
         <AuthProvider>
