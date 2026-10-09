@@ -254,12 +254,14 @@ object IntervalAttributionSpec
         scope <- dr.attributionScope(HouseholdId.Default, window._1, window._2)
         prev  <- dr.attributionScope(HouseholdId.Default, window._1.minusSeconds(86400), window._1)
         next  <- dr.attributionScope(HouseholdId.Default, window._2, window._2.plusSeconds(86400))
-        fixtureStart = Some(TestDatabase.FixtureAssignmentTime.toInstant(ZoneOffset.UTC))
+        // Both devices' FIRST-EVER assignment (to A) is open-ended (NULL start), the V90 backfill
+        // shape: a first assignment has no prior profile to protect, so A owns the history up to
+        // `moved`'s 14:00 reassignment. Only that reassignment stamps a start (B's).
       } yield assertTrue(
         window == (at(0), at(0).plusSeconds(86400)),
         scope.byProfile(f.a).toSet == Set(
-          AttributionSpan(movedMac, f.moved, fixtureStart, Some(at(14))),
-          AttributionSpan(stayMac, f.stay, fixtureStart, None),
+          AttributionSpan(movedMac, f.moved, None, Some(at(14))),
+          AttributionSpan(stayMac, f.stay, None, None),
         ),
         scope.byProfile(f.b) == List(AttributionSpan(movedMac, f.moved, Some(at(14)), None)),
         // The day before the move only A held `moved`; the day after, only B.
@@ -485,13 +487,14 @@ object IntervalAttributionSpec
         f     <- seed
         dr    <- ZIO.service[DeviceRepo]
         scope <- AttributionScope.forDay(dr, HouseholdId.Default, day, f.settings)
-        // Days later every span still has a finite start (the writer stamps every row), but no
-        // change falls in that read's window.
+        // Days later no assignment change falls in that read's window: `stay`'s open-ended start and
+        // `moved`'s 14:00 start both lie before it, so every bound is dropped and nothing is bounded.
         later = day.plusDays(5)
         lscope <- AttributionScope.forDay(dr, HouseholdId.Default, later, f.settings)
         moveDay = sqlOn(scope.allProfiles, day)
       } yield assertTrue(
-        // `stay` was assigned long before the window: it matches on the IN disjunct alone.
+        // `stay`'s first-ever assignment is open-ended (NULL start): it matches on the IN disjunct
+        // alone, with no `period_start` predicate.
         sqlOn(scope.allProfiles.restrictTo(Set(stayMac)), day).isEmpty,
         moveDay.contains(" IN ("),
         // `moved` changed at 14:00: A's span ends there, B's starts there. Nothing else is bounded.
