@@ -1,5 +1,6 @@
 package wifihaven.api.routes
 
+import wifihaven.shared.types.HouseholdId
 import zio.*
 
 import java.time.Instant
@@ -55,6 +56,14 @@ enum SpaEvent {
   case Stale(topic: StaleTopic, scope: Option[String] = None)
   case UsageIngested(periodStart: Instant, periodEnd: Instant)
   case TimeStatusChanged
+
+  /**
+   * #2848: a shared device in `household` was checked in, checked out, or made (un)shared. The
+   * consumer re-reads that household's `GET /api/shared-devices` list and pushes it to the
+   * household's `sharedDevices` subscribers. Contentless apart from the household, so a burst
+   * coalesces to one read per household.
+   */
+  case SharedDevicesChanged(household: HouseholdId)
 }
 
 /**

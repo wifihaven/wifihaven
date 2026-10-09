@@ -2,11 +2,9 @@ package wifihaven.api.feature
 
 import doobie.*
 import doobie.implicits.*
-import doobie.postgres.implicits.*
 import wifihaven.api.JwtConfig
 import wifihaven.api.auth.*
 import wifihaven.api.db.*
-import wifihaven.api.db.TypeMeta.given
 import wifihaven.api.policy.*
 import wifihaven.api.routes.*
 import wifihaven.shared.*
@@ -112,7 +110,10 @@ object SharedDeviceApiSpec
       _       <- dr.upsertUnknown(SharedMac, "family-mac", None, Now)
       _       <- markShared(SharedMac)
       _       <- dr.upsert(PlainMac, "kid1-phone", Some(kid1), "")
-      admin   <- auth.login("admin", "changeme").map(_.token.value).orDie
+      admin   <- auth
+        .login("admin", "changeme")
+        .map(_.token.value)
+        .mapError(e => new RuntimeException(s"login: $e"))
       adult   <- userToken(auth, "mom", "adult", Nil)
       child1  <- userToken(auth, "kid1", "child", List(kid1))
       child2  <- userToken(auth, "kid2", "child", List(kid2))
@@ -291,16 +292,32 @@ object SharedDeviceApiSpec
           dev.profileId.isEmpty,
         )
       },
-      test("a profile out of daily time: 409 profile_blocked (TimeLimit)") {
+      test("a profile in a schedule block: 409 profile_blocked (Schedule)") {
         for {
           fx   <- setup
-          _    <- ZIO.serviceWithZIO[TimeLimitRepo](_.upsert(fx.kid1, 0))
+          nsr  <- ZIO.service[NamedScheduleRepo]
+          // 13:00–15:00 every day covers the fixture clock's Monday 14:00.
+          sid  <- nsr.create(
+            "Homework",
+            None,
+            List(
+              ScheduleWindow(
+                List("mon", "tue", "wed", "thu", "fri", "sat", "sun"),
+                java.time.LocalTime.of(13, 0),
+                java.time.LocalTime.of(15, 0),
+                java.time.ZoneId.of("UTC"),
+              ),
+            ),
+          )
+          _    <- nsr.setProfileBlockSchedules(fx.kid1, List(sid))
           resp <- checkIn(fx, fx.child1, fx.kid1)
           body <- errorOf(resp)
+          dev  <- device(SharedMac)
         } yield assertTrue(
           resp.status == Status.Conflict,
           body.contains("profile_blocked"),
-          body.contains("TimeLimit"),
+          body.contains("Schedule"),
+          dev.profileId.isEmpty,
         )
       },
       test("a default-deny profile is a baseline, not a block: check-in succeeds") {
@@ -331,11 +348,10 @@ object SharedDeviceApiSpec
       test("another household's MAC and another household's profile both 404") {
         for {
           fx    <- setup
-          two   <- TestDatabase.seedTwoHouseholds(
+          two   <- TestLayers.seedTwoHouseholds(
             MacAddress.unsafe("aa:bb:cc:00:48:a1"),
             MacAddress.unsafe("aa:bb:cc:00:48:b1"),
           )
-          _     <- markShared(two.macB)
           mac   <- checkIn(fx, fx.admin, fx.kid1, two.macB)
           prof  <- checkIn(fx, fx.admin, two.profileB)
           devB  <- ZIO.serviceWithZIO[DeviceRepo](_.findByMacInHousehold(two.macB, two.hhB))

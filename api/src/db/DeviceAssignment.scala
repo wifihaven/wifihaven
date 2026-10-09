@@ -33,6 +33,26 @@ enum AssignmentEndCause(val db: String) {
   case Unshared   extends AssignmentEndCause("unshared")
 }
 
+/** #2848: the result of [[DeviceAssignment.checkIn]]. */
+enum CheckInOutcome {
+  case CheckedIn
+
+  /** The device is not shared, so it is assigned, never checked in. */
+  case NotShared
+
+  /** Someone already holds the device (design §15 Q2). */
+  case Held
+}
+
+/** #2848: the result of [[DeviceAssignment.checkOut]]. */
+enum CheckOutOutcome {
+  case CheckedOut
+  case NotShared
+
+  /** No open check-in by the expected holder: already released, or released and re-taken. */
+  case NotHeld
+}
+
 /**
  * Why [[DeviceAssignment.assign]] refused a write. Sealed so the routes that surface these (#2848:
  * 409 `device_shared`, 403 / 404 for scope) can map them exhaustively.
@@ -86,8 +106,8 @@ object DeviceAssignmentError {
  */
 object DeviceAssignment {
 
-  private final case class DeviceRow(household: HouseholdId, shared: Boolean)
-  private final case class OpenRow(id: Long, profile: ProfileId, kind: String)
+  private[db] final case class DeviceRow(household: HouseholdId, shared: Boolean)
+  private[db] final case class OpenRow(id: Long, profile: ProfileId, kind: String)
 
   // Locks the device row, so concurrent writers for one device serialise here and each sees the
   // open row the previous one left.
@@ -203,6 +223,98 @@ object DeviceAssignment {
             _  <- setCurrent(device, newProfile)
           } yield true
     } yield changed
+
+  /**
+   * The user `username` names in `household`, recorded as a history row's started_by / ended_by.
+   */
+  def actor(household: HouseholdId, username: Option[String]): ConnectionIO[Option[UserId]] =
+    username.flatTraverse(u =>
+      sql"SELECT id FROM users WHERE household_id=$household AND username=$u"
+        .query[UserId]
+        .option,
+    )
+
+  /**
+   * #2848 (design §9, §13): turn sharing on or off for a device, in the caller's transaction.
+   * Turning it on closes the open `assigned` row as `made_shared` and leaves the device checked
+   * out; turning it off closes any open check-in as `unshared` and leaves the device unassigned. A
+   * no-op when the device already has that value. Returns true when an open check-in was closed.
+   */
+  def setShared(
+      household: HouseholdId,
+      device: DeviceId,
+      shared: Boolean,
+      at: Instant,
+      by: Option[UserId],
+  ): ConnectionIO[Boolean] =
+    lockDevice(household, device).flatMap { dev =>
+      if (dev.shared == shared) false.pure[ConnectionIO]
+      else
+        for {
+          current <- openRow(device)
+          cause = if (shared) AssignmentEndCause.MadeShared else AssignmentEndCause.Unshared
+          // Clearing the profile is allowed on a shared device, so `kind` is never checked here.
+          _ <- assign(household, device, None, at, AssignmentKind.Assigned, by, cause)
+          _ <- sql"UPDATE devices SET shared = $shared WHERE id = $device".update.run
+        } yield current.exists(_.kind == AssignmentKind.CheckIn.db)
+    }
+
+  /**
+   * #2848 (design §9): open a `check_in` row for `profile` on a shared device that nobody holds, in
+   * the caller's transaction. The device row lock serialises this against any other check-in, so
+   * the open-row test below is the one-holder rule; `uq_dpa_device_open` is the backstop.
+   */
+  def checkIn(
+      household: HouseholdId,
+      device: DeviceId,
+      profile: ProfileId,
+      at: Instant,
+      by: Option[UserId],
+  ): ConnectionIO[CheckInOutcome] =
+    lockDevice(household, device).flatMap { dev =>
+      if (!dev.shared) CheckInOutcome.NotShared.pure[ConnectionIO]
+      else
+        openRow(device).flatMap {
+          case Some(_) => CheckInOutcome.Held.pure[ConnectionIO]
+          // Nothing is open, so there is no row for the end cause to close.
+          case None    =>
+            assign(
+              household,
+              device,
+              Some(profile),
+              at,
+              AssignmentKind.CheckIn,
+              by,
+              AssignmentEndCause.CheckOut,
+            )
+              .as(CheckInOutcome.CheckedIn)
+        }
+    }
+
+  /**
+   * #2848 (design §9): close the open check-in on a shared device with `cause` (`check_out` or
+   * `forced`), in the caller's transaction. `holder` is the profile the caller authorised against;
+   * if the open check-in is no longer that profile's, nothing is written.
+   */
+  def checkOut(
+      household: HouseholdId,
+      device: DeviceId,
+      holder: ProfileId,
+      at: Instant,
+      by: Option[UserId],
+      cause: AssignmentEndCause,
+  ): ConnectionIO[CheckOutOutcome] =
+    lockDevice(household, device).flatMap { dev =>
+      if (!dev.shared) CheckOutOutcome.NotShared.pure[ConnectionIO]
+      else
+        openRow(device).flatMap {
+          case Some(o) if o.kind == AssignmentKind.CheckIn.db && o.profile == holder =>
+            assign(household, device, None, at, AssignmentKind.CheckIn, by, cause)
+              .as(CheckOutOutcome.CheckedOut)
+          case _                                                                     =>
+            CheckOutOutcome.NotHeld.pure[ConnectionIO]
+        }
+    }
 
   // Devices in `household` whose two stores disagree, or that are shared and hold an `assigned`
   // row. Only a candidate list: each one is re-read under its row lock before it is repaired.

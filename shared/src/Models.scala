@@ -532,6 +532,30 @@ case class Device(
     shared: Boolean = false,
 ) derives JsonCodec
 
+/**
+ * #2848 (design `docs/design/shared-devices.md` §9): who holds a shared device now. `since` is the
+ * check-in instant (ISO-8601); `checkedInBy` the username of the user who checked it in, absent if
+ * that user has since been deleted.
+ */
+case class SharedDeviceHolder(
+    profileId: ProfileId,
+    profileName: String,
+    since: String,
+    checkedInBy: Option[String],
+) derives JsonCodec
+
+/**
+ * #2848: one row of `GET /api/shared-devices`. `holder` is None while the device is checked out.
+ */
+case class SharedDevice(
+    mac: MacAddress,
+    name: String,
+    holder: Option[SharedDeviceHolder],
+) derives JsonCodec
+
+/** #2848: body of `POST /api/shared-devices/{mac}/check-in`. */
+case class SharedDeviceCheckInRequest(profileId: ProfileId) derives JsonCodec
+
 // Generic admin-action feed, formerly DeviceAlert (#711, V29). The schema
 // (V33) supports a second `access_request` kind, but #960 is the writer for
 // that path; this PR only exercises new_device.

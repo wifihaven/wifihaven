@@ -2,7 +2,7 @@ package wifihaven.api.routes
 
 import wifihaven.api.db.*
 import wifihaven.api.observability.LogContext
-import wifihaven.api.policy.{PolicyService, TimeStatusService}
+import wifihaven.api.policy.{HouseholdScoped, PolicyService, TimeStatusService}
 import wifihaven.api.usage.{AppMembership, UsageTraffic, UsageTrafficQuery}
 import wifihaven.shared.{Clock, Device, Profile, ProfileTimeStatus, TrafficUsageResponse, UserRole}
 import wifihaven.shared.types.{HouseholdId, MacAddress, ProfileId}
@@ -85,6 +85,9 @@ object SpaPush {
       appTimeLimitRepo: AppTimeLimitRepo,
       clock: Clock,
       timeUsage: Option[TimeUsageDeps] = None,
+      // #2848: the `sharedDevices` push reads the household's list through this. None in the
+      // harnesses that never publish [[SpaEvent.SharedDevicesChanged]].
+      sharedDevices: Option[SharedDeviceRepo] = None,
   ): ZIO[Scope, Nothing, Unit] =
     bus.subscribe.flatMap { queue =>
       drainBatch(
@@ -99,6 +102,7 @@ object SpaPush {
         appTimeLimitRepo,
         clock,
         timeUsage,
+        sharedDevices,
       ).forever.forkScoped.unit
     }
 
@@ -121,6 +125,7 @@ object SpaPush {
       appTimeLimitRepo: AppTimeLimitRepo,
       clock: Clock,
       timeUsage: Option[TimeUsageDeps],
+      sharedDevices: Option[SharedDeviceRepo],
   ): UIO[Unit] =
     for {
       first <- queue.take
@@ -139,6 +144,7 @@ object SpaPush {
           appTimeLimitRepo,
           clock,
           timeUsage,
+          sharedDevices,
         ),
       )
     } yield ()
@@ -184,6 +190,7 @@ object SpaPush {
       appTimeLimitRepo: AppTimeLimitRepo,
       clock: Clock,
       timeUsage: Option[TimeUsageDeps],
+      sharedDevices: Option[SharedDeviceRepo],
   ): UIO[Unit] =
     event match {
       case SpaEvent.NowChanged                            =>
@@ -209,6 +216,24 @@ object SpaPush {
             periodEnd,
           )
             .catchAllCause(c => ZIO.logErrorCause("spa ws push: trafficUsage recompute failed", c))
+        }
+      case SpaEvent.SharedDevicesChanged(household)       =>
+        LogContext.annotate(LogContext.Op, "sharedDevices") {
+          sharedDevices match {
+            case None       => ZIO.unit
+            case Some(repo) =>
+              ZIO
+                .whenZIO(registry.sharedDevicesSubscribed(household))(
+                  repo
+                    .listForHousehold(household)
+                    .flatMap(ls => ZIO.fromEither(ls.toJsonAST).mapError(new RuntimeException(_)))
+                    .flatMap(body => registry.fanOutSharedDevices(HouseholdScoped(household, body))),
+                )
+                .unit
+                .catchAllCause(c =>
+                  ZIO.logErrorCause("spa ws push: sharedDevices recompute failed", c),
+                )
+          }
         }
       case SpaEvent.TimeStatusChanged                     =>
         // #1974 (S6a): the same change drives BOTH live time-usage topics (design §5.2). Each is

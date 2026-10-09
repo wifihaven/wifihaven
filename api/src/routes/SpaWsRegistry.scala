@@ -1,6 +1,7 @@
 package wifihaven.api.routes
 
 import wifihaven.api.metrics.AppMetrics
+import wifihaven.api.policy.HouseholdScoped
 import wifihaven.shared.{QueryLog, UserRole}
 import wifihaven.shared.types.{HouseholdId, ProfileId}
 import zio.*
@@ -17,13 +18,13 @@ import java.time.Instant
  * wire names match the `op` the server→SPA push will carry (S3/S4).
  */
 enum SpaTopic {
-  case TrafficUsage, Now, ConnectionEvents, TimeStatus, AppUsage, Stale
+  case TrafficUsage, Now, ConnectionEvents, TimeStatus, AppUsage, Stale, SharedDevices
 }
 
 object SpaTopic {
 
   val all: List[SpaTopic] =
-    List(TrafficUsage, Now, ConnectionEvents, TimeStatus, AppUsage, Stale)
+    List(TrafficUsage, Now, ConnectionEvents, TimeStatus, AppUsage, Stale, SharedDevices)
 
   def wire(t: SpaTopic): String = t match {
     case TrafficUsage     => "trafficUsage"
@@ -32,6 +33,7 @@ object SpaTopic {
     case TimeStatus       => "timeStatus"
     case AppUsage         => "appUsage"
     case Stale            => "stale"
+    case SharedDevices    => "sharedDevices"
   }
 
   def parse(s: String): Option[SpaTopic] = s match {
@@ -41,6 +43,7 @@ object SpaTopic {
     case "timeStatus"       => Some(TimeStatus)
     case "appUsage"         => Some(AppUsage)
     case "stale"            => Some(Stale)
+    case "sharedDevices"    => Some(SharedDevices)
     case _                  => None
   }
 
@@ -54,7 +57,9 @@ object SpaTopic {
    */
   def visibleTo(t: SpaTopic, role: UserRole): Boolean = role match {
     case UserRole.Admin | UserRole.Adult => true
-    case UserRole.Child                  => t == TimeStatus || t == AppUsage
+    // #2848: a child sees every shared device and who holds it (design §9), so the
+    // `GET /api/shared-devices` push is visible to a child too.
+    case UserRole.Child                  => t == TimeStatus || t == AppUsage || t == SharedDevices
   }
 }
 
@@ -214,6 +219,20 @@ trait SpaWsRegistry {
    * SECURITY fix.
    */
   def fanOutStale(topic: StaleTopic, scope: Option[String]): UIO[Unit]
+
+  /**
+   * #2848: whether any connection in `household` subscribed to `SharedDevices` and may see it, so
+   * [[SpaPush]] reads the list only when someone is watching.
+   */
+  def sharedDevicesSubscribed(household: HouseholdId): UIO[Boolean]
+
+  /**
+   * #2848: push the `GET /api/shared-devices` body to every `SharedDevices` subscriber whose
+   * household is the one the body was built for. The body is the same for every role in a household
+   * (a child sees every shared device, design §9), so one frame serves all of them; the tenant gate
+   * is [[HouseholdScoped.forHousehold]], the only way to read the body.
+   */
+  def fanOutSharedDevices(scoped: HouseholdScoped[Json]): UIO[Unit]
 
   /**
    * #1971 (S4): the DISTINCT `(household, trafficUsage-param-set)` pairs across every connection
@@ -467,6 +486,21 @@ final class SpaWsRegistryLive(
         ZIO.when(subscribedAndVisible(s, SpaTopic.Stale).isDefined)(
           sendPush(id, s.channel, op, frame),
         )
+      }
+    }
+
+  def sharedDevicesSubscribed(household: HouseholdId): UIO[Boolean] =
+    state.get.map(_.values.exists(eligible(_, SpaTopic.SharedDevices, household).isDefined))
+
+  def fanOutSharedDevices(scoped: HouseholdScoped[Json]): UIO[Unit] =
+    state.get.flatMap { m =>
+      val op = SpaTopic.wire(SpaTopic.SharedDevices)
+      ZIO.foreachDiscard(m.toList) { case (id, s) =>
+        scoped.forHousehold(s.household) match {
+          case Some(body) if subscribedAndVisible(s, SpaTopic.SharedDevices).isDefined =>
+            sendPush(id, s.channel, op, frameText(op, body.toJson))
+          case _                                                                       => ZIO.unit
+        }
       }
     }
 

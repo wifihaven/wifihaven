@@ -100,6 +100,12 @@ object MetricGuard {
       // so they satisfy the §4 cardinality firewall.
       "role",
       "topic",
+      // #2848 — shared-device check-in vocabulary for `shared_device_checkin_total`. `action` is a
+      // fixed 2-value enum (check_in | check_out); `cause` is `user` for a check-in, or the
+      // assignment end cause for a check-out (check_out | forced | unshared — `AssignmentEndCause`,
+      // a fixed enum). Bounded by the code, never by device / profile / user growth.
+      "action",
+      "cause",
       // #808 — partitioned-table name for `partition_weeks_ahead`. A fixed 2-value enum
       // (traffic_reports | connection_events — PartitionRepo.PartitionedTables); bounded by
       // the schema, not by user/device/flow growth, so it satisfies the §4 cardinality firewall.
@@ -209,6 +215,11 @@ object MetricGuard {
     // non-zero rate after a rollout settles means a writer is bypassing `DeviceAssignment.assign`,
     // and the WARN log names the household; a per-device/household label would break the firewall.
     "device_assignment_drift_repaired_total"    -> Set.empty[String],
+    // #2848 — shared-device check-ins opened and closed through the API, and the requests refused
+    // (`reason` ∈ held | not_linked | profile_blocked | not_shared | not_held). No device, profile
+    // or household label (design §12).
+    "shared_device_checkin_total"               -> Set("action", "cause"),
+    "shared_device_checkin_rejected_total"      -> Set("reason"),
     // #2077 ambient anchor-gate observability (unlabelled).
     "presence_ambient_spans_dropped_total"      -> Set.empty[String],
     "presence_ambient_hosts"                    -> Set.empty[String],
@@ -1902,6 +1913,15 @@ object AppMetrics {
   // a new series.
   def recordDeviceAssignmentDriftRepaired(devices: Int): UIO[Unit] =
     MetricGuard.counter("device_assignment_drift_repaired_total", Map.empty, devices.toLong)
+
+  // ── Shared-device check-in (#2848) ───────────────────────────────────────────────────────────
+  // Emitted by SharedDeviceRoutes (check-in / check-out) and by DeviceRoutes when turning sharing
+  // off closes a check-in (`cause = unshared`). Design `docs/design/shared-devices.md` §12.
+  def recordSharedDeviceCheckin(action: String, cause: String): UIO[Unit] =
+    MetricGuard.counter("shared_device_checkin_total", Map("action" -> action, "cause" -> cause))
+
+  def recordSharedDeviceCheckinRejected(reason: String): UIO[Unit] =
+    MetricGuard.counter("shared_device_checkin_rejected_total", Map("reason" -> reason))
 
   /**
    * #2553 — one household's slice of an all-tenant rollup tick was skipped

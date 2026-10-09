@@ -333,10 +333,15 @@ object MultiTenantRouteCensusSpec extends ZIOSpecDefault {
     "PUT /api/profiles/{}/users"     -> Scoped,
 
     // ── Routes.scala: devices ──────────────────────────────────────────────────────────────────
-    "GET /api/devices"       -> Scoped,
-    "PUT /api/devices"       -> Scoped,
-    "PATCH /api/devices/{}"  -> Scoped,
-    "DELETE /api/devices/{}" -> Scoped,
+    "GET /api/devices"                      -> Scoped,
+    "PUT /api/devices"                      -> Scoped,
+    "PATCH /api/devices/{}"                 -> Scoped,
+    "DELETE /api/devices/{}"                -> Scoped,
+    // #2848: each composes `findByMacInHousehold` on the path MAC (and, for check-in,
+    // `requireProfileInHousehold` on the body's profileId).
+    "GET /api/shared-devices"               -> Scoped,
+    "POST /api/shared-devices/{}/check-in"  -> Scoped,
+    "POST /api/shared-devices/{}/check-out" -> Scoped,
 
     // ── Routes.scala: time / presence ──────────────────────────────────────────────────────────
     "GET /api/time/status"               -> Scoped,

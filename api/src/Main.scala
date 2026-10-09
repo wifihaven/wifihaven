@@ -389,6 +389,8 @@ object Main extends ZIOAppDefault {
         timeStatusForPush <- ZIO.service[wifihaven.api.policy.TimeStatusService]
         upRepoForPush     <- ZIO.service[UserProfileRepo]
         ambientRepoPush   <- ZIO.service[wifihaven.api.db.AmbientHostsRepo]
+        // #2848: the `sharedDevices` push re-reads the household's list on each change.
+        sharedDevRepoPush <- ZIO.service[wifihaven.api.db.SharedDeviceRepo]
         _                 <- SpaPush.run(
           spaEventBus,
           spaWsRegistry,
@@ -401,6 +403,7 @@ object Main extends ZIOAppDefault {
           stlRepoForJ,
           clockForJobs,
           Some(SpaPush.TimeUsageDeps(timeStatusForPush, hsRepo, upRepoForPush, ambientRepoPush)),
+          sharedDevices = Some(sharedDevRepoPush),
         )
         _                 <- ZIO.logInfo("spa-ws push consumer fiber forked")
         // #1243: poll the HikariCP MXBean into the Prometheus pool gauges. forkDaemon so it lives
