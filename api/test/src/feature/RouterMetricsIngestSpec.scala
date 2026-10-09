@@ -2,13 +2,14 @@ package wifihaven.api.feature
 
 import wifihaven.api.MetricsConfig
 import wifihaven.api.db.*
-import wifihaven.api.metrics.RouterMetricsService
+import wifihaven.api.metrics.{AppMetrics, RouterMetricsService}
 import wifihaven.api.routes.*
 import wifihaven.shared.*
 import wifihaven.shared.types.*
 import wifihaven.shared.Clock.TestClock
 import wifihaven.testinfra.*
 import io.zonky.test.db.postgres.embedded.EmbeddedPostgres
+import java.nio.file.{Files, Paths}
 import zio.{Clock as _, *}
 import zio.http.*
 import zio.json.*
@@ -92,6 +93,28 @@ object RouterMetricsIngestSpec
         if toks.length >= 3 then toks.lift(toks.length - 2) else toks.lastOption
       }
       .flatMap(_.toDoubleOption)
+      .toList
+      .headOption
+
+  /**
+   * The cumulative count of `metric`'s `_bucket` series for this router at upper bound `le`. Parses
+   * the `le` label numerically so the assertion doesn't depend on the connector's float formatting
+   * ("6" vs "6.0").
+   */
+  private def bucketCount(
+      body: String,
+      metric: String,
+      ridStr: String,
+      le: Double,
+  ): Option[Double] =
+    body.linesIterator
+      .filter(l => l.startsWith(s"${metric}_bucket{") && l.contains(s"""router_id="$ridStr""""))
+      .flatMap { l =>
+        val leStr = """le="([^"]+)"""".r.findFirstMatchIn(l).map(_.group(1))
+        val leNum = leStr.map(s => if s == "+Inf" then Double.PositiveInfinity else s.toDouble)
+        val toks  = l.trim.split("\\s+")
+        if leNum.contains(le) then toks.lift(toks.length - 2).flatMap(_.toDoubleOption) else None
+      }
       .toList
       .headOption
 
@@ -469,6 +492,126 @@ object RouterMetricsIngestSpec
         after <- routerRepo.findById(rid)
       } yield assertTrue(resp.status == Status.Ok) &&
         assertTrue(after.flatMap(_.agentVersion).contains("0.3.32"))
+    },
+    test("#2897 an apply above 5 s from a new agent lands in its finite bucket, not +Inf") {
+      // The agent's buckets used to stop at 5 s, so every over-target apply sat in +Inf and the p95
+      // panels clamped to exactly 5 s. With the extended set, a 5.5 s apply must reach the registry
+      // in the le=6 bucket (and not le=5), so histogram_quantile resolves it to ~6 s.
+      for {
+        _          <- cleanDb
+        routerRepo <- ZIO.service[RouterRepo]
+        svc        <- RouterMetricsService.make(routerRepo)
+        (rid, tok) <- newRouter("r-buckets-new")
+        routes = RouterMetricsRoutes.routes(new RouterAuthLive(routerRepo), svc)
+        ridStr = rid.value.toString
+        cum    = List(
+          "0.01" -> 0,
+          "0.05" -> 0,
+          "0.1"  -> 0,
+          "0.5"  -> 0,
+          "1"    -> 0,
+          "2.5"  -> 0,
+          "5"    -> 0,
+          "6"    -> 1,
+          "7"    -> 1,
+          "8"    -> 1,
+          "10"   -> 1,
+          "15"   -> 1,
+          "30"   -> 1,
+          "60"   -> 1,
+          "+Inf" -> 1,
+        )
+        body   = batchJson(
+          rid,
+          "2026-05-30T09:00:00Z",
+          histograms = List(
+            MetricHistogram(
+              "ws_push_apply_latency_seconds",
+              Map.empty,
+              cum.map((le, n) => MetricHistogramBucket(le, n.toDouble)),
+              sum = 5.5,
+              count = 1,
+            ),
+          ),
+        )
+        resp    <- post(routes, tok, body)
+        _       <- tickPublisher
+        scraped <- scrape.catchAll(r => r.body.asString.orDie)
+        m = "ws_push_apply_latency_seconds"
+      } yield assertTrue(resp.status == Status.Ok) &&
+        assertTrue(bucketCount(scraped, m, ridStr, 5.0).contains(0.0)) &&
+        assertTrue(bucketCount(scraped, m, ridStr, 6.0).contains(1.0)) &&
+        assertTrue(bucketCount(scraped, m, ridStr, Double.PositiveInfinity).contains(1.0))
+    },
+    test("#2897 a pre-change agent's old 5 s-top buckets still ingest; overflow stays in +Inf") {
+      // Wire contract: an agent built before #2897 still pushes the 0.01..5 bucket set. Ingest must
+      // accept it (200, no malformed), and its +Inf overflow (an apply of unknown length > 5 s) must
+      // land in the registry's +Inf, not in a finite bucket the old agent never measured — otherwise
+      // an old agent's 30 s stall would read as a 6 s apply on the panels.
+      for {
+        _          <- cleanDb
+        routerRepo <- ZIO.service[RouterRepo]
+        svc        <- RouterMetricsService.make(routerRepo)
+        (rid, tok) <- newRouter("r-buckets-old")
+        routes = RouterMetricsRoutes.routes(new RouterAuthLive(routerRepo), svc)
+        ridStr = rid.value.toString
+        cum    = List(
+          "0.01" -> 0,
+          "0.05" -> 0,
+          "0.1"  -> 0,
+          "0.5"  -> 1,
+          "1"    -> 1,
+          "5"    -> 2,
+          "+Inf" -> 5,
+        )
+        body   = batchJson(
+          rid,
+          "2026-05-30T09:00:00Z",
+          histograms = List(
+            MetricHistogram(
+              "ws_push_apply_latency_seconds",
+              Map.empty,
+              cum.map((le, n) => MetricHistogramBucket(le, n.toDouble)),
+              sum = 40.0,
+              count = 5,
+            ),
+          ),
+        )
+        resp    <- post(routes, tok, body)
+        _       <- tickPublisher
+        scraped <- scrape.catchAll(r => r.body.asString.orDie)
+        m = "ws_push_apply_latency_seconds"
+      } yield assertTrue(resp.status == Status.Ok) &&
+        assertTrue(bucketCount(scraped, m, ridStr, 0.5).contains(1.0)) &&
+        assertTrue(bucketCount(scraped, m, ridStr, 5.0).contains(2.0)) &&
+        assertTrue(bucketCount(scraped, m, ridStr, 6.0).contains(2.0)) &&
+        assertTrue(bucketCount(scraped, m, ridStr, 60.0).contains(2.0)) &&
+        assertTrue(bucketCount(scraped, m, ridStr, Double.PositiveInfinity).contains(5.0)) &&
+        // The fold reconstructs `_sum` from per-bucket representatives: 0.5 + 5.0 + 3 overflows at
+        // the registry's top finite bound + 1 (61). It must stay finite: ZIO appends
+        // Double.MaxValue to every Boundaries, and using that as the overflow representative drove
+        // `_sum` to +Inf after two overflows, breaking every mean panel for the router.
+        assertTrue(
+          seriesValue(scraped, s"${m}_sum", s"""router_id="$ridStr"""").contains(188.5),
+        )
+    },
+    test("#2897 RouterDurationBoundaries matches the agent's buckets in the contract fixture") {
+      // The bucket set is a cross-language pair (agent DURATION_BUCKETS in metrics.lua, API
+      // RouterDurationBoundaries). metrics_spec.lua pins the Lua literal; this pins the Scala side
+      // against the fixture the agent's own build_batch generated, so changing either side alone
+      // fails CI. ZIO appends Double.MaxValue to every Boundaries, hence the filter.
+      val fixture = {
+        var cur = Paths.get(sys.props.getOrElse("user.dir", ".")).toAbsolutePath
+        while cur != null && !Files.isDirectory(cur.resolve("contract")) do cur = cur.getParent
+        cur.resolve("contract/router-to-api/router_metrics_batch.json")
+      }
+      val batch   = Files.readString(fixture).fromJson[RouterMetricsBatch]
+      val agentLe = batch.toOption.toList
+        .flatMap(_.histograms)
+        .map(_.buckets.map(_.le).filterNot(_ == "+Inf").map(_.toDouble))
+        .distinct
+      val apiLe   = AppMetrics.RouterDurationBoundaries.values.filter(_ < Double.MaxValue).toList
+      assertTrue(batch.isRight) && assertTrue(agentLe == List(apiLe))
     },
   ).provideSomeLayer[TestDatabase.AllRepos & EmbeddedPostgres & Clock](
     wifihaven.api.metrics.MetricsRuntime.prometheus(pollInterval),

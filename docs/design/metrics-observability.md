@@ -334,7 +334,7 @@ suggestions to be tuned during implementation.
 |--------|------|--------------|-------|
 | `dnsmasq_restarts_total` | counter | `reason` ∈ {`policy_change`, `boot`, `manual`} | The motivating metric. dnsmasq is **restarted, not reloaded**, on every conf-fragment change because SIGHUP doesn't re-read `conf-dir` ([#341](https://github.com/wifihaven/wifihaven/issues/341), fixes #328). #341's discussion suspected restarts fire more often than the PR claimed; #414 added the byte-for-byte short-circuit so most applies are nft-only. This counter is how we *measure* the real-world restart cadence and confirm #414 is doing its job. |
 | `policy_apply_total` | counter | `result` ∈ {`ok`, `write_failed`, `nft_failed`, `smoke_warn`} | One increment per policy timer apply. `smoke_warn` ties to #341's post-restart `dig` smoke probe. |
-| `policy_apply_duration_seconds` | histogram | — | Snapshot-fetch-to-ruleset-loaded wall time. Buckets ~ `0.01,0.05,0.1,0.5,1,5`. |
+| `policy_apply_duration_seconds` | histogram | — | Snapshot-fetch-to-ruleset-loaded wall time. Buckets `0.01,0.05,0.1,0.5,1,2.5,5,6,7,8,10,15,30,60` (`RouterDurationBoundaries`; the top stopped at 5 s before #2897). |
 | `snapshot_poll_total` | counter | `result` ∈ {`200`, `304`, `error`} | **RETIRED by [#2736](https://github.com/wifihaven/wifihaven/issues/2736)** — the agent no longer polls, so an updated router emits this no more. It was per policy poll, `304` dominating via the ETag fast-path. The server still ACCEPTS it: pre-#2736 agents in the field keep pushing it during the ~48 h jittered self-update window, and historical series stay queryable. |
 | `snapshot_poll_duration_seconds` | histogram | — | **RETIRED by #2736**, with `snapshot_poll_total`. Was the poll round-trip incl. the 304 path. |
 | `policy_poll_skipped_total` | counter | `reason` ∈ {`ws_healthy`} | **RETIRED by #2736.** Added by #2037 to count polls suppressed by a healthy ws link, and it is what made the cutover measurable: 28,100 suppressions in 24 h against zero polls is what proved the agents were alive and declining to poll rather than dead and silent. With no poll left there is nothing to skip. |
@@ -710,9 +710,9 @@ each × **R** routers):
 |--------|------|---------|------------------|
 | `dnsmasq_restarts_total` | counter | `reason` | 3 (`policy_change`,`boot`,`manual`) |
 | `policy_apply_total` | counter | `result` | 4 (`ok`,`write_failed`,`nft_failed`,`smoke_warn`) |
-| `policy_apply_duration_seconds` | histogram | — | (6+2) |
+| `policy_apply_duration_seconds` | histogram | — | (14+2) |
 | `snapshot_poll_total` | counter | `result` | 3 (`200`,`304`,`error`) |
-| `snapshot_poll_duration_seconds` | histogram | — | (6+2) |
+| `snapshot_poll_duration_seconds` | histogram | — | (14+2) |
 | `ws_health_age_seconds` | gauge | — | 1 |
 | `agent_uptime_seconds` | gauge | — | 1 |
 | `agent_version` | gauge | `version` | small (slow-moving) |

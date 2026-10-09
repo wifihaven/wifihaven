@@ -33,11 +33,24 @@
 
 local M = {}
 
--- Histogram boundaries. MUST match the API server's
--- PolicyApplyDurationBoundaries / SnapshotPollDurationBoundaries
+-- Histogram boundaries. MUST match the API server's RouterDurationBoundaries
 -- (api/src/metrics/Metrics.scala) so the server folds our cumulative bucket
 -- counts back into the matching registry buckets.
-M.DURATION_BUCKETS = { 0.01, 0.05, 0.1, 0.5, 1.0, 5.0 }
+--
+-- #2897: the set used to stop at 5 s, the shared-device unblock target. Every
+-- slower apply landed in +Inf, so histogram_quantile clamped p95 to exactly 5
+-- and the panels read "on target" when every prod apply was over it. The tail:
+--   2.5          splits the old 1-5 s gap so "comfortably under 5" shows;
+--   6, 7, 8      1 s steps where prod applies sit today (5-6 s, #2893), so a
+--                p95 of ~6 s reads as ~6 s rather than smeared across 5-10;
+--   10, 15       the slow end of the 6-11 s end-to-end check-ins;
+--   30, 60       stalls; 60 s matches the default metrics push interval
+--                (UCI metrics_report_interval, wifihaven-agent), past which a
+--                single number stops meaning much and +Inf says enough.
+-- 14 finite bounds + +Inf = 15 series per histogram per label set.
+-- Adding bounds is wire-additive: the API folds whatever `le` set a batch
+-- carries, so pre-#2897 agents keep working against the new API and vice versa.
+M.DURATION_BUCKETS = { 0.01, 0.05, 0.1, 0.5, 1.0, 2.5, 5.0, 6.0, 7.0, 8.0, 10.0, 15.0, 30.0, 60.0 }
 
 local function default_log()
   local ok, l = pcall(require, "wifihaven.log")
