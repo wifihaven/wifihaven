@@ -321,6 +321,15 @@ The hourly / daily `connection_events_*` rollups are keyed by `(mac, bucket)`. A
 straddles a check-in boundary is attributed by **bucket start**: off by at most one bucket on the
 series chart, never in the daily-limit math (that uses presence, §6.1).
 
+A shared device is usually checked out overnight, so the daily rollup would label its whole day with
+the 00:00 UTC holder, usually nobody. Profile-filtered `/series` reads therefore read the hourly
+rollup instead of the daily one (`LogRoutes.seriesGrain`, #2873), which bounds the error to the hour
+holding a check-in or check-out. Unfiltered reads keep the daily rollup, and so does a profile read
+whose window reaches past the hourly rollup's 90-day retention. `/series` no longer groups by
+profile: on the hourly rollup that read took 10-17 s on prod, and on the daily rollup it mislabels
+shared devices. The per-profile and per-device usage pages are unaffected; they read
+`traffic_reports`, attributed per report (§6.1).
+
 ### 6.4 What does NOT change
 
 `traffic_reports`, `connection_events` and `block_events` gain no column; no growth table is

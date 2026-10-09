@@ -22,10 +22,10 @@ import java.time.{Instant, LocalDate, LocalDateTime, ZoneOffset}
 /**
  * #2873 (epic #2841): a shared device is usually checked out overnight, so the daily rollup's
  * bucket-start label (the holder at 00:00 UTC, design `docs/design/shared-devices.md` §6.3) is
- * `(unassigned)` for its whole day. A `/series` read that groups or filters by profile therefore
- * reads the hourly rollup instead, which bounds the label error to the hour holding a check-in or
- * check-out. Reads that don't touch profile stay on the daily rollup, and so does a profile read
- * whose window reaches past the hourly rollup's retention.
+ * nobody for its whole day. A profile-filtered `/series` read therefore reads the hourly rollup
+ * instead, which bounds the error to the hour holding a check-in or check-out. Unfiltered reads
+ * stay on the daily rollup, and so does a profile read whose window reaches past the hourly
+ * rollup's retention. Grouping by profile is rejected.
  *
  * Each test wipes the raw table after the rerolls, and some wipe one rollup too, so the result
  * shows which table served the read.
@@ -96,7 +96,7 @@ object SharedDeviceSeriesGrainSpec
       } yield AuthServiceLive(ur, jwtCfg, clock)
       clock  <- ZIO.service[Clock]
       token  <- auth.login("admin", "changeme").map(_.token.value)
-    } yield Fixture(LogRoutes.routes(auth, events, upRepo), token, kids)
+    } yield Fixture(LogRoutes.routes(auth, events, upRepo, clock), token, kids)
 
   private def event(rid: RouterId, ts: Instant) =
     ConnectionEventInsert(
@@ -130,38 +130,52 @@ object SharedDeviceSeriesGrainSpec
           .addHeader(Header.Authorization.Bearer(f.token)),
       )
       body <- resp.body.asString
-      page <- ZIO.fromEither(body.fromJson[ConnectionEventSeriesPage]).mapError(new Exception(_))
-    } yield (resp.status, page.rows.map(r => (r.groups.values.mkString, r.countSucceeded)))
+      rows <-
+        if (resp.status != Status.Ok) ZIO.succeed(Nil)
+        else
+          ZIO
+            .fromEither(body.fromJson[ConnectionEventSeriesPage])
+            .mapError(new Exception(_))
+            .map(_.rows.map(r => (r.groups.values.mkString, r.countSucceeded)))
+    } yield (resp.status, rows)
 
   def spec = suite("/series grain for profile reads of a shared device (#2873)")(
     test("a profile-filtered daily window shows the holder's events") {
       for {
         f   <- fixture
-        got <- series(f, s"groupBy=profile&profileId=${f.kids.value}")
-      } yield assertTrue(got == (Status.Ok, List(("Kids", 3))))
+        got <- series(f, s"groupBy=device&profileId=${f.kids.value}")
+      } yield assertTrue(got == (Status.Ok, List(("family-ipad", 3))))
     },
-    test("a profile-grouped daily window labels the held span with the holder, not (unassigned)") {
+    // Grouping by profile was removed: on hourly it was too slow on prod, on daily it mislabels.
+    test("groupBy=profile is rejected") {
       for {
         f   <- fixture
         got <- series(f, "groupBy=profile")
-      } yield assertTrue(got == (Status.Ok, List(("Kids", 3))))
+      } yield assertTrue(got == (Status.BadRequest, Nil))
     },
-    test("a read that doesn't group or filter by profile stays on the daily rollup") {
+    test("a read that doesn't filter by profile stays on the daily rollup") {
       for {
         f   <- fixture
         _   <- wipe("connection_events_hourly")
         got <- series(f, "groupBy=domain")
       } yield assertTrue(got == (Status.Ok, List((Host, 3))))
     },
-    // Hourly rows older than its retention are swept, so reading hourly there would drop data. The
-    // daily rollup's bucket-start label is the accepted fallback.
+    // Hourly rows older than its retention are swept, so reading hourly there would drop data; the
+    // daily rollup's bucket-start rule is the accepted fallback. The hourly rows are wiped and Kids'
+    // span is moved to start before midnight, so only a daily read can return the events.
     test("a profile read whose window reaches past hourly retention stays on the daily rollup") {
       for {
         f   <- fixture
         _   <- wipe("connection_events_hourly")
+        _   <- ZIO.serviceWithZIO[Transactor[Task]](xa =>
+          sql"""UPDATE device_profile_assignments SET started_at = '2026-03-01T00:00:00Z'
+                WHERE profile_id = ${f.kids}""".update.run.transact(xa),
+        )
         // until = 03-03T00:00Z, now = 03-03T12:00Z: 91 days back is older than now - 90 days.
-        got <- series(f, "groupBy=profile", hours = 24 * 91)
-      } yield assertTrue(got == (Status.Ok, List(("(unassigned)", 3))))
+        in  <- series(f, s"groupBy=device&profileId=${f.kids.value}", hours = 24 * 91)
+        // A 30-day window is inside retention, so the same filter reads the (empty) hourly rollup.
+        out <- series(f, s"groupBy=device&profileId=${f.kids.value}")
+      } yield assertTrue(in == (Status.Ok, List(("family-ipad", 3))), out == (Status.Ok, Nil))
     },
   ) @@ TestAspect.sequential
 }

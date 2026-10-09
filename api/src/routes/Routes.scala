@@ -14,6 +14,7 @@ import zio.json.*
 import org.postgresql.util.PSQLException
 
 import java.time.{LocalDate, LocalTime, ZoneId}
+import java.time.temporal.ChronoUnit
 
 import zio.json.ast.Json
 
@@ -1987,19 +1988,42 @@ object LogRoutes {
   // (cap, window-pref) wins. Raw → None (read the live connection_events
   // table). includeMulticast forces raw, because the reroll excludes
   // multicast/broadcast at write time so the rollups can't serve it.
+  //
+  // #2873: a profile-filtered read is capped at the hourly rollup. A rollup
+  // row is attributed to the profile that held the device at its bucket start
+  // (`SqlFragments.deviceLabelJoin`), and a shared device is usually checked
+  // out overnight, so on the daily rollup its whole day would belong to the
+  // 00:00 UTC holder, usually nobody, and drop out of the filter. On the
+  // hourly rollup the error is bounded to the hour that holds a check-in or
+  // check-out: that hour belongs to whoever held the device when it began.
+  // The cap applies only while the whole window is inside the hourly rollup's
+  // retention; past that the hourly rows are gone and the daily bucket-start
+  // rule is the fallback. Unfiltered reads keep the daily rollup. Grouping by
+  // profile is not offered: on hourly it read ~1M rows and took 10-17 s on
+  // prod (EXPLAIN on #2873), and on daily it mislabels shared devices.
   private def seriesGrain(
       bucket: ConnectionEventBucket,
-      hours: Int,
-      includeMulticast: Boolean,
+      filter: LogFilter,
+      now: java.time.Instant,
   ): Option[BucketGrain] =
-    if (includeMulticast) None
+    if (filter.includeMulticast) None
     else {
-      val cap    = BucketPolicy.grainForBucket(bucket.wire)
-      val pref   = BucketPolicy.windowGrain(hours.toLong)
-      val chosen = if (BucketPolicy.rank(pref) <= BucketPolicy.rank(cap)) pref else cap
+      val cap        = BucketPolicy.grainForBucket(bucket.wire)
+      val pref       = BucketPolicy.windowGrain(filter.hours.toLong)
+      val chosen     = if (BucketPolicy.rank(pref) <= BucketPolicy.rank(cap)) pref else cap
+      val lower      = filter.until.getOrElse(now).minus(filter.hours.toLong, ChronoUnit.HOURS)
+      val hourlyKept =
+        !lower.isBefore(
+          now.minus(
+            wifihaven.api.usage.RetentionSweepJob.ConnEventsHourlyRetentionDays.toLong,
+            ChronoUnit.DAYS,
+          ),
+        )
       chosen match {
-        case BucketGrain.Raw => None
-        case g               => Some(g)
+        case BucketGrain.Raw                                               => None
+        case BucketGrain.Daily if filter.profileIds.nonEmpty && hourlyKept =>
+          Some(BucketGrain.Hourly)
+        case g                                                             => Some(g)
       }
     }
 
@@ -2059,6 +2083,7 @@ object LogRoutes {
       auth: AuthService,
       connRepo: ConnectionEventRepo,
       userProfileRepo: UserProfileRepo,
+      clock: Clock,
   ): Routes[Any, Response] =
     Routes(
       Method.GET / "api" / "logs"                         ->
@@ -2143,9 +2168,13 @@ object LogRoutes {
                   .map(_.trim)
                   .filter(_.nonEmpty),
               ) { s =>
+                // #2873: profile grouping was removed; say so rather than "unknown".
                 ZIO
-                  .fromOption(ConnectionEventGroupBy.fromWire(s))
-                  .orElseFail(ApiError.BadRequest(s"unknown groupBy: $s"))
+                  .fail(ApiError.BadRequest("groupBy=profile is not supported on /series (#2873)"))
+                  .when(s == "profile") *>
+                  ZIO
+                    .fromOption(ConnectionEventGroupBy.fromWire(s))
+                    .orElseFail(ApiError.BadRequest(s"unknown groupBy: $s"))
               }
               .map(_.toSet)
             _      <- ZIO
@@ -2178,7 +2207,8 @@ object LogRoutes {
             )
             // #1265: route coarse + wide reads to the rollup tables; fine,
             // short, or multicast-inclusive reads stay on raw connection_events.
-            rows <- (seriesGrain(bucket, filter.hours, filter.includeMulticast) match {
+            now  <- clock.instant
+            rows <- (seriesGrain(bucket, filter, now) match {
               case None    => connRepo.querySeries(filter, bucket.seconds, groupByCodes)
               case Some(g) => connRepo.querySeriesRollup(filter, bucket.seconds, groupByCodes, g)
             }).mapError(ApiError.Db(_))

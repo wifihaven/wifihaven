@@ -503,8 +503,8 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         )
         _        <- createUser(userRepo, upRepo, auth, "mom", "adult", List(kidsId))
         token    <- auth.login("mom", "pass").map(_.token.value)
-        routes = LogRoutes.routes(auth, connRepo, upRepo)
-        req    = Request
+        routes   <- ZIO.serviceWith[Clock](LogRoutes.routes(auth, connRepo, upRepo, _))
+        req = Request
           .get(URL.decode("/api/logs").toOption.get)
           .addHeader(Header.Authorization.Bearer(token))
         resp <- routes.runZIO(req)
