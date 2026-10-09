@@ -913,22 +913,37 @@ local BLOCKLIST_CACHE_DIR = "/etc/wifihaven/blocklists"
 --   reference; a bare-/tmp shard is unreadable inside the jail and crash-loops
 --   dnsmasq. Derived from render.SHARD_DIR so writer and reader never drift.
 local BLOCKLIST_SHARD_DIR = render.SHARD_DIR
+-- #2893: what the last clean shard + member-index render was built from, so a
+-- refresh that changes no list skips rewriting them (blocklists.render_outputs).
+local bl_render_state = {}
 local function refresh_blocklists(snap)
-  -- Step 1: fetch new list versions + cache them to disk.
+  -- Step 1: fetch any list version not yet cached.
   -- #2785: blocklist bodies are the one bulk fetch here (up to
   -- blocklist_max_list_bytes), so they get the longer bound — still finite.
+  -- #2893: parse = false. Nothing here reads the parsed host map; the shards,
+  -- the member index and update_shared all stream from the cache files. Parsing
+  -- every cached list cost 2.06 s of each push-apply on the prod family router.
   local res = blocklists.refresh(
     snap,
     function(url, headers) return http_get(url, headers, CURL_TIMEOUTS_BULK) end,
-    nil, BLOCKLIST_CACHE_DIR, api_url, router_token)
+    nil, BLOCKLIST_CACHE_DIR, api_url, router_token, nil, { parse = false })
   record_blocklist_failures(res)
   for _, e in ipairs(res.errors or {}) do
     log.warn("blocklist fetch: %s", tostring(e))
   end
 
-  -- Step 2: stream cache files → per-shard dnsmasq conf files.
-  -- Determine which blocklist ids are referenced by global.blocklistIds so
-  -- render_shards appends the global_block nftset specs to those shard lines.
+  -- Steps 2-4: stream cache files → per-shard dnsmasq conf files, GC shards for
+  -- ids no longer in the snapshot, and write the member index dns-tail reads for
+  -- CNAME-aware bl_ population (paths.bl_member_index, paths.lua:36; replaces
+  -- the old render.blocklist_member_index call in policy.apply, #1782).
+  -- render_shards appends the global_block nftset specs to the shard lines of
+  -- ids in global.blocklistIds.
+  --
+  -- #2893: skipped when no list id, version, global id or the size cap changed
+  -- since the last clean render and every output is still on disk. This runs
+  -- before `nft -f` on every pushed apply, and on the prod family router the
+  -- unchanged rewrite (~15 MB of shards, an 8 MB index) held enforcement back
+  -- by ~2.7 s.
   local global_bl_ids = {}
   local snap_global = snap and snap.global
   if type(snap_global) == "table" and type(snap_global.blocklistIds) == "table" then
@@ -937,8 +952,12 @@ local function refresh_blocklists(snap)
     end
   end
 
-  local shard_res = blocklists.render_shards(
-    snap, nil, BLOCKLIST_CACHE_DIR, BLOCKLIST_SHARD_DIR, blocklist_max_bytes, global_bl_ids)
+  local out = blocklists.render_outputs(
+    snap, nil, BLOCKLIST_CACHE_DIR, BLOCKLIST_SHARD_DIR, paths.bl_member_index,
+    blocklist_max_bytes, global_bl_ids, bl_render_state)
+  if not out.rendered then return end
+
+  local shard_res = out.shards
   for _, e in ipairs(shard_res.errors or {}) do
     log.warn("blocklist shard render: %s", tostring(e))
   end
@@ -951,32 +970,14 @@ local function refresh_blocklists(snap)
   -- skips are already covered by blocklist_fetch_failures_total). The
   -- `blocklist_id` label is bounded by the bundled set
   -- (api/resources/blocklists/_index.yml — 9 ids), so it satisfies the §4
-  -- cardinality firewall.
+  -- cardinality firewall. A cap-hit render is never recorded as clean, so it
+  -- re-renders (and counts) on every refresh exactly as before #2893.
   for _, id in ipairs(shard_res.cap_hit or {}) do
     metrics.inc_counter(mreg, "blocklist_render_skipped_total", { blocklist_id = id })
   end
-
-  -- Step 3: GC stale shards for ids that are no longer in the snapshot.
-  blocklists.gc_shards(snap, nil, BLOCKLIST_SHARD_DIR)
-
-  -- Step 4: write the member index for dns-tail's CNAME-aware bl_ population.
-  -- Written to paths.bl_member_index (= /tmp/wifihaven-bl-members.txt), the
-  -- path dns-tail reads (paths.lua:36). This replaces the
-  -- render.blocklist_member_index(snapshot) call in policy.apply (policy.lua:272)
-  -- which read from snapshot._blocklist_hosts — a table this PR no longer
-  -- attaches. policy.apply's write is skipped (see policy.lua) so the index
-  -- stays non-empty on every apply (#1782 BLOCKER fix).
-  local idx_res = blocklists.render_member_index(
-    snap, nil, BLOCKLIST_CACHE_DIR, paths.bl_member_index)
-  if idx_res and idx_res.error then
-    log.warn("blocklist member index: %s", tostring(idx_res.error))
+  if out.index and out.index.error then
+    log.warn("blocklist member index: %s", tostring(out.index.error))
   end
-
-  -- Note: blocklists.refresh no longer receives max_bytes post-#1782, so
-  -- load_cached parses everything. The parsed res.hosts map is unused by the
-  -- agent's main path (update_shared uses bl_member_iterator to stream from
-  -- cache files). The map survives only for backward-compat callers and can be
-  -- removed in a follow-up once the fleet has rolled over fully.
 end
 
 -- make_bl_member_iterator(snap) → iterator(id) → {host,...}
