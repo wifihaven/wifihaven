@@ -23,6 +23,11 @@ describe('blockReasonText', () => {
     expect(blockReasonText({ kind: 'defaultDeny' })).toBe('default deny')
   })
 
+  // #2847: MacBlockReason.CheckedOut, a shared device with no holder.
+  it('renders checkedOut with its own label', () => {
+    expect(blockReasonText({ kind: 'checkedOut' })).toBe('shared device checked out')
+  })
+
   // #2846: the SPA deploys separately from the API, so the API can emit a reason kind this build
   // has never heard of. It must render the generic label, never undefined (a blank cell) or the
   // raw kind string.

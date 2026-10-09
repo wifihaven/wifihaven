@@ -57,11 +57,15 @@ where `BlockRules` is:
   [#1615](https://github.com/wifihaven/wifihaven/issues/1615) /
   [#1617](https://github.com/wifihaven/wifihaven/issues/1617) /
   [#1618](https://github.com/wifihaven/wifihaven/issues/1618)).
-  `MacBlockReason` is a `sealed trait extends BlockReason` with six cases:
+  `MacBlockReason` is a `sealed trait extends BlockReason` with seven cases:
   `Paused`, `Schedule`, `TimeLimit`, `Manual`, `Unmanaged` (#1122 — device has
   no profile assignment under a `block` household policy), `DefaultDeny`
-  (#1316/#1308 — profile is in default-deny mode; lowest precedence) — the
-  only reasons a whole-MAC block can come from `PolicyService`.
+  (#1316/#1308 — profile is in default-deny mode; lowest precedence),
+  `CheckedOut` (#2847 — a shared device nobody has checked in; blocked in any
+  household policy) — the only reasons a whole-MAC block can come from
+  `PolicyService`. The no-profile cases (`Unmanaged`, `CheckedOut`) come from
+  `PolicyService.effectiveDeviceRules`, which the snapshot and `GET /api/blocked`
+  both call.
   **`Manual` has no producer today** — nothing in `api/src` ever sets it, only
   defensive consumer-side handling exists (`BlockedRoutes.scala`,
   `nft_drops.lua`); it is reserved vocabulary, not a shipped feature

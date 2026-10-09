@@ -34,6 +34,8 @@ describe("nft_drops.classify_reason", function()
 
   it("defaults an unrecognised reason to whole_mac (bounded label space)", function()
     assert.equal("whole_mac", nft_drops.classify_reason("SomeFutureReason"))
+    -- #2847: CheckedOut shipped API-side with no agent change; it lands here.
+    assert.equal("whole_mac", nft_drops.classify_reason("CheckedOut"))
     assert.equal("whole_mac", nft_drops.classify_reason(nil))
   end)
 end)

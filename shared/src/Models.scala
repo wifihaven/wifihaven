@@ -526,6 +526,10 @@ case class Device(
     profileName: Option[String],
     lastSeenIp: Option[IpAddress],
     lastSeenAt: Option[String],
+    // #2847 (V90 `devices.shared`): a shared device has no permanent profile. With a holder checked
+    // in it carries `profileId = holder`; with none it is blocked as `CheckedOut`
+    // (`PolicyService.effectiveDeviceRules`). Defaulted so a decoder of an older payload still works.
+    shared: Boolean = false,
 ) derives JsonCodec
 
 // Generic admin-action feed, formerly DeviceAlert (#711, V29). The schema
@@ -2211,6 +2215,11 @@ object MacBlockReason {
   case object DefaultDeny extends MacBlockReason {
     val jsonKind = "defaultDeny"; val wireKind = "default_deny"
   }
+  // #2847: a shared device nobody has checked in. Blocked whatever the household's
+  // unmanaged-device policy is; the router treats the reason as opaque (whole_mac).
+  case object CheckedOut  extends MacBlockReason {
+    val jsonKind = "checkedOut"; val wireKind = "checked_out"
+  }
 
   def asString(r: MacBlockReason): String      = r match {
     case Paused      => "Paused"
@@ -2219,6 +2228,7 @@ object MacBlockReason {
     case Manual      => "Manual"
     case Unmanaged   => "Unmanaged"
     case DefaultDeny => "DefaultDeny"
+    case CheckedOut  => "CheckedOut"
   }
   def parse(s: String): Option[MacBlockReason] = s match {
     case "Paused"      => Some(Paused)
@@ -2227,6 +2237,7 @@ object MacBlockReason {
     case "Manual"      => Some(Manual)
     case "Unmanaged"   => Some(Unmanaged)
     case "DefaultDeny" => Some(DefaultDeny)
+    case "CheckedOut"  => Some(CheckedOut)
     case _             => None
   }
 
@@ -2318,6 +2329,7 @@ object BlockReason {
     MacBlockReason.Manual,
     MacBlockReason.Unmanaged,
     MacBlockReason.DefaultDeny,
+    MacBlockReason.CheckedOut,
   )
 
   private val byWireKind: Map[String, BlockReason] =
@@ -2341,6 +2353,7 @@ object BlockReason {
     "Unmanaged"           -> MacBlockReason.Unmanaged,
     "device_not_enrolled" -> MacBlockReason.Unmanaged,
     "DefaultDeny"         -> MacBlockReason.DefaultDeny,
+    "CheckedOut"          -> MacBlockReason.CheckedOut,
   )
 
   /**

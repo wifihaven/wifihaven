@@ -805,34 +805,10 @@ class PolicyServiceLive(
         p.id -> ProfilePolicy(name = p.name, rules = rules, failureMode = p.failureMode)
       }.toMap
 
-      // #961: unmanaged-MAC enforcement is applied here at snapshot-build time,
-      // not via a new wire field. For devices with no profile assignment we
-      // emit explicit per-MAC `rules` keyed off the household policy:
-      //   - policy = "block": Manual-blocked. The UI / block-page hosts are no
-      //     longer copied here (#1318) — they live in `global.extraAllowed`,
-      //     which carves out this block too (it carves out every drop, including
-      //     a whole-MAC `blocked`), so the block-page redirect still loads.
-      //   - policy = "allow": `rules = None`, same as today (router treats as
-      //     unenrolled / allow-all).
-      // The router's existing per-MAC override path enforces this without any
-      // code change on the openwrt side — the contract fixture already
-      // exercises a profileless+blocked device shape.
-      val unmanagedRules: Option[BlockRules] =
-        if (settings.unmanagedMacPolicy.policy == "block")
-          Some(
-            BlockRules(
-              blocked = true,
-              blockReason = Some(MacBlockReason.Unmanaged),
-              extraBlocked = Nil,
-              extraAllowed = Nil,
-              blocklistIds = Nil,
-              blockIpOnly = false,
-            ),
-          )
-        else None
-
+      // #961/#2847: a profileless device's inline rules (unmanaged or checked-out shared) come
+      // from `effectiveDeviceRules`, the same function `decideDetailed` reads.
       val devicePolicies: Map[MacAddress, DevicePolicy] = devices.iterator.map { d =>
-        val rules = if (d.profileId.isEmpty) unmanagedRules else None
+        val rules = PolicyService.effectiveDeviceRules(d, settings)
         d.mac -> DevicePolicy(profileId = d.profileId, name = d.name, rules = rules)
       }.toMap
 
@@ -1011,17 +987,25 @@ class PolicyServiceLive(
         case None      =>
           // #2652: no profile assignment ⇒ nothing to carry. `dayState` is `None` rather than an
           // empty state so a consumer can tell "no profile" from "profile with zero minutes".
-          ZIO.succeed(
-            PolicyDecision(
+          // #2847: the verdict comes from the snapshot's own `effectiveDeviceRules`, so this
+          // reports `CheckedOut` / `Unmanaged` exactly when the router drops the MAC for that
+          // reason. A MAC with no device row is not in the snapshot either, so it stays allowed.
+          val inline   = device.flatMap(PolicyService.effectiveDeviceRules(_, settings))
+          val response = inline.filter(_.blocked) match {
+            case Some(r) =>
+              RouterDecisionResponse(
+                ConnectionDecision.Block,
+                BlockReason.asWire(r.blockReason.getOrElse(BlockReason.Blocked)),
+                None,
+              )
+            case None    =>
               RouterDecisionResponse(
                 ConnectionDecision.Allow,
                 BlockReason.asWire(BlockReason.NoProfile),
                 None,
-              ),
-              None,
-              None,
-            ),
-          )
+              )
+          }
+          ZIO.succeed(PolicyDecision(response, None, None))
         case Some(pid) =>
           for {
             pOpt            <- profileRepo.findById(pid)
@@ -1290,6 +1274,40 @@ private case class SnapshotCore(
 )
 
 object PolicyService {
+
+  /**
+   * #961/#2847: the inline per-MAC `rules` a device ships with, or `None` when it takes its
+   * profile's rules (or, with no profile, is allowed). The single source for both the snapshot's
+   * device mapping and `decideDetailed`'s no-profile branch, so `GET /api/blocked` names the reason
+   * the router drops for.
+   *
+   *   - shared, no holder: blocked as `CheckedOut`, whatever the unmanaged-device policy is
+   *     (docs/design/shared-devices.md §7.1). A shared device with a holder has `profileId` set and
+   *     takes the holder's rules unchanged.
+   *   - not shared, no profile, policy "block": blocked as `Unmanaged`.
+   *   - otherwise `None`.
+   *
+   * No hosts are carved out here. The UI / block-page / infra hosts live in `global.extraAllowed`
+   * (#1318/#1321), which the router applies ahead of every drop, so the block page and the SPA
+   * still load. The router enforces both shapes through its existing per-MAC override path.
+   */
+  def effectiveDeviceRules(device: Device, settings: HouseholdSettings): Option[BlockRules] =
+    if device.profileId.nonEmpty then None
+    else if device.shared then Some(wholeMacBlock(MacBlockReason.CheckedOut))
+    else if settings.unmanagedMacPolicy.policy == "block" then
+      Some(wholeMacBlock(MacBlockReason.Unmanaged))
+    else None
+
+  private def wholeMacBlock(reason: MacBlockReason): BlockRules =
+    BlockRules(
+      blocked = true,
+      blockReason = Some(reason),
+      extraBlocked = Nil,
+      extraAllowed = Nil,
+      blocklistIds = Nil,
+      blockIpOnly = false,
+    )
+
   val layer: ZLayer[
     AppConfig & ProfileRepo & NamedScheduleRepo & HouseholdSettingsRepo & TimeLimitRepo &
       AppTimeLimitRepo & DeviceRepo & BlocklistRepo & TrafficReportRepo & TimeExtensionRepo &
