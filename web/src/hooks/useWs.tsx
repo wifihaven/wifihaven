@@ -19,7 +19,7 @@ import {
 } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/api/client'
-import { qk, RECENT_BLOCKED_LIMIT, useInvalidators } from '@/api/queries'
+import { qk, RECENT_BLOCKED_LIMIT, useInvalidators, useSharedDevices } from '@/api/queries'
 import { useAuth } from '@/hooks/useAuth'
 import { SpaWsClient, type SpaTopicName, type WsStatus } from '@/api/wsClient'
 import {
@@ -39,6 +39,7 @@ import type {
   ProfileTimeStatus,
   ProfileUsageByApp,
   QueryLog,
+  SharedDevice,
   TrafficUsageAggregateRow,
   TrafficUsageBucket,
   TrafficUsageGroupBy,
@@ -237,6 +238,34 @@ export function useWsAppUsage(profileId: number, from: string, to: string, enabl
     key,
     enabled,
   )
+}
+
+/**
+ * #2850 (design docs/design/shared-devices.md §9): `sharedDevices` pushes the whole
+ * `GET /api/shared-devices` body for the household on every change (check-in, check-out, the
+ * Shared toggle, an auto-checkout). We replace the cache the GET seeds, so every surface reading
+ * `useSharedDevices` updates. Visible to a child (`SpaTopic.visibleTo`). Refetched once on reconnect.
+ */
+export function useWsSharedDevices(): void {
+  const qc = useQueryClient()
+  useWsSubscription(
+    'sharedDevices',
+    undefined,
+    payload => qc.setQueryData(qk.sharedDevices(), (payload as SharedDevice[]) ?? []),
+    qk.sharedDevices(),
+  )
+}
+
+/**
+ * #2850: the shared-device list, seeded by the GET and kept live by the push. The seed's pending
+ * state is what gates first paint (a push never lands on an empty cache the UI treats as loaded,
+ * because the query observer only reports `success` once the GET or a push has written data).
+ * Polling pauses while the push is acked and resumes on disconnect.
+ */
+export function useSharedDevicesLive() {
+  useWsSharedDevices()
+  const wsLive = useWsTopicLive('sharedDevices')
+  return useSharedDevices({ wsLive })
 }
 
 export interface WsTrafficUsage {

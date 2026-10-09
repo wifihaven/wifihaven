@@ -20,6 +20,8 @@ const unscopedKeys = {
   pressMessages: () => ['press', 'messages'] as const,
   profiles: () => ['profiles'] as const,
   devices: () => ['devices'] as const,
+  // #2850: GET /api/shared-devices, kept live by the `sharedDevices` ws push (useWsSharedDevices).
+  sharedDevices: () => ['shared-devices'] as const,
   // #2252 — enrolled routers, read by the dashboard first-run banner to tell
   // "no router yet" apart from "enrollment pending, waiting to connect".
   routers: () => ['routers'] as const,

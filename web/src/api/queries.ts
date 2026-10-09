@@ -16,6 +16,7 @@ import type {
   QueryLog, RouterSummary, UsageConfig, UsageSeriesResponse,
   SupportIdentityResponse,
   PressMessage,
+  SharedDevice,
 } from '@/types/api'
 
 const MIN = 60_000
@@ -197,6 +198,22 @@ export function useDevices(opts?: QueryOpts<Device[]>) {
     queryFn: () => api.devices.list(),
     staleTime: STALE.devices,
     ...opts,
+  })
+}
+
+// #2850: the household's shared devices and who holds each one. Seeded by this GET and then
+// patched by the `sharedDevices` push (useWsSharedDevices writes the same key). While the push is
+// live (`wsLive`) the poll pauses; on disconnect the flat fallback resumes, like the time-status
+// surfaces (§3.3).
+export function useSharedDevices(opts?: QueryOpts<SharedDevice[]> & { wsLive?: boolean }) {
+  const { wsLive, ...rest } = opts ?? {}
+  return useQuery({
+    queryKey: qk.sharedDevices(),
+    queryFn: () => api.sharedDevices.list(),
+    staleTime: STALE.devices,
+    refetchInterval: wsLive ? false : LIVE_SURFACE_FALLBACK_REFETCH_MS,
+    refetchIntervalInBackground: false,
+    ...rest,
   })
 }
 
@@ -522,6 +539,8 @@ export function useInvalidators() {
     ]),
     deviceMutated: () => Promise.all([
       qc.invalidateQueries({ queryKey: qk.devices() }),
+      // #2850: the shared flag and check-ins live on the device; the holder list reads them.
+      qc.invalidateQueries({ queryKey: qk.sharedDevices() }),
       qc.invalidateQueries({ queryKey: qk.timeStatusAll() }),
       qc.invalidateQueries({ queryKey: qk.dashboardNow() }),
     ]),

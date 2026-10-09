@@ -264,7 +264,6 @@ beforeEach(() => {
   mockNow().mockResolvedValue(emptyNow)
   mockAlerts().mockResolvedValue([])
   ;(api.sharedDevices.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([])
-  ;(api.profiles.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([])
   ;(api.usage.traffic as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
     bucket: '1m', from: '', to: '', tz: 'UTC', rawRows: [], aggregateRows: [],
   })
@@ -1111,10 +1110,15 @@ describe('DashboardPage child role (#2069)', () => {
     (api.sharedDevices.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([
       { mac: 'aa:bb:cc:dd:ee:05', name: 'Family iPad', holder: null },
     ])
+    // The FirstRunHint fixtures above mock bare `{id}` profiles; the card reads the real shape.
+    ;(api.profiles.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([{
+      profile: { id: 1, name: 'Kids', blockedCategories: [], paused: false, failureMode: 'block-all', crossDeviceOverlapMode: 'sum', pauseMode: 'soft', defaultDeny: false },
+      timeLimit: null,
+    }])
     renderAsChild()
-    const card = await screen.findByTestId('shared-devices-card')
-    expect(within(card).getByText('Family iPad')).toBeInTheDocument()
-    expect(within(card).getByTestId('shared-device-status-aa:bb:cc:dd:ee:05')).toHaveTextContent('Checked out')
+    const status = await screen.findByTestId('shared-device-status-aa:bb:cc:dd:ee:05')
+    expect(status).toHaveTextContent('Checked out')
+    expect(within(screen.getByTestId('shared-devices-card')).getByText('Family iPad')).toBeInTheDocument()
   })
 })
 

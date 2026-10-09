@@ -1,17 +1,20 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import { useMutation } from '@tanstack/react-query'
 import { Link, useSearchParams } from 'react-router-dom'
 import { api } from '@/api/client'
 import { useAlerts, useDevices, useHouseholdSettings, useProfiles, useInvalidators } from '@/api/queries'
-import { isManaged, isUnmanaged } from '@/lib/devices'
+import { isUnmanaged } from '@/lib/devices'
 import { useAuth } from '@/hooks/useAuth'
+import { useSharedDevicesLive } from '@/hooks/useWs'
 import { useEscapeClose } from '@/hooks/useEscapeClose'
 import { useNotificationPermission } from '@/hooks/useNotifyOnNewAlerts'
 import { useDebouncedSave, mergeSaveStatus } from '@/hooks/useDebouncedSave'
 import { EmptyState } from '@/components/EmptyState'
 import { ProfilePicker } from '@/components/ProfilePicker'
 import { SaveStatusBadge } from '@/components/SaveStatusBadge'
-import type { Alert, Device, PatchDeviceRequest, ProfileDetail } from '@/types/api'
+import { HolderLine } from '@/components/SharedDevicesCard'
+import { Skeleton } from '@/components/Skeleton'
+import type { Alert, Device, PatchDeviceRequest, ProfileDetail, SharedDevice } from '@/types/api'
 import { PageLoader } from './DashboardPage'
 
 // Apply the LogsPage click-through highlight (#298): when the URL carries
@@ -43,6 +46,8 @@ export function DevicesPage() {
   const devicesQuery  = useDevices()
   const profilesQuery = useProfiles()
   const householdQuery = useHouseholdSettings()
+  // #2850: who holds each shared device. Seeded by GET /api/shared-devices, live via the push.
+  const sharedQuery   = useSharedDevicesLive()
   const invalidators  = useInvalidators()
   const devices  = devicesQuery.data  ?? []
   const profiles = profilesQuery.data ?? []
@@ -77,6 +82,13 @@ export function DevicesPage() {
     },
   })
 
+  // #2850: an unmanaged device can become shared straight from its row (it then waits, checked out,
+  // for someone to check it in).
+  const makeSharedMutation = useMutation({
+    mutationFn: (mac: string) => api.devices.patch(mac, { shared: true }),
+    onSuccess: () => invalidators.deviceMutated(),
+  })
+
   const deleteMutation = useMutation({
     mutationFn: (mac: string) => api.devices.delete(mac),
     onSuccess: () => invalidators.deviceMutated(),
@@ -105,7 +117,9 @@ export function DevicesPage() {
 
   if (loading) return <PageLoader />
 
-  const knownDevices   = devices.filter(isManaged)
+  // #2850: a checked-out shared device has no profile but is not unmanaged; it lists here with
+  // its holder state.
+  const knownDevices   = devices.filter(d => !isUnmanaged(d))
   const unknownDevices = devices.filter(isUnmanaged)
 
   return (
@@ -134,11 +148,20 @@ export function DevicesPage() {
                     <p className="font-medium text-brand-ink truncate">{d.name}</p>
                     <p className="text-xs text-brand-text-muted font-mono">{d.mac}</p>
                   </Link>
-                  <div className="hidden sm:block text-sm">
-                    <span className="bg-brand-accent/10 text-brand-accent border border-brand-accent/20 px-2 py-1 rounded-lg text-xs">
-                      {d.profileName ?? 'No profile'}
-                    </span>
-                  </div>
+                  {d.shared ? (
+                    <SharedDeviceHolder
+                      device={d}
+                      shared={sharedQuery.data?.find(s => s.mac === d.mac)}
+                      pending={sharedQuery.isPending}
+                      error={sharedQuery.isError}
+                    />
+                  ) : (
+                    <div className="hidden sm:block text-sm">
+                      <span className="bg-brand-accent/10 text-brand-accent border border-brand-accent/20 px-2 py-1 rounded-lg text-xs">
+                        {d.profileName ?? 'No profile'}
+                      </span>
+                    </div>
+                  )}
                   {isWriter && (
                     <div className="flex gap-2 shrink-0">
                       <button
@@ -208,11 +231,19 @@ export function DevicesPage() {
                   </span>
                 </div>
                 {isWriter && (
-                  <button
-                    onClick={() => openCreate(d.mac)}
-                    data-testid={`unmanaged-enroll-${d.mac}`}
-                    className="text-xs text-brand-accent hover:text-brand-accent bg-brand-accent/10 px-3 py-1.5 rounded-lg transition-colors shrink-0"
-                  >Enroll</button>
+                  <div className="flex gap-2 shrink-0">
+                    <button
+                      onClick={() => openCreate(d.mac)}
+                      data-testid={`unmanaged-enroll-${d.mac}`}
+                      className="text-xs text-brand-accent hover:text-brand-accent bg-brand-accent/10 px-3 py-1.5 rounded-lg transition-colors"
+                    >Enroll</button>
+                    <button
+                      onClick={() => makeSharedMutation.mutate(d.mac)}
+                      disabled={makeSharedMutation.isPending}
+                      data-testid={`unmanaged-make-shared-${d.mac}`}
+                      className="text-xs text-brand-text hover:text-brand-ink bg-brand-alt px-3 py-1.5 rounded-lg transition-colors disabled:opacity-60"
+                    >Make shared</button>
+                  </div>
                 )}
               </div>
             ))}
@@ -267,14 +298,29 @@ function DeviceRowEditor({
 }) {
   const invalidators = useInvalidators()
   const [name, setName] = useState(device.name)
-  const [profileId, setProfileId] = useState<number | null>(device.profileId)
+  // The row's profile, mirrored from the server during render (not in an effect) so a server-side
+  // change and the save key below move in the same render. See the profileSave comment.
+  const serverProfileId = device.profileId ?? null
+  const [profileId, setProfileId] = useState<number | null>(serverProfileId)
+  const [syncedProfileId, setSyncedProfileId] = useState<number | null>(serverProfileId)
+  if (serverProfileId !== syncedProfileId) {
+    setSyncedProfileId(serverProfileId)
+    setProfileId(serverProfileId)
+  }
+  // #2850: the Shared toggle. Not policy authoring (#1452): it only says the device is held by
+  // whoever checks it in, instead of being assigned to one profile.
+  const serverShared = device.shared === true
+  const [shared, setShared] = useState(serverShared)
+  useEffect(() => { setShared(serverShared) }, [serverShared])
+  // A shared device is checked in, never assigned (a profileId on it is a 409 `device_shared`), so
+  // the profile picker is off while it is shared or about to be.
+  const profileLocked = shared || serverShared
   // #2560 — the row's own "+ New profile…" branch, now via the shared picker
   // (#2607). Without it the row could only assign a profile that already
   // existed, so putting a device on a NEW profile meant leaving /devices. The
   // picker raises `commitBlocked` while it has nothing committable to hand over.
   const [commitBlocked, setCommitBlocked] = useState(false)
   useEffect(() => { setName(device.name) }, [device.name])
-  useEffect(() => { setProfileId(device.profileId) }, [device.profileId])
 
   const nameSave = useDebouncedSave(
     name,
@@ -287,16 +333,28 @@ function DeviceRowEditor({
     { key: device.mac },
   )
 
+  // #2850: while the device is shared its profile is the holder, which changes on every check-in
+  // and check-out. The save is keyed on the holder so each server-side change resets the baseline
+  // instead of being read as an edit, which would PATCH a profileId onto a shared device.
   const profileSave = useDebouncedSave(
-    profileId,
+    profileLocked ? serverProfileId : profileId,
     async (next: number | null) => {
       await api.devices.patch(device.mac, { profileId: next })
+      await invalidators.deviceMutated()
+    },
+    { key: profileLocked ? `${device.mac}:shared:${serverProfileId}` : device.mac },
+  )
+
+  const sharedSave = useDebouncedSave(
+    shared,
+    async (next: boolean) => {
+      await api.devices.patch(device.mac, { shared: next })
       await invalidators.deviceMutated()
     },
     { key: device.mac },
   )
 
-  const merged = mergeSaveStatus([nameSave, profileSave])
+  const merged = mergeSaveStatus([nameSave, profileSave, sharedSave])
 
   return (
     <div
@@ -317,6 +375,20 @@ function DeviceRowEditor({
           surface `commitBlocked` is exactly "a creator the operator opened": the
           row allows null, so the loading and error terms don't reach it, and the
           picker never auto-opens on a failed fetch either. */}
+      <label className="flex items-center gap-2 pb-2.5 text-sm text-brand-text">
+        <input
+          type="checkbox"
+          checked={shared}
+          onChange={e => setShared(e.target.checked)}
+          data-testid={`device-shared-toggle-${device.mac}`}
+        />
+        Shared
+      </label>
+      {profileLocked ? (
+        <p className="pb-2.5 text-xs text-brand-text-muted" data-testid={`device-shared-note-${device.mac}`}>
+          Whoever checks it in holds it. Check in from the dashboard.
+        </p>
+      ) : (
       <div className={commitBlocked ? 'basis-full order-last' : 'min-w-[10rem]'}>
         <ProfilePicker
           profiles={profiles}
@@ -333,6 +405,7 @@ function DeviceRowEditor({
           onCommitBlockedChange={setCommitBlocked}
         />
       </div>
+      )}
       <div className="flex items-center gap-3 pb-2.5">
         <SaveStatusBadge
           status={merged.status}
@@ -351,6 +424,38 @@ function DeviceRowEditor({
           className="text-xs text-brand-text hover:text-brand-ink bg-brand-alt px-3 py-1.5 rounded-lg transition-colors disabled:opacity-60"
         >Done</button>
       </div>
+    </div>
+  )
+}
+
+// #2850: a shared device's row shows a Shared badge and its holder instead of a profile pill. The
+// holder comes from GET /api/shared-devices (who checked it in, since when); while that loads the
+// row shows a skeleton, never a guessed "Checked out".
+function SharedDeviceHolder({
+  device, shared, pending, error,
+}: {
+  device: Device
+  shared: SharedDevice | undefined
+  pending: boolean
+  error: boolean
+}) {
+  const mac = device.mac
+  let holder: ReactNode
+  if (pending) holder = <Skeleton className="h-3 w-24" testId={`device-holder-loading-${mac}`} label="Loading holder" />
+  else if (error) holder = <span className="text-red-700">Holder unavailable</span>
+  // The device list and the shared list are separate reads; if they disagree for a moment, fall
+  // back to the device row's own profile rather than claim it is checked out.
+  else holder = <HolderLine device={shared ?? { mac, name: device.name, holder: null }} />
+  const showFallback = !pending && !error && !shared && device.profileName
+  return (
+    <div className="text-xs text-right space-y-1">
+      <span
+        data-testid={`device-shared-badge-${mac}`}
+        className="inline-block bg-indigo-500/10 text-indigo-700 border border-indigo-500/20 px-2 py-0.5 rounded-lg"
+      >Shared</span>
+      <p data-testid={`device-holder-${mac}`} className="text-brand-text-muted">
+        {showFallback ? device.profileName : holder}
+      </p>
     </div>
   )
 }

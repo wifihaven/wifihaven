@@ -25,14 +25,22 @@ import type { Device } from '@/types/api'
 // is what let the strict version look correct. Tracked as #2623; until the type
 // admits `undefined`, this function is the only thing standing between us and a
 // silently empty unmanaged list.
+//
+// #2850: a shared device is never unmanaged. Checked out, it has no profile on the wire either, but
+// the router blocks it as `CheckedOut` under any household policy (#2847), `unmanagedMacPolicy`
+// does not apply to it, and assigning it a profile is a 409 `device_shared`. So it must not land in
+// the Devices page's "Unmanaged Devices" section or the Profiles page's add-device picker.
 export function isUnmanaged(d: Device): boolean {
-  return d.profileId == null
+  return d.profileId == null && d.shared !== true
 }
 
 // A type predicate, not just a boolean: narrowing to `profileId: number` lets call
 // sites index the field without an `as number` assertion. That matters for #2623 —
 // when `types/api.ts` widens `profileId` to admit `undefined`, a cast would keep
 // compiling and keep lying, where this narrowing is re-checked by the compiler.
+//
+// #2850: "managed" means "on a profile right now". A checked-out shared device is neither managed
+// nor unmanaged; a checked-in one is managed by its holder.
 export function isManaged(d: Device): d is Device & { profileId: number } {
-  return !isUnmanaged(d)
+  return d.profileId != null
 }

@@ -1,5 +1,5 @@
 import React from 'react'
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
+import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom'
 import { AuthProvider, useAuth } from '@/hooks/useAuth'
 import { WsProvider, WsStaleInvalidator } from '@/hooks/useWs'
 import { AlertsNotifier } from '@/hooks/useNotifyOnNewAlerts'
@@ -32,9 +32,14 @@ import { PressPage } from '@/pages/PressPage'
 import { useMe } from '@/api/queries'
 import { ACCOUNT_PATH } from '@/routes'
 
-function RequireAuth({ children }: { children: React.ReactNode }) {
+// #2850: a signed-out visit records the path it asked for, so LoginPage can return there. The block
+// page's Check in action (/dashboard?checkin=<mac>) is the case that needs it.
+export function RequireAuth({ children }: { children: React.ReactNode }) {
   const { isAuthenticated } = useAuth()
-  return isAuthenticated ? <>{children}</> : <Navigate to="/login" replace />
+  const location = useLocation()
+  return isAuthenticated
+    ? <>{children}</>
+    : <Navigate to="/login" replace state={{ from: location.pathname + location.search }} />
 }
 
 // #586: redirect to /account when the server-enforced must_change_password flag

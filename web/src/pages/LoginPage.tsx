@@ -52,6 +52,14 @@ export function householdHint(cookieSlug: string | null): HouseholdHint {
   }
 }
 
+/** #2850: an in-app path such as `/dashboard?checkin=…`, never `//host` or a full URL. */
+function safeReturnPath(from: unknown): string | null {
+  if (typeof from !== 'string') return null
+  if (!from.startsWith('/') || from.startsWith('//') || from.startsWith('/\\')) return null
+  if (from === '/login' || from.startsWith('/login?')) return null
+  return from
+}
+
 export function LoginPage() {
   const { login } = useAuth()
   const navigate  = useNavigate()
@@ -64,7 +72,11 @@ export function LoginPage() {
   const [hint] = useState(() => householdHint(getHouseholdCookie()))
   // #2492: set by AccountPage after a successful change (the rotation revokes the session's JWT,
   // so the user has to sign in again — say why instead of dumping them on a bare login form).
-  const passwordChanged = (useLocation().state as { passwordChanged?: boolean } | null)?.passwordChanged ?? false
+  const locationState = useLocation().state as { passwordChanged?: boolean; from?: unknown } | null
+  const passwordChanged = locationState?.passwordChanged ?? false
+  // #2850: where RequireAuth was sending this visitor (the block page's Check in action, say).
+  // Only an in-app path is honoured; anything else falls back to the dashboard.
+  const returnTo = safeReturnPath(locationState?.from)
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
@@ -80,7 +92,7 @@ export function LoginPage() {
       if (mustChangePassword) {
         navigate(ACCOUNT_PATH)
       } else {
-        navigate('/dashboard')
+        navigate(returnTo ?? '/dashboard')
       }
     } catch {
       setError('Invalid email/username or password')
