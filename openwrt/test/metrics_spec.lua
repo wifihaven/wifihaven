@@ -197,8 +197,34 @@ describe("metrics histograms", function()
   end)
 
   it("uses the same boundaries the API server folds against", function()
-    -- Server (api/src/metrics/Metrics.scala) folds on 0.01,0.05,0.1,0.5,1,5.
-    assert.same({ 0.01, 0.05, 0.1, 0.5, 1.0, 5.0 }, metrics.DURATION_BUCKETS)
+    -- Server (api/src/metrics/Metrics.scala RouterDurationBoundaries) folds on
+    -- exactly this set. #2897 extended it past 5 s.
+    assert.same({ 0.01, 0.05, 0.1, 0.5, 1.0, 2.5, 5.0, 6.0, 7.0, 8.0, 10.0, 15.0, 30.0, 60.0 },
+                metrics.DURATION_BUCKETS)
+  end)
+
+  -- #2897: the buckets used to stop at 5 s, so every over-target apply landed
+  -- in +Inf and histogram_quantile clamped p95 to exactly 5 — the target,
+  -- reading as met. A ~5.5 s apply must now land in a finite bucket above 5.
+  it("resolves applies above 5 s into finite buckets (#2897)", function()
+    local reg = new_reg()
+    metrics.observe(reg, "ws_push_apply_latency_seconds", {}, 5.5)
+    metrics.observe(reg, "ws_push_apply_latency_seconds", {}, 9.0)
+    metrics.observe(reg, "ws_push_apply_latency_seconds", {}, 120.0)
+
+    local h = find_series(metrics.build_batch(reg, "t").histograms, "ws_push_apply_latency_seconds")
+    local by_le = {}
+    for _, b in ipairs(h.buckets) do by_le[b.le] = b.count end
+    assert.equal(0, by_le["5"])
+    assert.equal(1, by_le["6"])
+    assert.equal(1, by_le["8"])
+    assert.equal(2, by_le["10"])
+    assert.equal(2, by_le["60"])
+    assert.equal(3, by_le["+Inf"])
+    -- 14 finite bounds + the +Inf overflow, in ascending order.
+    assert.equal(15, #h.buckets)
+    assert.equal("2.5", h.buckets[6].le)
+    assert.equal("+Inf", h.buckets[#h.buckets].le)
   end)
 end)
 
