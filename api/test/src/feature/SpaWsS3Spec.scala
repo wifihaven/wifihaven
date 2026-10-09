@@ -232,6 +232,7 @@ object SpaWsS3Spec
       alertRepo   <- ZIO.service[AlertRepo]
       hsRepo      <- ZIO.service[HouseholdSettingsRepo]
       routerRepo  <- ZIO.service[RouterRepo]
+      sharedRepo  <- ZIO.service[SharedDeviceRepo]
       _           <- seedDevice
       router      <- seedRouter
       reg         <- SpaWsRegistry.make
@@ -260,6 +261,7 @@ object SpaWsS3Spec
           appRepo,
           atlRepo,
           clock,
+          sharedDevices = Some(sharedRepo),
         ) *>
           body(port, ingest, bus, router)
       }
@@ -362,6 +364,54 @@ object SpaWsS3Spec
             wait = 20.seconds,
           )
         } yield assertTrue(matched.exists(_.contains("\"topic\":\"profiles\"")))
+      }
+    },
+    // #2848: the `sharedDevices` topic is visible to a child (design §9) and carries the
+    // `GET /api/shared-devices` body for the subscriber's own household only.
+    test("a child subscribed to `sharedDevices` receives its household's shared-device list") {
+      withHarness { (port, _, bus, _) =>
+        for {
+          childTok <- ZIO.serviceWithZIO[Clock](makeAuth).flatMap(a => tokenFor(a, "child", "kid"))
+          dr       <- ZIO.service[DeviceRepo]
+          dev      <- dr.findByMac(MacAddress.unsafe(knownMac)).someOrFailException
+          _        <- dr.patch(HouseholdId.Default, dev.id, dev.name, Some(true), None, None)
+          (matched, all) <- flow(
+            port,
+            childTok,
+            List("""{"op":"subscribe","payload":{"topic":"sharedDevices"}}"""),
+            trigger = bus.publish(SpaEvent.SharedDevicesChanged(HouseholdId.Default)),
+            until = _.contains("\"op\":\"sharedDevices\""),
+            wait = 20.seconds,
+          )
+        } yield assertTrue(matched.exists(_.contains(knownMac))) &&
+          assertTrue(
+            all.exists(f => f.contains("\"topic\":\"sharedDevices\"") && f.contains("\"ok\"")),
+          )
+      }
+    },
+    test("a `sharedDevices` change in another household is not delivered") {
+      withHarness { (port, _, bus, _) =>
+        for {
+          childTok <- ZIO.serviceWithZIO[Clock](makeAuth).flatMap(a => tokenFor(a, "child", "kid"))
+          dr       <- ZIO.service[DeviceRepo]
+          dev      <- dr.findByMac(MacAddress.unsafe(knownMac)).someOrFailException
+          _        <- dr.patch(HouseholdId.Default, dev.id, dev.name, Some(true), None, None)
+          (matched, all) <- flow(
+            port,
+            childTok,
+            List("""{"op":"subscribe","payload":{"topic":"sharedDevices"}}"""),
+            // The other household's change goes first; our own household's change is the liveness
+            // anchor that proves the push path is up, so the absence of the first is meaningful.
+            trigger = bus.publish(SpaEvent.SharedDevicesChanged(HouseholdId(999L))) *>
+              bus.publish(SpaEvent.SharedDevicesChanged(HouseholdId.Default)),
+            until = _.contains("\"op\":\"sharedDevices\""),
+            wait = 20.seconds,
+          )
+        } yield
+        // The consumer handles events in publish order, so a leaked frame for household 999 (an
+        // empty list) would arrive, and match, before this household's frame.
+        assertTrue(matched.exists(_.contains(knownMac))) &&
+          assertTrue(all.count(_.contains("\"op\":\"sharedDevices\"")) == 1)
       }
     },
     test("role gate: a child's `now` subscribe is acked reject and no `now` frame is ever pushed") {
