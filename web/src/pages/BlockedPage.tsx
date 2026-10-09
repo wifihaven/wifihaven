@@ -86,6 +86,11 @@ export function BlockedPage() {
     ? `for ${info.profileName}`
     : null
 
+  // #2867: a blocked device with no profile can't be granted anything (see offeredKindsFor), so
+  // tell the child what would help instead. A checked-out shared device has no profile either,
+  // but its body copy already says to check it in (#2847).
+  const needsSetup = isProfileless(info) && info?.reasonClass !== 'checked_out'
+
   return (
     <div className="min-h-screen bg-brand-surface flex items-center justify-center p-4">
       <div className="w-full max-w-sm space-y-6 text-center">
@@ -96,9 +101,11 @@ export function BlockedPage() {
           {profileLine && <p className="text-brand-text-muted text-xs">{profileLine}</p>}
         </div>
         {info && <UsageToday info={info} />}
-        {mac && host
-          ? <AskParent mac={mac} host={host} bpt={bpt} info={info} />
-          : <p className="text-brand-text-muted text-sm">Ask a parent to adjust your settings.</p>
+        {!(mac && host)
+          ? <p className="text-brand-text-muted text-sm">Ask a parent to adjust your settings.</p>
+          : needsSetup
+            ? <p className="text-brand-text-muted text-sm">Ask a parent to set up this device.</p>
+            : <AskParent mac={mac} host={host} bpt={bpt} info={info} />
         }
       </div>
     </div>
@@ -137,12 +144,25 @@ function UsageToday({ info }: { info: BlockedInfoResponse }) {
 }
 
 /**
+ * #2867: blocked, and the device has no profile. The access request would be stored without one
+ * (AlertRoutes takes the device's profileId, the same field `profileName` comes from), and no kind
+ * can be approved without a profile. Keyed on the missing profile rather than on reasonClass, so a
+ * no-profile reason the API adds later is covered without another branch here.
+ */
+function isProfileless(info: BlockedInfoResponse | null): boolean {
+  return info?.blocked === true && !info.profileName
+}
+
+/**
  * #960: kid-side CTA. Maps the API `reasonClass` to the request kinds that
  * make sense for that reason — e.g. `time_limit` offers only "ask for more
  * time", a category block offers only "ask to unblock this site". POSTs to
  * the public `/api/access-requests` endpoint; no kid-side credentials.
  */
 function offeredKindsFor(info: BlockedInfoResponse | null): AccessRequestKind[] {
+  // #2867: covers Unmanaged (generic `blocked` class) and #2847's checked_out shared device alike.
+  // The Check in action for the latter is #2850.
+  if (isProfileless(info))       return []
   const cls = info?.blocked ? info.reasonClass : null
   if (cls === 'paused')          return ['unpause', 'extension']
   if (cls === 'schedule')        return ['unpause', 'extension']
@@ -150,9 +170,6 @@ function offeredKindsFor(info: BlockedInfoResponse | null): AccessRequestKind[] 
   if (cls === 'app_time_limit')  return ['extension', 'exemption']
   if (cls === 'category')        return ['exemption']
   if (cls === 'extra_blocked')   return ['exemption']
-  // #2847: a checked-out shared device has no profile, so a parent could grant none of these.
-  // The Check in action is #2850.
-  if (cls === 'checked_out')     return []
   // API in flight or unknown class — offer everything so the kid still has a
   // way through.
   return ['extension', 'exemption', 'unpause']
