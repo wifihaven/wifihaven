@@ -470,10 +470,11 @@ object SpaPush {
         // reconstruct from `parsed.filterRequested && resolvedMacs.isEmpty`.
         // #2844: a profile filter selects what the profiles held during the head window, by
         // interval — the same resolution the GET makes over its window. #2875: the same scope
-        // labels the pushed rows by the profile that held each device then, as the GET does, so it
-        // is read for every param-set. `headStart` is already the bucket's start, so this is the
-        // GET's `UsageTrafficQuery.labelWindow` for the head bucket.
-        val attributionZ         = deviceRepo.attributionScope(household, headStart, headEnd)
+        // labels the pushed rows by the profile that held each device then, over the GET's
+        // `labelWindow`, so it is read for every param-set.
+        val (labelFrom, labelTo) =
+          UsageTrafficQuery.labelWindow(headStart, headEnd, parsed.bucket, parsed.zone)
+        val attributionZ         = deviceRepo.attributionScope(household, labelFrom, labelTo)
         attributionZ.flatMap { attribution =>
           val scope          =
             UsageTrafficQuery.resolveMacs(parsed.macs, parsed.profileIds, devices, attribution)

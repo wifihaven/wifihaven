@@ -133,9 +133,9 @@ object UsageTrafficQuery {
       zone: ZoneId,
       deviceByMac: Map[MacAddress, Device],
       profileNameById: Map[ProfileId, String],
-      // #2875: labels each row's profile by the span covering its `periodStart`. Must cover
-      // `[floorTo(from, bucket, zone), to)`: a pre-aggregated or rollup row's `periodStart` is its
-      // bucket's start, which can precede `from` (see [[labelWindow]]).
+      // #2875: labels each row's profile by the span covering its `periodStart`. Read it over
+      // [[labelWindow]]: a SQL pre-aggregated row's `periodStart` is its bucket's start, which can
+      // precede `from`.
       attribution: AttributionScope,
       appsByHost: Map[String, List[AppMembership]],
   ): Task[List[TrafficUsageAggregateRow]] = {
@@ -189,9 +189,12 @@ object UsageTrafficQuery {
 
   /**
    * #2875: the instant window the [[AttributionScope]] for a traffic read over `[from, to)` is read
-   * over. It starts at `from` floored to `bucket`, because a row aggregated in SQL or read from a
-   * rollup carries its bucket's start as its `periodStart` and is labelled by the profile that held
-   * the device then (design `shared-devices.md` §6.3). For `raw` this is `[from, to)`.
+   * over. It starts at `from` floored to `bucket`, because a row aggregated in SQL
+   * (`listRawAggregatedInRange`, which reads raw rows from `from` and floors them) carries its
+   * bucket's start as its `periodStart`, which can precede `from`, and is labelled by the profile
+   * that held the device then (design `shared-devices.md` §6.3). The rollup reads only return
+   * buckets starting at or after `from`, and the per-row reads rows at or after `from`, so for them
+   * the floor is harmless. For `raw` this is `[from, to)`.
    */
   def labelWindow(
       from: Instant,

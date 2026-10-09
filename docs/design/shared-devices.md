@@ -271,9 +271,12 @@ drop. Then:
   `covers` test the profile filter applies, and `groupBy=profile` groups on that label. A row no
   span covers is "(unassigned)", never the device's current profile. Rows from the SQL
   pre-aggregated and rollup tiers carry their bucket's start as `period_start`, so they are
-  labelled by bucket start (§6.3), and the scope is read from the first bucket's start
-  (`UsageTrafficQuery.labelWindow`) so a bucket beginning before the request's `from` still
-  resolves.
+  labelled by bucket start (§6.3). A daily-rollup row's start is UTC midnight of its stored
+  household-local `date`, the same instant the #2844 filter tests, so label and filter agree there.
+  A SQL pre-aggregated bucket can begin before the request's `from`, so the scope is read from the
+  first bucket's start (`UsageTrafficQuery.labelWindow`). On that tier the profile filter still
+  tests each raw row while the label tests the bucket start, so `?profileId=B&groupBy=profile`
+  can return the bucket that straddles a move from A to B holding only B's traffic but labelled A.
 
 Membership is decided by `period_start` (report periods are the agent's `usage_report_interval`,
 default 60 s), so a check-in boundary is attributed to within one report period. Accepted and

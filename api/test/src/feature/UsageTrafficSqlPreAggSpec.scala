@@ -87,6 +87,14 @@ object UsageTrafficSqlPreAggSpec extends ZIOSpec[TestDatabase.AllRepos & Embedde
   //     rows never tie on the sort key.
   private def seedAll: RIO[TestDatabase.AllRepos, Unit] =
     for {
+      // #2875: real profiles and assignments, so the profile labels (`AttributionScope.profileAt`)
+      // are "Kids" / "Adults" on both fetch paths rather than all "(unassigned)".
+      pRepo <- ZIO.service[ProfileRepo]
+      dRepo <- ZIO.service[DeviceRepo]
+      kids  <- pRepo.create("Kids", Nil)
+      adult <- pRepo.create("Adults", Nil)
+      _     <- TestLayers.seedDevice(dRepo, mac1.value, "iPad", kids)
+      _     <- TestLayers.seedDevice(dRepo, mac2.value, "Phone", adult)
       rid   <- seedRouter
       tRepo <- ZIO.service[TrafficReportRepo]
       cRepo <- ZIO.service[ConnectionEventRepo]
@@ -158,13 +166,26 @@ object UsageTrafficSqlPreAggSpec extends ZIOSpec[TestDatabase.AllRepos & Embedde
       )
     } yield ()
 
-  private val deviceByMac: Map[MacAddress, Device] = Map(
-    mac1 -> Device(DeviceId(1L), mac1, "iPad", Some(ProfileId(1L)), Some("Kids"), None, None),
-    mac2 -> Device(DeviceId(2L), mac2, "Phone", Some(ProfileId(2L)), Some("Adults"), None, None),
+  // The device, profile-name and attribution inputs the routes pass `buildAggregate`, read from the
+  // seeded household the way `UsageRoutes` reads them.
+  private final case class Labels(
+      deviceByMac: Map[MacAddress, Device],
+      profileNames: Map[ProfileId, String],
+      scope: AttributionScope,
   )
 
-  private val profileNames: Map[ProfileId, String] =
-    Map(ProfileId(1L) -> "Kids", ProfileId(2L) -> "Adults")
+  private val labels: RIO[TestDatabase.AllRepos, Labels] =
+    for {
+      dRepo <- ZIO.service[DeviceRepo]
+      pRepo <- ZIO.service[ProfileRepo]
+      devs  <- dRepo.listAllForHousehold(HouseholdId.Default)
+      profs <- pRepo.listAllForHousehold(HouseholdId.Default)
+      scope <- dRepo.attributionScope(HouseholdId.Default, dayStart, dayEnd)
+    } yield Labels(
+      devs.map(d => d.mac -> d).toMap,
+      profs.map(p => p.id -> p.name).toMap,
+      scope,
+    )
 
   // Run both fetch paths through the SAME buildAggregate and return (old, new) row sets.
   private def bothPaths(
@@ -174,6 +195,7 @@ object UsageTrafficSqlPreAggSpec extends ZIOSpec[TestDatabase.AllRepos & Embedde
   ): RIO[TestDatabase.AllRepos, (Set[TrafficUsageAggregateRow], Set[TrafficUsageAggregateRow])] =
     for {
       tRepo <- ZIO.service[TrafficReportRepo]
+      l     <- labels
       step = UsageTraffic.stepOf(bucket).map(_.toSeconds).getOrElse(60L)
       oldRows <- tRepo.listRawInRange(HouseholdId.Default, macs, dayStart, dayEnd)
       newRows <- tRepo.listRawAggregatedInRange(HouseholdId.Default, macs, dayStart, dayEnd, step)
@@ -184,9 +206,9 @@ object UsageTrafficSqlPreAggSpec extends ZIOSpec[TestDatabase.AllRepos & Embedde
             bucket,
             ZoneOffset.UTC,
             groupBy,
-            deviceByMac,
-            profileNames,
-            wifihaven.api.db.AttributionScope.empty(HouseholdId.Default),
+            l.deviceByMac,
+            l.profileNames,
+            l.scope,
           )
           .toSet
     } yield (build(oldRows), build(newRows))
@@ -210,6 +232,7 @@ object UsageTrafficSqlPreAggSpec extends ZIOSpec[TestDatabase.AllRepos & Embedde
         domain._1.nonEmpty,
         domain._1 == domain._2,
         multi._1 == multi._2,
+        multi._1.flatMap(_.groups.get("profile")) == Set("Kids", "Adults"),
         bare._1 == bare._2,
       )
     },
@@ -272,6 +295,7 @@ object UsageTrafficSqlPreAggSpec extends ZIOSpec[TestDatabase.AllRepos & Embedde
         _       <- seedAll
         tRepo   <- ZIO.service[TrafficReportRepo]
         rRepo   <- ZIO.service[RollupRepo]
+        l       <- labels
         core    <- UsageTrafficQuery.aggregate(
           HouseholdId.Default,
           tRepo,
@@ -282,9 +306,9 @@ object UsageTrafficSqlPreAggSpec extends ZIOSpec[TestDatabase.AllRepos & Embedde
           UsageTraffic.Bucket.TenMin,
           Set(UsageTraffic.GroupBy.Domain),
           ZoneOffset.UTC,
-          deviceByMac,
-          profileNames,
-          wifihaven.api.db.AttributionScope.empty(HouseholdId.Default),
+          l.deviceByMac,
+          l.profileNames,
+          l.scope,
           Map.empty,
         )
         oldRows <- tRepo.listRawInRange(HouseholdId.Default, Nil, dayStart, dayEnd)
@@ -293,9 +317,9 @@ object UsageTrafficSqlPreAggSpec extends ZIOSpec[TestDatabase.AllRepos & Embedde
           UsageTraffic.Bucket.TenMin,
           ZoneOffset.UTC,
           Set(UsageTraffic.GroupBy.Domain),
-          deviceByMac,
-          profileNames,
-          wifihaven.api.db.AttributionScope.empty(HouseholdId.Default),
+          l.deviceByMac,
+          l.profileNames,
+          l.scope,
         )
       } yield assertTrue(core.nonEmpty, core.toSet == expected.toSet)
     },

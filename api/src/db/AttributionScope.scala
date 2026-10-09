@@ -98,7 +98,7 @@ final case class AttributionScope private[db] (
 
 object AttributionScope {
 
-  /** A scope with no spans: what a read that named no profile resolves against. */
+  /** A scope with no spans: every profile filter selects nothing and every row is unassigned. */
   def empty(household: HouseholdId): AttributionScope = AttributionScope(household, Map.empty)
 
   /**
