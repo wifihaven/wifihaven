@@ -1439,7 +1439,7 @@ trait ConnectionEventRepo {
   def listForRouter(routerId: RouterId, limit: Int): Task[List[ConnectionEvent]]
   def query(f: LogFilter): Task[List[QueryLog]]
   // #846: multi-column grouping. `groupBy` is the set of column names from
-  // {"domain","device","profile"}; the repo returns one row per
+  // {"domain","device","app"}; the repo returns one row per
   // (window, *grouped-column-values*) with distinct-counts for the rest.
   def querySeries(
       f: LogFilter,

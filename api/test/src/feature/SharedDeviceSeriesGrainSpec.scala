@@ -65,25 +65,19 @@ object SharedDeviceSeriesGrainSpec
         _.upsertUnknown(Mac, "family-ipad", None, Instant.parse("2026-03-01T12:00:00Z")),
       )
       _      <- sql"UPDATE devices SET shared = true WHERE id = $dev".update.run.transact(xa)
-      dar    <- ZIO.service[DeviceAssignmentRepo]
-      _      <- dar.assign(
+      sdr    <- ZIO.service[SharedDeviceRepo]
+      in     <- sdr.checkIn(HouseholdId.Default, dev, kids, CheckIn, "admin")
+      out    <- sdr.checkOut(
         HouseholdId.Default,
         dev,
-        Some(kids),
-        CheckIn,
-        AssignmentKind.CheckIn,
-        None,
-        AssignmentEndCause.Reassigned,
-      )
-      _      <- dar.assign(
-        HouseholdId.Default,
-        dev,
-        None,
+        kids,
         CheckOut,
-        AssignmentKind.CheckIn,
-        None,
+        "admin",
         AssignmentEndCause.CheckOut,
       )
+      _      <- ZIO
+        .fail(new Exception(s"fixture check-in/out failed: $in, $out"))
+        .unless(in == CheckInOutcome.CheckedIn && out == CheckOutOutcome.CheckedOut)
       events <- ZIO.service[ConnectionEventRepo]
       _      <- events.insertBatch(Events.map(ts => event(rid, ts)))
       _      <- events.rerollConnEventsHourly(Day.atStartOfDay(ZoneOffset.UTC).toInstant)

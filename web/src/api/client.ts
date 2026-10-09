@@ -586,10 +586,10 @@ export const api = {
     },
     // #847 + #917: aggregated connection-events series. groupBy is sent as
     // repeated query params; empty = one row per time bucket. apex deferred
-    // to #856; app turned on by #769.
+    // to #856; app turned on by #769. #2873: profile grouping removed (the API 400s it).
     series: (params: {
       bucket: '1m' | '10m' | '1h' | '12h' | '1d' | '1w'
-      groupBy: Array<'domain' | 'device' | 'profile' | 'apex' | 'app'>
+      groupBy: Array<'domain' | 'device' | 'apex' | 'app'>
       macs?: string[]
       deviceIds?: number[]
       profileIds?: number[]

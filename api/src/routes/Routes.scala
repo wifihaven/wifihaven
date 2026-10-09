@@ -1998,7 +1998,10 @@ object LogRoutes {
   // check-out: that hour belongs to whoever held the device when it began.
   // The cap applies only while the whole window is inside the hourly rollup's
   // retention; past that the hourly rows are gone and the daily bucket-start
-  // rule is the fallback. Unfiltered reads keep the daily rollup. Grouping by
+  // rule is the fallback. Unfiltered reads keep the daily rollup. The window
+  // edge differs between the two: daily drops the partial oldest day, hourly
+  // keeps its later hours, so a filtered read's oldest `1d` bucket can be
+  // partial where the unfiltered read omits it. Grouping by
   // profile is not offered: on hourly it read ~1M rows and took 10-17 s on
   // prod (EXPLAIN on #2873), and on daily it mislabels shared devices.
   private def seriesGrain(
@@ -2069,13 +2072,13 @@ object LogRoutes {
           .mapBoth(ApiError.BadRequest(_), Some(_))
     }
 
-  // #862: the (domain, device, profile) column order here must match the
+  // #862: the (domain, device) column order here must match the
   // SQL's group_key concatenation in `ConnectionEventRepo` — that ordering
   // remains the one manual constraint. The separator byte is sourced from
   // `LogAggGroupKey` so the SQL `chr(N) ||` concat and this builder share
   // one source of truth and can't drift on it (#1532).
   private def aggGroupKey(r: ConnectionEventAggRow): String =
-    List("domain", "device", "profile").iterator
+    List("domain", "device").iterator
       .flatMap(k => r.groups.get(k))
       .mkString(LogAggGroupKey.Separator)
 
