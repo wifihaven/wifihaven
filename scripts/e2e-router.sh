@@ -1364,9 +1364,10 @@ pass "#1912: household setting → wire blockEncryptedDns=true"
 #
 # Layout for follow-on cases (e.g. auto-checkout, #2849): `sd_setup` builds the
 # fixtures once (two profiles, the device and a child user, all torn down by
-# cleanup(); the adult is the household admin, see sd_make_child), and every case is a `step` block below that drives the
-# `sd_*` helpers. A new case appends after the last block. Each block must leave
-# the device CHECKED OUT, which is the state `sd_setup` hands over.
+# cleanup(); the adult is the household admin, see sd_make_child), and every
+# case is a `step` block below that drives the `sd_*` helpers. A new case
+# appends after the last block. Each block must leave the device CHECKED OUT,
+# which is the state `sd_setup` hands over.
 #
 # Attribution is by each usage row's `period_start` against the check-in interval
 # (design §6.1), so the timestamps below are derived from the server's own
@@ -1389,11 +1390,16 @@ sd_post() {
 # token. Sets globals rather than echoing so EXTRA_USERS survives (a $(...)
 # caller would append in a subshell and the user would never be deleted).
 #
-# Logins are rate-limited to 10 per source IP per 15 min
+# Logins are rate-limited to 10 per source IP per 15 min, fixed window
 # (api/src/HttpRoutes.scala loginRateLimiter), and the compose e2e job's three
-# scripts share that budget, so this costs exactly the two logins it needs. The
-# adult side of the scenario uses the household admin's existing token: admin is
-# an adult-class writer, and a second user would cost two more logins.
+# scripts share that budget. With these two the job spends all 10:
+# e2e-tests.sh 4 (admin, then the change-password user's three), this script 4
+# (admin, the wrong-password negative, these two), e2e-isolation.py 2. A new
+# login in any of the three, or a curl-retry of a login that hit a 5xx, makes
+# e2e-isolation.py fail with its rate-limited error. api-smoke-staging runs only
+# the first two scripts and has 2 to spare. The adult side of the scenario uses
+# the household admin's existing token: admin is an adult-class writer, and a
+# second user would cost two more logins.
 sd_make_child() {  # $1=profileId
   local user="e2e-2878-kid-${RUN_ID}" pw1="sd-pw1-${RUN_ID}" pw2="sd-pw2-${RUN_ID}" uid tok
   uid=$(curl -fsS -X POST "$BASE/api/users" "${AUTH[@]}" \
@@ -1550,13 +1556,12 @@ case "$KID_MINS" in
   *) fail "#2878: expected ~5 usedMins on $SD_KID, got $KID_MINS" ;;
 esac
 pass "#2878: usage while held counts toward $SD_KID (hostUsage + usedMins=$KID_MINS)"
-# The former profile: the summary is uncached, and the hostUsage read happens
-# after the child's read above proved the row is visible.
+# The former profile, by the uncached summary. Its hostUsage view sits behind
+# TimeStatusCache, which another reader can have loaded before the post, so that
+# read is made after the cache wait in the check-out block below.
 [ "$(sd_used_mins "$SD_FORMER")" = "0" ] \
   || fail "#2878: former profile $SD_FORMER usedMins=$(sd_used_mins "$SD_FORMER"), expected 0"
-[ -z "$(sd_profiles_with_host "$SD_HOST_IN" "$SD_FORMER")" ] \
-  || fail "#2878: usage while checked in to $SD_KID shows on former profile $SD_FORMER"
-pass "#2878: none of it counts toward the former profile $SD_FORMER"
+pass "#2878: none of it counts toward the former profile $SD_FORMER (usedMins=0)"
 
 step "#2878: check-in refusals while held"
 CODE=$(sd_post "$ADMIN" "/api/shared-devices/$SD_MAC/check-in" "{\"profileId\":$SD_FORMER}")
@@ -1600,9 +1605,13 @@ print('ok' if any(r['host'].get('value') == '$SD_HOST_OUT' for r in rows) else '
 done
 [ "$got" = "ok" ] || fail "#2878: post-check-out usage never reached /api/usage/traffic for $SD_MAC"
 # Let every TimeStatusCache entry loaded before the post expire (todayTtl 30 s,
-# api/src/cache/TimeStatusCache.scala) so the hostUsage read below is fresh.
+# api/src/cache/TimeStatusCache.scala) so the hostUsage reads below are fresh.
 wait_s=$(( SD_OUT_POSTED + 32 - $(date +%s) ))
 (( wait_s > 0 )) && sleep "$wait_s"
+# Deferred from the check-in block: the in-hold usage is not on the former
+# profile's hostUsage either.
+[ -z "$(sd_profiles_with_host "$SD_HOST_IN" "$SD_FORMER")" ] \
+  || fail "#2878: usage while checked in to $SD_KID shows on former profile $SD_FORMER"
 got="$(sd_profiles_with_host "$SD_HOST_OUT")"
 [ -z "$got" ] || fail "#2878: usage after check-out counted toward profile(s) $got"
 [ "$(sd_used_mins "$SD_KID")" = "$KID_MINS" ] \
