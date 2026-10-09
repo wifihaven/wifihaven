@@ -878,7 +878,7 @@
         "uid": "${datasource}"
       },
       "title": "WS push→apply latency p50/p95/p99 (#2229)",
-      "description": "histogram_quantile over ws_push_apply_latency_seconds_bucket — time from the sidecar persisting a server-pushed policy snapshot to the agent applying it to the enforcement plane (nft). Event-driven since #2229 (the sidecar writes a trigger the agent reads every heartbeat tick); should sit in low single-digit seconds, dominated by nft load, no longer gated by the dnsmasq restart. Flat/0 until agents on ws receive a push.",
+      "description": "histogram_quantile over ws_push_apply_latency_seconds_bucket — time from the sidecar persisting a server-pushed policy snapshot to the agent applying it to the enforcement plane (nft). Event-driven since #2229 (the sidecar writes a trigger the agent reads every heartbeat tick); should sit in low single-digit seconds, dominated by nft load, no longer gated by the dnsmasq restart. Flat/0 until agents on ws receive a push. #2897: the 'over top bucket' series (right axis) is the share of observations above the highest finite bucket (60 s; 5 s for agents built before #2897). histogram_quantile cannot return a value past the top bucket, so while that share is at or above 5% the p95 line is pinned at the top bucket and is only a lower bound (1% for p99).",
       "type": "timeseries",
       "gridPos": {
         "h": 8,
@@ -901,7 +901,49 @@
             "lineWidth": 1
           }
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*over top bucket.*"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percentunit"
+              },
+              {
+                "id": "min",
+                "value": 0
+              },
+              {
+                "id": "max",
+                "value": 1
+              },
+              {
+                "id": "custom.axisPlacement",
+                "value": "right"
+              },
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    10,
+                    10
+                  ]
+                }
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "red"
+                }
+              }
+            ]
+          }
+        ]
       },
       "options": {
         "legend": {
@@ -944,6 +986,15 @@
           "expr": "histogram_quantile(0.99, sum by (le) (rate(ws_push_apply_latency_seconds_bucket{env=\"$env\"}[5m])))",
           "legendFormat": "p99",
           "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "(sum (rate(ws_push_apply_latency_seconds_bucket{env=\"$env\", le=\"+Inf\"}[5m])) - max (sum by (le) (rate(ws_push_apply_latency_seconds_bucket{env=\"$env\", le!=\"+Inf\"}[5m])))) / sum (rate(ws_push_apply_latency_seconds_bucket{env=\"$env\", le=\"+Inf\"}[5m]))",
+          "legendFormat": "over top bucket",
+          "refId": "D"
         }
       ]
     },

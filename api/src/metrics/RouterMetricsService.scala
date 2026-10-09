@@ -163,10 +163,15 @@ final class RouterMetricsServiceLive(
     val boundaries =
       AppMetrics.RouterHistogramBoundaries.getOrElse(
         h.name,
-        AppMetrics.PolicyApplyDurationBoundaries,
+        AppMetrics.RouterDurationBoundaries,
       )
     val sorted     = h.buckets.sortBy(b => leValue(b.le))
     val maxFinite  = sorted.map(b => leValue(b.le)).filter(_.isFinite).maxOption.getOrElse(1.0)
+    // An observation in the agent's +Inf bucket is only known to exceed the agent's top bound. Emit
+    // it above the REGISTRY's top bound too, so it lands in the registry's +Inf. Using
+    // `maxFinite + 1` alone would put a pre-#2897 agent's >5 s overflow into the registry's le=6
+    // bucket and read an unknown-length stall as a ~6 s apply (#2897).
+    val overflow   = math.max(maxFinite, boundaries.values.lastOption.getOrElse(maxFinite)) + 1.0
     val labels     = h.labels + ("router_id" -> rid)
 
     // Walk buckets in ascending `le`, tracking the running cumulative-below for both this batch and
@@ -176,7 +181,7 @@ final class RouterMetricsServiceLive(
         val nowCum   = b.count
         val prevCum  = prevBuckets.getOrElse(b.le, 0.0)
         val deltaObs = math.max(0L, math.round((nowCum - nowLower) - (prevCum - prevLower)))
-        val repr     = if leValue(b.le).isInfinite then maxFinite + 1.0 else leValue(b.le)
+        val repr     = if leValue(b.le).isInfinite then overflow else leValue(b.le)
         val emit     =
           MetricGuard
             .histogram(h.name, labels, repr, boundaries)

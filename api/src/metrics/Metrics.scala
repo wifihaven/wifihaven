@@ -1865,20 +1865,26 @@ object AppMetrics {
     MetricGuard.counter("spa_ws_push_total", Map("op" -> op, "result" -> result))
 
   // §5.1 — server-side histogram boundaries for the router-pushed duration histograms. The agent
-  // (#1206) reports cumulative bucket counts on these same boundaries; RouterMetricsService folds
-  // the per-batch bucket-count deltas back into these registry histograms.
-  val PolicyApplyDurationBoundaries: MetricKeyType.Histogram.Boundaries =
-    MetricKeyType.Histogram.Boundaries.fromChunk(Chunk(0.01, 0.05, 0.1, 0.5, 1.0, 5.0))
-
-  val SnapshotPollDurationBoundaries: MetricKeyType.Histogram.Boundaries =
-    MetricKeyType.Histogram.Boundaries.fromChunk(Chunk(0.01, 0.05, 0.1, 0.5, 1.0, 5.0))
+  // (#1206) reports cumulative bucket counts on these same boundaries (`DURATION_BUCKETS` in
+  // openwrt/files/usr/lib/lua/wifihaven/metrics.lua, pinned by metrics_spec.lua);
+  // RouterMetricsService folds the per-batch bucket-count deltas back into these registry
+  // histograms. #2897 extended the set past 5 s (2.5 and 6..60) so an over-target apply lands in a
+  // finite bucket instead of +Inf, where histogram_quantile clamped p95 to exactly 5. The rationale
+  // for each bound is on the agent side. The fold accepts any `le` set a batch carries, so agents
+  // built before #2897 (0.01..5) still ingest.
+  val RouterDurationBoundaries: MetricKeyType.Histogram.Boundaries =
+    MetricKeyType.Histogram.Boundaries.fromChunk(
+      Chunk(0.01, 0.05, 0.1, 0.5, 1.0, 2.5, 5.0, 6.0, 7.0, 8.0, 10.0, 15.0, 30.0, 60.0),
+    )
 
   /**
-   * Boundaries keyed by router-pushed histogram name; the fold falls back to this when unmatched.
+   * Boundaries keyed by router-pushed histogram name; the fold falls back to
+   * [[RouterDurationBoundaries]] when unmatched.
    */
   val RouterHistogramBoundaries: Map[String, MetricKeyType.Histogram.Boundaries] = Map(
-    "policy_apply_duration_seconds"  -> PolicyApplyDurationBoundaries,
-    "snapshot_poll_duration_seconds" -> SnapshotPollDurationBoundaries,
+    "policy_apply_duration_seconds"  -> RouterDurationBoundaries,
+    "snapshot_poll_duration_seconds" -> RouterDurationBoundaries,
+    "ws_push_apply_latency_seconds"  -> RouterDurationBoundaries,
   )
 
   // ── Rollup health (#1243) ──────────────────────────────────────────────────

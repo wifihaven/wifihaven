@@ -80,7 +80,7 @@
     {
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "title": "Policy apply duration (p50 / p95)",
-      "description": "histogram_quantile over policy_apply_duration_seconds_bucket (boundaries 0.01→5s, PolicyApplyDurationBoundaries). How long an agent takes to render + write + nft-load a snapshot. Pinned to phase=\"\" (the whole-apply series) so the per-phase breakdown series (#2208) don't double-count.",
+      "description": "histogram_quantile over policy_apply_duration_seconds_bucket (boundaries 0.01→60s, RouterDurationBoundaries; 0.01→5s before #2897). How long an agent takes to render + write + nft-load a snapshot. Pinned to phase=\"\" (the whole-apply series) so the per-phase breakdown series (#2208) don't double-count. #2897: the 'over top bucket' series (right axis) is the share of observations above the highest finite bucket (60 s; 5 s for agents built before #2897). histogram_quantile cannot return a value past the top bucket, so while that share is at or above 5% the p95 line is pinned at the top bucket and is only a lower bound (1% for p99).",
       "type": "timeseries",
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
       "id": 3,
@@ -91,7 +91,7 @@
           "min": 0,
           "custom": { "drawStyle": "line", "fillOpacity": 10, "showPoints": "never", "lineWidth": 1 }
         },
-        "overrides": []
+        "overrides": [ { "matcher": { "id": "byRegexp", "options": ".*over top bucket.*" }, "properties": [ { "id": "unit", "value": "percentunit" }, { "id": "min", "value": 0 }, { "id": "max", "value": 1 }, { "id": "custom.axisPlacement", "value": "right" }, { "id": "custom.lineStyle", "value": { "fill": "dash", "dash": [10, 10] } }, { "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } } ] } ]
       },
       "options": {
         "legend": { "displayMode": "list", "placement": "bottom", "calcs": ["lastNotNull", "max"] },
@@ -109,6 +109,12 @@
           "expr": "histogram_quantile(0.95, sum by (le) (rate(policy_apply_duration_seconds_bucket{env=\"$env\", phase=\"\"}[5m])))",
           "legendFormat": "p95",
           "refId": "B"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "(sum (rate(policy_apply_duration_seconds_bucket{env=\"$env\", phase=\"\", le=\"+Inf\"}[5m])) - max (sum by (le) (rate(policy_apply_duration_seconds_bucket{env=\"$env\", phase=\"\", le!=\"+Inf\"}[5m])))) / sum (rate(policy_apply_duration_seconds_bucket{env=\"$env\", phase=\"\", le=\"+Inf\"}[5m]))",
+          "legendFormat": "over top bucket",
+          "refId": "C"
         }
       ]
     },
@@ -144,7 +150,7 @@
     {
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "title": "Snapshot poll duration (p50 / p95)",
-      "description": "RETIRED BY #2736 — the agent is websocket-only and no longer polls, so this reads flat 0 for an updated router. The panel stays for historical range and for pre-#2736 agents still rolling forward over the ~48h jittered self-update window. histogram_quantile over snapshot_poll_duration_seconds_bucket (boundaries 0.01→5s, SnapshotPollDurationBoundaries). Round-trip time of GET /api/router/policy as seen from the agent.",
+      "description": "RETIRED BY #2736 — the agent is websocket-only and no longer polls, so this reads flat 0 for an updated router. The panel stays for historical range and for pre-#2736 agents still rolling forward over the ~48h jittered self-update window. histogram_quantile over snapshot_poll_duration_seconds_bucket (boundaries 0.01→5s; RouterDurationBoundaries 0.01→60s after #2897). Round-trip time of GET /api/router/policy as seen from the agent.",
       "type": "timeseries",
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
       "id": 5,
@@ -801,7 +807,7 @@
     {
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "title": "Policy apply duration p95 by phase (#2208)",
-      "description": "histogram_quantile(0.95) per internal policy.apply phase (render_dnsmasq / render_nft / dnsmasq_restart / nft_load / ea_backfill / smoke_probe — the bounded enum policy.apply's phase_timer seam emits), so a slow apply is attributable to the step that costs. ea_backfill is the phase that regressed in v0.3.20 (one nft-process spawn per carve element; fixed by batching into a single nft -f) — a p95 creep here means the carve seeding is going per-element/slow again.",
+      "description": "histogram_quantile(0.95) per internal policy.apply phase (render_dnsmasq / render_nft / dnsmasq_restart / nft_load / ea_backfill / smoke_probe — the bounded enum policy.apply's phase_timer seam emits), so a slow apply is attributable to the step that costs. ea_backfill is the phase that regressed in v0.3.20 (one nft-process spawn per carve element; fixed by batching into a single nft -f) — a p95 creep here means the carve seeding is going per-element/slow again. #2897: the 'over top bucket' series (right axis) is the share of observations above the highest finite bucket (60 s; 5 s for agents built before #2897). histogram_quantile cannot return a value past the top bucket, so while that share is at or above 5% the p95 line is pinned at the top bucket and is only a lower bound (1% for p99).",
       "type": "timeseries",
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 96 },
       "id": 25,
@@ -812,7 +818,7 @@
           "min": 0,
           "custom": { "drawStyle": "line", "fillOpacity": 10, "showPoints": "never", "lineWidth": 1 }
         },
-        "overrides": []
+        "overrides": [ { "matcher": { "id": "byRegexp", "options": ".*over top bucket.*" }, "properties": [ { "id": "unit", "value": "percentunit" }, { "id": "min", "value": 0 }, { "id": "max", "value": 1 }, { "id": "custom.axisPlacement", "value": "right" }, { "id": "custom.lineStyle", "value": { "fill": "dash", "dash": [10, 10] } }, { "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } } ] } ]
       },
       "options": {
         "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] },
@@ -824,6 +830,12 @@
           "expr": "histogram_quantile(0.95, sum by (le, phase) (rate(policy_apply_duration_seconds_bucket{env=\"$env\", phase!=\"\"}[5m])))",
           "legendFormat": "{{phase}} p95",
           "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "(sum by (phase) (rate(policy_apply_duration_seconds_bucket{env=\"$env\", phase!=\"\", le=\"+Inf\"}[5m])) - max by (phase) (sum by (le, phase) (rate(policy_apply_duration_seconds_bucket{env=\"$env\", phase!=\"\", le!=\"+Inf\"}[5m])))) / sum by (phase) (rate(policy_apply_duration_seconds_bucket{env=\"$env\", phase!=\"\", le=\"+Inf\"}[5m]))",
+          "legendFormat": "{{phase}} over top bucket",
+          "refId": "B"
         }
       ]
     },
@@ -1054,7 +1066,7 @@
     {
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "title": "ws push \u2192 apply latency (p95 / mean) (#2785)",
-      "description": "histogram_quantile(0.95, \u2026 ws_push_apply_latency_seconds_bucket) and the mean \u2014 wall time from the ws sidecar persisting a server-pushed snapshot to the agent applying it, measured off /proc/uptime on both sides. This is the number the operator feels: the gap between granting a child extra screen time and the device working. Healthy is ~1s, one idle-heartbeat tick. On 2026-09-13 it was 251s, because the apply sat behind an unbounded curl in the same loop. Post-#2785 the apply runs first in the tick and every curl is bounded, so a sustained p95 past a few seconds means the ordering or the bounds regressed.",
+      "description": "histogram_quantile(0.95, \u2026 ws_push_apply_latency_seconds_bucket) and the mean \u2014 wall time from the ws sidecar persisting a server-pushed snapshot to the agent applying it, measured off /proc/uptime on both sides. This is the number the operator feels: the gap between granting a child extra screen time and the device working. Healthy is ~1s, one idle-heartbeat tick. On 2026-09-13 it was 251s, because the apply sat behind an unbounded curl in the same loop. Post-#2785 the apply runs first in the tick and every curl is bounded, so a sustained p95 past a few seconds means the ordering or the bounds regressed. #2897: the 'over top bucket' series (right axis) is the share of observations above the highest finite bucket (60 s; 5 s for agents built before #2897). histogram_quantile cannot return a value past the top bucket, so while that share is at or above 5% the p95 line is pinned at the top bucket and is only a lower bound (1% for p99).",
       "type": "timeseries",
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 120 },
       "id": 32,
@@ -1066,7 +1078,7 @@
           "custom": { "drawStyle": "line", "fillOpacity": 30, "showPoints": "always", "lineWidth": 2, "thresholdsStyle": { "mode": "line" } },
           "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "red", "value": 10 } ] }
         },
-        "overrides": []
+        "overrides": [ { "matcher": { "id": "byRegexp", "options": ".*over top bucket.*" }, "properties": [ { "id": "unit", "value": "percentunit" }, { "id": "min", "value": 0 }, { "id": "max", "value": 1 }, { "id": "custom.axisPlacement", "value": "right" }, { "id": "custom.lineStyle", "value": { "fill": "dash", "dash": [10, 10] } }, { "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } } ] } ]
       },
       "options": {
         "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] },
@@ -1084,6 +1096,12 @@
           "expr": "sum by (router_id) (rate(ws_push_apply_latency_seconds_sum{env=\"$env\"}[10m])) / sum by (router_id) (rate(ws_push_apply_latency_seconds_count{env=\"$env\"}[10m]))",
           "legendFormat": "mean {{router_id}}",
           "refId": "B"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "(sum by (router_id) (rate(ws_push_apply_latency_seconds_bucket{env=\"$env\", le=\"+Inf\"}[10m])) - max by (router_id) (sum by (le, router_id) (rate(ws_push_apply_latency_seconds_bucket{env=\"$env\", le!=\"+Inf\"}[10m])))) / sum by (router_id) (rate(ws_push_apply_latency_seconds_bucket{env=\"$env\", le=\"+Inf\"}[10m]))",
+          "legendFormat": "over top bucket {{router_id}}",
+          "refId": "C"
         }
       ]
     }
