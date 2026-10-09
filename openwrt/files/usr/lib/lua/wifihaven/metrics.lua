@@ -44,7 +44,8 @@ local M = {}
 --   6, 7, 8      1 s steps where prod applies sit today (5-6 s, #2893), so a
 --                p95 of ~6 s reads as ~6 s rather than smeared across 5-10;
 --   10, 15       the slow end of the 6-11 s end-to-end check-ins;
---   30, 60       stalls; 60 s is the metrics push cadence, past which a
+--   30, 60       stalls; 60 s matches the default metrics push interval
+--                (UCI metrics_report_interval, wifihaven-agent), past which a
 --                single number stops meaning much and +Inf says enough.
 -- 14 finite bounds + +Inf = 15 series per histogram per label set.
 -- Adding bounds is wire-additive: the API folds whatever `le` set a batch

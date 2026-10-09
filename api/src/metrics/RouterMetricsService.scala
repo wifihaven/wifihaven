@@ -160,19 +160,24 @@ final class RouterMetricsServiceLive(
       prevBuckets: Map[String, Double],
       rid: String,
   ): (UIO[Unit], Map[String, Double]) = {
-    val boundaries =
+    val boundaries  =
       AppMetrics.RouterHistogramBoundaries.getOrElse(
         h.name,
         AppMetrics.RouterDurationBoundaries,
       )
-    val sorted     = h.buckets.sortBy(b => leValue(b.le))
-    val maxFinite  = sorted.map(b => leValue(b.le)).filter(_.isFinite).maxOption.getOrElse(1.0)
+    val sorted      = h.buckets.sortBy(b => leValue(b.le))
+    val maxFinite   = sorted.map(b => leValue(b.le)).filter(_.isFinite).maxOption.getOrElse(1.0)
     // An observation in the agent's +Inf bucket is only known to exceed the agent's top bound. Emit
-    // it above the REGISTRY's top bound too, so it lands in the registry's +Inf. Using
+    // it above the REGISTRY's top finite bound too, so it lands in the registry's +Inf. Using
     // `maxFinite + 1` alone would put a pre-#2897 agent's >5 s overflow into the registry's le=6
-    // bucket and read an unknown-length stall as a ~6 s apply (#2897).
-    val overflow   = math.max(maxFinite, boundaries.values.lastOption.getOrElse(maxFinite)) + 1.0
-    val labels     = h.labels + ("router_id" -> rid)
+    // bucket and read an unknown-length stall as a ~6 s apply (#2897). ZIO's `Boundaries.fromChunk`
+    // appends Double.MaxValue as the last bound, so it is filtered out: emitting at MaxValue would
+    // add 1.8e308 to `_sum` and overflow it to +Inf. The cost of a finite representative is that
+    // `_sum` counts each overflow at top + 1 (61 s today), so a mean panel is an upper-biased
+    // estimate whenever any observations sit over the top bucket.
+    val registryTop = boundaries.values.filter(_ < Double.MaxValue).lastOption.getOrElse(maxFinite)
+    val overflow    = math.max(maxFinite, registryTop) + 1.0
+    val labels      = h.labels + ("router_id" -> rid)
 
     // Walk buckets in ascending `le`, tracking the running cumulative-below for both this batch and
     // the previous one, so each step yields the half-open bucket's new-observation delta.
