@@ -12,6 +12,13 @@ import java.time.{Instant, LocalDate, ZoneOffset}
 // in one place (#1532 SSOT audit, #1741).
 object SqlFragments {
 
+  // #2872: the one `date_bin` origin for every connection-event bucket — the `/series` window, its
+  // rollup `last_seen`, and the hourly rollup writer — so stored and on-the-fly buckets line up.
+  // It is a `timestamptz` literal with an explicit `+00`: a bare `TIMESTAMP '2000-01-01 00:00:00'`
+  // is converted in the SESSION time zone, which put daily buckets at 07:00Z under America/Denver
+  // and hourly buckets at :30 under a half-hour zone.
+  val BucketOrigin: Fragment = Fragment.const("TIMESTAMPTZ '2000-01-01 00:00:00+00'")
+
   // #2107 (multi-tenant, epic #622): the per-household tenancy predicate. Every household-scoped
   // read AND-composes this so it sees only its own tenant's rows. `column` lets callers qualify the
   // predicate when the query joins another table (e.g. `d.household_id` when `devices` is aliased

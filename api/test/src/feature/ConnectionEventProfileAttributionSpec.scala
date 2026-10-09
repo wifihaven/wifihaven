@@ -208,9 +208,7 @@ object ConnectionEventProfileAttributionSpec
           Set.empty,
           BucketGrain.Daily,
         )
-        // Profile and count only: the re-binned `windowStart` follows date_bin's origin in the session
-        // time zone (#2872). TODO(#2872): assert `windowStart` once the origin is pinned to UTC.
-      } yield assertTrue(seriesByProfile(rows).map(r => (r._2, r._3)) == List(("Kids", 2)))
+      } yield assertTrue(seriesByProfile(rows) == List(("2026-03-02T00:00:00Z", "Kids", 2)))
     },
   ) @@ TestAspect.sequential
 }

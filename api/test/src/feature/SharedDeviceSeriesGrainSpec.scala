@@ -46,6 +46,7 @@ object SharedDeviceSeriesGrainSpec
   private val CheckOut = Instant.parse("2026-03-02T17:00:00Z")
   private val Events = List("09:10", "12:00", "16:50").map(t => Instant.parse(s"2026-03-02T$t:00Z"))
   private val Until  = "2026-03-03T00:00:00Z"
+  private val DayStart = "2026-03-02T00:00:00Z"
 
   final case class Fixture(routes: Routes[Any, Response], token: String, kids: ProfileId)
 
@@ -109,8 +110,7 @@ object SharedDeviceSeriesGrainSpec
     )
 
   // A 30-day daily-bucket read (the SPA's aggregated band), so the window alone picks the daily
-  // rollup. (group, succeeded) per row; `windowStart` follows date_bin's origin in the session
-  // time zone (#2872), so it is not asserted.
+  // rollup. (windowStart, group, succeeded) per row.
   private def series(f: Fixture, query: String, hours: Int = 24 * 30) =
     for {
       resp <- f.routes.runZIO(
@@ -130,7 +130,7 @@ object SharedDeviceSeriesGrainSpec
           ZIO
             .fromEither(body.fromJson[ConnectionEventSeriesPage])
             .mapError(new Exception(_))
-            .map(_.rows.map(r => (r.groups.values.mkString, r.countSucceeded)))
+            .map(_.rows.map(r => (r.windowStart, r.groups.values.mkString, r.countSucceeded)))
     } yield (resp.status, rows)
 
   def spec = suite("/series grain for profile reads of a shared device (#2873)")(
@@ -138,7 +138,7 @@ object SharedDeviceSeriesGrainSpec
       for {
         f   <- fixture
         got <- series(f, s"groupBy=device&profileId=${f.kids.value}")
-      } yield assertTrue(got == (Status.Ok, List(("family-ipad", 3))))
+      } yield assertTrue(got == (Status.Ok, List((DayStart, "family-ipad", 3))))
     },
     // Grouping by profile was removed: on hourly it was too slow on prod, on daily it mislabels.
     test("groupBy=profile is rejected") {
@@ -152,7 +152,7 @@ object SharedDeviceSeriesGrainSpec
         f   <- fixture
         _   <- wipe("connection_events_hourly")
         got <- series(f, "groupBy=domain")
-      } yield assertTrue(got == (Status.Ok, List((Host, 3))))
+      } yield assertTrue(got == (Status.Ok, List((DayStart, Host, 3))))
     },
     // Hourly rows older than its retention are swept, so reading hourly there would drop data; the
     // daily rollup's bucket-start rule is the accepted fallback. The hourly rows are wiped and Kids'
@@ -169,7 +169,10 @@ object SharedDeviceSeriesGrainSpec
         in  <- series(f, s"groupBy=device&profileId=${f.kids.value}", hours = 24 * 91)
         // A 30-day window is inside retention, so the same filter reads the (empty) hourly rollup.
         out <- series(f, s"groupBy=device&profileId=${f.kids.value}")
-      } yield assertTrue(in == (Status.Ok, List(("family-ipad", 3))), out == (Status.Ok, Nil))
+      } yield assertTrue(
+        in == (Status.Ok, List((DayStart, "family-ipad", 3))),
+        out == (Status.Ok, Nil),
+      )
     },
   ) @@ TestAspect.sequential
 }
