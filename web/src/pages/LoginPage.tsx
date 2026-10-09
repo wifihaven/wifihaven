@@ -64,12 +64,11 @@ export function LoginPage() {
   const [hint] = useState(() => householdHint(getHouseholdCookie()))
   // #2492: set by AccountPage after a successful change (the rotation revokes the session's JWT,
   // so the user has to sign in again — say why instead of dumping them on a bare login form).
-  const locationState = useLocation().state as { passwordChanged?: boolean; from?: unknown } | null
-  const passwordChanged = locationState?.passwordChanged ?? false
-  // #2850: where RequireAuth was sending this visitor (the block page's Check in action, say), or
-  // the 401 handler's `?next=`. Only an in-app path is honoured; anything else goes to the dashboard.
+  const passwordChanged = (useLocation().state as { passwordChanged?: boolean } | null)?.passwordChanged ?? false
+  // #2850: where RequireAuth or the 401 handler was sending this visitor (the block page's Check in
+  // action, say). Only an in-app path is honoured; anything else goes to the dashboard.
   const [searchParams] = useSearchParams()
-  const returnTo = safeReturnPath(locationState?.from) ?? safeReturnPath(searchParams.get('next'))
+  const returnTo = safeReturnPath(searchParams.get('next'))
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()

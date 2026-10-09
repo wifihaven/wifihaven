@@ -30,16 +30,16 @@ import { SupportConsentPage } from '@/pages/SupportConsentPage'
 import { BetaRequestsPage } from '@/pages/BetaRequestsPage'
 import { PressPage } from '@/pages/PressPage'
 import { useMe } from '@/api/queries'
-import { ACCOUNT_PATH } from '@/routes'
+import { ACCOUNT_PATH, loginUrlReturningTo } from '@/routes'
 
-// #2850: a signed-out visit records the path it asked for, so LoginPage can return there. The block
-// page's Check in action (/dashboard?checkin=<mac>) is the case that needs it.
+// #2850: a signed-out visit records the path it asked for in `?next=`, so LoginPage can return there.
+// The block page's Check in action (/dashboard?checkin=<mac>) is the case that needs it.
 export function RequireAuth({ children }: { children: React.ReactNode }) {
   const { isAuthenticated } = useAuth()
   const location = useLocation()
   return isAuthenticated
     ? <>{children}</>
-    : <Navigate to="/login" replace state={{ from: location.pathname + location.search }} />
+    : <Navigate to={loginUrlReturningTo(location.pathname, location.search)} replace />
 }
 
 // #586: redirect to /account when the server-enforced must_change_password flag

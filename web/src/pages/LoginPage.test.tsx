@@ -124,38 +124,8 @@ describe('LoginPage', () => {
     await waitFor(() => expect(navigateMock).toHaveBeenCalledWith('/dashboard'))
   })
 
-  // #2850: the block page's Check in action sends a signed-out child through login; RequireAuth
-  // records where they were going and login returns them there.
-  it('returns to the page RequireAuth recorded after a successful login', async () => {
-    loginMock.mockResolvedValue({ mustChangePassword: false })
-    const user = userEvent.setup()
-    render(
-      <MemoryRouter initialEntries={[{ pathname: '/login', state: { from: '/dashboard?checkin=aa%3Abb' } }]}>
-        <LoginPage />
-      </MemoryRouter>,
-    )
-    await user.type(screen.getByPlaceholderText(/you@example.com/), 'emma')
-    await user.type(screen.getByPlaceholderText('••••••••'), 'secret123')
-    await user.click(screen.getByRole('button', { name: /Sign in/ }))
-    await waitFor(() => expect(navigateMock).toHaveBeenCalledWith('/dashboard?checkin=aa%3Abb'))
-  })
-
-  it('ignores a recorded destination that is not an in-app path', async () => {
-    loginMock.mockResolvedValue({ mustChangePassword: false })
-    const user = userEvent.setup()
-    render(
-      <MemoryRouter initialEntries={[{ pathname: '/login', state: { from: '//evil.example/x' } }]}>
-        <LoginPage />
-      </MemoryRouter>,
-    )
-    await user.type(screen.getByPlaceholderText(/you@example.com/), 'emma')
-    await user.type(screen.getByPlaceholderText('••••••••'), 'secret123')
-    await user.click(screen.getByRole('button', { name: /Sign in/ }))
-    await waitFor(() => expect(navigateMock).toHaveBeenCalledWith('/dashboard'))
-  })
-
-  // #2850 review: an expired token reaches login through the 401 handler's full-page redirect,
-  // which cannot carry router state, so the destination rides `?next=`.
+  // #2850: RequireAuth and the 401 handler both send a visitor here as /login?next=<path>; the block
+  // page's Check in action is the case that needs it.
   it('returns to ?next= after a successful login', async () => {
     loginMock.mockResolvedValue({ mustChangePassword: false })
     const user = userEvent.setup()
