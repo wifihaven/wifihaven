@@ -263,6 +263,10 @@ class AdminAPI:
 
     # ── shared devices (#2848) ────────────────────────────────────────────
 
+    def list_shared_devices(self) -> list[dict[str, Any]]:
+        """GET /api/shared-devices. 404 on an API that predates #2848."""
+        return self._request("GET", "/api/shared-devices")
+
     def check_in_shared_device(self, mac: str, *, profile_id: int) -> None:
         """POST /api/shared-devices/{mac}/check-in {profileId}. The device must
         be shared and unheld; 409 `held` / `profile_blocked` / `not_shared`."""

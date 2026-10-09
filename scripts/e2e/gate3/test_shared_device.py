@@ -17,7 +17,13 @@ per-device `rules` override (blocked=true), and a checked-in one carries its
 holder's `profileId`. What this pins is that the two transitions reach a router
 customers are running, through the real push path, quickly.
 
-Liveness anchor (memory: absence assertions need one). Each "blocked" sample is
+Version skew. Gate 3a runs this against whatever API staging serves, which can
+predate #2848 (staging deploys only when Master API/UI CD is green). The test
+probes `GET /api/shared-devices` first: on Gate 3a a 404 skips, because the
+router under test cannot be judged against an API that lacks the feature; on
+Gate 3b the API is the commit under test, so a 404 fails.
+
+Liveness anchor (absence assertions need one). Each "blocked" sample is
 paired with a probe of `captive.apple.com`, an infra host the API ships in
 `global.extraAllowed` (`InfraHosts.canonical`), which the router carves out
 ahead of every whole-MAC drop. A router that has stopped forwarding fails the
@@ -27,11 +33,15 @@ anchor alone.
 from __future__ import annotations
 
 import logging
+import os
 import time
+
+import pytest
 
 from lib.traffic import http_get
 from lib.wait import wait_until
 
+from .conftest import WH_GATE3_SIDE
 from .test_smoke import _BLOCK_MARKERS, _block_page_probe, _upstream_probe
 
 log = logging.getLogger(__name__)
@@ -54,9 +64,28 @@ UNBLOCK_BOUND_S = 60.0
 # the client VM, so the measured latency is an upper bound with this resolution
 # plus one probe's duration.
 UNBLOCK_INTERVAL_S = 0.25
+# Waits for the block page, same timeout and cadence as test_smoke.py's
+# whole-MAC block-page wait, which covers the same push-and-apply path.
+BLOCKED_TIMEOUT_S = 180
+BLOCKED_INTERVAL_S = 3
 
 
-def test_shared_device_check_in_unblocks(admin, enrolled_router, client_vm,
+@pytest.fixture()
+def require_shared_device_routes(admin):
+    try:
+        admin.list_shared_devices()
+    except RuntimeError as e:
+        if "HTTP 404" not in str(e):
+            raise
+        msg = (f"{admin.base_url} has no GET /api/shared-devices "
+               f"(predates #2848)")
+        if WH_GATE3_SIDE == "3a":
+            pytest.skip(f"{msg}; Gate 3a runs against deployed staging")
+        pytest.fail(f"{msg}; Gate 3b deploys the API under test, so it must have it")
+
+
+def test_shared_device_check_in_unblocks(require_shared_device_routes, admin,
+                                         enrolled_router, client_vm,
                                          scratch_profile_and_device):
     mac = scratch_profile_and_device["mac"]
     profile_id = scratch_profile_and_device["profile_id"]
@@ -88,6 +117,10 @@ def test_shared_device_check_in_unblocks(admin, enrolled_router, client_vm,
             "(target %.1fs p95; check-in request %.2fs; %d probe(s), upper bound)",
             mac, elapsed, TARGET_UNBLOCK_S, request_s, probes,
         )
+        _step_summary(
+            f"Shared-device check-in unblock ({WH_GATE3_SIDE}): {elapsed:.2f}s "
+            f"(target {TARGET_UNBLOCK_S:.0f}s p95, one sample, upper bound)"
+        )
 
         # ── check out → blocked again ────────────────────────────────────
         admin.check_out_shared_device(mac)
@@ -116,10 +149,15 @@ def _wait_blocked_with_anchor(client, *, phase: str) -> None:
 
     try:
         blocked, _ = wait_until(
-            _pair, timeout_s=180, interval_s=3,
+            _pair, timeout_s=BLOCKED_TIMEOUT_S, interval_s=BLOCKED_INTERVAL_S,
             description=f"block page for {NEUTRAL_HOST} with live anchor ({phase})",
         )
     except TimeoutError as e:
+        if not last:
+            raise AssertionError(
+                f"{phase}: no probe pair completed in {BLOCKED_TIMEOUT_S}s "
+                f"(every sample raised): {e}",
+            ) from e
         raise AssertionError(
             f"{phase}: last sample block_page={last.get('blocked')} "
             f"anchor={last.get('anchor')} — block_page=False means the router "
@@ -140,3 +178,16 @@ def _anchor_probe(client):
     if "success" not in body_lc or any(m in body_lc for m in _BLOCK_MARKERS):
         return None
     return p
+
+
+def _step_summary(line: str) -> None:
+    """Append to the GitHub Actions job summary when running in CI, so the
+    latency sample is visible without opening the log."""
+    path = os.environ.get("GITHUB_STEP_SUMMARY")
+    if not path:
+        return
+    try:
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except OSError as e:
+        log.warning("could not write step summary: %s", e)
