@@ -1746,6 +1746,19 @@ function M.update_shared(snapshot, nft_sets, blocked_macs, blocked_reason,
   -- table as soon as it saw a member, even one extraBlocked then claimed.
   local versioned = bl_member_iterator ~= nil and bl_cache ~= nil
   local maps_this_call = {}
+  -- Drop maps for a list version the snapshot no longer ships before building
+  -- any new one, so a version change never holds the old and new maps at once.
+  if versioned then
+    local current = {}
+    for id, bl in pairs(snapshot.blocklists or {}) do
+      current[id .. "@" .. tostring(bl.version)] = true
+    end
+    for key in pairs(bl_cache) do
+      for part in (key .. "\n"):gmatch("([^\n]*)\n") do
+        if not current[part] then bl_cache[key] = nil; break end
+      end
+    end
+  end
   local function bl_map_for(ids)
     local parts = {}
     for i, id in ipairs(ids) do

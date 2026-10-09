@@ -919,7 +919,7 @@ local BLOCKLIST_SHARD_DIR = render.SHARD_DIR
 -- #2893: what the last clean shard + member-index render was built from, so a
 -- refresh that changes no list skips rewriting them (blocklists.render_outputs).
 local bl_render_state = {}
-local function refresh_blocklists_untimed(snap)
+local function refresh_blocklists(snap)
   -- Step 1: fetch any list version not yet cached.
   -- #2785: blocklist bodies are the one bulk fetch here (up to
   -- blocklist_max_list_bytes), so they get the longer bound — still finite.
@@ -983,11 +983,14 @@ local function refresh_blocklists_untimed(snap)
   end
 end
 
--- #2893: timed as policy_apply_duration_seconds{phase="blocklist_refresh"}. On a
--- pushed apply this runs before `nft -f`, so it delays enforcement directly.
-local function refresh_blocklists(snap)
+-- #2893: the refresh that precedes an apply (boot, ws push), timed as
+-- policy_apply_duration_seconds{phase="blocklist_refresh"}. It runs before
+-- `nft -f`, so it delays enforcement directly. The hourly blocklist timer calls
+-- the untimed refresh_blocklists: its ticks usually apply nothing and would
+-- drag this phase's p95 toward zero.
+local function refresh_blocklists_for_apply(snap)
   local t0 = clock.monotonic_seconds()
-  refresh_blocklists_untimed(snap)
+  refresh_blocklists(snap)
   apply_phase_timer("blocklist_refresh", clock.monotonic_seconds() - t0)
 end
 
@@ -1365,7 +1368,7 @@ do
     -- #1782/#2736: populate the category/extraBlocked shards BEFORE the apply so
     -- the rendered conf-file= directives resolve. The removed startup fetch used
     -- to be what did this; the cached path has to do it itself now.
-    refresh_blocklists(cached)
+    refresh_blocklists_for_apply(cached)
     local t0 = clock.monotonic_seconds()
     local applied = policy.apply(cached, write_file, run_cmd, log,
                                  { on_apply = record_apply("boot"),
@@ -1694,7 +1697,7 @@ conntrack.watch({
         if pushed and pushed.etag and pushed.etag ~= ts.current_etag then
           -- Populate category/extraBlocked shards before the apply, exactly as
           -- the boot path does, so the rendered conf-file= directives resolve.
-          refresh_blocklists(pushed)
+          refresh_blocklists_for_apply(pushed)
           ts.last_blocklist_run = mono
           if apply_and_publish(pushed, "policy_change") then
             ts.current_etag  = pushed.etag
