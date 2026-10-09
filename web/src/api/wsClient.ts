@@ -23,6 +23,8 @@ export type SpaTopicName =
   | 'timeStatus'
   | 'appUsage'
   | 'stale'
+  // #2848: the GET /api/shared-devices body for the subscriber's household; visible to a child.
+  | 'sharedDevices'
 
 // The slice of the browser `WebSocket` the client uses — injectable so tests drive a
 // mock. The real `WebSocket` satisfies this shape structurally.

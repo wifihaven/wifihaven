@@ -952,6 +952,21 @@ object ProfileRoutes {
 // ── Device routes ──────────────────────────────────────────────────────────
 
 object DeviceRoutes {
+
+  /**
+   * #2848 (design §9): a non-null `profileId` on a shared device. A shared device is held only
+   * through check-in; an `assigned` row would enforce like a check-in no auto-checkout releases.
+   */
+  private val deviceShared: ApiError =
+    ApiError.Wrapped(Response.json("""{"error":"device_shared"}""").status(Status.Conflict))
+
+  // The assignment writer refuses an `assigned` row on a shared device itself; that refusal is the
+  // same 409 when a request races a sharing change past the route's own check.
+  private def writeError(e: Throwable): ApiError = e match {
+    case _: DeviceAssignmentError.SharedDeviceRefused => deviceShared
+    case other                                        => ApiError.Db(other)
+  }
+
   def routes(
       auth: AuthService,
       deviceRepo: DeviceRepo,
@@ -986,10 +1001,15 @@ object DeviceRoutes {
               .fromEither(body.fromJson[UpsertDeviceRequest])
               .mapError(ApiError.DecodeFailure(_))
             mac = MacAddress.unsafe(normalizeMac(udr.mac.value))
+            // #2848: a shared device is never assigned a profile (409 `device_shared`).
+            current <- deviceRepo.findByMacInHousehold(mac, claims.hh).mapError(ApiError.Db(_))
+            _       <- ZIO.when(current.exists(_.shared) && udr.profileId.isDefined)(
+              ZIO.fail(deviceShared),
+            )
             // #708: profileId is optional — None means "unassigned" (NULL). The
             // access check only fires when the caller supplies a profileId; targeting
             // a profile they can't write to still 403s.
-            _  <- udr.profileId match {
+            _       <- udr.profileId match {
               case Some(pid) =>
                 requireProfileAccess(claims, pid, userProfileRepo, profileRepo) *>
                   // #1771: devices cannot be assigned to the global sentinel profile. Reject with
@@ -1000,13 +1020,13 @@ object DeviceRoutes {
             // #2108: constructively keyed to the caller's household — a user device write lands
             // under `claims.hh` only (ON CONFLICT (household_id, mac)); it cannot address another
             // household's row.
-            id <- deviceRepo
+            id      <- deviceRepo
               // #2843: the caller is recorded on the assignment-history row this writes.
               .upsert(mac, udr.name, udr.profileId, "", claims.hh, byUsername = Some(claims.sub))
-              .mapError(ApiError.Db(_))
+              .mapError(writeError)
             // #481: log device upsert so the next CI failure makes it obvious
             // whether the mutation reached the API at all.
-            _  <- LogContext.annotate(LogContext.Mac, mac.value) {
+            _       <- LogContext.annotate(LogContext.Mac, mac.value) {
               LogContext.annotateOpt(
                 LogContext.ProfileId,
                 udr.profileId.map(_.value.toString),
@@ -1018,7 +1038,7 @@ object DeviceRoutes {
                 )
               }
             }
-            _  <- invalidateSnapshot(claims.hh)
+            _       <- invalidateSnapshot(claims.hh)
           } yield Response.json(s"""{"id":${id.value}}""")
           handle.mapError(ErrorMapper.errorToResponse)
         },
@@ -1046,55 +1066,77 @@ object DeviceRoutes {
           handle.mapError(ErrorMapper.errorToResponse)
         },
       // #996: field-scoped partial update. Body is a subset of the Device read
-      // shape — `name` (set), `profileId` (set/null-to-clear). Absent fields
-      // preserve their current value. Same auth as DELETE: writer + access to
-      // the device's current profile, plus access to the destination profile
-      // if `profileId` is being reassigned.
+      // shape — `name` (set), `profileId` (set/null-to-clear), and (#2848) `shared` (set). Absent
+      // fields preserve their current value. Same auth as DELETE: writer + access to the device's
+      // current profile, plus access to the destination profile if `profileId` is being reassigned.
+      // A shared device's current profile is only whoever has it checked in, so it gates nothing.
       Method.PATCH / "api" / "devices" / string("mac")  ->
         handler { (mac: String, req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
             claims <- requireWriter(req, auth)
             normalized = MacAddress.unsafe(normalizeMac(mac))
             // #2108: household-scoped lookup — a cross-household MAC 404s before any write (§7 pin 2).
-            existing <- deviceRepo
+            existing  <- deviceRepo
               .findByMacInHousehold(normalized, claims.hh)
               .mapError(ApiError.Db(_))
               .flatMap(ZIO.fromOption(_).orElseFail(ApiError.NotFound("Device not found")))
-            _    <- requireProfileAccess(claims, existing.profileId, userProfileRepo, profileRepo)
-            body <- req.body.asString.orElseFail(ApiError.BadRequest(""))
-            obj  <- ZIO.fromEither(FieldPatch.parseObj(body)).mapError(ApiError.BadRequest(_))
+            _         <- ZIO.unless(existing.shared)(
+              requireProfileAccess(claims, existing.profileId, userProfileRepo, profileRepo),
+            )
+            body      <- req.body.asString.orElseFail(ApiError.BadRequest(""))
+            obj       <- ZIO.fromEither(FieldPatch.parseObj(body)).mapError(ApiError.BadRequest(_))
             namePatch <- ZIO
               .fromEither(FieldPatch.from[String](obj, "name"))
               .mapError(ApiError.BadRequest(_))
             pidPatch  <- ZIO
               .fromEither(FieldPatch.from[ProfileId](obj, "profileId"))
               .mapError(ApiError.BadRequest(_))
-            _         <- namePatch match {
+            sharedPatch <- ZIO
+              .fromEither(FieldPatch.from[Boolean](obj, "shared"))
+              .mapError(ApiError.BadRequest(_))
+            _           <- namePatch match {
               case FieldPatch.Cleared => ZIO.fail(ApiError.BadRequest("name cannot be cleared"))
               case _                  => ZIO.unit
             }
-            _         <- pidPatch match {
+            _           <- sharedPatch match {
+              case FieldPatch.Cleared => ZIO.fail(ApiError.BadRequest("shared cannot be cleared"))
+              case _                  => ZIO.unit
+            }
+            // #2848 (design §9): `shared` applies first, so a profile is judged against the
+            // device's sharing AFTER this request. `{shared:true, profileId:P}` is a 409.
+            willBeShared = sharedPatch.applyTo(existing.shared)
+            _           <- pidPatch match {
               case FieldPatch.Set(pid) =>
-                requireProfileAccess(claims, pid, userProfileRepo, profileRepo) *>
+                ZIO.when(willBeShared)(ZIO.fail(deviceShared)) *>
+                  requireProfileAccess(claims, pid, userProfileRepo, profileRepo) *>
                   // #1771: same guard as PUT — reassigning a device to the global sentinel is
                   // rejected with 400.
                   requireNotGlobalProfile(profileRepo, pid, "device.profileId")
               case _                   => ZIO.unit
             }
             newName = namePatch.applyTo(existing.name)
-            newPid = pidPatch.applyToNullable(existing.profileId)
-            _ <- deviceRepo
-              .upsert(normalized, newName, newPid, "", claims.hh, byUsername = Some(claims.sub))
-              .mapError(ApiError.Db(_))
+            sharedOpt  = sharedPatch match {
+              case FieldPatch.Set(v) => Some(v)
+              case _                 => None
+            }
+            profileOpt = pidPatch match {
+              case FieldPatch.Set(pid) => Some(Some(pid))
+              case FieldPatch.Cleared  => Some(None)
+              case FieldPatch.Absent   => None
+            }
+            outcome <- deviceRepo
+              .patch(claims.hh, existing.id, newName, sharedOpt, profileOpt, Some(claims.sub))
+              .mapError(writeError)
+            // Turning sharing off ends whoever had the device checked in.
+            _ <- ZIO.when(outcome.closedCheckIn)(
+              AppMetrics.recordSharedDeviceCheckin("check_out", AssignmentEndCause.Unshared.db),
+            )
             _ <- LogContext.annotate(LogContext.Mac, normalized.value) {
-              LogContext.annotateOpt(
-                LogContext.ProfileId,
-                newPid.map(_.value.toString),
-              ) {
-                ZIO.logInfo(
-                  s"device patched: mac=${normalized.value} name=$newName profileId=${newPid.map(_.value.toString).getOrElse("-")}",
-                )
-              }
+              ZIO.logInfo(
+                s"device patched: mac=${normalized.value} name=$newName " +
+                  s"profileId=${profileOpt.fold("unchanged")(_.fold("-")(_.value.toString))} " +
+                  s"shared=${sharedOpt.fold("unchanged")(_.toString)}",
+              )
             }
             _ <- invalidateSnapshot(claims.hh)
           } yield Response.ok
@@ -2646,9 +2688,16 @@ def requireAdmin(req: Request, auth: AuthService): IO[ApiError, JwtClaims] =
 def requireWriter(req: Request, auth: AuthService): IO[ApiError, JwtClaims] =
   // requireAuth already enforces must_change_password; then we check role.
   requireAuth(req, auth).flatMap { claims =>
-    if claims.role == "admin" || claims.role == "adult" then ZIO.succeed(claims)
+    if isWriterRole(claims) then ZIO.succeed(claims)
     else ZIO.fail(ApiError.Forbidden("Adult or admin required"))
   }
+
+/**
+ * The role half of [[requireWriter]]: admin or adult. For a route that every role may call but that
+ * grants writers more (#2848 shared-device check-in / check-out).
+ */
+def isWriterRole(claims: JwtClaims): Boolean =
+  claims.role == "admin" || claims.role == "adult"
 
 /**
  * #2132 (multi-tenant P5-2, epic #622): the OPERATOR gate — admin AND a member of household 1 (the

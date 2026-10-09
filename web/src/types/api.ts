@@ -166,7 +166,40 @@ export interface Device {
   profileName: string | null
   lastSeenIp: string | null
   lastSeenAt: string | null
+  // #2847/#2848: a shared device is never assigned; `profileId` is whoever has it checked in.
+  // Optional only because an API older than #2847 omits it.
+  shared?: boolean
 }
+
+// #2848: GET /api/shared-devices. `holder` is null while the device is checked out.
+export interface SharedDeviceHolder {
+  profileId: number
+  profileName: string
+  // ISO-8601 instant the check-in started.
+  since: string
+  // Username of whoever checked it in; null if that user has since been deleted.
+  checkedInBy: string | null
+}
+
+export interface SharedDevice {
+  mac: string
+  name: string
+  holder: SharedDeviceHolder | null
+}
+
+export interface SharedDeviceCheckInRequest {
+  profileId: number
+}
+
+// #2848: the `error` code on a refused shared-device request (403 not_linked, the rest 409).
+// `profile_blocked` also carries `reason`: Paused | Schedule | TimeLimit.
+export type SharedDeviceErrorCode =
+  | 'held'
+  | 'not_linked'
+  | 'profile_blocked'
+  | 'not_shared'
+  | 'not_held'
+  | 'device_shared'
 
 // Generic admin-action feed (formerly DeviceAlert, #711). The schema (V34)
 // supports two kinds — `new_device` and `access_request`; #960 is the writer
@@ -895,6 +928,9 @@ export interface UpsertDeviceRequest {
 export interface PatchDeviceRequest {
   name?: string
   profileId?: number | null
+  // #2848: writers only. Applied before profileId; a non-null profileId on a device that is (or
+  // becomes) shared is a 409 `device_shared`.
+  shared?: boolean
 }
 
 // #423: PATCH /api/profiles/:id — field-scoped partial update. Omitted fields

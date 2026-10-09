@@ -480,7 +480,8 @@ within one usage-report interval plus one reevaluate tick.
 - `shared_device_checkins_open` gauge: fleet-wide total of open check-ins, no household or device label.
 - `shared_device_checkout_job_total{outcome=ok|error}` and `shared_device_checkout_job_duration_seconds`
   for the §7.3 job.
-- `shared_device_checkin_rejected_total{reason=held|not_linked|profile_blocked|not_shared|bad_bpt}`.
+- `shared_device_checkin_rejected_total{reason=held|not_linked|profile_blocked|not_shared|not_held|bad_bpt}`.
+  `not_held` is a check-out of a device nobody holds (amended on #2848).
 - `device_assignment_drift_repaired_total` for the §5.3 standing drift check, with an alert.
 - Grafana panels for all of the above under `deploy/grafana/dashboards/` in the same PRs.
 

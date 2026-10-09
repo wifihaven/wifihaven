@@ -43,6 +43,7 @@ object HttpRoutes {
       tlRepo         <- ZIO.service[TimeLimitRepo]
       atlRepo        <- ZIO.service[AppTimeLimitRepo]
       deviceRepo     <- ZIO.service[DeviceRepo]
+      sharedDevRepo  <- ZIO.service[SharedDeviceRepo]
       blRepo         <- ZIO.service[BlocklistRepo]
       blCache        <- ZIO.service[BlocklistCache]
       blFetcher2     <- ZIO.service[BlocklistFetcher]
@@ -330,6 +331,9 @@ object HttpRoutes {
           spaEventBus,
           hsRepo,
           deviceRepo,
+          sharedDevRepo,
+          timeStatus,
+          clock,
         )
 
       val statsRoutes: Routes[Any, Response] =
@@ -494,7 +498,17 @@ object HttpRoutes {
       spaEventBus: SpaEventBus,
       hsRepo: HouseholdSettingsRepo,
       deviceRepo: DeviceRepo,
-  ): Routes[Any, Response] =
+      sharedDeviceRepo: SharedDeviceRepo,
+      timeStatus: wifihaven.api.policy.TimeStatusService,
+      clock: Clock,
+  ): Routes[Any, Response] = {
+    // #2848: a device write can move a device in or out of sharing, and a check-in/out moves
+    // `devices.profile_id`: invalidate the snapshot and nudge both the Devices page and the
+    // household's `sharedDevices` subscribers.
+    val deviceChanged: wifihaven.shared.types.HouseholdId => UIO[Unit] = hh =>
+      policy.invalidate(hh) <*
+        spaEventBus.publish(SpaEvent.Stale(StaleTopic.Devices)) <*
+        spaEventBus.publish(SpaEvent.SharedDevicesChanged(hh))
     VersionRoutes.routes(wifihaven.api.BuildInfo.fromEnv) ++
       AuthRoutes.routes(auth, userRepo, upRepo, loginRateLimiter) ++
       // #2308: forgot-password request (public) + token consume / reset (public). Both rate-
@@ -559,13 +573,19 @@ object HttpRoutes {
       // flag is a behavioral setting on household_settings; a toggle busts the computed-snapshot
       // cache so the permissive/enforcing flip reaches connected ws routers and the next REST poll.
       HouseholdEnforcementRoutes.routes(auth, hsRepo, policy.invalidate) ++
-      DeviceRoutes.routes(
+      DeviceRoutes.routes(auth, deviceRepo, upRepo, profileRepo, deviceChanged) ++
+      SharedDeviceRoutes.routes(
         auth,
         deviceRepo,
+        sharedDeviceRepo,
         upRepo,
         profileRepo,
-        hh => policy.invalidate(hh) <* spaEventBus.publish(SpaEvent.Stale(StaleTopic.Devices)),
+        hsRepo,
+        timeStatus,
+        clock,
+        deviceChanged,
       )
+  }
 
   private def buildStatsRoutes(
       auth: AuthService,

@@ -17,6 +17,7 @@ import type {
   RouterSummary, SetUserPasswordRequest, SetUserPasswordResponse, SetUserProfilesRequest, TimeExtension,
   TrafficUsageBucket, TrafficUsageGroupBy, TrafficUsageResponse, UsageConfig,
   PatchDeviceRequest, PatchProfileRequest,
+  SharedDevice, SharedDeviceCheckInRequest,
   UpsertAppAssignmentRequest, UpsertDeviceRequest, UpsertProfileRequest, GrantExtensionRequest,
   UsageSeriesBatchResponse, UsageSeriesResponse, User,
   BillingStatusResponse, BillingRedirect,
@@ -414,6 +415,15 @@ export const api = {
     patch: (mac: string, data: PatchDeviceRequest) =>
       req<void>('PATCH', `/devices/${mac}`, data),
     delete: (mac: string) => req<void>('DELETE', `/devices/${encodeURIComponent(mac)}`),
+  },
+
+  // ── Shared devices (#2848) ─────────────────────────────────────────────
+  // Raw MAC path segments, like `devices.patch`.
+  sharedDevices: {
+    list: () => req<SharedDevice[]>('GET', '/shared-devices'),
+    checkIn: (mac: string, data: SharedDeviceCheckInRequest) =>
+      req<void>('POST', `/shared-devices/${mac}/check-in`, data),
+    checkOut: (mac: string) => req<void>('POST', `/shared-devices/${mac}/check-out`),
   },
 
   // ── Alerts (unifies #711 + #960) ───────────────────────────────────────

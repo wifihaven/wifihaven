@@ -703,6 +703,9 @@ trait AppTimeLimitRepo {
   def listAllForHousehold(household: HouseholdId): Task[List[AppTimeLimit]]
 }
 
+/** #2848: what [[DeviceRepo.patch]] did that its caller reports on. */
+final case class DevicePatchOutcome(closedCheckIn: Boolean)
+
 trait DeviceRepo {
 
   /**
@@ -792,6 +795,24 @@ trait DeviceRepo {
       // row's started_by / ended_by. None for system writes and fixtures.
       byUsername: Option[String] = None,
   ): Task[DeviceId]
+
+  /**
+   * #2848: the field-scoped `PATCH /api/devices/{mac}` write, in ONE transaction (design §9).
+   * `shared` is applied first (see [[DeviceAssignment.setShared]]), then `name`, then `profile`:
+   * `None` leaves the assignment alone, `Some(Some(p))` assigns `p` (refused with
+   * [[DeviceAssignmentError.SharedDeviceRefused]] on a shared device), `Some(None)` unassigns a
+   * device that is not shared and is a no-op on a shared one, whose holder only check-out changes
+   * (both rules live in [[DeviceAssignment.assign]], so `upsert` follows them too). `device` must
+   * already belong to `household`.
+   */
+  def patch(
+      household: HouseholdId,
+      device: DeviceId,
+      name: String,
+      shared: Option[Boolean],
+      profile: Option[Option[ProfileId]],
+      byUsername: Option[String],
+  ): Task[DevicePatchOutcome]
 
   /**
    * #2125: household-scoped. Now that the same MAC can exist in two households (V74 dropped the
@@ -2306,11 +2327,7 @@ class DeviceRepoLive(xa: Transactor[Task], clock: wifihaven.shared.Clock) extend
                     VALUES($mac,$name,NULLIF($ip,''),NOW(),$household)
                     ON CONFLICT(household_id,mac) DO UPDATE SET name=EXCLUDED.name
                     RETURNING id""".query[DeviceId].unique
-        by <- byUsername.flatTraverse(u =>
-          sql"SELECT id FROM users WHERE household_id=$household AND username=$u"
-            .query[UserId]
-            .option,
-        )
+        by <- DeviceAssignment.actor(household, byUsername)
         _  <- DeviceAssignment.assign(
           household,
           id,
@@ -2321,6 +2338,40 @@ class DeviceRepoLive(xa: Transactor[Task], clock: wifihaven.shared.Clock) extend
           if (pid.isDefined) AssignmentEndCause.Reassigned else AssignmentEndCause.Unassigned,
         )
       } yield id).transact(xa)
+    }
+  def patch(
+      household: HouseholdId,
+      device: DeviceId,
+      name: String,
+      shared: Option[Boolean],
+      profile: Option[Option[ProfileId]],
+      byUsername: Option[String],
+  ) =
+    clock.instant.flatMap { at =>
+      DbMetrics.timed("device.patch")(
+        (for {
+          by     <- DeviceAssignment.actor(household, byUsername)
+          closed <- shared.fold(false.pure[ConnectionIO])(
+            DeviceAssignment.setShared(household, device, _, at, by),
+          )
+          _      <-
+            sql"UPDATE devices SET name=$name WHERE id=$device AND household_id=$household".update.run
+          // `assign` applies the shared-device rule under the row lock: a profile on a shared device
+          // is refused, and no profile leaves its check-in alone.
+          _      <- profile.traverse_ { newProfile =>
+            DeviceAssignment.assign(
+              household,
+              device,
+              newProfile,
+              at,
+              AssignmentKind.Assigned,
+              by,
+              if (newProfile.isDefined) AssignmentEndCause.Reassigned
+              else AssignmentEndCause.Unassigned,
+            )
+          }
+        } yield DevicePatchOutcome(closedCheckIn = closed)).transact(xa),
+      )
     }
   def updateLastSeen(mac: MacAddress, ip: String, household: HouseholdId = HouseholdId.Default) =
     // #2125: AND-scoped to `household` so it can only touch its own household's row.
@@ -5027,6 +5078,7 @@ object Repos {
   val deviceRepo            = ZLayer.fromFunction(DeviceRepoLive(_, _))
   // #2843: the device-profile assignment primitive, for the reevaluate tick's drift check.
   val deviceAssignmentRepo  = ZLayer.fromFunction(DeviceAssignmentRepoLive(_))
+  val sharedDeviceRepo      = ZLayer.fromFunction(SharedDeviceRepoLive(_))
   val blocklistRepo         = ZLayer.fromFunction(BlocklistRepoLive(_))
   val timeUsageRepo         = ZLayer.fromFunction(TimeUsageRepoLive(_))
   val timeExtRepo           = ZLayer.fromFunction(TimeExtensionRepoLive(_))
@@ -5056,5 +5108,5 @@ object Repos {
   // grants that widen the #2241 agent token's data scope (V84).
   val supportConsentRepo    = ZLayer.fromFunction(SupportConsentRepoLive(_))
   val all                   =
-    userRepo ++ householdRepo ++ userProfileRepo ++ profileRepo ++ namedScheduleRepo ++ householdSettingsRepo ++ timeLimitRepo ++ appTimeLimitRepo ++ deviceRepo ++ deviceAssignmentRepo ++ blocklistRepo ++ timeUsageRepo ++ timeExtRepo ++ routerRepo ++ trafficReportRepo ++ blockEventRepo ++ connEventRepo ++ alertRepo ++ appRepo ++ rollupRepo ++ timeUsedRollupRepo ++ appUsedRollupRepo ++ partitionRepo ++ ambientHostsRepo ++ householdBillingRepo ++ betaRequestRepo ++ betaCohortRepo ++ entitlementsRepo ++ pressMessageRepo ++ passwordResetRepo ++ supportConsentRepo
+    userRepo ++ householdRepo ++ userProfileRepo ++ profileRepo ++ namedScheduleRepo ++ householdSettingsRepo ++ timeLimitRepo ++ appTimeLimitRepo ++ deviceRepo ++ deviceAssignmentRepo ++ sharedDeviceRepo ++ blocklistRepo ++ timeUsageRepo ++ timeExtRepo ++ routerRepo ++ trafficReportRepo ++ blockEventRepo ++ connEventRepo ++ alertRepo ++ appRepo ++ rollupRepo ++ timeUsedRollupRepo ++ appUsedRollupRepo ++ partitionRepo ++ ambientHostsRepo ++ householdBillingRepo ++ betaRequestRepo ++ betaCohortRepo ++ entitlementsRepo ++ pressMessageRepo ++ passwordResetRepo ++ supportConsentRepo
 }
