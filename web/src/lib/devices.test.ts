@@ -40,3 +40,20 @@ describe('isUnmanaged — #2621', () => {
     expect(isUnmanaged({ ...assigned, profileId: 0 })).toBe(false)
   })
 })
+
+// #2850: a checked-out shared device has no profile on the wire either, but it is not unmanaged —
+// the router blocks it as `CheckedOut` under any household policy (#2847), and assigning it a profile
+// is a 409 `device_shared`. Counting it as unmanaged would list it under "Unmanaged Devices" and in
+// the Profiles page's add-device picker.
+describe('isUnmanaged — shared devices (#2850)', () => {
+  it('does not treat a checked-out shared device as unmanaged', () => {
+    const checkedOut = { ...wireUnassigned, shared: true } as Device
+    expect(isUnmanaged(checkedOut)).toBe(false)
+    // It has no profile right now, so it is not "managed" (assigned) either.
+    expect(isManaged(checkedOut)).toBe(false)
+  })
+
+  it('a checked-in shared device reads as managed by its holder', () => {
+    expect(isManaged({ ...assigned, shared: true })).toBe(true)
+  })
+})

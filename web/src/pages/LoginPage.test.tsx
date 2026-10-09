@@ -124,6 +124,36 @@ describe('LoginPage', () => {
     await waitFor(() => expect(navigateMock).toHaveBeenCalledWith('/dashboard'))
   })
 
+  // #2850: RequireAuth and the 401 handler both send a visitor here as /login?next=<path>; the block
+  // page's Check in action is the case that needs it.
+  it('returns to ?next= after a successful login', async () => {
+    loginMock.mockResolvedValue({ mustChangePassword: false })
+    const user = userEvent.setup()
+    render(
+      <MemoryRouter initialEntries={[`/login?next=${encodeURIComponent('/dashboard?checkin=aa%3Abb')}`]}>
+        <LoginPage />
+      </MemoryRouter>,
+    )
+    await user.type(screen.getByPlaceholderText(/you@example.com/), 'emma')
+    await user.type(screen.getByPlaceholderText('••••••••'), 'secret123')
+    await user.click(screen.getByRole('button', { name: /Sign in/ }))
+    await waitFor(() => expect(navigateMock).toHaveBeenCalledWith('/dashboard?checkin=aa%3Abb'))
+  })
+
+  it('ignores a ?next= that is not an in-app path', async () => {
+    loginMock.mockResolvedValue({ mustChangePassword: false })
+    const user = userEvent.setup()
+    render(
+      <MemoryRouter initialEntries={['/login?next=https%3A%2F%2Fevil.example']}>
+        <LoginPage />
+      </MemoryRouter>,
+    )
+    await user.type(screen.getByPlaceholderText(/you@example.com/), 'emma')
+    await user.type(screen.getByPlaceholderText('••••••••'), 'secret123')
+    await user.click(screen.getByRole('button', { name: /Sign in/ }))
+    await waitFor(() => expect(navigateMock).toHaveBeenCalledWith('/dashboard'))
+  })
+
   it('#2164: composes a bare username with the wh_household cookie slug before posting', async () => {
     document.cookie = `${HOUSEHOLD_COOKIE_NAME}=smith-family; Path=/`
     loginMock.mockResolvedValue({ mustChangePassword: false })

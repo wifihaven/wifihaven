@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { api } from '@/api/client'
 import type { AccessRequestKind, BlockedInfoResponse } from '@/types/api'
 
@@ -45,7 +45,7 @@ function copyFor(info: BlockedInfoResponse): string {
     case 'extra_blocked':
       return 'Blocked by your parent.'
     case 'checked_out':
-      // #2847: a shared device nobody has checked in. The Check in action is #2850.
+      // #2847: a shared device nobody has checked in. The Check in action below is #2850.
       return 'This is a shared device. Check it in to your profile to use it.'
     default:
       return 'Access blocked.'
@@ -101,6 +101,19 @@ export function BlockedPage() {
           {profileLine && <p className="text-brand-text-muted text-xs">{profileLine}</p>}
         </div>
         {info && <UsageToday info={info} />}
+        {/* #2850: the Check in action for a checked-out shared device. It opens the dashboard's
+            Shared devices card with this device marked; a signed-out child logs in first and is
+            returned there (RequireAuth / LoginPage). The MAC only pre-selects the device (design
+            §15 Q1): the check-in is the ordinary authenticated flow. */}
+        {info?.blocked && info.reasonClass === 'checked_out' && mac && (
+          <Link
+            to={`/dashboard?checkin=${encodeURIComponent(mac)}`}
+            data-testid="block-checkin"
+            className="block w-full bg-brand-accent hover:bg-brand-accent-dark text-white text-sm font-semibold px-4 py-2 rounded-lg transition-colors"
+          >
+            Check in
+          </Link>
+        )}
         {!(mac && host)
           ? <p className="text-brand-text-muted text-sm">Ask a parent to adjust your settings.</p>
           : needsSetup
@@ -161,7 +174,7 @@ function isProfileless(info: BlockedInfoResponse | null): boolean {
  */
 function offeredKindsFor(info: BlockedInfoResponse | null): AccessRequestKind[] {
   // #2867: covers Unmanaged (generic `blocked` class) and #2847's checked_out shared device alike.
-  // The Check in action for the latter is #2850.
+  // The latter gets the Check in action instead (#2850).
   if (isProfileless(info))       return []
   const cls = info?.blocked ? info.reasonClass : null
   if (cls === 'paused')          return ['unpause', 'extension']

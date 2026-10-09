@@ -35,6 +35,12 @@ vi.mock('@/api/client', () => ({
     routers: {
       list: vi.fn(),
     },
+    // #2850: the Shared devices card.
+    sharedDevices: {
+      list: vi.fn(),
+      checkIn: vi.fn(),
+      checkOut: vi.fn(),
+    },
   },
 }))
 
@@ -257,6 +263,7 @@ beforeEach(() => {
   )
   mockNow().mockResolvedValue(emptyNow)
   mockAlerts().mockResolvedValue([])
+  ;(api.sharedDevices.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([])
   ;(api.usage.traffic as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
     bucket: '1m', from: '', to: '', tz: 'UTC', rawRows: [], aggregateRows: [],
   })
@@ -1096,6 +1103,41 @@ describe('DashboardPage child role (#2069)', () => {
     expect(screen.queryByText('Events (1h)')).not.toBeInTheDocument()
     expect(screen.queryByText('Blocked (1h)')).not.toBeInTheDocument()
     expect(screen.queryByText('Blocking activity (24h)')).not.toBeInTheDocument()
+  })
+  // #2850: the child dashboard carries the Shared devices card (the `sharedDevices` topic and the
+  // list route are both visible to a child).
+  it('shows the Shared devices card to a child', async () => {
+    (api.sharedDevices.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { mac: 'aa:bb:cc:dd:ee:05', name: 'Family iPad', holder: null },
+    ])
+    // The FirstRunHint fixtures above mock bare `{id}` profiles; the card reads the real shape.
+    ;(api.profiles.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([{
+      profile: { id: 1, name: 'Kids', blockedCategories: [], paused: false, failureMode: 'block-all', crossDeviceOverlapMode: 'sum', pauseMode: 'soft', defaultDeny: false },
+      timeLimit: null,
+    }])
+    renderAsChild()
+    const status = await screen.findByTestId('shared-device-status-aa:bb:cc:dd:ee:05')
+    expect(status).toHaveTextContent('Checked out')
+    expect(within(screen.getByTestId('shared-devices-card')).getByText('Family iPad')).toBeInTheDocument()
+  })
+})
+
+// #2850: parents see who holds each shared device on the dashboard.
+describe('DashboardPage — shared devices for parents (#2850)', () => {
+  afterEach(() => localStorage.clear())
+  it('shows the holder of each shared device', async () => {
+    localStorage.setItem('token', 't')
+    localStorage.setItem('username', 'pat')
+    localStorage.setItem('role', 'admin')
+    ;(api.auth.me as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({ username: 'pat', role: 'admin', profileIds: [] })
+    ;(api.sharedDevices.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { mac: 'aa:bb:cc:dd:ee:05', name: 'Family iPad',
+        holder: { profileId: 1, profileName: 'Kids', since: '2026-10-09T15:42:00Z', checkedInBy: 'octavius' } },
+    ])
+    render(withQuery(<AuthProvider><MemoryRouter><DashboardPage /></MemoryRouter></AuthProvider>))
+    const status = await screen.findByTestId('shared-device-status-aa:bb:cc:dd:ee:05')
+    expect(status).toHaveTextContent('Kids')
+    expect(status).toHaveTextContent(/checked in by octavius/i)
   })
 })
 

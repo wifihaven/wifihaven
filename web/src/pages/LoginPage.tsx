@@ -1,8 +1,8 @@
 import React, { useState } from 'react'
-import { useNavigate, useLocation, Link } from 'react-router-dom'
+import { useNavigate, useLocation, useSearchParams, Link } from 'react-router-dom'
 import { useAuth } from '@/hooks/useAuth'
 import { getHouseholdCookie } from '@/api/householdCookie'
-import { ACCOUNT_PATH } from '@/routes'
+import { ACCOUNT_PATH, safeReturnPath } from '@/routes'
 
 /**
  * #2164 (single-identifier login, design §4): compose the string actually posted to the server from
@@ -65,6 +65,10 @@ export function LoginPage() {
   // #2492: set by AccountPage after a successful change (the rotation revokes the session's JWT,
   // so the user has to sign in again — say why instead of dumping them on a bare login form).
   const passwordChanged = (useLocation().state as { passwordChanged?: boolean } | null)?.passwordChanged ?? false
+  // #2850: where RequireAuth or the 401 handler was sending this visitor (the block page's Check in
+  // action, say). Only an in-app path is honoured; anything else goes to the dashboard.
+  const [searchParams] = useSearchParams()
+  const returnTo = safeReturnPath(searchParams.get('next'))
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
@@ -80,7 +84,7 @@ export function LoginPage() {
       if (mustChangePassword) {
         navigate(ACCOUNT_PATH)
       } else {
-        navigate('/dashboard')
+        navigate(returnTo ?? '/dashboard')
       }
     } catch {
       setError('Invalid email/username or password')

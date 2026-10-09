@@ -11,7 +11,7 @@ import {
   RECENT_BLOCKED_WINDOW_LABEL,
   RECENT_BLOCKED_FETCH_LABEL,
 } from '@/api/queries'
-import { isManaged } from '@/lib/devices'
+import { isUnmanaged } from '@/lib/devices'
 import type {
   DashboardNow,
   DashboardNowDevice,
@@ -31,6 +31,7 @@ import type { BandwidthRate } from '@/api/wsCache'
 import { LiveBadge } from '@/components/dashboard/LiveBadge'
 import { RateBadge } from '@/components/dashboard/RateBadge'
 import { BucketSelector } from '@/components/usage/BucketSelector'
+import { SharedDevicesCard } from '@/components/SharedDevicesCard'
 
 // #2056 (§8.5) — the live-bandwidth windows offered on the dashboard. The 12h/1d/1w history
 // buckets make no sense for a live B/s gauge; default `1m` (smooth glance, `raw` opt-in).
@@ -88,6 +89,10 @@ export function DashboardPage() {
       <NewDevicesHint />
 
       <AccessRequestsBanner />
+
+      {/* #2850: who holds each shared device; check in / check out. Renders nothing for a
+          household with no shared devices. */}
+      <SharedDevicesCard />
 
       <RecentlyBlockedSection />
 
@@ -164,7 +169,8 @@ export function FirstRunHint() {
     // A household with no devices yet is still on the devices step: there is nothing enrolled,
     // so "close the policy" would be the wrong ask.
     const known = devices.data ?? []
-    const allAssigned = known.length > 0 && known.every(isManaged)
+    // #2850: a checked-out shared device has no profile but is not waiting to be assigned one.
+    const allAssigned = known.length > 0 && known.every(d => !isUnmanaged(d))
     return allAssigned ? <PolicyStep /> : <DevicesStep />
   }
 

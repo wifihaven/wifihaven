@@ -26,6 +26,9 @@ vi.mock('@/api/client', () => ({
     household: {
       get: vi.fn(),
     },
+    sharedDevices: {
+      list: vi.fn(),
+    },
   },
 }))
 
@@ -78,6 +81,7 @@ beforeEach(() => {
   ;(api.alerts.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([])
   ;(api.alerts.approve as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(undefined)
   ;(api.alerts.deny as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(undefined)
+  ;(api.sharedDevices.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([])
   ;(api.household.get as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
     dailyResetTime: '00:00',
     dailyResetTz: 'UTC',
@@ -1061,5 +1065,105 @@ describe('DevicesPage — new-device alert inline profile creation (#2607)', () 
 
     await user.click(within(editor).getByTestId('new-device-alert-cancel-profile'))
     expect(within(editor).getByTestId('new-device-alert-save')).toBeEnabled()
+  })
+})
+
+// #2850 (design docs/design/shared-devices.md §10): the Shared toggle and the current holder.
+describe('DevicesPage — shared devices (#2850)', () => {
+  const sharedMac = 'aa:bb:cc:dd:ee:05'
+  // A checked-out shared device has no profile on the wire (the key is absent, like #2621's shape).
+  const checkedOut = { id: 5, mac: sharedMac, name: 'Family iPad', shared: true } as unknown as Device
+  const held: Device = {
+    id: 5, mac: sharedMac, name: 'Family iPad', shared: true,
+    profileId: 1, profileName: 'Kids', lastSeenIp: null, lastSeenAt: null,
+  }
+  const listShared = api.sharedDevices.list as unknown as ReturnType<typeof vi.fn>
+  const listDevices = api.devices.list as unknown as ReturnType<typeof vi.fn>
+
+  it('lists a checked-out shared device as shared and "Checked out", not as unmanaged', async () => {
+    listDevices.mockResolvedValue([ipad, checkedOut])
+    listShared.mockResolvedValue([{ mac: sharedMac, name: 'Family iPad', holder: null }])
+    renderPage()
+    const row = await screen.findByTestId(`device-row-${sharedMac}`)
+    expect(within(row).getByTestId(`device-shared-badge-${sharedMac}`)).toHaveTextContent('Shared')
+    expect(await within(row).findByTestId(`device-holder-${sharedMac}`)).toHaveTextContent('Checked out')
+    expect(screen.queryByTestId('unmanaged-devices-section')).not.toBeInTheDocument()
+  })
+
+  it('shows the holder profile, who checked it in, and since when', async () => {
+    listDevices.mockResolvedValue([held])
+    listShared.mockResolvedValue([{
+      mac: sharedMac, name: 'Family iPad',
+      holder: { profileId: 1, profileName: 'Kids', since: '2026-10-09T15:42:00Z', checkedInBy: 'alex' },
+    }])
+    renderPage()
+    const holder = await screen.findByTestId(`device-holder-${sharedMac}`)
+    await waitFor(() => expect(holder).toHaveTextContent('Kids'))
+    expect(holder).toHaveTextContent(/checked in by alex/i)
+    expect(holder).toHaveTextContent(/since/i)
+  })
+
+  it('shows a skeleton for the holder while the shared list loads, never "Checked out"', async () => {
+    listDevices.mockResolvedValue([checkedOut])
+    listShared.mockReturnValue(new Promise(() => {}))
+    renderPage()
+    const row = await screen.findByTestId(`device-row-${sharedMac}`)
+    expect(within(row).getByTestId(`device-holder-loading-${sharedMac}`)).toBeInTheDocument()
+    expect(within(row).queryByText('Checked out')).not.toBeInTheDocument()
+  })
+
+  it('the Shared toggle autosaves PATCH {shared:true}, with no Save button', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    try {
+      renderPage()
+      const mac = 'aa:bb:cc:dd:ee:01'
+      const row = await screen.findByTestId(`device-row-${mac}`)
+      await user.click(within(row).getByRole('button', { name: /Edit/ }))
+      const editor = await screen.findByTestId(`device-editor-${mac}`)
+      await user.click(within(editor).getByTestId(`device-shared-toggle-${mac}`))
+      await vi.advanceTimersByTimeAsync(700)
+      expect(api.devices.patch).toHaveBeenCalledWith(mac, { shared: true })
+      expect(within(editor).queryByRole('button', { name: /^Save$/ })).not.toBeInTheDocument()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('a shared device has no profile picker (it is checked in, never assigned)', async () => {
+    const user = userEvent.setup()
+    listDevices.mockResolvedValue([held])
+    renderPage()
+    const row = await screen.findByTestId(`device-row-${sharedMac}`)
+    await user.click(within(row).getByRole('button', { name: /Edit/ }))
+    const editor = await screen.findByTestId(`device-editor-${sharedMac}`)
+    expect((within(editor).getByTestId(`device-shared-toggle-${sharedMac}`) as HTMLInputElement).checked).toBe(true)
+    expect(within(editor).queryByTestId(`device-profile-select-${sharedMac}`)).not.toBeInTheDocument()
+  })
+
+  it('turning Shared off autosaves PATCH {shared:false}', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    try {
+      listDevices.mockResolvedValue([held])
+      renderPage()
+      const row = await screen.findByTestId(`device-row-${sharedMac}`)
+      await user.click(within(row).getByRole('button', { name: /Edit/ }))
+      const editor = await screen.findByTestId(`device-editor-${sharedMac}`)
+      await user.click(within(editor).getByTestId(`device-shared-toggle-${sharedMac}`))
+      await vi.advanceTimersByTimeAsync(700)
+      expect(api.devices.patch).toHaveBeenCalledWith(sharedMac, { shared: false })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('an unmanaged device can be made shared from its row', async () => {
+    const user = userEvent.setup()
+    const guest = { id: 9, mac: 'aa:bb:cc:dd:ee:09', name: 'guest-tablet' } as unknown as Device
+    listDevices.mockResolvedValue([ipad, guest])
+    renderPage()
+    await user.click(await screen.findByTestId('unmanaged-make-shared-aa:bb:cc:dd:ee:09'))
+    await waitFor(() => expect(api.devices.patch).toHaveBeenCalledWith('aa:bb:cc:dd:ee:09', { shared: true }))
   })
 })

@@ -19,7 +19,8 @@ import { withQuery } from '@/test/queryWrapper'
 // #2522: the gates are imported from App.tsx, not re-implemented here. A local copy would
 // keep passing after the real guard drifted — which is exactly the failure mode this issue
 // is about (the SPA claiming a boundary the API no longer enforces).
-import { RequireAdmin, RequireWriter } from './App'
+import { RequireAdmin, RequireAuth, RequireWriter } from './App'
+import { useLocation } from 'react-router-dom'
 
 const GUARDED = <div data-testid="guarded">Guarded page</div>
 
@@ -101,5 +102,29 @@ describe('RequireWriter — the policy-editing gate', () => {
   it('refuses a session with no role at all', async () => {
     renderAt(null, 'writer')
     await expectRedirected()
+  })
+})
+
+// #2850: a signed-out visit records where it was going, so login can return there (the block
+// page's Check in action lands on /dashboard?checkin=<mac>).
+describe('RequireAuth — return-to after login', () => {
+  function LoginProbe() {
+    return <div data-testid="login-probe">{new URLSearchParams(useLocation().search).get('next') ?? 'none'}</div>
+  }
+
+  it('sends a signed-out visitor to /login?next= with the path and query they asked for', async () => {
+    render(
+      withQuery(
+        <AuthProvider>
+          <MemoryRouter initialEntries={['/dashboard?checkin=aa%3Abb']}>
+            <Routes>
+              <Route path="/login" element={<LoginProbe />} />
+              <Route path="/dashboard" element={<RequireAuth>{GUARDED}</RequireAuth>} />
+            </Routes>
+          </MemoryRouter>
+        </AuthProvider>,
+      ),
+    )
+    expect(await screen.findByTestId('login-probe')).toHaveTextContent('/dashboard?checkin=aa%3Abb')
   })
 })
