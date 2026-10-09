@@ -264,6 +264,7 @@ object AppHostSetAttributionSpec extends ZIOSpec[TestDatabase.AllRepos & Embedde
         Set(UsageTraffic.GroupBy.App),
         Map.empty,
         Map.empty,
+        wifihaven.api.db.AttributionScope.empty(HouseholdId.Default),
         byHost,
       )
       ZIO.succeed(

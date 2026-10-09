@@ -62,6 +62,7 @@ object UsageTrafficSpec extends ZIOSpecDefault {
         groupBy = Set(UsageTraffic.GroupBy.Domain),
         deviceByMac = Map.empty,
         profileNameById = Map.empty,
+        attribution = wifihaven.api.db.AttributionScope.empty(HouseholdId.Default),
       )
 
       val windowStarts = out.map(_.windowStart).distinct
@@ -89,6 +90,7 @@ object UsageTrafficSpec extends ZIOSpecDefault {
         groupBy = Set(UsageTraffic.GroupBy.Domain),
         deviceByMac = Map.empty,
         profileNameById = Map.empty,
+        attribution = wifihaven.api.db.AttributionScope.empty(HouseholdId.Default),
       )
       assertTrue(out.length == 1) &&
       assertTrue(out.head.windowStart == base.toString) &&
@@ -112,6 +114,7 @@ object UsageTrafficSpec extends ZIOSpecDefault {
         groupBy = Set(UsageTraffic.GroupBy.App),
         deviceByMac = Map.empty,
         profileNameById = Map.empty,
+        attribution = wifihaven.api.db.AttributionScope.empty(HouseholdId.Default),
         appsByHost = Map.empty, // no apps registered
       )
       val appSlugs = out.flatMap(_.groups.get("app")).toSet
@@ -164,6 +167,7 @@ object UsageTrafficSpec extends ZIOSpecDefault {
           groupBy = Set(UsageTraffic.GroupBy.Domain),
           deviceByMac = Map.empty,
           profileNameById = Map.empty,
+          attribution = wifihaven.api.db.AttributionScope.empty(HouseholdId.Default),
         )
         .head
 

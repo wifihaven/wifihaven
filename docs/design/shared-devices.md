@@ -266,6 +266,17 @@ drop. Then:
   `usedSecondsByMac`) is the set of devices with any span in the window, so a shared device appears
   under every profile that held it that day, credited only its in-interval presence.
 - `MacScope.Only` grows span bounds, so the traffic/usage-series routes inherit the same rule.
+- **Traffic usage labels** (#2875): `GET /api/usage/traffic` and its `trafficUsage` ws live edge
+  label each row's profile with `AttributionScope.profileAt(mac, period_start)`, the same
+  `covers` test the profile filter applies, and `groupBy=profile` groups on that label. A row no
+  span covers is "(unassigned)", never the device's current profile. Rows from the SQL
+  pre-aggregated and rollup tiers carry their bucket's start as `period_start`, so they are
+  labelled by bucket start (§6.3). A daily-rollup row's start is UTC midnight of its stored
+  household-local `date`, the same instant the #2844 filter tests, so label and filter agree there.
+  A SQL pre-aggregated bucket can begin before the request's `from`, so the scope is read from the
+  first bucket's start (`UsageTrafficQuery.labelWindow`). On that tier the profile filter still
+  tests each raw row while the label tests the bucket start, so `?profileId=B&groupBy=profile`
+  can return the bucket that straddles a move from A to B holding only B's traffic but labelled A.
 
 Membership is decided by `period_start` (report periods are the agent's `usage_report_interval`,
 default 60 s), so a check-in boundary is attributed to within one report period. Accepted and
@@ -283,6 +294,7 @@ stated, not hidden.
 | Time status / rollup routes | `Routes.scala:1203,1283,1338` | day / range |
 | Dashboard "now" | `DashboardNowRoutes.scala:115,176` | now (current read; already right via §5.2) |
 | SPA ws time-status push | `SpaPush.scala:587` | day |
+| Traffic usage row labels, `groupBy=profile` (GET + ws live edge) | `UsageTraffic.buildRaw` / `buildAggregate` | per row `period_start` (bucket start on rollup / pre-aggregated tiers) |
 | Logs + series profile label/filter | `SqlFragments.deviceLabelJoin`, `Repos.scala:3547,3577,3644,3724` | per event `ts` |
 
 The inventory is a starting list, not proof of completeness (grep cannot prove a sweep). The

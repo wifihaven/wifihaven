@@ -387,6 +387,72 @@ object SpaWsS4Spec
           assertTrue(pushed.rawRows.isEmpty)
       }
     },
+    test(
+      "#2875: a device moved after the ingested period is labelled by the profile that held it " +
+        "during the period, on both the raw and the groupBy=profile live edge, as the GET does",
+    ) {
+      // The device is on Kids for the ingested period [14:00:00, 14:00:30) and moves to Teens at
+      // 14:00:20, before the report arrives. Labelling by the CURRENT profile (pre-#2875) says
+      // Teens; the period started while Kids held the device.
+      withHarness { (port, ingest, router) =>
+        for {
+          tok   <- ZIO.serviceWithZIO[Clock](makeAuth).flatMap(adminToken)
+          teens <- ZIO.serviceWithZIO[ProfileRepo](_.create("Teens", Nil))
+          dev   <- ZIO
+            .serviceWithZIO[DeviceRepo](_.findByMac(MacAddress.unsafe(knownMac)))
+            .someOrFail(new RuntimeException("device not seeded"))
+          _     <- ZIO.serviceWithZIO[DeviceAssignmentRepo](
+            _.assign(
+              HouseholdId.Default,
+              dev.id,
+              Some(teens),
+              Instant.parse("2026-06-25T14:00:20Z"),
+              AssignmentKind.Assigned,
+              None,
+              AssignmentEndCause.Reassigned,
+            ),
+          )
+          // One connection per param-set (a connection holds one `trafficUsage` subscription), each
+          // triggered by its own ingest into the same period.
+          rawFr <- collect(
+            port,
+            tok,
+            List(
+              """{"op":"subscribe","payload":{"topic":"trafficUsage","params":{"bucket":"raw"}}}""",
+            ),
+            trigger = ingestUsage(ingest, router, usageRecord("youtube.com", 1000, 2000)),
+            wait = 4.seconds,
+          )
+          aggFr <- collect(
+            port,
+            tok,
+            List(
+              """{"op":"subscribe","payload":{"topic":"trafficUsage","params":{"groupBy":["profile"],"bucket":"1m"}}}""",
+            ),
+            trigger = ingestUsage(ingest, router, usageRecord("example.com", 10, 20)),
+            wait = 4.seconds,
+          )
+          parse = (fs: Chunk[String]) =>
+            ZIO
+              .foreach(trafficFrames(fs))(f => ZIO.fromEither(parsePush(f)))
+              .mapError(e => new RuntimeException(e))
+          rawPush <- parse(rawFr).map(_.flatMap(_.rawRows))
+          aggPush <- parse(aggFr).map(_.lastOption.toList.flatMap(_.aggregateRows))
+          rawGet  <- getTraffic(port, tok, s"bucket=raw&from=$headFrom&to=$headTo&tz=UTC")
+          aggGet  <- getTraffic(
+            port,
+            tok,
+            s"bucket=1m&groupBy=profile&from=$headFrom&to=$headTo&tz=UTC",
+          )
+        } yield assertTrue(
+          rawPush.nonEmpty,
+          rawPush.forall(_.profileName.contains("Kids")),
+          rawGet.rawRows.map(_.profileName) == List(Some("Kids"), Some("Kids")),
+          aggPush.map(_.groups.get("profile")) == List(Some("Kids")),
+          aggPush.toSet == aggGet.aggregateRows.toSet,
+        )
+      }
+    },
     test("no trafficUsage subscriber → no trafficUsage push (and no query) on usage ingest") {
       withHarness { (port, ingest, router) =>
         for {
