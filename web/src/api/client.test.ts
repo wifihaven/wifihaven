@@ -6,6 +6,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { api, isCanceledError } from './client'
 import { httpStatusOf } from './httpError'
 import { apiHealth } from './apiHealth'
+import { inflightWrites } from './inflightWrites'
 import type { UsageSeriesBatchResponse } from '@/types/api'
 
 function okJson(body: unknown): Response {
@@ -209,5 +210,42 @@ describe('req carries the HTTP status on a rejected response (#2824)', () => {
     const err = await api.profiles.getGlobal().then(() => null, (e: unknown) => e)
     expect(httpStatusOf(err)).toBe(409)
     expect((err as Error).message).toBe('HTTP 409')
+  })
+})
+
+// #2903: the new-build reload waits for writes that are already on the wire, so the one request
+// path counts them. Reads are not counted; a cancelled read loses nothing.
+describe('in-flight write tracking (#2903)', () => {
+  beforeEach(() => {
+    localStorage.setItem('token', 'tok')
+  })
+  afterEach(() => {
+    vi.restoreAllMocks()
+    localStorage.clear()
+  })
+
+  it('counts a write while its request is outstanding and releases it when it settles', async () => {
+    let resolve!: (r: Response) => void
+    vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>(r => { resolve = r })))
+    const p = api.users.create({ username: 'u', password: 'p', role: 'ReadOnly' } as Parameters<typeof api.users.create>[0])
+    expect(inflightWrites.count()).toBe(1)
+    resolve(okJson({ id: 1 }))
+    await p
+    expect(inflightWrites.count()).toBe(0)
+  })
+
+  it('releases the count when the write fails', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('Failed to fetch')))
+    await expect(api.users.create({ username: 'u', password: 'p', role: 'ReadOnly' } as Parameters<typeof api.users.create>[0])).rejects.toThrow()
+    expect(inflightWrites.count()).toBe(0)
+  })
+
+  it('does not count reads', async () => {
+    let resolve!: (r: Response) => void
+    vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>(r => { resolve = r })))
+    const p = api.users.list()
+    expect(inflightWrites.count()).toBe(0)
+    resolve(okJson([]))
+    await p
   })
 })

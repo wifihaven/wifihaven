@@ -3,8 +3,9 @@ import { act, render, screen, renderHook } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, useNavigate } from 'react-router-dom'
 import { NewBuildBanner, useCheckOnWsReconnect } from './NewBuildBanner'
-import { createBuildChecker, type BuildChecker } from '@/lib/buildCheck'
+import { createBuildChecker, getBuildChecker, type BuildChecker } from '@/lib/buildCheck'
 import type { WsStatus } from '@/api/wsClient'
+import { inflightWrites } from '@/api/inflightWrites'
 
 const RUNNING = '<script type="module" src="/assets/index-OLD.js"></script>'
 const NEWER = '<script type="module" src="/assets/index-NEW.js"></script>'
@@ -62,6 +63,17 @@ describe('NewBuildBanner (#2903)', () => {
     expect(reload).toHaveBeenCalledTimes(1)
   })
 
+  it('waits for writes already in flight before the navigation reload, then reloads', async () => {
+    const checker = checkerServing(NEWER)
+    const reload = renderBanner(checker)
+    await act(() => checker.check())
+    const done = inflightWrites.begin()
+    act(() => navigateTo('/devices'))
+    expect(reload).not.toHaveBeenCalled()
+    act(() => done())
+    expect(reload).toHaveBeenCalledTimes(1)
+  })
+
   it('does not reload on a query-string-only change (filters typed into the URL)', async () => {
     const checker = checkerServing(NEWER)
     const reload = renderBanner(checker)
@@ -101,6 +113,13 @@ describe('NewBuildBanner (#2903)', () => {
     renderBanner(checker)
     await act(async () => { window.dispatchEvent(new Event('focus')) })
     expect(spy).toHaveBeenCalled()
+  })
+})
+
+describe('getBuildChecker (#2903)', () => {
+  it('is off under the dev server (vitest runs in DEV) rather than reporting a broken check', () => {
+    expect(import.meta.env.DEV).toBe(true)
+    expect(getBuildChecker()).toBeNull()
   })
 })
 
