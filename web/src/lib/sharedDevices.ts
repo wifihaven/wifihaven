@@ -50,22 +50,22 @@ export function sharedDeviceErrorMessage(
   const profile = ctx.profileName ?? 'This profile'
   switch (parsed?.code) {
     case 'held':
-      return 'Someone else is using this device. Their session has to end first.'
+      return 'Someone else is using this device right now. You can start yours when their session ends.'
     case 'not_linked':
       return ctx.action === 'check-in'
-        ? "You can only start a session on a profile you're linked to."
+        ? "You can only start a session on your own profile."
         : "Only someone on this session's profile, or a parent, can end it."
     case 'profile_blocked':
       // Design §15 Q3: check-in is refused while the profile is Paused / Schedule / TimeLimit.
       switch (parsed.reason) {
         case 'Paused':
-          return `${profile} is paused, so it can't start a session right now.`
+          return `${profile} is paused, so a session can't start right now.`
         case 'Schedule':
-          return `${profile} is outside its allowed time, so it can't start a session right now.`
+          return `${profile} is outside its allowed time, so a session can't start right now.`
         case 'TimeLimit':
-          return `${profile} is out of time for today, so it can't start a session.`
+          return `${profile} is out of time for today, so a session can't start.`
         default:
-          return `${profile} is blocked right now, so it can't start a session.`
+          return `${profile} is blocked right now, so a session can't start.`
       }
     case 'not_shared':
       return "This device isn't shared any more."

@@ -244,11 +244,11 @@ describe('SharedDevicesCard — child check in / check out (#2850)', () => {
   })
 
   it.each([
-    ['held', 409, {}, 'Someone else is using this device. Their session has to end first.'],
-    ['profile_blocked', 409, { reason: 'TimeLimit' }, "Kids is out of time for today, so it can't start a session."],
-    ['profile_blocked', 409, { reason: 'Schedule' }, "Kids is outside its allowed time, so it can't start a session right now."],
-    ['profile_blocked', 409, { reason: 'Paused' }, "Kids is paused, so it can't start a session right now."],
-    ['not_linked', 403, {}, "You can only start a session on a profile you're linked to."],
+    ['held', 409, {}, 'Someone else is using this device right now. You can start yours when their session ends.'],
+    ['profile_blocked', 409, { reason: 'TimeLimit' }, "Kids is out of time for today, so a session can't start."],
+    ['profile_blocked', 409, { reason: 'Schedule' }, "Kids is outside its allowed time, so a session can't start right now."],
+    ['profile_blocked', 409, { reason: 'Paused' }, "Kids is paused, so a session can't start right now."],
+    ['not_linked', 403, {}, "You can only start a session on your own profile."],
     ['not_shared', 409, {}, "This device isn't shared any more."],
   ])('shows a readable message for a %s refusal', async (code, status, extra, message) => {
     signIn('child', { profileIds: [1] })

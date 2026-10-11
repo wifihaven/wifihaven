@@ -1140,7 +1140,7 @@ describe('DevicesPage — shared devices (#2850)', () => {
     expect((within(editor).getByTestId(`device-shared-toggle-${sharedMac}`) as HTMLInputElement).checked).toBe(true)
     expect(within(editor).queryByTestId(`device-profile-select-${sharedMac}`)).not.toBeInTheDocument()
     expect(within(editor).getByTestId(`device-shared-note-${sharedMac}`))
-      .toHaveTextContent('Sessions on this device start and end from the dashboard.')
+      .toHaveTextContent('Start and end sessions on this device from the dashboard.')
   })
 
   it('turning Shared off autosaves PATCH {shared:false}', async () => {

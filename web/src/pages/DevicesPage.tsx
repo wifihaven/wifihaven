@@ -394,7 +394,7 @@ function DeviceRowEditor({
       </label>
       {profileLocked ? (
         <p className="pb-2.5 text-xs text-brand-text-muted" data-testid={`device-shared-note-${device.mac}`}>
-          Sessions on this device start and end from the dashboard.
+          Start and end sessions on this device from the dashboard.
         </p>
       ) : (
       <div className={commitBlocked ? 'basis-full order-last' : 'min-w-[10rem]'}>
