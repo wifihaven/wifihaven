@@ -16,8 +16,9 @@ function htmlResponse(body: string, status = 200): Response {
   return new Response(body, { status, headers: { 'Content-Type': 'text/html' } })
 }
 
-function quietLog(): BuildCheckLog & { info: ReturnType<typeof vi.fn>; warn: ReturnType<typeof vi.fn>; error: ReturnType<typeof vi.fn> } {
-  return { info: vi.fn(), warn: vi.fn(), error: vi.fn() }
+function quietLog() {
+  const log = { info: vi.fn(), warn: vi.fn(), error: vi.fn() }
+  return log satisfies BuildCheckLog
 }
 
 describe('assetFingerprint', () => {
