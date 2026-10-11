@@ -316,6 +316,19 @@ describe('AdminPage — ambient anchor-gate toggle (#2077)', () => {
 })
 
 describe('AdminPage — shared-device idle auto-checkout (#2849)', () => {
+  // #2906: the threshold is described in session words.
+  it('labels the threshold as ending the session, and lists why a session ends automatically', async () => {
+    render(<AdminPage />)
+    expect(await screen.findByLabelText('End session after (minutes idle)')).toBe(
+      screen.getByTestId('shared-device-idle-minutes'),
+    )
+    const card = screen.getByTestId('shared-device-idle-card')
+    expect(card).toHaveTextContent(/ends automatically/i)
+    for (const reason of [/paused/i, /bedtime/i, /out of time/i, /daily reset/i]) {
+      expect(card).toHaveTextContent(reason)
+    }
+  })
+
   it('renders the stored threshold in minutes', async () => {
     render(<AdminPage />)
     const input = await screen.findByTestId('shared-device-idle-minutes') as HTMLInputElement
