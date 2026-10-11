@@ -99,9 +99,14 @@ end
 -- enough to OOM a 1 GB router when several such lists are assigned. nil = no cap
 -- (legacy callers / tests). The cap is checked by byte size BEFORE parse_body so
 -- the big table is never allocated.
-function M.fetch_and_cache(snapshot, http_get_fn, fs, cache_dir, base_url, auth_token, max_bytes)
+function M.fetch_and_cache(snapshot, http_get_fn, fs, cache_dir, base_url, auth_token, max_bytes, opts)
   cache_dir = cache_dir or DEFAULT_CACHE_DIR
   local result = { hosts_by_id = {}, errors = {}, failures = {} }
+  -- #2893: opts.parse == false fetches what is missing and nothing else: a
+  -- cached list is only checked for existence, and no list is parsed into
+  -- hosts_by_id. The agent never reads the parsed hosts, and on the prod family
+  -- router parsing them cost ~1 s of every push-apply.
+  local parse = not (opts and opts.parse == false)
 
   -- Parse a body into hosts unless it exceeds the byte cap (then return empty
   -- without building the table). See max_bytes above (#1412).
@@ -129,13 +134,20 @@ function M.fetch_and_cache(snapshot, http_get_fn, fs, cache_dir, base_url, auth_
     or nil
 
   -- Default filesystem ops (real I/O) when fs not injected.
-  local read_fn, write_fn, rename_fn, mkdir_fn
+  local read_fn, write_fn, rename_fn, mkdir_fn, exists_fn
   if fs then
     read_fn  = fs.read
     write_fn = fs.write
     rename_fn = fs.rename
     mkdir_fn = fs.mkdir
+    exists_fn = fs.exists or function(path) return fs.read(path) ~= nil end
   else
+    exists_fn = function(path)
+      local f = io.open(path, "r")
+      if not f then return false end
+      f:close()
+      return true
+    end
     read_fn  = function(path)
       local f, err = io.open(path, "r")
       if not f then return nil end
@@ -188,9 +200,14 @@ function M.fetch_and_cache(snapshot, http_get_fn, fs, cache_dir, base_url, auth_
     end
 
     -- Check if (id, version) is already cached.
-    local existing = read_fn(path)
+    local existing
+    if parse then
+      existing = read_fn(path)
+    elseif exists_fn(path) then
+      existing = true
+    end
     if existing then
-      result.hosts_by_id[id] = parse_bounded(existing)
+      if parse then result.hosts_by_id[id] = parse_bounded(existing) end
     else
       -- Fetch from API. Signature matches the agent's http_get: status first.
       -- Send the router bearer token — the route is router-authenticated (#1360).
@@ -210,7 +227,7 @@ function M.fetch_and_cache(snapshot, http_get_fn, fs, cache_dir, base_url, auth_
           if not rok then
             fail(id, "write_failed",
               string.format("blocklists: rename failed for %s: %s", tostring(id), tostring(rerr)))
-          else
+          elseif parse then
             result.hosts_by_id[id] = parse_bounded(body or "")
           end
         end
@@ -282,10 +299,15 @@ end
 -- failures back to the caller lets the agent emit blocklist_fetch_failures_total
 -- and simply retry on the next cadence rather than no-op until the next snapshot
 -- change (which on a stable household may be hours/days away).
-function M.refresh(snapshot, http_get_fn, fs, cache_dir, base_url, auth_token, max_bytes)
+--
+-- opts.parse == false (#2893): fetch and gc only; `hosts` and `skipped` are nil.
+function M.refresh(snapshot, http_get_fn, fs, cache_dir, base_url, auth_token, max_bytes, opts)
   local fc             = M.fetch_and_cache(
-    snapshot, http_get_fn, fs, cache_dir, base_url, auth_token, max_bytes)
+    snapshot, http_get_fn, fs, cache_dir, base_url, auth_token, max_bytes, opts)
   M.gc(snapshot, fs, cache_dir)
+  if opts and opts.parse == false then
+    return { failures = fc.failures, errors = fc.errors }
+  end
   local hosts, skipped = M.load_cached(snapshot, fs, cache_dir, max_bytes)
   return { hosts = hosts, failures = fc.failures, errors = fc.errors, skipped = skipped }
 end
@@ -673,6 +695,73 @@ function M.gc(snapshot, fs, cache_dir)
       remove_fn(cache_dir .. "/" .. fname)
     end
   end
+end
+
+-- ---------------------------------------------------------------------------
+-- M.render_outputs(snapshot, fs, cache_dir, shard_dir, index_path, max_bytes,
+--                  global_blocklist_ids, state)
+-- ---------------------------------------------------------------------------
+-- render_shards → gc_shards → render_member_index, skipped when nothing they
+-- read has changed since the last clean render (#2893). Their inputs are the
+-- list ids, each list's version (a cache file <id>-<version>.txt never changes
+-- once written), the global ids and max_bytes, so those make the key. The skip
+-- also requires every shard and the index to still exist on disk.
+--
+-- `state` is a table the caller keeps across calls; state.key is set only after
+-- a render with no error and no skipped id, so a list whose cache file has not
+-- arrived yet is re-rendered on every call until it has.
+--
+-- Returns { rendered = false } on a skip, otherwise
+-- { rendered = true, shards = <render_shards result>, index = <render_member_index result> }.
+--
+-- On the prod family router the render this skips rewrote ~15 MB of shards and
+-- an 8 MB index on every push-apply, ~2.7 s before `nft -f`.
+
+function M.render_key(snapshot, max_bytes, global_blocklist_ids)
+  local bls = snapshot and snapshot.blocklists or {}
+  global_blocklist_ids = global_blocklist_ids or {}
+  local ids = {}
+  for id in pairs(bls) do ids[#ids + 1] = id end
+  table.sort(ids)
+  local parts = {}
+  for i, id in ipairs(ids) do
+    parts[i] = id .. "@" .. tostring(bls[id].version)
+               .. (global_blocklist_ids[id] and "+global" or "")
+  end
+  return tostring(max_bytes) .. "|" .. table.concat(parts, ",")
+end
+
+local function outputs_present(snapshot, fs, shard_dir, index_path)
+  local open_read_fn = fs and fs.open_read or function(path) return io.open(path, "r") end
+  local function present(path)
+    local f = open_read_fn(path)
+    if not f then return false end
+    f:close()
+    return true
+  end
+  if not present(index_path) then return false end
+  for id in pairs(snapshot and snapshot.blocklists or {}) do
+    if not present(get_render().shard_path(id, shard_dir)) then return false end
+  end
+  return true
+end
+
+function M.render_outputs(snapshot, fs, cache_dir, shard_dir, index_path, max_bytes,
+                          global_blocklist_ids, state)
+  state = state or {}
+  local key = M.render_key(snapshot, max_bytes, global_blocklist_ids)
+  if state.key == key and outputs_present(snapshot, fs, shard_dir, index_path) then
+    return { rendered = false }
+  end
+  state.key = nil
+  local shards = M.render_shards(snapshot, fs, cache_dir, shard_dir, max_bytes,
+                                 global_blocklist_ids)
+  M.gc_shards(snapshot, fs, shard_dir)
+  local index = M.render_member_index(snapshot, fs, cache_dir, index_path)
+  if #shards.errors == 0 and #shards.skipped == 0 and not (index and index.error) then
+    state.key = key
+  end
+  return { rendered = true, shards = shards, index = index }
 end
 
 return M

@@ -117,8 +117,9 @@ object MetricGuard {
       // (`outcome` is already a known key.)
       "stage",
       // #2208 — policy.apply internal step for `policy_apply_duration_seconds`. A fixed
-      // 6-value enum (render_dnsmasq | render_nft | dnsmasq_restart | nft_load |
-      // ea_backfill | smoke_probe — policy.apply's phase_timer seam); bounded by the
+      // 8-value enum (render_dnsmasq | render_nft | dnsmasq_restart | nft_load |
+      // ea_backfill | smoke_probe — policy.apply's phase_timer seam — plus the agent's
+      // blocklist_refresh | update_shared around it, #2893); bounded by the
       // code, not by user/device/flow growth, so it satisfies the §4 cardinality firewall.
       "phase",
       // #2137 — beta-flip conversion-notice window for `wifihaven_beta_flip_notice_total`. A fixed
@@ -259,7 +260,8 @@ object MetricGuard {
     // #2208 — `phase` breaks the apply down into its internal steps so a slow
     // apply is attributable (render_dnsmasq / render_nft / dnsmasq_restart /
     // nft_load / ea_backfill / smoke_probe — the bounded enum policy.apply's
-    // phase_timer seam emits). The agent still emits the unlabeled total.
+    // phase_timer seam emits — plus the agent-side blocklist_refresh and
+    // update_shared, #2893). The agent still emits the unlabeled total.
     "policy_apply_duration_seconds"               -> Set("phase", "router_id", "installation_id"),
     "snapshot_poll_total"                         -> Set("result", "router_id", "installation_id"),
     "snapshot_poll_duration_seconds"              -> Set("router_id", "installation_id"),
