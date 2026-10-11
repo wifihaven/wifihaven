@@ -18,7 +18,7 @@
 -- perf), so the predicate is the disjunction of all drop conditions.
 --
 -- For a forwarded packet from MAC m to v4/v6 destination d, let
---   ea_hit(m, d) ⇔ ∃ a ∈ extraAllowed(m). d ∈ @ea_<m>_a   (or @ea6_<m>_a v6).
+--   ea_hit(m, d) ⇔ ∃ a ∈ extraAllowed(m). d ∈ @ea_a   (or @ea6_a v6).
 -- Then:
 --
 --   drop(m, d) ⇔
@@ -39,9 +39,9 @@
 -- docs/design/global-policy-layer.md §5.2.
 --
 -- allow := ¬drop. extraAllowed beats every "blocked" path (#421):
--- the @blocked_macs / eb_ / bl_ drop rules each carry one `ip daddr != @ea_<m>_<a>`
--- clause per host in m's effective extraAllowed list, so a hit in any
--- ea_ set suppresses those drops for that (mac, packet). For the
+-- the @blocked_macs / eb_ / bl_ drop rules each carry one `ip daddr != @ea_<a>`
+-- clause per host in m's effective extraAllowed list, so a hit in any of
+-- m's ea_ sets suppresses those drops for that (mac, packet). For the
 -- @blocked_macs path: blocked MACs *with* extraAllowed are pulled out of
 -- the set into per-MAC rules carrying the ea exception (one rule per
 -- family; the family-agnostic `ether saddr @blocked_macs drop` cannot
@@ -157,7 +157,7 @@ end
 M.effective_rules = effective_rules
 
 -- Iterate the device map in a deterministic (mac-sorted) order. Many of
--- our nft set element lists and dnsmasq dhcp-host lines should be stable
+-- our nft set element lists should be stable
 -- across rerenders so the etag-equivalent on-disk content doesn't churn.
 local function sorted_devices(devices)
   local keys = {}
@@ -259,23 +259,43 @@ local function resolved6_set_name(mac)
   return "resolved6_" .. sanitize(mac)
 end
 
--- #421: per-(MAC, host) extraAllowed exception sets. ea_<sanmac>_<sanhost>
--- holds the v4 resolved IPs of host a; ea6_ is the v6 sibling. The eb_/bl_
--- drop rules append `ip daddr != @ea_<m>_<a>` for each a ∈ extraAllowed(m),
--- so a hit suppresses the drop. The MAC scoping lives entirely in the nft
--- rule (`ether saddr <m>`); the set name carries the MAC only as a unique
--- per-(MAC, host) identifier — dnsmasq populates it from any client's
--- resolution of the host (#496: dnsmasq's `nftset=` does not support a
--- `tag:` prefix in 2.91, so per-MAC DNS-time scoping isn't an option here).
--- Cross-pollination is benign: an IP belonging to host h enters every
--- ea_<m>_h set declared, but a MAC <m'> without h in its extraAllowed has
--- no corresponding nft rule referencing ea_<m'>_h, so the set is unread.
-local function ea_set_name(mac, host)
-  return "ea_" .. sanitize(mac) .. "_" .. sanitize(host)
+-- #421: extraAllowed exception sets. ea_<sanhost> holds the v4 resolved IPs
+-- of host a; ea6_ is the v6 sibling. The eb_/bl_ drop rules for MAC m append
+-- `ip daddr != @ea_<a>` for each a ∈ extraAllowed(m), so a hit suppresses the
+-- drop. The MAC scoping lives entirely in the nft rule (`ether saddr <m>`),
+-- exactly as for eb_<host>: dnsmasq populates the set from any client's
+-- resolution of the host (#496: dnsmasq's `nftset=` does not support a `tag:`
+-- prefix in 2.91, so per-MAC DNS-time scoping isn't an option), and a MAC
+-- without a in its extraAllowed has no rule referencing ea_<a>.
+--
+-- #2900: the sets are per host, not per (MAC, host). Per-(MAC, host) names
+-- held the same IPs (dnsmasq filled every one from any client's resolution),
+-- but they put the MAC into the dnsmasq conf, so moving a device onto a
+-- profile (a shared-device check-in) changed the conf and paid a dnsmasq
+-- restart + smoke probe for what is purely nft state.
+local function ea_set_name(host)
+  return "ea_" .. sanitize(host)
 end
-local function ea6_set_name(mac, host)
-  return "ea6_" .. sanitize(mac) .. "_" .. sanitize(host)
+local function ea6_set_name(host)
+  return "ea6_" .. sanitize(host)
 end
+M.ea_set_name  = ea_set_name
+M.ea6_set_name = ea6_set_name
+
+-- Sorted unique hosts across every MAC's effective extraAllowed: the ea_/ea6_
+-- sets to declare (render.nft) and populate (render.dnsmasq, the apply-time
+-- backfill).
+local function extra_allowed_hosts(ea_by_mac)
+  local seen, hosts = {}, {}
+  for _, hs in pairs(ea_by_mac) do
+    for _, h in ipairs(hs) do
+      if not seen[h] then seen[h] = true; hosts[#hosts + 1] = h end
+    end
+  end
+  table.sort(hosts)
+  return hosts
+end
+M.extra_allowed_hosts = extra_allowed_hosts
 
 -- Per-MAC effective extraAllowed hosts. Returns { [mac] = {host, ...} } with
 -- hosts sorted + deduplicated; macs with no effective extraAllowed entries
@@ -433,8 +453,7 @@ function M.dnsmasq(snapshot, opts)
   -- declares none of the eb_/bl_/ea_/resolved_/global ipsets, so the conf
   -- MUST carry NO nftset= populators (they would fail against absent sets) and
   -- NO blockEncryptedDns NODATA lines (encrypted-DNS blocking is enforcement
-  -- too). dhcp-host= tags are dropped as well — they only exist to scope
-  -- per-profile nftset callbacks that no longer exist. dnsmasq is then a plain
+  -- too). dnsmasq is then a plain
   -- recursive resolver and all forwarded traffic passes. A header-only file is
   -- a valid conf-dir fragment. Independent of snapshot freshness (works with a
   -- stale/absent snapshot — the API-down case). See docs/escape-hatch.md.
@@ -457,29 +476,16 @@ function M.dnsmasq(snapshot, opts)
     emit("")
   end
 
-  -- #421: which MACs have non-empty effective extraAllowed. We use this
-  -- below to drive per-(MAC, host) ea_ nftset declarations, but no
-  -- dhcp-host tag is needed (#496: dnsmasq's nftset= parser rejects the
-  -- `tag:` prefix, so the per-MAC scoping lives in the nft rule instead
-  -- and the dnsmasq populator is untagged).
-  local ea_by_mac = effective_extra_allowed_by_mac(snapshot)
-
-  -- MAC → profile tag so dnsmasq can apply per-profile tagged callbacks.
-  -- Devices auto-created from first_seen_mac events have profileId=nil
-  -- until an admin assigns them; skip them (no policy to apply yet).
-  --
-  -- #353/#505: no `set:resolvetag_<sanmac>` tag is appended for blockIpOnly
-  -- MACs. The tag-scoped `nftset=tag:...` directive it used to feed is
-  -- rejected by dnsmasq 2.91, so resolved_/resolved6_ sets are populated
-  -- by the wifihaven-dns-tail sidecar from the dnsmasq query log instead.
-  emit("# device MAC → profile tag")
-  for mac, dev in sorted_devices(snapshot.devices) do
-    if dev.profileId then
-      local tags = { string.format("set:profile%d", dev.profileId) }
-      emit(string.format("dhcp-host=%s,%s", mac, table.concat(tags, ",")))
-    end
-  end
-  emit("")
+  -- #2900: nothing in this conf names a MAC or a profile. Which device is on
+  -- which profile is nft state (per-MAC rules); the conf only lists the hosts
+  -- whose resolved IPs feed an nft set. A profile assignment change (a
+  -- shared-device check-in, check-out or holder swap) therefore renders the
+  -- same conf unless it changes the set of hosts, and policy.apply skips the
+  -- dnsmasq restart. The `dhcp-host=<mac>,set:profile<N>` lines this used to
+  -- emit had no reader (no `tag:profile<N>` directive exists: dnsmasq 2.91
+  -- rejects `tag:` in nftset=, #496), so they are gone. blockIpOnly's per-MAC
+  -- resolved_ sets are populated by wifihaven-dns-tail (#353/#505).
+  local ea_hosts = extra_allowed_hosts(effective_extra_allowed_by_mac(snapshot))
 
   -- #353/#505: per-MAC resolved-IP set population is NOT done via dnsmasq
   -- `nftset=` — dnsmasq 2.91 rejects the `tag:` prefix needed for per-MAC
@@ -490,7 +496,7 @@ function M.dnsmasq(snapshot, opts)
   -- openwrt/files/usr/sbin/wifihaven-dns-tail.
 
   -- nftset= populators for every host the snapshot cares about, across all
-  -- channels: per-(MAC, host) extraAllowed (ea_/ea6_, #421/#496), per-host
+  -- channels: per-host extraAllowed (ea_/ea6_, #421/#496/#2900), per-host
   -- extraBlocked (eb_/eb6_, #351/#392), per-category blocklist members
   -- (bl_/bl6_, #352/#392), and the fleet-wide #1319 global policy sets
   -- (@global_allow / @global_block).
@@ -519,11 +525,11 @@ function M.dnsmasq(snapshot, opts)
   -- remainder is parsed as a bogus option — dnsmasq then refuses to start and
   -- :53 returns "connection refused" (the Gate 3a staging-smoke regression in
   -- #1489). Because only one directive per host is honoured we cannot split a
-  -- host across lines, so the per-host spec count must stay bounded. The only
-  -- per-host spec that scales with device count is the per-(MAC,host) ea_
-  -- populator — the #1307 infra-allow copy lands the same host in every
-  -- profile's extraAllowed, so one ea_ spec per device would pile onto a
-  -- single line. We skip the redundant ones in the ea_ loop below.
+  -- host across lines, so the per-host spec count must stay bounded. Since
+  -- #2900 every channel contributes at most one v4 + one v6 spec per host (the
+  -- ea_ sets used to be per-(MAC, host), one spec pair per device), so only a
+  -- pathologically long hostname can still overflow; the guard in the emit
+  -- loop below stays for that case.
   -- #1782: per-blocklist shard files are included via conf-file= directives so
   -- dnsmasq loads the nftset= host entries from /tmp/wifihaven-blocklist-<id>.conf
   -- without the agent ever holding the full host list in Lua memory. The shard
@@ -553,7 +559,7 @@ function M.dnsmasq(snapshot, opts)
 
   -- host_order preserves first-seen ordering (deterministic by source);
   -- host_specs accumulates the per-host spec list. Source order:
-  --   1. ea_  (per-MAC, sorted by mac then host)
+  --   1. ea_  (per host, sorted)
   --   2. eb_  (per-host, in effective_extra_blocked_hosts order)
   --   3. ga_  (global allow, sorted)
   --   4. gb_  (global block, sorted)
@@ -579,26 +585,19 @@ function M.dnsmasq(snapshot, opts)
     end
   end
 
-  -- #1489: a host that is also in global.extraAllowed needs NO per-(MAC,host)
-  -- ea_ populator. @global_allow already carves it out of every drop for every
-  -- MAC (render.nft's ga_suffix), so the ea_ specs are pure redundancy — and
-  -- they are the only per-host nftset spec that scales with device count, so
-  -- emitting one per device is what overflows dnsmasq's config-line buffer
-  -- above. Skip them; enforcement rides on @global_allow, and dns-tail (#1346)
-  -- still populates the per-(MAC,host) ea_ sets from live replies regardless.
-  -- This mirrors the #1307→#1321 redundancy the global-allow layer retires.
+  -- #1489: a host that is also in global.extraAllowed needs NO ea_ populator.
+  -- @global_allow already carves it out of every drop for every MAC
+  -- (render.nft's ga_suffix), so the ea_ specs are pure redundancy. Skip them;
+  -- enforcement rides on @global_allow, and dns-tail (#1346) still populates
+  -- the ea_ sets from live replies regardless. This mirrors the #1307→#1321
+  -- redundancy the global-allow layer retires.
   local ga_host_set = {}
   for _, h in ipairs(ga_hosts) do ga_host_set[h] = true end
 
-  local ea_macs = {}
-  for m in pairs(ea_by_mac) do ea_macs[#ea_macs + 1] = m end
-  table.sort(ea_macs)
-  for _, mac in ipairs(ea_macs) do
-    for _, host in ipairs(ea_by_mac[mac]) do
-      if not ga_host_set[host] then
-        add_spec(host, "4#inet#wifihaven#" .. ea_set_name(mac, host))
-        add_spec(host, "6#inet#wifihaven#" .. ea6_set_name(mac, host))
-      end
+  for _, host in ipairs(ea_hosts) do
+    if not ga_host_set[host] then
+      add_spec(host, "4#inet#wifihaven#" .. ea_set_name(host))
+      add_spec(host, "6#inet#wifihaven#" .. ea6_set_name(host))
     end
   end
   for _, host in ipairs(effective_extra_blocked_hosts(snapshot)) do
@@ -621,16 +620,14 @@ function M.dnsmasq(snapshot, opts)
     for _, host in ipairs(host_order) do
       local specs = host_specs[host]
       local line  = string.format("nftset=/%s/%s", host, table.concat(specs, ","))
-      -- #1489 follow-up: the global-extraAllowed skip above only spares a
-      -- host that lives in @global_allow. A host in many profiles'
-      -- extraAllowed but NOT in global.extraAllowed still piles one ea_ spec
-      -- per device onto a single merged line and overflows dnsmasq's 1024-
-      -- byte config-line buffer (Gate 3a staging-smoke regression after
-      -- #1493 shipped). When that happens, drop the per-(MAC,host) ea_/ea6_
-      -- specs from the merged directive: dns-tail (#1346) repopulates the
-      -- ea_ sets from live replies, so the per-MAC carve-out is only delayed
-      -- until the first reply lands for that host, not lost. Crashing
-      -- dnsmasq (which takes :53 down for every device) is strictly worse.
+      -- #1489 follow-up: if a merged line would still overflow dnsmasq's
+      -- 1024-byte config-line buffer (pre-#2900 that was a host in many
+      -- profiles' extraAllowed piling one ea_ spec per device onto the line;
+      -- now only a very long hostname), drop the ea_/ea6_ specs from the
+      -- merged directive: dns-tail (#1346) repopulates the ea_ sets from live
+      -- replies, so the carve-out is only delayed until the first reply lands
+      -- for that host, not lost. Crashing dnsmasq (which takes :53 down for
+      -- every device) is strictly worse.
       if #line > 1024 then
         local kept, dropped = {}, 0
         for _, s in ipairs(specs) do
@@ -641,7 +638,7 @@ function M.dnsmasq(snapshot, opts)
           end
         end
         emit(string.format(
-          "# wifihaven: dropped %d per-(MAC,host) ea_ spec(s) for %s to fit dnsmasq's 1024-byte line limit (#1489); dns-tail (#1346) repopulates ea_ sets from live replies",
+          "# wifihaven: dropped %d ea_ spec(s) for %s to fit dnsmasq's 1024-byte line limit (#1489); dns-tail (#1346) repopulates ea_ sets from live replies",
           dropped, host))
         if #kept > 0 then
           line = string.format("nftset=/%s/%s", host, table.concat(kept, ","))
@@ -936,7 +933,7 @@ function M.nft(snapshot, opts)
   --
   -- #421: blocked MACs whose effective rules also have a non-empty
   -- extraAllowed list get pulled out of the @blocked_macs set into
-  -- per-MAC rules carrying the `ip daddr != @ea_<m>_<a>` exception. The
+  -- per-MAC rules carrying the `ip daddr != @ea_<a>` exception. The
   -- @blocked_macs set itself stays family-agnostic (it cannot carry an
   -- `ip daddr` predicate), so MACs with ea exceptions need per-family
   -- rules instead.
@@ -1020,9 +1017,9 @@ function M.nft(snapshot, opts)
     emit("")
   end
 
-  -- #421: per-(MAC, host) extraAllowed sets. One v4 + one v6 set per
-  -- (mac, host) pair that appears in some device's effective extraAllowed
-  -- list. Sets are declared even for allowall-suppressed MACs (the dnsmasq
+  -- #421/#2900: extraAllowed sets. One v4 + one v6 set per host that appears
+  -- in some device's effective extraAllowed list. Sets are declared even when
+  -- every MAC naming the host is allowall-suppressed (the dnsmasq
   -- populator still runs harmlessly; sets are cheap) — the drop/DNAT
   -- suffixes below are what allowall actually suppresses, by virtue of
   -- the eb_/bl_ rules themselves being suppressed for those MACs.
@@ -1036,7 +1033,7 @@ function M.nft(snapshot, opts)
   -- re-resolution can't keep an actively-used carve alive — only a long
   -- timeout can. Memory stays bounded: per set the element count is
   -- (distinct resolved IPs for that host over the timeout window); the number
-  -- of sets is (carved MACs × their small extraAllowed lists); and the whole
+  -- of sets is (distinct carved hosts); and the whole
   -- table is delete+recreated on every policy apply (policy.apply's `nft -f`,
   -- which also re-seeds via the #2095 apply-time backfill), so accumulation is
   -- capped by the inter-apply interval, not device uptime. 24h (vs 1h) trades a
@@ -1044,29 +1041,22 @@ function M.nft(snapshot, opts)
   -- stable block without a re-resolve — the exact #2094 scenario.
   local EA_CARVE_TIMEOUT = "24h"
   local ea_by_mac = ea_by_mac_early
-  do
-    local ea_macs = {}
-    for m in pairs(ea_by_mac) do ea_macs[#ea_macs + 1] = m end
-    table.sort(ea_macs)
-    for _, mac in ipairs(ea_macs) do
-      for _, host in ipairs(ea_by_mac[mac]) do
-        ind(string.format("set %s {", ea_set_name(mac, host)))
-        ind2("type ipv4_addr")
-        ind2("flags dynamic,timeout")
-        ind2("timeout " .. EA_CARVE_TIMEOUT)
-        ind("}")
-        emit("")
-        ind(string.format("set %s {", ea6_set_name(mac, host)))
-        ind2("type ipv6_addr")
-        ind2("flags dynamic,timeout")
-        ind2("timeout " .. EA_CARVE_TIMEOUT)
-        ind("}")
-        emit("")
-      end
-    end
+  for _, host in ipairs(extra_allowed_hosts(ea_by_mac)) do
+    ind(string.format("set %s {", ea_set_name(host)))
+    ind2("type ipv4_addr")
+    ind2("flags dynamic,timeout")
+    ind2("timeout " .. EA_CARVE_TIMEOUT)
+    ind("}")
+    emit("")
+    ind(string.format("set %s {", ea6_set_name(host)))
+    ind2("type ipv6_addr")
+    ind2("flags dynamic,timeout")
+    ind2("timeout " .. EA_CARVE_TIMEOUT)
+    ind("}")
+    emit("")
   end
 
-  -- #421: helper — emit the `ip daddr != @ea_<m>_<a>` exception suffix
+  -- #421: helper — emit the `ip daddr != @ea_<a>` exception suffix
   -- to append to a (mac, family) drop / dnat predicate. Joins one clause
   -- per a ∈ extraAllowed(m); returns "" if the MAC has no extraAllowed.
   local function ea_suffix(mac, family)
@@ -1075,9 +1065,9 @@ function M.nft(snapshot, opts)
     local parts = {}
     for _, host in ipairs(hosts) do
       if family == "ip6" then
-        parts[#parts + 1] = " ip6 daddr != @" .. ea6_set_name(mac, host)
+        parts[#parts + 1] = " ip6 daddr != @" .. ea6_set_name(host)
       else
-        parts[#parts + 1] = " ip daddr != @" .. ea_set_name(mac, host)
+        parts[#parts + 1] = " ip daddr != @" .. ea_set_name(host)
       end
     end
     return table.concat(parts)
@@ -1361,7 +1351,7 @@ function M.nft(snapshot, opts)
   end
   -- v4 drops first, then v6 (#392). One ipset directive populates both sets
   -- at DNS time; here we gate on whichever family the destination matched.
-  -- #421: each eb_/bl_ drop carries `ip daddr != @ea_<m>_<a>` exception
+  -- #421: each eb_/bl_ drop carries `ip daddr != @ea_<a>` exception
   -- clauses (one per a ∈ extraAllowed(m)) so an allowed host's resolved
   -- IPs suppress the drop. ea_suffix("") for MACs with no extraAllowed,
   -- so behaviour for those is unchanged.

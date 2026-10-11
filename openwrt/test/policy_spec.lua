@@ -914,7 +914,7 @@ describe("policy.apply ea_/ea6_ backfill (#2095)", function()
     -- resolution, so an in-flight keep-alive submit POST survives.
     local reloads, writes = run()
     assert.is_true(
-      issued(reloads, writes, "ea_ca_ef_a1_72_6a_a3_mathacademy_com", "52.40.111.135"),
+      issued(reloads, writes, "ea_mathacademy_com", "52.40.111.135"),
       "expected the app's own domain immediately carved over v4 after apply")
   end)
 
@@ -938,7 +938,7 @@ describe("policy.apply ea_/ea6_ backfill (#2095)", function()
     local found = false
     for _, c in ipairs(reloads) do
       if c:find("nft add element", 1, true)
-         and c:find("ea_ca_ef_a1_72_6a_a3_mathacademy_com", 1, true) then
+         and c:find("ea_mathacademy_com", 1, true) then
         found = true
       end
     end
@@ -948,7 +948,7 @@ describe("policy.apply ea_/ea6_ backfill (#2095)", function()
   it("backfills ea_ (v4) for the shared CDN apex from the persisted cache", function()
     local reloads, writes = run()
     assert.is_true(
-      issued(reloads, writes, "ea_ca_ef_a1_72_6a_a3_jsdelivr_net", "151.101.1.229"),
+      issued(reloads, writes, "ea_jsdelivr_net", "151.101.1.229"),
       "expected the v4 carve set for cdn.jsdelivr.net to be seeded")
   end)
 
@@ -958,7 +958,7 @@ describe("policy.apply ea_/ea6_ backfill (#2095)", function()
     -- adds the expanded form; nft matches the compressed dest packet regardless.
     local canon = host_norm.canon_ip("2606:4700::6811:d005")
     assert.is_true(
-      issued(reloads, writes, "ea6_ca_ef_a1_72_6a_a3_jsdelivr_net", canon),
+      issued(reloads, writes, "ea6_jsdelivr_net", canon),
       "expected the v6 carve set for cdn.jsdelivr.net to be seeded")
   end)
 

@@ -8,8 +8,9 @@
 --
 --   * resolved_<mac>        — blockIpOnly allow-by-resolution (#505)
 --   * eb_<sanhost>          — extraBlocked drop set (#515)
---   * ea_<sanmac>_<sanhost> — extraAllowed carve-out (#421); NEW dns-tail
---                             populator added in #1346 (was dnsmasq-only).
+--   * ea_<sanhost>          — extraAllowed carve-out (#421); dns-tail
+--                             populator added in #1346 (was dnsmasq-only);
+--                             per host, not per (MAC, host), since #2900.
 --
 -- #1346 — the directly-queried CNAME-target gap. Some clients (Apple devices)
 -- resolve a branded host, then re-query the FINAL CNAME target *directly* as a
@@ -68,20 +69,13 @@ function M.nft_add_element(nft_table, set_name, ip, exec_fn)
   return true
 end
 
--- Sanitized-MAC sub-pattern: six hex pairs joined by `_`. The ea_ set name
--- embeds BOTH mac and host (`ea_<sanmac>_<sanhost>`, e.g.
--- `ea_04_72_ef_d6_e4_5a_kastatic_org`); the fixed-width MAC prefix is what
--- lets us split it back into (sanmac, sanhost) unambiguously even though both
--- halves contain underscores.
-local SANMAC = "%x%x_%x%x_%x%x_%x%x_%x%x_%x%x"
-
 -- Classify one `nft -a list table` line, mutating the membership tables in
 -- `s` (s = { bio={}, eb4={}, eb6={}, ea4={}, ea6={} }):
 --   bio[sanmac]            = true      resolved_<sanmac>      (#505)
 --   eb4[sanhost]           = true      eb_<sanhost>           (#515)
 --   eb6[sanhost]           = true      eb6_<sanhost>          (#515)
---   ea4[sanmac][sanhost]   = true      ea_<sanmac>_<sanhost>  (#421/#1346)
---   ea6[sanmac][sanhost]   = true      ea6_<sanmac>_<sanhost>
+--   ea4[sanhost]           = true      ea_<sanhost>           (#421/#1346/#2900)
+--   ea6[sanhost]           = true      ea6_<sanhost>
 -- The literal `resolved_`/`eb_`/`eb6_`/`ea_`/`ea6_` prefixes are mutually
 -- exclusive (none is a prefix of another after the trailing `_`), so the
 -- independent matches below cannot cross-fire.
@@ -92,16 +86,10 @@ function M.classify_set_line(line, s)
   if eb4 then s.eb4[eb4] = true end
   local eb6 = line:match("set%s+eb6_([%w_]+)%s*{")
   if eb6 then s.eb6[eb6] = true end
-  local ea4m, ea4h = line:match("set%s+ea_(" .. SANMAC .. ")_([%w_]+)%s*{")
-  if ea4m then
-    s.ea4[ea4m] = s.ea4[ea4m] or {}
-    s.ea4[ea4m][ea4h] = true
-  end
-  local ea6m, ea6h = line:match("set%s+ea6_(" .. SANMAC .. ")_([%w_]+)%s*{")
-  if ea6m then
-    s.ea6[ea6m] = s.ea6[ea6m] or {}
-    s.ea6[ea6m][ea6h] = true
-  end
+  local ea4 = line:match("set%s+ea_([%w_]+)%s*{")
+  if ea4 then s.ea4[ea4] = true end
+  local ea6 = line:match("set%s+ea6_([%w_]+)%s*{")
+  if ea6 then s.ea6[ea6] = true end
 end
 
 -- Walk the candidate sanitized-host suffixes for an answered name and invoke
@@ -127,16 +115,10 @@ function M.each_candidate_host(name, resolve_head, fn)
   end
 end
 
--- maybe_populate_eb(r, deps) — extraBlocked populator (#515 + #1346).
--- r    : a dns_log.parse_resolved_reply result { name, ip, family }.
--- deps : { eb4, eb6, nft_table, exec_fn?, resolve_head?, log? }
--- Returns the number of `nft add element` commands issued (0+). A host whose
--- answered name OR recovered branded head suffix-matches a declared
--- eb_/eb6_<sanhost> set gets its resolved IP added to that set.
-function M.maybe_populate_eb(r, deps)
-  if not r or not r.name then return 0 end
-  local set    = (r.family == "v6") and deps.eb6 or deps.eb4
-  local prefix = (r.family == "v6") and "eb6_" or "eb_"
+-- Shared per-host populator walk for eb_ and ea_: add r.ip to <prefix><sanhost>
+-- for the first declared host each candidate name suffix-matches.
+local function populate_per_host(r, set, prefix, deps)
+  if not set then return 0 end
   local adds, seen = 0, {}
   M.each_candidate_host(r.name, deps.resolve_head, function(sanhost)
     if set[sanhost] then
@@ -153,42 +135,33 @@ function M.maybe_populate_eb(r, deps)
   return adds
 end
 
--- maybe_populate_ea(r, deps) — extraAllowed carve-out populator (#1346, NEW).
--- Mirrors maybe_populate_eb but the sets are per-(mac, host): map the reply's
--- client_ip → MAC, then for each ea_<sanmac>_<sanhost> set belonging to that
--- MAC whose host suffix-matches the answered name OR its recovered branded
--- head, add the resolved IP.
--- r    : a dns_log.parse_resolved_reply result { client_ip, name, ip, family }.
--- deps : { ea4, ea6, ip_to_mac, nft_table, exec_fn?, resolve_head?, log? }
+-- maybe_populate_eb(r, deps) — extraBlocked populator (#515 + #1346).
+-- r    : a dns_log.parse_resolved_reply result { name, ip, family }.
+-- deps : { eb4, eb6, nft_table, exec_fn?, resolve_head?, log? }
+-- Returns the number of `nft add element` commands issued (0+). A host whose
+-- answered name OR recovered branded head suffix-matches a declared
+-- eb_/eb6_<sanhost> set gets its resolved IP added to that set.
+function M.maybe_populate_eb(r, deps)
+  if not r or not r.name then return 0 end
+  local v6 = (r.family == "v6")
+  return populate_per_host(r, v6 and deps.eb6 or deps.eb4, v6 and "eb6_" or "eb_", deps)
+end
+
+-- maybe_populate_ea(r, deps) — extraAllowed carve-out populator (#1346).
+-- Same walk as maybe_populate_eb against the declared ea_/ea6_<sanhost> sets.
+-- Any client's reply populates them, exactly as dnsmasq's own nftset= callback
+-- does: the per-MAC scoping lives in the nft rule (#2900).
+-- r    : a dns_log.parse_resolved_reply result { name, ip, family }.
+-- deps : { ea4, ea6, nft_table, exec_fn?, resolve_head?, log? }
 -- Returns the number of `nft add element` commands issued (0+).
 function M.maybe_populate_ea(r, deps)
   if not r or not r.name then return 0 end
-  local mac = deps.ip_to_mac and deps.ip_to_mac[r.client_ip]
-  if not mac then return 0 end
-  local sanmac = M.sanitize(mac)
-  local by_mac = (r.family == "v6") and deps.ea6 or deps.ea4
-  local hosts  = by_mac and by_mac[sanmac]
-  if not hosts then return 0 end
-  local prefix = (r.family == "v6") and "ea6_" or "ea_"
-  local adds, seen = 0, {}
-  M.each_candidate_host(r.name, deps.resolve_head, function(sanhost)
-    if hosts[sanhost] then
-      if not seen[sanhost] then
-        seen[sanhost] = true
-        M.nft_add_element(deps.nft_table,
-          prefix .. sanmac .. "_" .. sanhost, r.ip, deps.exec_fn)
-        adds = adds + 1
-        if deps.log then deps.log(prefix .. sanmac .. "_" .. sanhost, r, mac) end
-      end
-      return true
-    end
-    return false
-  end)
-  return adds
+  local v6 = (r.family == "v6")
+  return populate_per_host(r, v6 and deps.ea6 or deps.ea4, v6 and "ea6_" or "ea_", deps)
 end
 
 -- backfill_ea(cache, carve, deps) — apply-time pre-population of the
--- per-(mac,host) extraAllowed carve sets (#2095).
+-- extraAllowed carve sets (#2095).
 --
 -- policy.apply reloads the ruleset with a single `nft -f` whose prelude
 -- delete+recreates `table inet wifihaven`, so EVERY ea_/ea6_ carve set is
@@ -203,16 +176,15 @@ end
 --
 -- cache : { [ip] = hostname }  — dns_log.load_table output (the answered name
 --         attributed to each resolved ip; already TTL-bounded on load).
--- carve : { [sanhost] = { [sanmac]=true, ... } } — the sanitized hosts in some
---         MAC's effective extraAllowed and the MACs that carve each. Built by
---         the caller from render.effective_extra_allowed_by_mac (the SAME SSOT
---         that DECLARES the sets), so every add targets a set that exists.
+-- carve : { [sanhost] = true } — the sanitized hosts in some MAC's effective
+--         extraAllowed. Built by the caller from render.extra_allowed_hosts
+--         (the SAME SSOT that DECLARES the sets), so every add targets a set
+--         that exists.
 -- deps  : { nft_table, exec_fn?, resolve_head?, log? }
 --
 -- For each cached (ip, hostname): walk the answered name's candidate suffixes
 -- (+ the #1346 recovered branded head via resolve_head) and, on the first
--- carved-host hit, add ip to ea_/ea6_<sanmac>_<sanhost> for every MAC that
--- carves that host. Family is chosen from the ip literal (colon => v6). The ip
+-- carved-host hit, add ip to ea_/ea6_<sanhost>. Family is chosen from the ip literal (colon => v6). The ip
 -- passes through safe_addr (inside nft_add_element) so a malformed cache line
 -- can never reach the shell. Returns the number of `nft add element` commands
 -- issued.
@@ -225,8 +197,7 @@ end
 -- per-element, #2208 batch). Single source of the walk/dedup semantics: for
 -- each cached (ip, name) whose candidate suffix (or #1346 recovered branded
 -- head) hits a carved host — first carved suffix wins, mirroring
--- maybe_populate_ea — invoke emit(set_name, safe_ip, name) once per MAC that
--- carves the host. Family (ea_ vs ea6_) is chosen from the ip literal; ips
+-- maybe_populate_ea — invoke emit(set_name, safe_ip, name) once. Family (ea_ vs ea6_) is chosen from the ip literal; ips
 -- failing safe_addr are skipped before the walk so a malformed cache line can
 -- never reach an emitter.
 local function each_ea_backfill_element(cache, carve, deps, emit)
@@ -238,13 +209,10 @@ local function each_ea_backfill_element(cache, carve, deps, emit)
         local prefix = safe:find(":", 1, true) and "ea6_" or "ea_"
         local seen   = {}
         M.each_candidate_host(name, deps.resolve_head, function(sanhost)
-          local macs = carve[sanhost]
-          if macs then
+          if carve[sanhost] then
             if not seen[sanhost] then
               seen[sanhost] = true
-              for sanmac in pairs(macs) do
-                emit(prefix .. sanmac .. "_" .. sanhost, safe, name)
-              end
+              emit(prefix .. sanhost, safe, name)
             end
             return true  -- first carved suffix wins (mirror maybe_populate_ea)
           end
@@ -285,7 +253,7 @@ end
 -- render one batch rather than exec per element.
 --
 -- Safety: every target set is DECLARED by render.nft from the SAME
--- render.effective_extra_allowed_by_mac SSOT the caller builds `carve` from,
+-- render.extra_allowed_hosts SSOT the caller builds `carve` from,
 -- and the `nft -f` that created them ran immediately before, so all sets exist
 -- and are empty (no missing-set or duplicate-element aborts inside the single
 -- transaction). IPs pass safe_addr; set names are sanitized — no shell/nft

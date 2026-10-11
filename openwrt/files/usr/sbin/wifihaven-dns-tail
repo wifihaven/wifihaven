@@ -154,8 +154,8 @@ end
 --   bio  — { [sanmac]          = true } MACs with a resolved_<sanmac> set (#505).
 --   eb4  — { [sanhost]         = true } hosts with an eb_<sanhost>  set (#515).
 --   eb6  — { [sanhost]         = true } hosts with an eb6_<sanhost> set (#515).
---   ea4  — { [sanmac]={[sanhost]=true} } per-(MAC,host) ea_ allow sets (#1346).
---   ea6  — { [sanmac]={[sanhost]=true} } the v6 sibling.
+--   ea4  — { [sanhost]         = true } hosts with an ea_<sanhost>  set (#1346/#2900).
+--   ea6  — { [sanhost]         = true } hosts with an ea6_<sanhost> set.
 -- All live in the same `inet wifihaven` table and refresh on the same cadence,
 -- so a single `nft list table` popen pays for all of them.
 local function refresh_nft_sets()
@@ -229,23 +229,22 @@ local function maybe_populate_eb(line)
   })
 end
 
--- #1346: per-(MAC, host) extraAllowed carve-out populator. There was NO
--- dns-tail populator for ea_ before this — the kernel allow set was filled
--- only by dnsmasq's `nftset=/host/...#ea_<mac>_<host>` directive, which misses
--- the directly-queried CDN target (the target doesn't suffix-match the brand).
--- Mirror the eb_ path but key the declared sets by MAC: map client_ip → MAC,
--- recover the branded head, and add the IP to that MAC's matching ea_ set.
+-- #1346: extraAllowed carve-out populator. There was NO dns-tail populator for
+-- ea_ before this — the kernel allow set was filled only by dnsmasq's
+-- `nftset=/host/...#ea_<host>` directive, which misses the directly-queried CDN
+-- target (the target doesn't suffix-match the brand). Same walk as the eb_
+-- path: recover the branded head and add the IP to the matching ea_<host> set
+-- (per host since #2900; the per-MAC scoping lives in the nft rule).
 local function maybe_populate_ea(line)
   local r = dns_log.parse_resolved_reply(line)
   if not r then return end
   ea_adds_total = ea_adds_total + dns_sets.maybe_populate_ea(r, {
     ea4 = nft_sets.ea4, ea6 = nft_sets.ea6,
-    ip_to_mac    = ip_to_mac,
     nft_table    = nft_table,
     resolve_head = cache.resolve_head,
-    log = function(set_name, _r, mac)
-      log.debug("dns-tail: ea add %s { %s } client=%s mac=%s name=%s",
-                set_name, r.ip, r.client_ip, mac, r.name)
+    log = function(set_name)
+      log.debug("dns-tail: ea add %s { %s } client=%s name=%s",
+                set_name, r.ip, r.client_ip, r.name)
     end,
   })
 end
@@ -272,7 +271,7 @@ local function maybe_populate_bl(line)
   end)
 end
 
-log.info("dns-tail: populator init — %d lease(s), %d bio set(s), %d eb set(s), %d ea mac(s)",
+log.info("dns-tail: populator init — %d lease(s), %d bio set(s), %d eb set(s), %d ea set(s)",
          (function() local n = 0; for _ in pairs(ip_to_mac) do n = n + 1 end; return n end)(),
          (function() local n = 0; for _ in pairs(nft_sets.bio) do n = n + 1 end; return n end)(),
          (function() local n = 0; for _ in pairs(nft_sets.eb4) do n = n + 1 end; return n end)(),
@@ -359,8 +358,8 @@ while true do
     -- through.
     maybe_populate_eb(line)
 
-    -- #1346: per-(MAC, host) extraAllowed carve-out, same first-SYN-race
-    -- argument — if the resolved IP isn't in the ea_<mac>_<host> set before the
+    -- #1346: extraAllowed carve-out, same first-SYN-race
+    -- argument — if the resolved IP isn't in the ea_<host> set before the
     -- flow's first packet, a whole-MAC block drops an explicitly-allowed app.
     maybe_populate_ea(line)
 

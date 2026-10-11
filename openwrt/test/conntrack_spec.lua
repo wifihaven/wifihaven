@@ -2823,7 +2823,7 @@ describe("slow-path bounding (#2719)", function()
     local exec = function(cmd)
       seen[#seen + 1] = cmd
       if cmd:find("bl_ads", 1, true) then return 0 end
-      if cmd:find("ea_aa_bb_cc_11_22_33_news_example", 1, true) then return 0 end
+      if cmd:find("ea_news_example", 1, true) then return 0 end
       return 1
     end
     local b = collecting_batcher()

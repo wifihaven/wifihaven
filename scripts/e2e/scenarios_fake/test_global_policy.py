@@ -33,7 +33,7 @@ import socket
 import pytest
 
 from ._observers import (
-    ea_set_exists_for_mac,
+    ea_carve_present_for_mac,
     mac_drop_rule_present,
     wait_block_page,
     wait_global_allow_populated,
@@ -110,7 +110,7 @@ def test_global_allow_beats_whole_mac_block(router, client, fake_api):
     # the global layer for this MAC).
     members = wait_global_allow_populated(timeout_s=30)
     assert members, "expected @global_allow to carry >=1 resolved IP"
-    assert not ea_set_exists_for_mac(client.mac), (
+    assert not ea_carve_present_for_mac(client.mac), (
         "global-only allow host must not produce a per-MAC ea_ set; the carve-out "
         "is the fleet-wide @global_allow, not a per-(MAC, host) allow"
     )
@@ -158,8 +158,8 @@ def test_global_allow_applies_to_every_mac(router, client, client_factory, fake_
 
     # Neither MAC got a per-MAC ea_ set — the carve-out is the single shared
     # @global_allow, applied flat across the fleet.
-    assert not ea_set_exists_for_mac(kids.mac)
-    assert not ea_set_exists_for_mac(adults.mac)
+    assert not ea_carve_present_for_mac(kids.mac)
+    assert not ea_carve_present_for_mac(adults.mac)
 
 
 # ── H3 — global.extraBlocked blocks fleet-wide, per-profile allow can't save ─
