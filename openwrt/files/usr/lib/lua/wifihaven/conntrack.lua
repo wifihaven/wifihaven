@@ -289,13 +289,15 @@ end
 -- extraAllowed set `ea_<host>` / `ea6_…` (#421/#496; per host since #2900 —
 -- the caller only probes hosts in the flow MAC's own extraAllowed) and
 -- the fleet-wide `global_allow` / `global_allow6` (#1319). Set names mirror
--- render.lua's ea_set_name / GLOBAL_ALLOW4 — both use render.sanitize, which is
--- eb_san's rule (dots and colons only), so eb_san is the right sanitizer here
--- and bl_san is not.
+-- render.lua's ea_set_name (called directly, so the name rule has one home) /
+-- GLOBAL_ALLOW4.
 -- ---------------------------------------------------------------------------
 function M.nft_ea_hit(dst_ip, ea_host, exec_fn)
-  local san = M.eb_san(ea_host)
-  return M.nft_set_hit(dst_ip, "ea_" .. san, "ea6_" .. san, exec_fn)
+  if _render_module == nil then
+    _render_module = require("wifihaven.render")
+  end
+  return M.nft_set_hit(dst_ip, _render_module.ea_set_name(ea_host),
+                       _render_module.ea6_set_name(ea_host), exec_fn)
 end
 
 function M.nft_ga_hit(dst_ip, exec_fn)
@@ -1294,7 +1296,7 @@ function M.handle_flow(flow, ctx, batcher)
   --   ... daddr @eb_<host>|@bl_<id> != @ea_<host> … != @global_allow
   -- so a set hit ALONE is not a drop. With no attribution the only way to
   -- evaluate the exception clauses is to ask the kernel about the same sets it
-  -- excepts on: the MAC's per-(mac, host) ea_ sets and the fleet-wide
+  -- excepts on: the ea_ sets for the MAC's own extraAllowed hosts and the fleet-wide
   -- global_allow. Returns "carved" (the kernel let this flow through),
   -- "clear" (no carve-out applies), or "unknown" when the budget ran out
   -- mid-check — and "unknown" must NOT be labelled blocked, because claiming a

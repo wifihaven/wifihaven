@@ -585,6 +585,12 @@ script's install step (`opkg install` or `apk add --allow-untrusted`) uses
 the standard upgrade path, which preserves `/etc/config/wifihaven`, so the
 router credentials survive and no re-enrollment is needed.
 
+If your LAN only hands out leases to known hosts (`option dynamicdhcp '0'` in
+`/etc/config/dhcp`), give each device its own static lease (a `config host`
+section). Agents before #2900 wrote a `dhcp-host=` line for every device with a
+profile, which made those devices "known" as a side effect; current agents
+don't.
+
 ## Manual install (fallback)
 
 Use this if you cannot or do not want to run the one-shot script — for

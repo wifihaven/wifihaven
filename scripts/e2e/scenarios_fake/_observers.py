@@ -50,7 +50,7 @@ def mac_drop_rule_present(mac: str) -> bool:
     effective rules have ``blocked = true`` — and the only correct one when the
     MAC also has a non-empty ``extraAllowed`` list. Per #421, render.lua pulls a
     blocked-with-extraAllowed MAC OUT of the ``@blocked_macs`` set into per-MAC
-    forward-chain rules that carry the ``ip daddr != @ea_<mac>_<host>`` carve-out
+    forward-chain rules that carry the ``ip daddr != @ea_<host>`` carve-out
     (the set cannot hold an ``ip daddr`` predicate). So such a MAC is
     deliberately ABSENT from ``blocked_macs`` while still fully blocked — asserting
     set membership there would never succeed (the #1360 G2 false-failure).
@@ -306,7 +306,7 @@ def wait_bl_set_populated(bl_id: str, *, timeout_s: float = 90) -> list[str]:
 # ── #1319 global policy sets (@global_allow / @global_block) ─────────────────
 #
 # Fleet-wide ipsets render.lua declares when the snapshot carries a populated
-# `global` section. Unlike the per-(MAC, host) `ea_<mac>_<host>` sets, these
+# `global` section. Unlike the per-host `ea_<host>` sets (scoped to a MAC by its rules), these
 # are NOT keyed by MAC — one `global_allow` / `global_block` set applies to
 # every MAC. Populated at DNS resolve time by dnsmasq `nftset=` callbacks, same
 # as eb_/bl_. See render.lua GLOBAL_ALLOW4 / GLOBAL_BLOCK4.

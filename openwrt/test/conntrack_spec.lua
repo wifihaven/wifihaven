@@ -1494,7 +1494,7 @@ describe("handle_flow", function()
   -- ── extraAllowed (ea_) override for blocked MACs (#421) ──────────────────
   --
   -- When a MAC is paused / schedule-blocked / time-limited, the kernel still
-  -- allows flows to extraAllowed hosts via `ip daddr != @ea_<mac>_<host>`
+  -- allows flows to extraAllowed hosts via `ip daddr != @ea_<host>`
   -- clauses.  handle_flow must flip allowed back to true when hname matches.
 
   it("ea-override: blocked MAC + flow to extraAllowed host → allowed=true reason=nil", function()
@@ -2794,7 +2794,7 @@ describe("slow-path bounding (#2719)", function()
 
   -- ── the kernel's carve-out clauses apply on the slow path too ───────────
   --
-  -- The kernel rule is `daddr @bl_<id> != @ea_<mac>_<host> != @global_allow`,
+  -- The kernel rule is `daddr @bl_<id> != @ea_<host> != @global_allow`,
   -- so a bl_ hit alone is not a drop. With no hostname to compare, the only
   -- way to evaluate the exception clauses is to probe the same sets.
 
@@ -2818,7 +2818,7 @@ describe("slow-path bounding (#2719)", function()
       "the kernel forwards this flow via global_allow; the event must not say blocked")
   end)
 
-  it("does not report blocked when a per-MAC ea_ set covers the destination", function()
+  it("does not report blocked when one of the MAC's ea_ sets covers the destination", function()
     local seen = {}
     local exec = function(cmd)
       seen[#seen + 1] = cmd

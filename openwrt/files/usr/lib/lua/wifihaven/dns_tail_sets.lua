@@ -184,9 +184,9 @@ end
 --
 -- For each cached (ip, hostname): walk the answered name's candidate suffixes
 -- (+ the #1346 recovered branded head via resolve_head) and, on the first
--- carved-host hit, add ip to ea_/ea6_<sanhost>. Family is chosen from the ip literal (colon => v6). The ip
--- passes through safe_addr (inside nft_add_element) so a malformed cache line
--- can never reach the shell. Returns the number of `nft add element` commands
+-- carved-host hit, add ip to ea_/ea6_<sanhost>. Family is chosen from the ip
+-- literal (colon => v6). The ip passes through safe_addr (inside
+-- nft_add_element) so a malformed cache line can never reach the shell. Returns the number of `nft add element` commands
 -- issued.
 --
 -- Cost: one linear pass over the cache (× label depth) with a hash lookup per
@@ -197,7 +197,8 @@ end
 -- per-element, #2208 batch). Single source of the walk/dedup semantics: for
 -- each cached (ip, name) whose candidate suffix (or #1346 recovered branded
 -- head) hits a carved host — first carved suffix wins, mirroring
--- maybe_populate_ea — invoke emit(set_name, safe_ip, name) once. Family (ea_ vs ea6_) is chosen from the ip literal; ips
+-- maybe_populate_ea — invoke emit(set_name, safe_ip, name) once. Family (ea_
+-- vs ea6_) is chosen from the ip literal; ips
 -- failing safe_addr are skipped before the walk so a malformed cache line can
 -- never reach an emitter.
 local function each_ea_backfill_element(cache, carve, deps, emit)

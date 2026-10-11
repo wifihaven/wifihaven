@@ -794,7 +794,7 @@ end)
 --
 -- #2094 root cause (confirmed, NOT a v6-only race): `nft -f` deletes+recreates
 -- `table inet wifihaven` as the prelude of EVERY apply (render.lua:730-731),
--- destroying the dynamic per-(mac,host) ea_/ea6_ carve sets AND their
+-- destroying the dynamic ea_/ea6_ carve sets AND their
 -- contents. They're only repopulated LAZILY at the next DNS resolution
 -- (dnsmasq nftset= callback + wifihaven-dns-tail). So for the window between a
 -- policy apply and the next re-resolution of each carved host, EVERY carved

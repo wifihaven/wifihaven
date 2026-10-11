@@ -106,12 +106,12 @@ def test_global_allow_beats_whole_mac_block(router, client, fake_api):
     assert probe.http_code is not None and 200 <= probe.http_code < 400
 
     # Router-state corroboration: the fleet-wide @global_allow set holds the
-    # resolved IP, and the host did NOT get a per-MAC ea_ set (it lives only in
+    # resolved IP, and the MAC's rules carry NO ea_ carve (it lives only in
     # the global layer for this MAC).
     members = wait_global_allow_populated(timeout_s=30)
     assert members, "expected @global_allow to carry >=1 resolved IP"
     assert not ea_carve_present_for_mac(client.mac), (
-        "global-only allow host must not produce a per-MAC ea_ set; the carve-out "
+        "global-only allow host must not produce an ea_ carve in this MAC's rules; the carve-out "
         "is the fleet-wide @global_allow, not a per-(MAC, host) allow"
     )
 
@@ -156,7 +156,7 @@ def test_global_allow_applies_to_every_mac(router, client, client_factory, fake_
     p_adults = wait_http_succeeds(adults, host=GLOBAL_ALLOW_HOST, timeout_s=120)
     assert p_adults.http_code is not None and 200 <= p_adults.http_code < 400
 
-    # Neither MAC got a per-MAC ea_ set — the carve-out is the single shared
+    # Neither MAC's rules carry an ea_ carve — the carve-out is the single shared
     # @global_allow, applied flat across the fleet.
     assert not ea_carve_present_for_mac(kids.mac)
     assert not ea_carve_present_for_mac(adults.mac)
