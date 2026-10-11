@@ -1,4 +1,5 @@
 import { apiHealth } from '@/api/apiHealth'
+import { inflightWrites } from '@/api/inflightWrites'
 // #2824: HttpError lives in the leaf `api/httpError` module, NOT here, so a
 // component can import it without pulling in this module — which most page tests
 // mock wholesale, and a mocked module cannot supply a helper the component calls.
@@ -128,7 +129,20 @@ export function isCurrentPasswordIncorrect(e: unknown): boolean {
   return e instanceof CurrentPasswordIncorrectError
 }
 
-async function req<T>(
+// #2903: every write is counted while it is outstanding, so the new-build reload can wait for it.
+function req<T>(
+  method: string,
+  path: string,
+  body?: unknown,
+  skipAuth = false,
+  signal?: AbortSignal,
+): Promise<T> {
+  if (method === 'GET') return send<T>(method, path, body, skipAuth, signal)
+  const done = inflightWrites.begin()
+  return send<T>(method, path, body, skipAuth, signal).finally(done)
+}
+
+async function send<T>(
   method: string,
   path: string,
   body?: unknown,

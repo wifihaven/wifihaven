@@ -139,13 +139,19 @@ export function createBuildChecker(opts: {
   }
 }
 
+// Read when this module is evaluated, which is during the entry chunk's evaluation and before
+// any later code could add /assets/ <link>s to the document (Vite's preload helper does that for
+// dynamic imports). Those runtime additions are absent from the served index.html, so reading the
+// document any later could mark every tab stale.
+const runningAtLoad = typeof document === 'undefined' ? null : assetFingerprint(document)
+
 let shared: BuildChecker | null = null
 let devNoticeLogged = false
 
 /**
- * The tab's checker, built from the live document on first use. Null under the Vite dev server
- * (and vitest), whose index.html has no hashed assets and which hot-reloads anyway; that one
- * case is logged rather than reported as a broken check.
+ * The tab's checker, compared against the fingerprint read at module load. Null under the Vite
+ * dev server (and vitest), whose index.html has no hashed assets and which hot-reloads anyway;
+ * that one case is logged rather than reported as a broken check.
  */
 export function getBuildChecker(): BuildChecker | null {
   if (import.meta.env.DEV) {
@@ -155,7 +161,7 @@ export function getBuildChecker(): BuildChecker | null {
   }
   if (!shared) {
     shared = createBuildChecker({
-      running: assetFingerprint(document),
+      running: runningAtLoad,
       fetchIndex: () => fetch('/', { cache: 'no-store', headers: { Accept: 'text/html' } }),
     })
   }

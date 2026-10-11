@@ -1,5 +1,6 @@
-import { useEffect, useRef, useSyncExternalStore } from 'react'
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { useLocation } from 'react-router-dom'
+import { inflightWrites } from '@/api/inflightWrites'
 import { getBuildChecker, type BuildChecker, type BuildCheckSnapshot } from '@/lib/buildCheck'
 import { useWsLive } from '@/hooks/useWs'
 import type { WsStatus } from '@/api/wsClient'
@@ -8,8 +9,9 @@ import type { WsStatus } from '@/api/wsClient'
 //
 // - A banner with a Reload button, so a user looking at the page can pick up the new build now.
 // - A full page load on the next change of route (pathname). The router has already moved to
-//   the new URL and the page being left is unmounting anyway, so nothing typed into it survives
-//   either way; reloading there costs the user nothing they would otherwise keep. Query-string
+//   the new URL and the page being left is unmounting anyway, so input not yet saved is lost
+//   either way. A write already sent is not: the reload waits until no API write is in flight
+//   (api/inflightWrites.ts), since a page load cancels outstanding requests. Query-string
 //   changes do not count, because some pages write filters into the URL as the user types.
 //
 // The page is never reloaded out from under the user while they stay on it.
@@ -52,13 +54,19 @@ export function NewBuildBanner({
 
   const { pathname } = useLocation()
   const lastPath = useRef(pathname)
-  const reloadRef = useRef(reload)
-  reloadRef.current = reload
+  const [reloadPending, setReloadPending] = useState(false)
+  const writes = useSyncExternalStore(inflightWrites.subscribe, inflightWrites.count)
   useEffect(() => {
     if (pathname === lastPath.current) return
     lastPath.current = pathname
-    if (stale) reloadRef.current()
+    if (stale) setReloadPending(true)
   }, [pathname, stale])
+
+  const reloadRef = useRef(reload)
+  reloadRef.current = reload
+  useEffect(() => {
+    if (reloadPending && writes === 0) reloadRef.current()
+  }, [reloadPending, writes])
 
   if (!stale) return null
   return (
