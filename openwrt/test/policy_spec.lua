@@ -981,3 +981,58 @@ describe("policy.apply ea_/ea6_ backfill (#2095)", function()
       "must skip the dns-cache read entirely when no MAC carves a host")
   end)
 end)
+
+-- #2900: a shared-device check-in only moves the MAC onto a profile. That is
+-- nft state; the dnsmasq conf is unchanged, so the apply must not pay the
+-- dnsmasq restart or the smoke probe that follows it.
+describe("policy.apply on a shared-device check-in (#2900)", function()
+  local render = require("render")
+  local SHARED = "02:aa:00:00:00:01"
+
+  local function snap(shared_dev)
+    local r = function(t)
+      return { blocked = t.blocked or false, blockReason = t.blockReason,
+               extraBlocked = t.extraBlocked or {}, extraAllowed = t.extraAllowed or {},
+               blocklistIds = {}, blockIpOnly = false }
+    end
+    return {
+      etag = "sha256:2900", generatedAt = "2026-10-11T12:00:00Z",
+      devices = {
+        ["aa:bb:cc:11:22:33"] = { profileId = 3, name = "kid-ipad" },
+        [SHARED] = shared_dev,
+      },
+      profiles = {
+        ["3"] = { name = "kids", failureMode = "block-all",
+                  rules = r({ extraBlocked = { "tiktok.com" }, extraAllowed = { "khanacademy.org" } }) },
+      },
+      blocklists = {},
+    }
+  end
+
+  it("skips the dnsmasq restart and the smoke probe", function()
+    local checked_out = { name = "family-ipad",
+      rules = { blocked = true, blockReason = "CheckedOut", extraBlocked = {}, extraAllowed = {},
+                blocklistIds = {}, blockIpOnly = false } }
+    local on_disk = render.dnsmasq(snap(checked_out))
+    local cmds, probed, reported = {}, nil, nil
+    local ok = policy.apply(snap({ profileId = 3, name = "family-ipad" }),
+      function(_path, _content) return true, nil end,
+      function(cmd) cmds[#cmds + 1] = cmd; return 0 end,
+      nil,
+      { read_fn = function(path)
+          if path == "/tmp/dnsmasq.d/wifihaven.conf" then return on_disk end
+          return nil
+        end,
+        dns_check_fn = function(domain) probed = domain; return "93.184.216.34" end,
+        on_apply = function(info) reported = info end })
+    assert.is_true(ok)
+    local loaded_nft = false
+    for _, cmd in ipairs(cmds) do
+      assert.is_nil(cmd:find("dnsmasq", 1, true), "unexpected dnsmasq command: " .. cmd)
+      if cmd:find("nft -f /tmp/nftables.d/wifihaven.nft", 1, true) then loaded_nft = true end
+    end
+    assert.is_true(loaded_nft, "the check-in must still load the nft ruleset")
+    assert.is_nil(probed, "smoke probe must not run without a restart")
+    assert.is_false(reported.dnsmasq_restarted)
+  end)
+end)

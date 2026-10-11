@@ -3428,3 +3428,135 @@ describe("render.nft #1174 schedule-block + ui-host allow", function()
     assert.is_nil(nft:find("!= @global_allow", 1, true))
   end)
 end)
+
+-- ── #2900: a profile/holder change does not change the dnsmasq conf ─────────
+--
+-- A shared-device check-in gives the device a profileId; a check-out or holder
+-- swap moves it off one profile and onto another. Enforcement for that is all
+-- nft (per-MAC rules), and policy.apply restarts dnsmasq only when the rendered
+-- conf changed. So the conf must depend on the snapshot's HOSTS (which nftset=
+-- populators exist), never on which MAC holds which profile: no per-MAC
+-- dhcp-host tags (nothing reads them) and per-host ea_ carve sets (the MAC
+-- scoping lives in the nft rule, as it already did for eb_).
+
+describe("render: profile assignment does not change the dnsmasq conf (#2900)", function()
+  local SHARED = "02:aa:00:00:00:01"
+  local KID    = "aa:bb:cc:11:22:33"
+  local PARENT = "de:ad:be:ef:00:01"
+
+  local function rules(t)
+    return {
+      blocked      = t.blocked or false,
+      blockReason  = t.blockReason,
+      extraBlocked = t.extraBlocked or {},
+      extraAllowed = t.extraAllowed or {},
+      blocklistIds = t.blocklistIds or {},
+      blockIpOnly  = t.blockIpOnly or false,
+    }
+  end
+
+  -- shared_dev: the shared device's entry (checked out / held by a profile).
+  local function snap(shared_dev)
+    return {
+      etag = "sha256:2900", generatedAt = "2026-10-11T12:00:00Z",
+      devices = {
+        [KID]    = { profileId = 3, name = "kid-ipad" },
+        [PARENT] = { profileId = 1, name = "parent-phone" },
+        [SHARED] = shared_dev,
+      },
+      profiles = {
+        ["3"] = { name = "kids", failureMode = "block-all", rules = rules({
+          blocked = true, blockReason = "Schedule",
+          extraBlocked = { "tiktok.com" },
+          extraAllowed = { "khanacademy.org", "music.tiktok.com" },
+          blocklistIds = { "test_ads" },
+        }) },
+        ["1"] = { name = "adults", failureMode = "last-known-good", rules = rules({
+          extraBlocked = { "gambling.example" },
+          extraAllowed = { "1password.com" },
+          blockIpOnly  = true,
+        }) },
+      },
+      blocklists = {
+        test_ads = { version = "v1", url = "http://api/api/blocklists/test_ads" },
+      },
+    }
+  end
+
+  -- What the API ships for a shared device nobody holds (PolicyService
+  -- wholeMacBlock(CheckedOut)): inline rules, no profileId.
+  local function checked_out()
+    return { name = "family-ipad", rules = rules({ blocked = true, blockReason = "CheckedOut" }) }
+  end
+  local function held_by(pid)
+    return { profileId = pid, name = "family-ipad" }
+  end
+
+  it("check-in (checked out -> kids) renders a byte-identical conf", function()
+    assert.are.equal(render.dnsmasq(snap(checked_out())), render.dnsmasq(snap(held_by(3))))
+  end)
+
+  it("check-out (kids -> checked out) renders a byte-identical conf", function()
+    assert.are.equal(render.dnsmasq(snap(held_by(3))), render.dnsmasq(snap(checked_out())))
+  end)
+
+  it("holder swap (kids -> adults) renders a byte-identical conf", function()
+    assert.are.equal(render.dnsmasq(snap(held_by(3))), render.dnsmasq(snap(held_by(1))))
+  end)
+
+  it("an unassigned device getting a profile renders a byte-identical conf", function()
+    assert.are.equal(render.dnsmasq(snap({ name = "new-laptop" })), render.dnsmasq(snap(held_by(1))))
+  end)
+
+  it("emits no dhcp-host= lines (the profile tags had no reader)", function()
+    assert.is_nil(render.dnsmasq(snap(held_by(3))):find("dhcp-host=", 1, true))
+  end)
+
+  -- Attribution / ipset population is unchanged: every host that has an
+  -- nft set still gets a populator, and the ea_ populator names the per-host
+  -- set the nft rules reference.
+  it("still emits one merged populator per host for ea_, eb_ and the shard", function()
+    local conf = render.dnsmasq(snap(held_by(3)))
+    assert.truthy(conf:find(
+      "nftset=/khanacademy.org/4#inet#wifihaven#ea_khanacademy_org,6#inet#wifihaven#ea6_khanacademy_org\n",
+      1, true))
+    assert.truthy(conf:find(
+      "nftset=/1password.com/4#inet#wifihaven#ea_1password_com,6#inet#wifihaven#ea6_1password_com\n",
+      1, true))
+    assert.truthy(conf:find(
+      "nftset=/tiktok.com/4#inet#wifihaven#eb_tiktok_com,6#inet#wifihaven#eb6_tiktok_com\n", 1, true))
+    assert.truthy(conf:find(
+      "nftset=/gambling.example/4#inet#wifihaven#eb_gambling_example,6#inet#wifihaven#eb6_gambling_example\n",
+      1, true))
+    assert.truthy(conf:find("conf-file=" .. render.shard_path("test_ads"), 1, true))
+  end)
+
+  -- The conf still changes when the set of hosts changes: a holder whose
+  -- profile is the only one naming a host brings that host's populator in.
+  it("does change when the new holder's profile is the only one naming a host", function()
+    local before = snap(checked_out())
+    local after  = snap(held_by(5))
+    after.profiles["5"] = { name = "guest", failureMode = "block-all",
+      rules = rules({ extraAllowed = { "wikipedia.org" } }) }
+    before.profiles["5"] = after.profiles["5"]
+    assert.are_not.equal(render.dnsmasq(before), render.dnsmasq(after))
+    assert.truthy(render.dnsmasq(after):find("nftset=/wikipedia.org/4#inet#wifihaven#ea_wikipedia_org", 1, true))
+  end)
+
+  -- nft side: the shared MAC picks up the new holder's carve the moment nft
+  -- loads, against the same per-host sets the other holders use.
+  it("nft carves the new holder's allowed hosts out of its drops via the per-host sets", function()
+    local nft = render.nft(snap(held_by(3)))
+    for _, mac in ipairs({ KID, SHARED }) do
+      local line = nft:match("[^\n]*ether saddr " .. mac:gsub("%p", "%%%0") .. " ip daddr != @ea_[^\n]*Schedule[^\n]*")
+      assert.truthy(line, "missing carved v4 schedule drop for " .. mac)
+      assert.truthy(line:find("ip daddr != @ea_khanacademy_org", 1, true), line)
+      assert.truthy(line:find("ip daddr != @ea_music_tiktok_com", 1, true), line)
+    end
+    -- One declaration per host, not per (MAC, host).
+    local _, n = nft:gsub("set ea_khanacademy_org {", "")
+    assert.are.equal(1, n)
+    assert.is_nil(nft:find("ea_aa_bb_cc", 1, true))
+    assert.is_nil(nft:find("ea_02_aa", 1, true))
+  end)
+end)
