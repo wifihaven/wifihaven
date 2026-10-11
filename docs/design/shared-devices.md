@@ -117,6 +117,26 @@ an apply-path one.
 - **Holder**: the profile of the open check-in, if any.
 - **Checked out**: a shared device with no open check-in.
 
+### 4.1a Words people see (#2906)
+
+The product never says "check in" or "check out": in the library sense "check out" means taking
+the device, in the hotel sense leaving it, and readers split on which. People see sessions. The
+internal names below (DB values, routes, metric names, the wire reason) keep the check-in
+vocabulary, because renaming them would need a migration and a wire change for no user benefit.
+
+| People see | Internal name |
+|---|---|
+| **Start session** | `POST /api/shared-devices/{mac}/check-in`; opens a `device_profile_assignments` row with `kind = 'check_in'` |
+| **End session** | `POST /api/shared-devices/{mac}/check-out` by someone linked to the holder profile; closes the row with `end_cause = 'check_out'` |
+| **End Alice's session** (an adult ending someone else's) | the same route by a writer not linked to the holder; `end_cause = 'forced'` |
+| **Session ended automatically**, because of: out of time / bedtime / paused / idle / the daily reset | `end_cause` = `time_limit` / `schedule` / `paused` / `idle` / `day_reset`, written by `SharedDeviceCheckoutJob` (§7.3) |
+| **Available** (no session; the device is blocked) | no open `check_in` row; the snapshot blocks the MAC as `MacBlockReason.CheckedOut` (`checked_out` on `GET /api/blocked`, `checkedOut` in the SPA's `BlockReason`) |
+| **In use: Alice's session**, started by *user* | the open `check_in` row: its profile is the holder, its `started_by` user is `holder.checkedInBy` on `GET /api/shared-devices` |
+
+The SPA test `web/src/userCopy.test.ts` fails if any string literal or JSX text in `web/src` says
+"check in", "check out", "checked in" or "checked out". This design doc is exempt and keeps the
+internal names throughout.
+
 ### 4.2 Effective state of a device at instant *t*
 
 | Device | Open check-in at *t*? | Effective rules | `blockReason` |
@@ -497,6 +517,9 @@ router-issued `mac` and `bpt`; the SPA can pass them through, and the API checks
 and that the MAC is a shared device in it.
 
 ## 10. UX
+
+The UI words for the actions and states below are in §4.1a (Start session / End session /
+Available).
 
 - **Child, on the shared device:** opening the browser lands on the block page if the request is
   HTTP, but most sites are HTTPS and will show a certificate warning (architecture.md §7.6: 443 is

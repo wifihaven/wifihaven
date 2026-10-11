@@ -459,9 +459,9 @@ function SharedDeviceIdleCard({
       </div>
 
       <p className="text-xs text-brand-text">
-        A shared device is checked out automatically when nobody has used it for this long, so
-        someone else can check in. It is also checked out when the person holding it is paused,
-        enters a schedule block, runs out of daily time, or at the daily reset.
+        A session on a shared device ends automatically when nobody has used the device for this
+        long, so someone else can start one. A session also ends automatically when its profile is
+        paused, reaches bedtime, runs out of time for the day, or at the daily reset.
       </p>
       {!valid(minutes) && (
         <div
@@ -473,7 +473,7 @@ function SharedDeviceIdleCard({
       )}
       <div>
         <label htmlFor="shared-device-idle-minutes" className="block text-xs text-brand-text-muted mb-1">
-          Check out after (minutes idle)
+          End session after (minutes idle)
         </label>
         <input
           id="shared-device-idle-minutes"

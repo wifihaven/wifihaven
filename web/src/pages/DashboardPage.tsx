@@ -185,7 +185,7 @@ export function FirstRunHint() {
         <>
           <h2 className="text-base font-semibold text-brand-ink">Waiting for your router to connect</h2>
           <p className="text-sm text-brand-text mt-1">
-            You've enrolled a router, but it hasn't checked in yet. Run the OpenWRT install script on
+            You've enrolled a router, but it hasn't connected yet. Run the OpenWRT install script on
             the router and paste the enrollment token when prompted. Once it connects, your devices,
             profiles and screen time appear here automatically.
           </p>

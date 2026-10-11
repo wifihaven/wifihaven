@@ -45,8 +45,9 @@ function copyFor(info: BlockedInfoResponse): string {
     case 'extra_blocked':
       return 'Blocked by your parent.'
     case 'checked_out':
-      // #2847: a shared device nobody has checked in. The Check in action below is #2850.
-      return 'This is a shared device. Check it in to your profile to use it.'
+      // #2847: a shared device nobody has checked in. The Start session action below is #2850;
+      // the wording is #2906.
+      return 'This is a shared device. Start a session on your profile to use it.'
     default:
       return 'Access blocked.'
   }
@@ -111,7 +112,7 @@ export function BlockedPage() {
             data-testid="block-checkin"
             className="block w-full bg-brand-accent hover:bg-brand-accent-dark text-white text-sm font-semibold px-4 py-2 rounded-lg transition-colors"
           >
-            Check in
+            Start session
           </Link>
         )}
         {!(mac && host)

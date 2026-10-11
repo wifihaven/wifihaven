@@ -348,7 +348,7 @@ describe('SharedDevicesCard — live updates (#2850)', () => {
       heartbeatMs: 100_000_000,
     })
     renderCard({ client })
-    expect(await screen.findByTestId(`shared-device-status-${IPAD}`)).toHaveTextContent('Checked out')
+    expect(await screen.findByTestId(`shared-device-status-${IPAD}`)).toHaveTextContent('Available')
 
     act(() => client.start())
     act(() => lastSocket().open())
@@ -363,7 +363,7 @@ describe('SharedDevicesCard — live updates (#2850)', () => {
 
     act(() => lastSocket().emit({ op: 'sharedDevices', payload: [ipadHeldByKids] }))
     await waitFor(() => expect(screen.getByTestId(`shared-device-status-${IPAD}`)).toHaveTextContent('Kids'))
-    expect(screen.getByTestId(`shared-device-status-${IPAD}`)).not.toHaveTextContent('Checked out')
+    expect(screen.getByTestId(`shared-device-status-${IPAD}`)).not.toHaveTextContent('Available')
     client.stop()
   })
 })

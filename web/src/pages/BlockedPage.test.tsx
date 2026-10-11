@@ -77,7 +77,7 @@ describe('BlockedPage — API-driven reason copy (#1615)', () => {
     mockBlockedInfo({ blocked: true, reasonClass: 'checked_out' })
     renderBlocked({ mac: 'aa:bb:cc:11:22:33', host: 'example.com' })
     await waitFor(() =>
-      expect(screen.getByText(/shared device.*check it in/i)).toBeInTheDocument(),
+      expect(screen.getByText(/shared device.*start a session/i)).toBeInTheDocument(),
     )
   })
 

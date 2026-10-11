@@ -6,11 +6,12 @@ import { useInvalidators, useMe, useProfiles } from '@/api/queries'
 import { useAuthOptional } from '@/hooks/useAuth'
 import { useSharedDevicesLive } from '@/hooks/useWs'
 import { Skeleton } from '@/components/Skeleton'
-import { formatSince, sharedDeviceErrorMessage, type SharedDeviceAction } from '@/lib/sharedDevices'
+import { formatSince, possessive, sharedDeviceErrorMessage, type SharedDeviceAction } from '@/lib/sharedDevices'
 import type { SharedDevice } from '@/types/api'
 
 // #2850 (epic #2841, design docs/design/shared-devices.md §10, §15 Q1/Q2/Q4/Q5/Q5a): the
-// dashboard's "Shared devices" card, for every role.
+// dashboard's "Shared devices" card, for every role. People see sessions ("Start session",
+// "End session", "Available"); the code keeps the API's check-in / check-out names (#2906).
 //
 //   - Each shared device with its holder (profile, who checked it in, since when), or "Checked out".
 //   - Check in: a child on a profile they are linked to, an adult on any household profile (Q5a).
@@ -82,7 +83,7 @@ export function SharedDevicesCard() {
     <CardFrame>
       {actionsFailed && (
         <div data-testid="shared-devices-actions-error" className="px-5 pb-2 flex items-center gap-3 text-xs">
-          <span className="text-red-700 flex-1">Couldn't load your profiles, so check in and check out are unavailable.</span>
+          <span className="text-red-700 flex-1">Couldn't load your profiles, so you can't start or end sessions right now.</span>
           <button
             type="button"
             onClick={() => {
@@ -231,7 +232,7 @@ function SharedDeviceRow({
             disabled={picked === null || mutation.isPending}
             onClick={() => picked !== null && checkIn(picked)}
             className="text-xs font-semibold text-white bg-brand-accent hover:bg-brand-accent-dark disabled:opacity-50 px-3 py-1.5 rounded-lg"
-          >Check in</button>
+          >Start session</button>
           <button
             type="button"
             onClick={() => { setPicking(false); setPicked(null) }}
@@ -248,20 +249,20 @@ function SharedDeviceRow({
   )
 }
 
-/** Holder profile, who checked it in, and since when; or the loaded "Checked out" state. */
+/** Whose session it is, who started it, and since when; or the loaded "Available" state. */
 export function HolderLine({ device }: { device: SharedDevice }) {
   const { holder } = device
   if (!holder) {
     return (
       <span className="inline-block bg-brand-alt text-brand-text border border-brand-border px-2 py-0.5 rounded-lg">
-        Checked out
+        Available
       </span>
     )
   }
   return (
     <>
-      <span className="text-brand-ink font-medium">{holder.profileName}</span>
-      {holder.checkedInBy && <> · checked in by {holder.checkedInBy}</>}
+      In use: <span className="text-brand-ink font-medium">{possessive(holder.profileName)} session</span>
+      {holder.checkedInBy && <> · started by {holder.checkedInBy}</>}
       {' '}· since {formatSince(holder.since)}
     </>
   )
@@ -296,14 +297,14 @@ function RowButtons({
         disabled={busy}
         onClick={onCheckOut}
         className={`${btn} text-brand-text bg-brand-alt hover:text-brand-ink`}
-      >{own ? 'Check out' : 'Force check out'}</button>
+      >{own ? 'End session' : `End ${possessive(holder.profileName)} session`}</button>
     )
   }
 
   if (actions.checkInOptions.length === 0) {
     return (
       <p data-testid={`shared-device-no-profile-${mac}`} className="text-xs text-brand-text-muted">
-        {actions.isWriter ? 'Add a profile to check this device in.' : 'Ask a parent to link your account to a profile.'}
+        {actions.isWriter ? 'Add a profile to start a session on this device.' : 'Ask a parent to link your account to a profile.'}
       </p>
     )
   }
@@ -316,6 +317,6 @@ function RowButtons({
       disabled={busy}
       onClick={onCheckIn}
       className={`${btn} text-white bg-brand-accent hover:bg-brand-accent-dark`}
-    >Check in</button>
+    >Start session</button>
   )
 }

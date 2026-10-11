@@ -394,7 +394,7 @@ function DeviceRowEditor({
       </label>
       {profileLocked ? (
         <p className="pb-2.5 text-xs text-brand-text-muted" data-testid={`device-shared-note-${device.mac}`}>
-          Whoever checks it in holds it. Check in from the dashboard.
+          Sessions on this device start and end from the dashboard.
         </p>
       ) : (
       <div className={commitBlocked ? 'basis-full order-last' : 'min-w-[10rem]'}>
@@ -438,7 +438,7 @@ function DeviceRowEditor({
 
 // #2850: a shared device's row shows a Shared badge and its holder instead of a profile pill. The
 // holder comes from GET /api/shared-devices (who checked it in, since when); while that loads the
-// row shows a skeleton, never a guessed "Checked out".
+// row shows a skeleton, never a guessed "Available".
 function SharedDeviceHolder({
   device, shared, pending, error,
 }: {

@@ -6,6 +6,8 @@
 // read back from the message here rather than from the error's class.
 import type { SharedDeviceErrorCode } from '@/types/api'
 
+// The action names follow the API routes. People see "Start session" / "End session" (#2906; the
+// glossary in docs/design/shared-devices.md maps one to the other).
 export type SharedDeviceAction = 'check-in' | 'check-out'
 
 // Keyed by the `SharedDeviceErrorCode` union, so adding a code there fails to compile here until it
@@ -48,32 +50,37 @@ export function sharedDeviceErrorMessage(
   const profile = ctx.profileName ?? 'This profile'
   switch (parsed?.code) {
     case 'held':
-      return 'Someone else has this device checked in. They need to check it out first.'
+      return 'Someone else is using this device. Their session has to end first.'
     case 'not_linked':
       return ctx.action === 'check-in'
-        ? "You can only check in on a profile you're linked to."
-        : 'Only the person who checked it in, or a parent, can check it out.'
+        ? "You can only start a session on a profile you're linked to."
+        : "Only someone on this session's profile, or a parent, can end it."
     case 'profile_blocked':
       // Design §15 Q3: check-in is refused while the profile is Paused / Schedule / TimeLimit.
       switch (parsed.reason) {
         case 'Paused':
-          return `${profile} is paused, so it can't check in right now.`
+          return `${profile} is paused, so it can't start a session right now.`
         case 'Schedule':
-          return `${profile} is outside its allowed time, so it can't check in right now.`
+          return `${profile} is outside its allowed time, so it can't start a session right now.`
         case 'TimeLimit':
-          return `${profile} is out of time for today, so it can't check in.`
+          return `${profile} is out of time for today, so it can't start a session.`
         default:
-          return `${profile} is blocked right now, so it can't check in.`
+          return `${profile} is blocked right now, so it can't start a session.`
       }
     case 'not_shared':
       return "This device isn't shared any more."
     case 'not_held':
-      return 'This device is already checked out.'
+      return 'This session has already ended.'
     case 'device_shared':
-      return "This device is shared, so it can't be assigned to a profile. Check it in instead."
+      return "This device is shared, so it can't be assigned to a profile. Start a session on it instead."
     default:
-      return ctx.action === 'check-in' ? "Couldn't check in. Try again." : "Couldn't check out. Try again."
+      return ctx.action === 'check-in' ? "Couldn't start the session. Try again." : "Couldn't end the session. Try again."
   }
+}
+
+/** "Alex's", "Teens'": the possessive for "In use: Alex's session" and "End Alex's session". */
+export function possessive(name: string): string {
+  return /s$/i.test(name) ? `${name}'` : `${name}'s`
 }
 
 /** "3:42 PM" for a check-in that started today, "Oct 8, 3:42 PM" otherwise. */

@@ -22,7 +22,7 @@ export function blockReasonText(r: BlockReason): string {
     case 'timeLimit':     return 'daily limit reached'
     case 'manual':        return 'blocked by parent'
     case 'defaultDeny':   return 'default deny'
-    case 'checkedOut':    return 'shared device checked out'
+    case 'checkedOut':    return 'shared device, no session' // #2906
     case 'category':      return `category: ${r.slug}`
     case 'appTimeLimit':  return `app limit: ${r.label}`
     case 'appBlocked':    return `app blocked: ${r.appId}`
