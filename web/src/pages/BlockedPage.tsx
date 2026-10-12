@@ -102,7 +102,7 @@ export function BlockedPage() {
           {profileLine && <p className="text-brand-text-muted text-xs">{profileLine}</p>}
         </div>
         {info && <UsageToday info={info} />}
-        {/* #2850: the Check in action for a checked-out shared device. It opens the dashboard's
+        {/* #2850: the Start session action for a checked-out shared device. It opens the dashboard's
             Shared devices card with this device marked; a signed-out child logs in first and is
             returned there (RequireAuth / LoginPage). The MAC only pre-selects the device (design
             §15 Q1): the check-in is the ordinary authenticated flow. */}

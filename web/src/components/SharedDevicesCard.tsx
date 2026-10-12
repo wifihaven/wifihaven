@@ -13,15 +13,16 @@ import type { SharedDevice } from '@/types/api'
 // dashboard's "Shared devices" card, for every role. People see sessions ("Start session",
 // "End session", "Available"); the code keeps the API's check-in / check-out names (#2906).
 //
-//   - Each shared device with its holder (profile, who checked it in, since when), or "Checked out".
-//   - Check in: a child on a profile they are linked to, an adult on any household profile (Q5a).
+//   - Each shared device with its holder (profile, who started the session, since when), or
+//     "Available".
+//   - Start session (check-in): a child on a profile they are linked to, an adult on any household profile (Q5a).
 //     The profile picker appears only when there is more than one profile to choose from (Q4).
-//   - Check out: whoever is linked to the holder profile; an adult may force it on anyone (Q2/Q5).
-//   - `?checkin=<mac>` (the block page's Check in action) marks that device as "This device". The
+//   - End session (check-out): whoever is linked to the holder profile; an adult may force it on anyone (Q2/Q5).
+//   - `?checkin=<mac>` (the block page's Start session action) marks that device as "This device". The
 //     MAC only pre-selects; the check-in is the same flow as from anywhere else (Q1).
 //
 // Loading states (AGENTS.md#loading-states): a skeleton until the GET seed resolves, an error
-// affordance on failure, and "Checked out" only as a loaded state. A household with no shared
+// affordance on failure, and "Available" only as a loaded state. A household with no shared
 // devices renders nothing.
 export function SharedDevicesCard() {
   const auth = useAuthOptional()

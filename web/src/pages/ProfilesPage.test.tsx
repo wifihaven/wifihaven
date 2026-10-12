@@ -1859,7 +1859,7 @@ describe('ProfilesPage — #973 inline devices subsection', () => {
 
   // #2850 review: a checked-in shared device lists under its holder, but it is held by a check-in,
   // not assigned. Remove would send PATCH {profileId:null}, which the API treats as a no-op on a
-  // shared device, so the row offers no Remove and says it is checked in.
+  // shared device, so the row offers no Remove and says it is in use.
   it('a shared device in a session shows as in use, with no Remove', async () => {
     (api.devices.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([
       { ...phoneDevice, shared: true },

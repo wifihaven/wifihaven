@@ -9,7 +9,9 @@
 // like 'check-in', a route, a test id) and is skipped; anything else is treated as copy.
 import ts from 'typescript'
 
-const FORBIDDEN = /\bcheck(?:ed)?[\s-]+(?:in|out)\b/i
+// Up to two words may sit between the verb and its particle ("Check it in", "check this device in"),
+// and any form of the verb counts ("checks", "checking").
+const FORBIDDEN = /\bcheck(?:s|ed|ing)?(?:\s+\w+){0,2}?[\s-]+(?:in|out)\b/i
 
 function isCodeToken(text: string): boolean {
   return !/\s/.test(text) && text === text.toLowerCase()
@@ -59,8 +61,12 @@ describe('user-visible copy says "session", never "check in / check out" (#2906)
       'const c = `${name} checked in`',
       'const d = <button>Check out</button>',
       "const e = 'Force check-out'",
+      "const f = 'This is a shared device. Check it in to your profile to use it.'",
+      "const g = 'Add a profile to check this device in.'",
+      "const h = 'Only the person who checked it in can do this.'",
+      "const i = 'Someone is checking out the device.'",
     ].join('\n')
-    expect(findCheckInOutCopy(fixture, 'fixture.tsx')).toHaveLength(5)
+    expect(findCheckInOutCopy(fixture, 'fixture.tsx')).toHaveLength(9)
   })
 
   it('the scan ignores comments and lowercase code tokens', () => {
@@ -69,6 +75,7 @@ describe('user-visible copy says "session", never "check in / check out" (#2906)
       "const action = 'check-in'",
       'const path = `/shared-devices/${mac}/check-out`',
       "const testId = 'shared-device-checkin'",
+      "const other = 'Check your inbox, then sign in'",
     ].join('\n')
     expect(findCheckInOutCopy(fixture, 'fixture.tsx')).toEqual([])
   })
