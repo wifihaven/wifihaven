@@ -68,13 +68,13 @@ ETAG_ENFORCE_PAUSED = '"sha256:ws-push-enforce-paused-v2"'
 ETAG_IDLE_BASE = '"sha256:ws-push-idle-base-v1"'
 ETAG_IDLE_PAUSED = '"sha256:ws-push-idle-paused-v2"'
 # #2207 — distinct etags for the carve-out live-apply scenario (a paused profile
-# that KEEPS extraAllowed hosts, so the whole-MAC drop renders with per-MAC
-# `!= @ea_...` carve clauses). Kept separate from the plain scenario above.
+# that KEEPS extraAllowed hosts, so the whole-MAC drop renders behind the MAC's
+# ea_ carve chain, #2901). Kept separate from the plain scenario above.
 ETAG_CARVE_BASE = '"sha256:ws-push-carve-base-v1"'
 ETAG_CARVE_PAUSED = '"sha256:ws-push-carve-paused-v2"'
 # The hosts a paused profile retains in extraAllowed (a soft pause / allowed-app
-# carve-out). The whole-MAC `:Paused` drop must render WITH these as `!= @ea_...`
-# exceptions — it must NOT be suppressed by their presence (the #2207 concern).
+# carve-out). The whole-MAC `:Paused` drop must render WITH these as ea_ carves
+# — it must NOT be suppressed by their presence (the #2207 concern).
 CARVE_ALLOWED = ["gimkit.com", "gimkitconnect.com", "eaglercraft.dev"]
 
 
@@ -504,8 +504,9 @@ def _carve_snapshot(*, etag: str, paused: bool) -> dict:
     non-empty `extraAllowed` on a `blocked=True` profile. Combined with the
     fleet-wide `global.extraAllowed` that every real deployment ships (the infra
     allowlist, #1307/#1308), the blocked MAC is rendered NOT via the family-
-    agnostic `@blocked_macs` set but as per-family drops carrying one
-    `ip daddr != @ea_<host>` clause per carve host plus `!= @global_allow`.
+    agnostic `@blocked_macs` set but as a whole-MAC drop behind the MAC's
+    carve chain (one `ip daddr @ea_<host> return` per carve host plus one for
+    `@global_allow`; #2901).
     That whole-MAC-drop + ea_-carve combination is the exact shape #2207 flagged
     on the failing prod device — this snapshot reproduces it on the bench.
     """
@@ -533,9 +534,9 @@ def test_ws_policy_push_applies_paused_with_extra_allowed(router, fake_api):
     The plain live-apply test above pauses a profile with NO per-MAC
     `extraAllowed`, so the MAC lands in the simple drop path. #2207's failing
     prod device was a paused profile that ALSO kept `extraAllowed` carve-outs,
-    which routes the whole-MAC drop through render.lua's per-family
-    `blocked_ea_macs` branch (one `!= @ea_<host>` clause per carve host, plus
-    `!= @global_allow`). This asserts that branch renders live from a ws push
+    which routes the whole-MAC drop into render.lua's per-MAC carve chain
+    (`wh_carve_<mac>`, returning on each `@ea_<host>` and on `@global_allow`;
+    #2901). This asserts that branch renders live from a ws push
     with the poll frozen — the previously-untested carve-out combination.
 
     Observable: the same `wh_drop:<mac>:Paused` comment (the drop still carries

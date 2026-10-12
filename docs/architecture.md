@@ -283,7 +283,7 @@ Enforcement plane per field:
 |-------|-------------|
 | `blocked` | nftables: `ether saddr ∈ blocked_macs` → drop forwarded traffic; DNAT HTTP/80 to local block page |
 | `extraBlocked` | nftables: `(ether saddr == mac, ip daddr ∈ ipset(host))` → drop. Per-host ipset populated by dnsmasq `--ipset=` at resolution time. **No `address=/host/#` NXDOMAIN.** |
-| `extraAllowed` | nftables: explicit accept above the drop rules for this MAC |
+| `extraAllowed` | nftables: the MAC's carve chain (`wh_carve_<mac>`, jumped to once from the drop chain) returns on `ip daddr @ea_<host>` before this MAC's whole-MAC, host and category drops; blockIpOnly and global drops after the jump still apply (#2901) |
 | `blocklistIds` | Agent fetches blocklist by URL (cached by version), resolves member hosts periodically, populates per-blocklist ipset. nftables: `(mac, ip daddr ∈ ipset(blocklist))` → drop. **No RPZ.** |
 | `blockIpOnly` | nftables: `(mac, ip daddr ∉ ⋃(per-host ipsets resolved for this MAC))` → drop. Strict — no allowlist carve-out, since we cannot attribute the IP to a hostname. |
 
@@ -655,7 +655,7 @@ allowed app survives, per #421/#1413). *Hard* pause is a true off-switch — whe
 profile is paused **and** `pause_mode = 'hard'`,
 `PolicyService.computeBlockRules` ships `blocked = true` with the per-profile
 `extraAllowed` emptied of the app/exempt hosts. With an empty `ea_` set the
-router drops the MAC unconditionally — no `ip daddr != @ea_…` exception — so it
+router drops the MAC unconditionally — no `ea_` carve — so it
 never learns "hard vs soft"; `blockReason` stays `Paused` (block-page copy
 only). No wire/router change. The fleet-wide always-reachable set
 (`global.extraAllowed` — deployment UI / block-page hosts **and** the curated

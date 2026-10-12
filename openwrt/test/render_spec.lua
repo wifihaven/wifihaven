@@ -2,6 +2,34 @@
 -- Run with: cd openwrt && busted test/render_spec.lua
 
 local render = require("render")
+package.path = "./test/?.lua;" .. package.path
+local nft_eval = require("nft_eval")
+
+-- #2901: a MAC with extraAllowed hosts keeps its whole-MAC / extraBlocked /
+-- blocklist drops and their block-page DNATs in its own chains,
+-- wh_carve_<mac> and wh_carve_nat_<mac>, opened by `@ea_<host> return` lines.
+local function chain_body(nft, name)
+  local start = nft:find("\n  chain " .. name .. " {\n", 1, true)
+  if not start then return nil end
+  return nft:sub(start, nft:find("\n  }", start + 1, true))
+end
+local function carve_body(nft, mac)
+  return chain_body(nft, "wh_carve_" .. mac:gsub(":", ""))
+end
+local function carve_nat_body(nft, mac)
+  return chain_body(nft, "wh_carve_nat_" .. mac:gsub(":", ""))
+end
+-- Forward verdict (+ dropping rule's comment) and block-page DNAT verdict for a
+-- TCP/80 packet from `mac` whose destination is in the nft sets `sets`.
+local function verdicts(nft, mac, family, sets)
+  local in_sets = {}
+  for _, n in ipairs(sets or {}) do in_sets[n] = true end
+  local ev = nft_eval.parse(nft)
+  local pkt = { mac = mac, family = family, sets = in_sets, dport = 80,
+                iif = "br-lan", oif = "wan" }
+  local f, label = nft_eval.forward(ev, pkt)
+  return f, nft_eval.prerouting(ev, pkt), label
+end
 
 -- Snapshot shape per #354 / docs/architecture.md §0.2. Field names match the
 -- wire JSON emitted by the API (camelCase). devices and profiles are objects
@@ -847,18 +875,19 @@ describe("render.nft #1865 block page is never dropped", function()
     s.profiles["3"].rules.blockReason  = "Schedule"
     s.profiles["3"].rules.extraAllowed = { "mathacademy.com" }
     local nft = render.nft(s)
-    -- v4 block-page DNAT for the blocked MAC carries the ea_ carve, so an
-    -- allowed dest is NEVER DNAT'd to the local block page.
-    assert.truthy(nft:find(
-      "ether saddr aa:bb:cc:11:22:33 ip daddr != @ea_mathacademy_com tcp dport 80 dnat ip to 127.0.0.1:8081",
-      1, true),
-      "expected v4 block-page DNAT to carve out the ea_ allowed dest")
-    -- v6 block-page REDIRECT (the path #1868 made deliver) carries the ea6_
-    -- carve, so an allowed v6 dest is NEVER redirected to the block page.
-    assert.truthy(nft:find(
-      "ether saddr aa:bb:cc:11:22:33 ip6 daddr != ::1 ip6 daddr != @ea6_mathacademy_com tcp dport 80 redirect to :8081",
-      1, true),
-      "expected v6 block-page redirect to carve out the ea6_ allowed dest")
+    local mac = "aa:bb:cc:11:22:33"
+    -- The blocked MAC's block-page DNAT lives in its carve chain, which returns
+    -- on the ea_/ea6_ allowed dest before the DNAT / redirect (#2901).
+    local nat = carve_nat_body(nft, mac)
+    assert.truthy(nat, "expected wh_carve_nat_ chain for the blocked+extraAllowed MAC")
+    assert.truthy(nat:find("ip daddr @ea_mathacademy_com return", 1, true))
+    assert.truthy(nat:find("ip6 daddr @ea6_mathacademy_com return", 1, true))
+    -- An allowed dest is NEVER DNAT'd (v4) or redirected (v6, the path #1868
+    -- made deliver) to the block page; any other dest is.
+    assert.are.equal("none", select(2, verdicts(nft, mac, "ip", { "ea_mathacademy_com" })))
+    assert.are.equal("none", select(2, verdicts(nft, mac, "ip6", { "ea6_mathacademy_com" })))
+    assert.are.equal("redirect", select(2, verdicts(nft, mac, "ip", {})))
+    assert.are.equal("redirect", select(2, verdicts(nft, mac, "ip6", {})))
     -- And the #1865 never-drop guard is still present so a FULLY-blocked dest
     -- (no carve) still reaches the block-page listener rather than being dropped.
     local body = filter_chain_body(nft)
@@ -942,12 +971,16 @@ describe("render.nft drop rules carry log prefix + counter + comment (#1122/#112
     s.profiles["3"].rules.blockReason  = "Paused"
     s.profiles["3"].rules.extraAllowed = { "school.example" }
     local nft = render.nft(s)
-    assert.truthy(nft:find(
-      "ether saddr aa:bb:cc:11:22:33 ip daddr != @ea_school_example counter drop comment \"wh_drop:aa:bb:cc:11:22:33:Paused\"",
+    local body = carve_body(nft, "aa:bb:cc:11:22:33")
+    assert.truthy(body)
+    assert.truthy(body:find(
+      "meta nfproto ipv4 update @wh_drop_log4 { ether saddr . ip daddr limit rate 1/minute burst 5 packets } log prefix \"wh_drop:aa:bb:cc:11:22:33:Paused \"",
       1, true))
-    assert.truthy(nft:find(
-      "ether saddr aa:bb:cc:11:22:33 ip6 daddr != @ea6_school_example counter drop comment \"wh_drop:aa:bb:cc:11:22:33:Paused\"",
+    assert.truthy(body:find(
+      "meta nfproto ipv6 update @wh_drop_log6 { ether saddr . ip6 daddr limit rate 1/minute burst 5 packets } log prefix \"wh_drop:aa:bb:cc:11:22:33:Paused \"",
       1, true))
+    assert.truthy(body:find(
+      "\n    counter drop comment \"wh_drop:aa:bb:cc:11:22:33:Paused\"", 1, true))
   end)
 
   it("#1413: Paused MAC carves out an allowed app host but still drops other traffic", function()
@@ -961,10 +994,13 @@ describe("render.nft drop rules carry log prefix + counter + comment (#1122/#112
     s.profiles["3"].rules.blockReason  = "Paused"
     s.profiles["3"].rules.extraAllowed = { "mathacademy.com" }
     local nft = render.nft(s)
-    -- The per-MAC drop spares the allowed host via the ea_ exception (allow wins).
-    assert.truthy(nft:find(
-      "ether saddr aa:bb:cc:11:22:33 ip daddr != @ea_mathacademy_com counter drop comment \"wh_drop:aa:bb:cc:11:22:33:Paused\"",
-      1, true))
+    -- The per-MAC drop spares the allowed host via the ea_ carve (allow wins)
+    -- and drops everything else with the Paused label.
+    local mac = "aa:bb:cc:11:22:33"
+    assert.are.equal("accept", (verdicts(nft, mac, "ip", { "ea_mathacademy_com" })))
+    local f, _, label = verdicts(nft, mac, "ip", {})
+    assert.are.equal("drop", f)
+    assert.are.equal("wh_drop:aa:bb:cc:11:22:33:Paused", label)
     -- The MAC is pulled out of the family-agnostic @blocked_macs set (it has a
     -- per-MAC carve-out rule instead), so general traffic drops via that rule.
     assert.is_nil(nft:find("@blocked_macs drop", 1, true))
@@ -1353,6 +1389,32 @@ describe("render.nft syntax validation", function()
     local ok = os.execute("nft -c -f " .. tmp .. " >/dev/null 2>&1")
     os.remove(tmp)
     assert.is_true(ok == 0 or ok == true)
+  end)
+
+  -- #2901: the per-MAC carve chains (forward and nat, `return` + drop / dnat /
+  -- redirect, jumped to from the base chains) must load too.
+  it("rendered output with carve chains loads cleanly via `nft -c -f -`", function()
+    local ok, why = nft_checkable()
+    if not ok then
+      pending(why)
+      return
+    end
+    local s = snap_one()
+    s.profiles["3"].rules.blocked = true
+    s.profiles["3"].rules.blockReason = "Schedule"
+    s.profiles["3"].rules.extraAllowed = { "khanacademy.org", "music.tiktok.com" }
+    s.blocklists = { ads = { version = "v1", url = "/api/blocklists/ads" } }
+    s.global = { blocked = false, extraBlocked = { "evil.example" },
+                 extraAllowed = { "ok.example" }, blocklistIds = {}, blockIpOnly = false }
+    local nft_text = render.nft(s)
+    assert.truthy(nft_text:find("jump wh_carve_nat_", 1, true))
+    local tmp = os.tmpname()
+    local f = io.open(tmp, "w")
+    f:write(nft_text)
+    f:close()
+    local ran = os.execute("nft -c -f " .. tmp .. " >/dev/null 2>&1")
+    os.remove(tmp)
+    assert.is_true(ran == 0 or ran == true)
   end)
 
   -- #1911: the wifihaven_encrypted_dns chain (DoT/853 + DNS:53-to-resolver-IPs)
@@ -2492,11 +2554,14 @@ describe("render extraAllowed enforcement (#421)", function()
     -- The scoping is in the nft rule: the override MAC's drop carries the
     -- carve, its sibling on the same profile's does not.
     local nft = render.nft(s)
-    assert.truthy(nft:find(
-      "ether saddr aa:bb:cc:11:22:33 ip daddr @eb_tiktok_com ip daddr != @ea_music_tiktok_com counter drop",
-      1, true))
+    assert.truthy(carve_body(nft, "aa:bb:cc:11:22:33"):find(
+      "ip daddr @ea_music_tiktok_com return", 1, true))
+    assert.is_nil(carve_body(nft, "11:22:33:44:55:66"))
     assert.truthy(nft:find(
       "ether saddr 11:22:33:44:55:66 ip daddr @eb_tiktok_com counter drop", 1, true))
+    local allowed = { "eb_tiktok_com", "ea_music_tiktok_com" }
+    assert.are.equal("accept", (verdicts(nft, "aa:bb:cc:11:22:33", "ip", allowed)))
+    assert.are.equal("drop", (verdicts(nft, "11:22:33:44:55:66", "ip", allowed)))
   end)
 
   -- ── nft side: set declarations ──────────────────────────────────────────
@@ -2532,44 +2597,50 @@ describe("render extraAllowed enforcement (#421)", function()
     assert.is_nil(nft:find("set ea6_", 1, true))
   end)
 
-  -- ── nft side: drop predicate gets `ip daddr != @ea_...` suffix ──────────
+  -- ── nft side: the MAC's drops sit behind its ea carve (#421 / #2901) ────
 
-  it("appends `ip daddr != @ea_<a>` to the eb_<host> drop for MAC m", function()
+  it("jumps once from wifihaven_block to the MAC's carve chain", function()
     local nft = render.nft(snap_ea())
-    assert.truthy(nft:find(
-      "ether saddr aa:bb:cc:11:22:33 ip daddr @eb_tiktok_com ip daddr != @ea_music_tiktok_com counter drop comment \"wh_drop:aa:bb:cc:11:22:33:host:tiktok.com\"",
-      1, true))
+    local _, n = nft:gsub("ether saddr aa:bb:cc:11:22:33 jump wh_carve_aabbcc112233\n", "")
+    assert.are.equal(1, n)
   end)
 
-  it("appends `ip6 daddr != @ea6_<a>` to the eb6_<host> drop for MAC m", function()
-    local nft = render.nft(snap_ea())
-    assert.truthy(nft:find(
-      "ether saddr aa:bb:cc:11:22:33 ip6 daddr @eb6_tiktok_com ip6 daddr != @ea6_music_tiktok_com counter drop comment \"wh_drop:aa:bb:cc:11:22:33:host:tiktok.com\"",
-      1, true))
-  end)
-
-  it("appends `ip daddr != @ea_<a>` to the bl_<id> drop for MAC m", function()
-    local nft = render.nft(snap_ea())
-    assert.truthy(nft:find(
-      "ether saddr aa:bb:cc:11:22:33 ip daddr @bl_test_ads ip daddr != @ea_music_tiktok_com counter drop comment \"wh_drop:aa:bb:cc:11:22:33:category:test_ads\"",
-      1, true))
-  end)
-
-  it("appends `ip6 daddr != @ea6_<a>` to the bl6_<id> drop for MAC m", function()
-    local nft = render.nft(snap_ea())
-    assert.truthy(nft:find(
-      "ether saddr aa:bb:cc:11:22:33 ip6 daddr @bl6_test_ads ip6 daddr != @ea6_music_tiktok_com counter drop comment \"wh_drop:aa:bb:cc:11:22:33:category:test_ads\"",
-      1, true))
-  end)
-
-  it("appends one `ip daddr != @ea_...` clause per extraAllowed host (multiple hosts)", function()
+  it("opens the carve chain with one v4 and one v6 return per extraAllowed host", function()
     local s = snap_ea()
     s.profiles["3"].rules.extraAllowed = { "music.tiktok.com", "khanacademy.org" }
-    local nft = render.nft(s)
-    -- Both clauses present in the same eb_ drop rule, in sorted order.
-    assert.truthy(nft:find(
-      "ether saddr aa:bb:cc:11:22:33 ip daddr @eb_tiktok_com ip daddr != @ea_khanacademy_org ip daddr != @ea_music_tiktok_com counter drop comment \"wh_drop:aa:bb:cc:11:22:33:host:tiktok.com\"",
-      1, true))
+    local body = carve_body(render.nft(s), "aa:bb:cc:11:22:33")
+    assert.truthy(body:find(
+      "    ip daddr @ea_khanacademy_org return\n" ..
+      "    ip6 daddr @ea6_khanacademy_org return\n" ..
+      "    ip daddr @ea_music_tiktok_com return\n" ..
+      "    ip6 daddr @ea6_music_tiktok_com return\n", 1, true), body)
+  end)
+
+  it("puts the eb_/eb6_/bl_/bl6_ drops in the carve chain with no ea suffix", function()
+    local body = carve_body(render.nft(snap_ea()), "aa:bb:cc:11:22:33")
+    for _, line in ipairs({
+      "ip daddr @eb_tiktok_com counter drop comment \"wh_drop:aa:bb:cc:11:22:33:host:tiktok.com\"",
+      "ip6 daddr @eb6_tiktok_com counter drop comment \"wh_drop:aa:bb:cc:11:22:33:host:tiktok.com\"",
+      "ip daddr @bl_test_ads counter drop comment \"wh_drop:aa:bb:cc:11:22:33:category:test_ads\"",
+      "ip6 daddr @bl6_test_ads counter drop comment \"wh_drop:aa:bb:cc:11:22:33:category:test_ads\"",
+    }) do
+      assert.truthy(body:find("\n    " .. line, 1, true), line)
+    end
+    assert.is_nil(body:find("!= @ea", 1, true))
+  end)
+
+  it("an allowed host's IPs pass the MAC's eb_/bl_ drops in both families", function()
+    local nft = render.nft(snap_ea())
+    local mac = "aa:bb:cc:11:22:33"
+    assert.are.equal("accept", (verdicts(nft, mac, "ip", { "eb_tiktok_com", "ea_music_tiktok_com" })))
+    assert.are.equal("accept", (verdicts(nft, mac, "ip6", { "eb6_tiktok_com", "ea6_music_tiktok_com" })))
+    assert.are.equal("accept", (verdicts(nft, mac, "ip", { "bl_test_ads", "ea_music_tiktok_com" })))
+    assert.are.equal("accept", (verdicts(nft, mac, "ip6", { "bl6_test_ads", "ea6_music_tiktok_com" })))
+    assert.are.equal("drop", (verdicts(nft, mac, "ip", { "eb_tiktok_com" })))
+    assert.are.equal("drop", (verdicts(nft, mac, "ip6", { "bl6_test_ads" })))
+    -- The v6 carve set does not carve v4 traffic, nor v4 the v6.
+    assert.are.equal("drop", (verdicts(nft, mac, "ip", { "eb_tiktok_com", "ea6_music_tiktok_com" })))
+    assert.are.equal("drop", (verdicts(nft, mac, "ip6", { "eb6_tiktok_com", "ea_music_tiktok_com" })))
   end)
 
   -- Multi-MAC scoping: extraAllowed for MAC A must NOT carve out MAC B's drops.
@@ -2593,27 +2664,28 @@ describe("render extraAllowed enforcement (#421)", function()
       "ether saddr aa:bb:cc:11:22:33 ip daddr @eb_tiktok_com counter drop comment \"wh_drop:aa:bb:cc:11:22:33:host:tiktok.com\"", 1, true))
   end)
 
-  -- ── DNAT chain: same suffix applied ─────────────────────────────────────
+  -- ── DNAT chain: same carve, in wh_carve_nat_<mac> ───────────────────────
 
-  it("appends `ip daddr != @ea_<a>` to the eb_<host> DNAT for MAC m", function()
+  it("jumps once from wifihaven_block_nat to the MAC's DNAT carve chain", function()
     local nft = render.nft(snap_ea())
-    assert.truthy(nft:find(
-      "ether saddr aa:bb:cc:11:22:33 ip daddr @eb_tiktok_com ip daddr != @ea_music_tiktok_com tcp dport 80 dnat ip to 127.0.0.1:8081",
-      1, true))
+    local _, n = nft:gsub("ether saddr aa:bb:cc:11:22:33 jump wh_carve_nat_aabbcc112233\n", "")
+    assert.are.equal(1, n)
+    local nat = carve_nat_body(nft, "aa:bb:cc:11:22:33")
+    assert.truthy(nat:find("ip daddr @ea_music_tiktok_com return", 1, true))
+    assert.truthy(nat:find("\n    ip daddr @eb_tiktok_com tcp dport 80 dnat ip to 127.0.0.1:8081", 1, true))
+    assert.truthy(nat:find("\n    ip6 daddr @eb6_tiktok_com tcp dport 80 redirect to :8081", 1, true))
+    assert.truthy(nat:find("\n    ip daddr @bl_test_ads tcp dport 80 dnat ip to 127.0.0.1:8081", 1, true))
   end)
 
-  it("appends `ip6 daddr != @ea6_<a>` to the eb6_<host> DNAT for MAC m", function()
+  it("an allowed host is never sent to the block page; a blocked one is", function()
     local nft = render.nft(snap_ea())
-    assert.truthy(nft:find(
-      "ether saddr aa:bb:cc:11:22:33 ip6 daddr @eb6_tiktok_com ip6 daddr != @ea6_music_tiktok_com tcp dport 80 redirect to :8081",
-      1, true))
-  end)
-
-  it("appends `ip daddr != @ea_<a>` to the bl_<id> DNAT for MAC m", function()
-    local nft = render.nft(snap_ea())
-    assert.truthy(nft:find(
-      "ether saddr aa:bb:cc:11:22:33 ip daddr @bl_test_ads ip daddr != @ea_music_tiktok_com tcp dport 80 dnat ip to 127.0.0.1:8081",
-      1, true))
+    local mac = "aa:bb:cc:11:22:33"
+    assert.are.equal("none", select(2, verdicts(nft, mac, "ip", { "eb_tiktok_com", "ea_music_tiktok_com" })))
+    assert.are.equal("none", select(2, verdicts(nft, mac, "ip6", { "eb6_tiktok_com", "ea6_music_tiktok_com" })))
+    assert.are.equal("none", select(2, verdicts(nft, mac, "ip", { "bl_test_ads", "ea_music_tiktok_com" })))
+    assert.are.equal("redirect", select(2, verdicts(nft, mac, "ip", { "eb_tiktok_com" })))
+    assert.are.equal("redirect", select(2, verdicts(nft, mac, "ip6", { "eb6_tiktok_com" })))
+    assert.are.equal("redirect", select(2, verdicts(nft, mac, "ip", { "bl_test_ads" })))
   end)
 
   -- ── blockIpOnly composition (#353): ea sets do NOT modify the bio drop ──
@@ -2641,10 +2713,15 @@ describe("render extraAllowed enforcement (#421)", function()
     local s = snap_ea()
     s.profiles["3"].rules.blockIpOnly = true
     local nft = render.nft(s)
-    -- eb drop has ea suffix:
-    assert.truthy(nft:find(
-      "ether saddr aa:bb:cc:11:22:33 ip daddr @eb_tiktok_com ip daddr != @ea_music_tiktok_com counter drop comment \"wh_drop:aa:bb:cc:11:22:33:host:tiktok.com\"",
-      1, true))
+    -- eb drop is carved by the ea set:
+    assert.are.equal("accept", (verdicts(nft, "aa:bb:cc:11:22:33", "ip",
+      { "eb_tiktok_com", "ea_music_tiktok_com", "resolved_aa_bb_cc_11_22_33" })))
+    -- ...but the bio drop is not: an allowed host's IP that this MAC did not
+    -- resolve itself is still dropped, after the carve chain returns.
+    local f, _, label = verdicts(nft, "aa:bb:cc:11:22:33", "ip",
+      { "eb_tiktok_com", "ea_music_tiktok_com" })
+    assert.are.equal("drop", f)
+    assert.are.equal("wh_drop:aa:bb:cc:11:22:33:ip_only", label)
     -- bio drop has no ea suffix:
     assert.truthy(nft:find(
       "ether saddr aa:bb:cc:11:22:33 ip daddr != @resolved_aa_bb_cc_11_22_33 counter drop comment \"wh_drop:aa:bb:cc:11:22:33:ip_only\"",
@@ -2692,17 +2769,23 @@ describe("render extraAllowed enforcement (#421)", function()
     assert.is_nil(blk:find("aa:bb:cc:11:22:33", 1, true))
   end)
 
-  it("emits per-MAC v4 + v6 drops with ea exception for blocked-AND-has-extraAllowed", function()
+  it("emits the whole-MAC drop in the carve chain for blocked-AND-has-extraAllowed", function()
     local s = snap_ea()
     s.profiles["3"].rules.blocked = true
     s.profiles["3"].rules.blockReason = "Paused"
     local nft = render.nft(s)
-    assert.truthy(nft:find(
-      "ether saddr aa:bb:cc:11:22:33 ip daddr != @ea_music_tiktok_com counter drop comment \"wh_drop:aa:bb:cc:11:22:33:Paused\"",
-      1, true))
-    assert.truthy(nft:find(
-      "ether saddr aa:bb:cc:11:22:33 ip6 daddr != @ea6_music_tiktok_com counter drop comment \"wh_drop:aa:bb:cc:11:22:33:Paused\"",
-      1, true))
+    local body = carve_body(nft, "aa:bb:cc:11:22:33")
+    assert.truthy(body:find("\n    counter drop comment \"wh_drop:aa:bb:cc:11:22:33:Paused\"", 1, true))
+    -- The whole-MAC drop comes before the MAC's eb_/bl_ drops, as it did inline.
+    assert.is_true(body:find(":Paused\"", 1, true) < body:find("@eb_tiktok_com", 1, true))
+    local mac = "aa:bb:cc:11:22:33"
+    assert.are.equal("accept", (verdicts(nft, mac, "ip", { "ea_music_tiktok_com" })))
+    assert.are.equal("accept", (verdicts(nft, mac, "ip6", { "ea6_music_tiktok_com" })))
+    local f4, _, l4 = verdicts(nft, mac, "ip", {})
+    local f6, _, l6 = verdicts(nft, mac, "ip6", {})
+    assert.are.same({ "drop", "drop" }, { f4, f6 })
+    assert.are.equal("wh_drop:aa:bb:cc:11:22:33:Paused", l4)
+    assert.are.equal("wh_drop:aa:bb:cc:11:22:33:Paused", l6)
   end)
 
   it("emits per-MAC v4 + v6 DNAT with ea exception for blocked-AND-has-extraAllowed", function()
@@ -2710,12 +2793,14 @@ describe("render extraAllowed enforcement (#421)", function()
     s.profiles["3"].rules.blocked = true
     s.profiles["3"].rules.blockReason = "Paused"
     local nft = render.nft(s)
-    assert.truthy(nft:find(
-      "ether saddr aa:bb:cc:11:22:33 ip daddr != @ea_music_tiktok_com tcp dport 80 dnat ip to 127.0.0.1:8081",
-      1, true))
-    assert.truthy(nft:find(
-      "ether saddr aa:bb:cc:11:22:33 ip6 daddr != ::1 ip6 daddr != @ea6_music_tiktok_com tcp dport 80 redirect to :8081",
-      1, true))
+    local nat = carve_nat_body(nft, "aa:bb:cc:11:22:33")
+    assert.truthy(nat:find("\n    tcp dport 80 dnat ip to 127.0.0.1:8081", 1, true))
+    assert.truthy(nat:find("\n    ip6 daddr != ::1 tcp dport 80 redirect to :8081", 1, true))
+    local mac = "aa:bb:cc:11:22:33"
+    assert.are.equal("none", select(2, verdicts(nft, mac, "ip", { "ea_music_tiktok_com" })))
+    assert.are.equal("none", select(2, verdicts(nft, mac, "ip6", { "ea6_music_tiktok_com" })))
+    assert.are.equal("redirect", select(2, verdicts(nft, mac, "ip", {})))
+    assert.are.equal("redirect", select(2, verdicts(nft, mac, "ip6", {})))
   end)
 
   it("leaves blocked MACs *without* extraAllowed in @blocked_macs (per-MAC drop)", function()
@@ -2750,10 +2835,10 @@ describe("render extraAllowed enforcement (#421)", function()
       "ether saddr @blocked_macs tcp dport 80", 1, true))
     assert.is_nil(nft:find(
       "ether saddr @blocked_macs ip6 daddr != ::1 tcp dport 80", 1, true))
-    -- But the per-MAC ea-gated DNAT is present.
-    assert.truthy(nft:find(
-      "ether saddr aa:bb:cc:11:22:33 ip daddr != @ea_music_tiktok_com tcp dport 80 dnat ip to 127.0.0.1:8081",
-      1, true))
+    -- But the per-MAC ea-gated DNAT is present, in the carve chain.
+    assert.truthy(nft:find("ether saddr aa:bb:cc:11:22:33 jump wh_carve_nat_aabbcc112233", 1, true))
+    assert.truthy(carve_nat_body(nft, "aa:bb:cc:11:22:33"):find(
+      "\n    tcp dport 80 dnat ip to 127.0.0.1:8081", 1, true))
   end)
 
   it("emits the block-page nat chain when only a blocked-with-ea MAC exists (no eb/bl/bio)", function()
@@ -2773,9 +2858,10 @@ describe("render extraAllowed enforcement (#421)", function()
     s.profiles["3"].rules.blockReason = "Paused"
     s.profiles["3"].rules.extraAllowed = { "music.tiktok.com", "khanacademy.org" }
     local nft = render.nft(s)
-    assert.truthy(nft:find(
-      "ether saddr aa:bb:cc:11:22:33 ip daddr != @ea_khanacademy_org ip daddr != @ea_music_tiktok_com counter drop comment \"wh_drop:aa:bb:cc:11:22:33:Paused\"",
-      1, true))
+    local mac = "aa:bb:cc:11:22:33"
+    assert.are.equal("accept", (verdicts(nft, mac, "ip", { "ea_khanacademy_org" })))
+    assert.are.equal("accept", (verdicts(nft, mac, "ip", { "ea_music_tiktok_com" })))
+    assert.are.equal("drop", (verdicts(nft, mac, "ip", {})))
   end)
 
   -- #1307: the carve-out must apply for *every* MacBlockReason, not just
@@ -2794,17 +2880,16 @@ describe("render extraAllowed enforcement (#421)", function()
     local blk_end = nft:find("\n  }", pos, true)
     local blk = nft:sub(pos, blk_end)
     assert.is_nil(blk:find("aa:bb:cc:11:22:33", 1, true))
-    -- Per-MAC v4 + v6 drops carry the ea exception and the TimeLimit reason.
-    assert.truthy(nft:find(
-      "ether saddr aa:bb:cc:11:22:33 ip daddr != @ea_mathacademy_com counter drop comment \"wh_drop:aa:bb:cc:11:22:33:TimeLimit\"",
-      1, true))
-    assert.truthy(nft:find(
-      "ether saddr aa:bb:cc:11:22:33 ip6 daddr != @ea6_mathacademy_com counter drop comment \"wh_drop:aa:bb:cc:11:22:33:TimeLimit\"",
-      1, true))
-    -- And the block-page DNAT for the allowed host is likewise carved out.
-    assert.truthy(nft:find(
-      "ether saddr aa:bb:cc:11:22:33 ip daddr != @ea_mathacademy_com tcp dport 80 dnat ip to 127.0.0.1:8081",
-      1, true))
+    -- The whole-MAC drop is carved by the ea set in both families and carries
+    -- the TimeLimit reason; the block-page DNAT is likewise carved out.
+    local mac = "aa:bb:cc:11:22:33"
+    for _, fam in ipairs({ { "ip", "ea_mathacademy_com" }, { "ip6", "ea6_mathacademy_com" } }) do
+      local f, n = verdicts(nft, mac, fam[1], { fam[2] })
+      assert.are.same({ "accept", "none" }, { f, n })
+      local f2, n2, label = verdicts(nft, mac, fam[1], {})
+      assert.are.same({ "drop", "redirect" }, { f2, n2 })
+      assert.are.equal("wh_drop:aa:bb:cc:11:22:33:TimeLimit", label)
+    end
   end)
 
 end)
@@ -3318,10 +3403,17 @@ describe("render.nft global composition — precedence compositions (#1322)", fu
       blockIpOnly  = true,
     }
     local nft = render.nft(s)
-    -- 1) whole-MAC block, carved out by the per-MAC ea exception, DefaultDeny reason
-    assert.truthy(nft:find(
-      "ether saddr aa:bb:cc:11:22:33 ip daddr != @ea_pbskids_org counter drop comment \"wh_drop:aa:bb:cc:11:22:33:DefaultDeny\"",
-      1, true))
+    -- 1) whole-MAC block, carved out by the per-MAC ea set, DefaultDeny reason
+    local mac = "aa:bb:cc:11:22:33"
+    assert.truthy(carve_body(nft, mac):find(
+      "\n    counter drop comment \"wh_drop:aa:bb:cc:11:22:33:DefaultDeny\"", 1, true))
+    local _, _, label = verdicts(nft, mac, "ip", { "resolved_aa_bb_cc_11_22_33" })
+    assert.are.equal("wh_drop:aa:bb:cc:11:22:33:DefaultDeny", label)
+    -- allowed AND locally resolved is the only way through
+    assert.are.equal("accept", (verdicts(nft, mac, "ip",
+      { "ea_pbskids_org", "resolved_aa_bb_cc_11_22_33" })))
+    local _, _, l2 = verdicts(nft, mac, "ip", { "ea_pbskids_org" })
+    assert.are.equal("wh_drop:aa:bb:cc:11:22:33:ip_only", l2)
     -- 2) the independent strict-IP drop on resolved_<m>
     assert.truthy(nft:find("set resolved_aa_bb_cc_11_22_33 {", 1, true))
     assert.truthy(nft:find(
@@ -3560,10 +3652,11 @@ describe("render: profile assignment does not change the dnsmasq conf (#2900)", 
   it("nft carves the new holder's allowed hosts out of its drops via the per-host sets", function()
     local nft = render.nft(snap(held_by(3)))
     for _, mac in ipairs({ KID, SHARED }) do
-      local line = nft:match("[^\n]*ether saddr " .. mac:gsub("%p", "%%%0") .. " ip daddr != @ea_[^\n]*Schedule[^\n]*")
-      assert.truthy(line, "missing carved v4 schedule drop for " .. mac)
-      assert.truthy(line:find("ip daddr != @ea_khanacademy_org", 1, true), line)
-      assert.truthy(line:find("ip daddr != @ea_music_tiktok_com", 1, true), line)
+      local body = carve_body(nft, mac)
+      assert.truthy(body, "missing carve chain for " .. mac)
+      assert.truthy(body:find("ip daddr @ea_khanacademy_org return", 1, true), body)
+      assert.truthy(body:find("ip daddr @ea_music_tiktok_com return", 1, true), body)
+      assert.truthy(body:find(":Schedule\"", 1, true), body)
     end
     -- One declaration per host, not per (MAC, host).
     local _, n = nft:gsub("set ea_khanacademy_org {", "")

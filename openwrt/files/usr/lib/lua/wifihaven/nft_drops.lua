@@ -3,7 +3,8 @@
 --
 -- Per the architectural model, enforcement is nftables forward-drop on the
 -- gateway (dnsmasq is only hostname attribution, never the enforcer). render.lua
--- emits every per-MAC drop rule in the `wifihaven_block` chain carrying a
+-- emits every per-MAC drop rule — in the `wifihaven_block` chain, or in a MAC's
+-- `wh_carve_<mac>` chain when it has extraAllowed hosts (#2901) — carrying a
 -- `counter` statement and a `comment "wh_drop:<mac>:<reason>"` (#1122). This
 -- module reads those rule counters and collapses them into the four bounded
 -- drop reasons an operator alerts on, so the agent can ship
@@ -70,7 +71,7 @@ end
 
 -- parse_drop_counters(json_str) → { [reason_enum] = packets }
 --
--- Walks `nft -j list chain inet wifihaven wifihaven_block` and sums each rule's
+-- Walks `nft -j -t list table inet wifihaven` and sums each rule's
 -- `counter` packets into its classified reason bucket. Rules without a
 -- `wh_drop:` comment (e.g. the chain's `policy accept`) or without a counter
 -- contribute nothing. Returns an empty table when the chain is absent (cold
@@ -134,7 +135,11 @@ function M.read(exec_fn)
     p:close()
     return out
   end
-  local json = exec_fn("nft -j list chain inet wifihaven wifihaven_block")
+  -- #2901: the whole table, because drops also live in per-MAC carve chains.
+  -- -t leaves out set elements; only rules carry the counters read here. Only
+  -- render's per-MAC drops carry a `wh_drop:` comment (encrypted_dns.lua uses
+  -- its own prefix), so reading more chains adds no other rules to the sum.
+  local json = exec_fn("nft -j -t list table inet wifihaven")
   return M.parse_drop_counters(json)
 end
 

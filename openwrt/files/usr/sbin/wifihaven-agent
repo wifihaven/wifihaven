@@ -380,8 +380,9 @@ local function record_blocklist_failures(bl_result)
 end
 
 -- #1325: enforcement-plane forward-drop counters. The nftables drop rules in
--- the wifihaven_block chain carry anonymous `counter`s that reset to 0 on every
--- re-render (`delete table` + recreate). We keep a per-reason baseline and fold
+-- the wifihaven_block chain and the per-MAC wh_carve_ chains (#2901) carry
+-- anonymous `counter`s that reset to 0 on every re-render (`delete table` +
+-- recreate). We keep a per-reason baseline and fold
 -- the growth since the last sample into enforcement_drops_total{reason} via
 -- metrics.fold_external, which re-bases on the reset. To avoid losing the
 -- counts a re-render is about to discard, fold_enforcement_drops() is called

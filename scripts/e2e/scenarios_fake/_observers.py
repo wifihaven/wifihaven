@@ -336,13 +336,16 @@ def wait_global_block_populated(*, timeout_s: float = 90) -> list[str]:
 
 
 def ea_carve_present_for_mac(mac: str) -> bool:
-    """True iff any forward rule for this MAC carves an ea_/ea6_ allow-set.
+    """True iff any rule for this MAC carves an ea_/ea6_ allow-set.
 
     Used to prove the global allow carve-out is genuinely *global* (a single
     @global_allow set), not silently degraded into a per-MAC extraAllowed
     carve. Since #2900 the ea_ sets are per host (`ea_<sanhost>`) and the MAC
-    scoping lives in the rule (`ether saddr <mac> ... ip daddr != @ea_<host>`),
-    so this scans the MAC's rules rather than set names.
+    scoping lives in the rules, so this scans the MAC's rules rather than set
+    names. Since #2901 the ea_ sets are named in the MAC's own carve chain
+    (`ether saddr <mac> jump wh_carve_<hex>`, whose rules carry no MAC), so
+    the jump is what marks a per-MAC carve; a rule naming `@ea_` with the MAC
+    inline (the pre-#2901 shape) still counts.
     """
     res = router_ssh(
         "nft list table inet wifihaven 2>/dev/null || true",
@@ -353,7 +356,7 @@ def ea_carve_present_for_mac(mac: str) -> bool:
     assert "table inet wifihaven" in out, "nft list table inet wifihaven returned no table"
     needle = "ether saddr " + mac.lower() + " "
     return any(
-        needle in line and ("@ea_" in line or "@ea6_" in line)
+        needle in line and ("@ea_" in line or "@ea6_" in line or " jump wh_carve_" in line)
         for line in out.splitlines()
     )
 
