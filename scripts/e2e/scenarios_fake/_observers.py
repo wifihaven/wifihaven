@@ -50,8 +50,9 @@ def mac_drop_rule_present(mac: str) -> bool:
     effective rules have ``blocked = true`` — and the only correct one when the
     MAC also has a non-empty ``extraAllowed`` list. Per #421, render.lua pulls a
     blocked-with-extraAllowed MAC OUT of the ``@blocked_macs`` set into per-MAC
-    forward-chain rules that carry the ``ip daddr != @ea_<host>`` carve-out
-    (the set cannot hold an ``ip daddr`` predicate). So such a MAC is
+    forward-chain rules carved by its ``@ea_<host>`` sets (since #2901, in the
+    MAC's ``wh_carve_<hex>`` chain; the set cannot hold an ``ip daddr``
+    predicate). So such a MAC is
     deliberately ABSENT from ``blocked_macs`` while still fully blocked — asserting
     set membership there would never succeed (the #1360 G2 false-failure).
 

@@ -1187,12 +1187,11 @@ function M.nft(snapshot, opts)
     end
     return carve[mac]
   end
-  for mac, dev in sorted_devices(snapshot.devices) do
-    local r = effective_rules(dev, snapshot.profiles)
-    if r and r.blocked and not allowall_macs[mac] then
-      local c = carve_entry(mac)
-      if c then c.blocked = true end
-    end
+  -- blocked_ea_macs already holds the blocked MACs kept out of @blocked_macs;
+  -- reuse it so the two can't disagree about which MACs those are.
+  for _, mac in ipairs(blocked_ea_macs) do
+    local c = carve_entry(mac)
+    if c then c.blocked = true end
   end
   for _, p in ipairs(eb_pairs) do
     local c = carve_entry(p.mac)

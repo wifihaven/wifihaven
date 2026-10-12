@@ -337,7 +337,7 @@ def _xfail_if_leaf_unreachable(client) -> None:
     (Master Router CD red 2026-06-22 → 06-24). Pinning to v4 exercises the v4
     ea_ carve the test actually proved, restoring the documented "unroutable v4
     leaf ⇒ xfail" semantics. The carve itself is correct in both families
-    (render.lua emits `ip daddr != @ea_…` / `ip6 daddr != @ea6_…`; dns-tail
+    (render.lua carves on `@ea_…` / `@ea6_…`; dns-tail
     populates both) — this was test-harness drift, not a carve regression.
     """
     probe = http_get(client, f"http://{LEAF_HOST}/", timeout_s=8, ipv4_only=True)
@@ -478,8 +478,8 @@ def test_ea_direct_requery_allowed_under_blocked_mac(router, client, fake_api):
 
     # Confirm the whole-MAC block is live. NOTE (#1360 / #421): this profile
     # has a non-empty extraAllowed, so render.lua deliberately pulls the MAC OUT
-    # of the @blocked_macs set into a per-MAC forward-chain drop carrying the
-    # `ip daddr != @ea_<brand>` carve-out — the set cannot hold an
+    # of the @blocked_macs set into a per-MAC forward-chain drop carved by
+    # `@ea_<brand>` (#2901: in its wh_carve_ chain) — the set cannot hold an
     # `ip daddr` predicate. Asserting @blocked_macs membership here therefore
     # never succeeds (it was the original G2 false-failure). Assert the per-MAC
     # drop rule instead, which is the correct "blocked right now" observable for

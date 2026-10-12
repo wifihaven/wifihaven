@@ -125,8 +125,9 @@ local function parse_rule(line)
       i = i + 2
     elseif w == "dnat" then
       assert(need(1) == "ip" and need(2) == "to", line)
-      -- In an inet table nft gives `dnat ip to` an implicit
-      -- `meta nfproto ipv4` dependency: it never fires on an IPv6 packet.
+      -- `dnat ip to` in an inet table never fires on an IPv6 packet: the
+      -- kernel's nft_nat_inet_eval skips a NAT whose family differs from the
+      -- packet's, so the rule falls through with no verdict.
       rule.matches[#rule.matches + 1] = { k = "family", family = "ip" }
       rule.verdict = { k = "nat", target = need(3) }
       i = i + 4

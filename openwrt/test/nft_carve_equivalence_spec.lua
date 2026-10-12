@@ -248,7 +248,9 @@ end
 
 local STRANGER = "02:00:00:00:00:ff"
 
--- Every set relevant to `mac` in `family`, plus one foreign MAC's set.
+-- Every set relevant to `mac` in `family`, plus other MACs' sets: a blocked
+-- host, a category, and an allowed host, so a carve that leaks across MACs
+-- shows up as a mismatch.
 local function universe(o, snap, mac, family)
   local u, seen = {}, {}
   local function add(n) if not seen[n] then seen[n] = true; u[#u + 1] = n end end
@@ -263,6 +265,7 @@ local function universe(o, snap, mac, family)
   if o.has_ga then add(set_name("ga", family)) end
   if o.has_gb then add(set_name("gb", family)) end
   add(set_name("eb", family, "kb1.example"))
+  add(set_name("ea", family, "ka1.example"))
   add(set_name("bl", family, "social"))
   return u
 end
