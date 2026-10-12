@@ -20,16 +20,16 @@ and isn't catalogable) and aggregated across the three profiles by
 | --- | ---: | ---: | --- |
 | `blocksi-screenshots-us.s3.us-east-005.backblazeb2.com` | 415 | 1 | 5 |
 | `log.blocksi.net` | 309 | 1 | 5 |
-| `api.blocksi.net` | 187 | 1 | 5 |
+| `api.blocksi.net` | 186 | 1 | 5 |
 | `k8s-ws-lb.blocksi.net` | 108 | 1 | 5 |
 | `service1.blocksi.net` | 71 | 1 | 5 |
-| `service.blocksi.net` | 59 | 1 | 5 |
+| `service.blocksi.net` | 58 | 1 | 5 |
 | **Blocksi total** | **~1,150** | **6** | **5** |
 | `download.testnav.com` | 174 | 1 | 5 |
 | `cdn-download-prod.drcedirect.com` | 147 | 1 | 5 |
-| `inquisition.goguardian.com` (×2 rows) | 94 + 26 | 2 | 5, 6 |
+| `inquisition.goguardian.com` (×2 rows) | 93 + 25 | 2 | 5, 6 |
 | `countvoncount.goguardian.com` | 14 | 1 | 5 |
-| `prod-ext-gateway.goguardian.com` (×2 rows) | 1.5 + 25 | 2 | 5, 6 |
+| `prod-ext-gateway.goguardian.com` (×2 rows) | 1 + 25 | 2 | 5, 6 |
 | **GoGuardian total** | **~161** | **5** | **5, 6** |
 | `home.testnav.com` | 1 | 1 | 5 |
 
