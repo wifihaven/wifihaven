@@ -252,6 +252,32 @@ above is now wrong, fix the step too — don't just log around it.
 
 ## Learnings log (newest first)
 
+- **2026-10-12 (#2908)** — **Chromebook content-filter/monitoring vendors
+  (Blocksi, GoGuardian) are a recurring display-cleanup class distinct from
+  utility pings and widget polling**, and worth checking for on every pass
+  that includes a school-managed Chromebook profile. Both run as background
+  Chrome extensions pushed by district MDM — not something a kid chooses to
+  use, and not overridable by the operator (school-side filter rules win) —
+  so they're attribution-only like `icanhazip`/`weather`/`onenote`, never a
+  blocking/time-limit target: blocking either risks breaking the
+  Chromebook's compliance with district policy. Unlike the icanhazip/ipify
+  merge, these stayed as **two separate templates** — different vendors,
+  not interchangeable instances of one function — even though they're the
+  same functional category. Grep for `blocksi`, `goguardian`, and other
+  classroom-management brands (Securly, Lightspeed, ContentKeeper, Linewize)
+  on any profile with a school Chromebook; they tend to cluster into a
+  handful of FQDNs under the vendor's own single-purpose apex, which is
+  usually safe to list bare (not a shared platform) once you've confirmed
+  the backend IPs aren't on a shared anycast/CDN pool.
+- **2026-10-12 (#2908)** — **A single-event download from a standardized
+  state-testing platform (Pearson TestNav, DRC INSIGHT/eDirect) is a
+  skip-with-note, not a template**, for the same reason as the Scholastic
+  Book Clubs skip (#2740): low `presenceSeconds` relative to
+  `proportionalSeconds` on exactly one orphan row reads as a one-time
+  administered test session, not something the kid returns to. Watch for
+  this pattern (one row, presence << proportional, a known assessment-vendor
+  domain) before spending a template on it; revisit only if a later pass
+  shows the same host recurring across multiple days.
 - **2026-10-05 (#2833)** — **The measurement host sits INSIDE the enforcement
   plane, so a `curl` that fails is evidence about US before it is evidence about
   the site.** `scratchfoundation.org` was written up twice and wrong twice —

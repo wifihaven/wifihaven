@@ -1,0 +1,33 @@
+slug: blocksi
+name: Blocksi
+icon: "https://icons.duckduckgo.com/ip3/blocksi.net.ico"
+icon_type: url
+# Display-cleanup app (#2908, orphan-driven catalog pass): Blocksi is a
+# school-managed Chromebook content filter / monitoring extension
+# (parent.blocksi.net), not something a kid chooses to use — it runs in the
+# background whenever the school-issued Chromebook is on. It was the largest
+# non-platform orphan cluster on the Quintus profile (~1,150 proportional
+# min / 30d across 6 hosts, recurring over many days), burying real gaps in
+# the per-device list, so it gets a named row per the #2805 precedent
+# (icanhazip, weather, onenote).
+#
+# Hosts observed: log./api./k8s-ws-lb./service./service1.blocksi.net (the
+# vendor's own GCP-hosted backend) and the screenshot-upload bucket
+# blocksi-screenshots-us.s3.us-east-005.backblazeb2.com. Scoped to the
+# `blocksi.net` apex rather than enumerating — it's a single-purpose vendor
+# domain, not a shared platform, so the apex is the stable, future-proof
+# anchor; the Backblaze B2 bucket is a separate domain and listed explicitly.
+#
+# FOR ATTRIBUTION/VISIBILITY ONLY, NOT BLOCKING. This is school-mandated
+# software on a school-owned device: blocking it risks breaking the
+# Chromebook's compliance with district policy, and the operator has no
+# ability to override school-side filtering through this app regardless
+# (Blocksi's own docs say school rules aren't overridable by the parent
+# dashboard). The Backblaze bucket is shared B2 storage infra (collateral if
+# ever blocked); the blocksi.net backend hosts are on Google Cloud IPs
+# dedicated to Blocksi's own load balancer, not a shared anycast API pool —
+# not independently verified beyond that, so don't promote this host-set to
+# a blocking posture without re-checking.
+hosts:
+  - blocksi.net
+  - blocksi-screenshots-us.s3.us-east-005.backblazeb2.com
