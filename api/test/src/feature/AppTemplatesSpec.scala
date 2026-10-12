@@ -191,6 +191,10 @@ object AppTemplatesSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
           "onenote",
           // #2833: Scratch, scoped to the delegated `scratch.mit.edu` zone
           "scratch",
+          // #2908: orphan-driven catalog pass — Blocksi + GoGuardian,
+          // school-Chromebook content-filter/monitoring display-cleanup apps
+          "blocksi",
+          "goguardian",
         )
         val slugs    = templates.map(_.slug.value).toSet
         assertTrue(slugs == expected) &&

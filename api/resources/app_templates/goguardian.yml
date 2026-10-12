@@ -1,0 +1,27 @@
+slug: goguardian
+name: GoGuardian
+icon: "https://icons.duckduckgo.com/ip3/goguardian.com.ico"
+icon_type: url
+# Display-cleanup app (#2908, orphan-driven catalog pass): GoGuardian is a
+# school-managed Chromebook content filter / activity-monitoring product
+# (web filtering, screen recording, teacher-side tab control), same class as
+# `blocksi.yml` but a different vendor — not something a kid chooses to use,
+# it runs in the background whenever the school-issued Chromebook is on.
+# Smaller than Blocksi's cluster but still recurring over multiple days
+# across two profiles (Quintus + Prima, ~161 proportional min / 30d
+# combined), so it gets the same #2805 display-cleanup treatment rather than
+# cluttering the per-device orphan list.
+#
+# Hosts observed: inquisition./countvoncount./prod-ext-gateway.goguardian.com,
+# all on AWS IPs GoGuardian appears to own directly (not a shared CDN/anycast
+# pool — not independently verified beyond the resolved ranges). Scoped to
+# the bare `goguardian.com` apex rather than enumerating: it's a
+# single-purpose vendor domain, not a shared platform, so the apex is the
+# stable anchor for whatever subdomain the product adds next.
+#
+# FOR ATTRIBUTION/VISIBILITY ONLY, NOT BLOCKING. Same reasoning as Blocksi:
+# this is school-mandated software on a school-owned device, and the
+# operator has no legitimate reason to block or budget it — doing so risks
+# breaking the Chromebook's compliance with district policy.
+hosts:
+  - goguardian.com

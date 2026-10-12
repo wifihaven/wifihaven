@@ -91,3 +91,8 @@ slugs:
   # DELEGATED `scratch.mit.edu` zone; the shared `mit.edu` apex is deliberately
   # absent (see scratch.yml). Anchors presence — not a display-cleanup app.
   - scratch
+  # #2908: orphan-driven catalog pass (see evidence/classification-2908.md) —
+  # Blocksi + GoGuardian, school-Chromebook content-filter/monitoring vendors.
+  # Display-cleanup apps, attribution only — not blocking/time-limit targets.
+  - blocksi
+  - goguardian
