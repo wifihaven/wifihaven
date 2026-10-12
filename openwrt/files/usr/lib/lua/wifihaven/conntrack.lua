@@ -272,8 +272,8 @@ end
 -- Consequence to respect at the call site: this probe hits far more often than
 -- the per-host eb_-style probe it replaced (a pure blocklist member has no
 -- eb_<host> set at all, so that query almost always missed). The kernel's
--- category drop is `... ip daddr @bl_<id> != @ea_<host> != @global_allow`
--- — a bl_ hit ALONE is not a drop, and the carve-out sets have to be probed
+-- category drop is carved by the MAC's @ea_<host> sets and @global_allow
+-- (render.lua's wh_carve_<mac> chain, #2901) — a bl_ hit ALONE is not a drop, and the carve-out sets have to be probed
 -- too before the flow may be labelled blocked. See nft_carve_hit.
 -- ---------------------------------------------------------------------------
 function M.nft_bl_hit(dst_ip, bl_id, exec_fn)
@@ -1232,7 +1232,7 @@ function M.handle_flow(flow, ctx, batcher)
   -- extraAllowed override for blocked MACs (#421): if the MAC is blocked by
   -- the per-MAC rule (pause / schedule / time-limit) but hname matches a host
   -- in ea_hosts_by_mac[mac] (using dnsmasq's suffix-match semantics), the
-  -- kernel's `ip daddr != @ea_<host>` clause fires and the packet IS
+  -- kernel's `@ea_<host>` carve fires and the packet IS
   -- forwarded.  Flip allowed back to true so the event is reported correctly.
   --
   -- Limitation: when hname is nil (no DNS attribution), we cannot determine
@@ -1259,7 +1259,7 @@ function M.handle_flow(flow, ctx, batcher)
   -- ipsets are); nft_sets is only a partial attribution fallback for
   -- site_limits domains.
   --
-  -- Each eb_/bl_ drop carries `ip daddr != @ea_<host>` exception clauses,
+  -- Each eb_/bl_ drop is carved by the MAC's @ea_<host> sets,
   -- so we must NOT classify as blocked when hname also matches a host in
   -- ea_hosts_by_mac[mac] (#421).
   --
@@ -1292,8 +1292,8 @@ function M.handle_flow(flow, ctx, batcher)
   end
 
   -- #2719: the carve-out check for a slow-path hit, where there is no hostname
-  -- to compare against. The kernel's per-host and per-category drops are
-  --   ... daddr @eb_<host>|@bl_<id> != @ea_<host> … != @global_allow
+  -- to compare against. The kernel's per-host and per-category drops
+  -- (daddr @eb_<host>|@bl_<id>) are carved by @ea_<host> … and @global_allow,
   -- so a set hit ALONE is not a drop. With no attribution the only way to
   -- evaluate the exception clauses is to ask the kernel about the same sets it
   -- excepts on: the ea_ sets for the MAC's own extraAllowed hosts and the fleet-wide

@@ -38,15 +38,13 @@
 -- @global_allow. See the "#1319 global policy composition" helpers below and
 -- docs/design/global-policy-layer.md §5.2.
 --
--- allow := ¬drop. extraAllowed beats every "blocked" path (#421):
--- the @blocked_macs / eb_ / bl_ drop rules each carry one `ip daddr != @ea_<a>`
--- clause per host in m's effective extraAllowed list, so a hit in any of
--- m's ea_ sets suppresses those drops for that (mac, packet). For the
--- @blocked_macs path: blocked MACs *with* extraAllowed are pulled out of
--- the set into per-MAC rules carrying the ea exception (one rule per
--- family; the family-agnostic `ether saddr @blocked_macs drop` cannot
--- carry an `ip daddr` predicate). Blocked MACs with no extraAllowed
--- stay in the set and drop unconditionally as before.
+-- allow := ¬drop. extraAllowed beats every "blocked" path (#421): a hit in
+-- any of m's ea_ sets suppresses m's whole-MAC, eb_ and bl_ drops for that
+-- (mac, packet). Since #2901 a MAC with extraAllowed hosts has those drops in
+-- its own wh_carve_<mac> chain, which returns on `ip daddr @ea_<a>` (one line
+-- per host) before reaching them; such a blocked MAC is therefore kept out of
+-- @blocked_macs. Blocked MACs with no extraAllowed stay in the set and drop
+-- unconditionally as before.
 -- blockIpOnly is intentionally NOT suppressed by ea sets — extraAllowed
 -- composes via the dnsmasq resolver populating resolved_<m> at A/AAAA
 -- time, so a resolved-allowed host already lands in resolved_<m>.
@@ -260,9 +258,10 @@ local function resolved6_set_name(mac)
 end
 
 -- #421: extraAllowed exception sets. ea_<sanhost> holds the v4 resolved IPs
--- of host a; ea6_ is the v6 sibling. The eb_/bl_ drop rules for MAC m append
--- `ip daddr != @ea_<a>` for each a ∈ extraAllowed(m), so a hit suppresses the
--- drop. The MAC scoping lives entirely in the nft rule (`ether saddr <m>`),
+-- of host a; ea6_ is the v6 sibling. MAC m's carve chain returns on
+-- `ip daddr @ea_<a>` for each a ∈ extraAllowed(m) before its drops, so a hit
+-- suppresses them (#2901). The MAC scoping lives entirely in the nft rules
+-- (the `ether saddr <m> jump wh_carve_<m>`),
 -- exactly as for eb_<host>: dnsmasq populates the set from any client's
 -- resolution of the host (#496: dnsmasq's `nftset=` does not support a `tag:`
 -- prefix in 2.91, so per-MAC DNS-time scoping isn't an option), and a MAC
@@ -932,11 +931,10 @@ function M.nft(snapshot, opts)
   -- we just collect MACs whose effective rules.blocked == true.
   --
   -- #421: blocked MACs whose effective rules also have a non-empty
-  -- extraAllowed list get pulled out of the @blocked_macs set into
-  -- per-MAC rules carrying the `ip daddr != @ea_<a>` exception. The
-  -- @blocked_macs set itself stays family-agnostic (it cannot carry an
-  -- `ip daddr` predicate), so MACs with ea exceptions need per-family
-  -- rules instead.
+  -- extraAllowed list get pulled out of the @blocked_macs set: their
+  -- whole-MAC drop sits in their carve chain behind the ea returns (#2901).
+  -- The @blocked_macs set itself stays family-agnostic (it cannot carry an
+  -- `ip daddr` predicate).
   local ea_by_mac_early = effective_extra_allowed_by_mac(snapshot)
   local blocked_macs_list   = {}   -- in @blocked_macs set (drop unconditionally)
   local blocked_ea_macs     = {}   -- blocked AND has extraAllowed → per-MAC rules
@@ -1056,21 +1054,34 @@ function M.nft(snapshot, opts)
     emit("")
   end
 
-  -- #421: helper — emit the `ip daddr != @ea_<a>` exception suffix
-  -- to append to a (mac, family) drop / dnat predicate. Joins one clause
-  -- per a ∈ extraAllowed(m); returns "" if the MAC has no extraAllowed.
-  local function ea_suffix(mac, family)
-    local hosts = ea_by_mac[mac]
-    if not hosts or #hosts == 0 then return "" end
-    local parts = {}
-    for _, host in ipairs(hosts) do
-      if family == "ip6" then
-        parts[#parts + 1] = " ip6 daddr != @" .. ea6_set_name(host)
-      else
-        parts[#parts + 1] = " ip daddr != @" .. ea_set_name(host)
-      end
+  -- #421 / #2901: a MAC's extraAllowed hosts carve its per-MAC drops (whole-MAC
+  -- block, extraBlocked, blocklists) and their block-page DNATs. Before #2901
+  -- every one of those rules repeated `ip daddr != @ea_<a>` for every a ∈
+  -- extraAllowed(m), so rule text grew with |extraBlocked| × |extraAllowed| per
+  -- MAC (979 KB on the family router). Now a MAC with extraAllowed hosts gets
+  -- its own regular chain: the base chain jumps to it once, it lists each carve
+  -- set once as `ip daddr @ea_<a> return`, and the MAC's carvable rules follow
+  -- with no suffix. A carved destination returns to the base chain at the rule
+  -- after the jump, so the uncarvable rules there (blockIpOnly, global block,
+  -- lockdown) still see it — the precedence is unchanged, which
+  -- nft_carve_equivalence_spec checks against an oracle.
+  local function carve_chain_name(mac)
+    return "wh_carve_" .. mac:lower():gsub(":", "")
+  end
+  local function carve_nat_chain_name(mac)
+    return "wh_carve_nat_" .. mac:lower():gsub(":", "")
+  end
+  -- The `return` lines that open a carve chain: per-MAC ea sets, then the
+  -- global allow (which carves the same per-MAC rules; see ga_suffix).
+  local function emit_carve_returns(mac)
+    for _, host in ipairs(ea_by_mac[mac]) do
+      ind2("ip daddr @" .. ea_set_name(host) .. " return")
+      ind2("ip6 daddr @" .. ea6_set_name(host) .. " return")
     end
-    return table.concat(parts)
+    if has_global_allow then
+      ind2("ip daddr @" .. GLOBAL_ALLOW4 .. " return")
+      ind2("ip6 daddr @" .. GLOBAL_ALLOW6 .. " return")
+    end
   end
 
   -- #351: per-(MAC, host) drop pairs. We build the cross-product from each
@@ -1161,6 +1172,36 @@ function M.nft(snapshot, opts)
       end
     end
   end
+
+  -- #2901: MACs whose carvable rules go in a carve chain — those with
+  -- extraAllowed hosts and at least one carvable rule (whole-MAC block,
+  -- extraBlocked, or blocklist). Every other MAC keeps its rules inline in the
+  -- base chains, carrying only the global-allow suffix as before.
+  -- carve[mac] = { blocked = bool, eb = {hosts}, bl = {ids} }
+  local carve, carve_macs = {}, {}
+  local function carve_entry(mac)
+    if not (ea_by_mac[mac] and #ea_by_mac[mac] > 0) then return nil end
+    if not carve[mac] then
+      carve[mac] = { eb = {}, bl = {} }
+      carve_macs[#carve_macs + 1] = mac
+    end
+    return carve[mac]
+  end
+  -- blocked_ea_macs already holds the blocked MACs kept out of @blocked_macs;
+  -- reuse it so the two can't disagree about which MACs those are.
+  for _, mac in ipairs(blocked_ea_macs) do
+    local c = carve_entry(mac)
+    if c then c.blocked = true end
+  end
+  for _, p in ipairs(eb_pairs) do
+    local c = carve_entry(p.mac)
+    if c then c.eb[#c.eb + 1] = p.host end
+  end
+  for _, p in ipairs(bl_pairs) do
+    local c = carve_entry(p.mac)
+    if c then c.bl[#c.bl + 1] = p.id end
+  end
+  table.sort(carve_macs)
 
   -- #1122/#1126: each drop is rendered as a pair of rules sharing one predicate
   -- (see #1826/#1915 / `emit_drop` below):
@@ -1268,15 +1309,18 @@ function M.nft(snapshot, opts)
   -- family's daddr into the (mac,dst) key, then one shared family-agnostic
   -- drop. `predicate` is everything up to (but excluding) the log/drop suffix;
   -- the log and drop rules share it verbatim so they match the same packets.
+  -- `predicate` is "" inside a #2901 carve chain, whose jump already matched
+  -- the MAC (emit_rule drops the suffix's leading space).
+  local function emit_rule(s) ind2((s:gsub("^ ", ""))) end
   local function emit_drop(predicate, mac, reason, family)
     family = family or "any"
     if family == "any" then
-      ind2(predicate .. " meta nfproto ipv4" .. log_suffix("ip", mac, reason))
-      ind2(predicate .. " meta nfproto ipv6" .. log_suffix("ip6", mac, reason))
+      emit_rule(predicate .. " meta nfproto ipv4" .. log_suffix("ip", mac, reason))
+      emit_rule(predicate .. " meta nfproto ipv6" .. log_suffix("ip6", mac, reason))
     else
-      ind2(predicate .. log_suffix(family, mac, reason))
+      emit_rule(predicate .. log_suffix(family, mac, reason))
     end
-    ind2(predicate .. drop_suffix(mac, reason))
+    emit_rule(predicate .. drop_suffix(mac, reason))
   end
   local blocked_reason_by_mac = {}
   for mac, dev in pairs(snapshot.devices or {}) do
@@ -1305,6 +1349,33 @@ function M.nft(snapshot, opts)
   ind("}")
   emit("")
 
+  -- #2901: per-MAC carve chains, jumped to from wifihaven_block below. Rule
+  -- order inside matches the base chain's: whole-MAC, extraBlocked v4/v6,
+  -- blocklists v4/v6. The drops keep their `wh_drop:<mac>:<reason>` prefix and
+  -- comment; nft_drops.lua reads the whole table, so it counts them here too.
+  for _, mac in ipairs(carve_macs) do
+    local c = carve[mac]
+    ind(string.format("chain %s {", carve_chain_name(mac)))
+    emit_carve_returns(mac)
+    if c.blocked then
+      emit_drop("", mac, blocked_reason_by_mac[mac] or "blocked")
+    end
+    for _, host in ipairs(c.eb) do
+      emit_drop("ip daddr @" .. eb_set_name(host), mac, "host:" .. host, "ip")
+    end
+    for _, host in ipairs(c.eb) do
+      emit_drop("ip6 daddr @" .. eb6_set_name(host), mac, "host:" .. host, "ip6")
+    end
+    for _, id in ipairs(c.bl) do
+      emit_drop("ip daddr @" .. bl_set_name(id), mac, "category:" .. tostring(id), "ip")
+    end
+    for _, id in ipairs(c.bl) do
+      emit_drop("ip6 daddr @" .. bl6_set_name(id), mac, "category:" .. tostring(id), "ip6")
+    end
+    ind("}")
+    emit("")
+  end
+
   ind("chain wifihaven_block {")
   ind2("type filter hook forward priority 0; policy accept;")
   -- #1865: the block page must NEVER be dropped, for any reason. The block-page
@@ -1332,31 +1403,35 @@ function M.nft(snapshot, opts)
   -- #1122: the family-agnostic @blocked_macs drop is replaced by per-MAC
   -- rules so each can carry its own `wh_drop:<mac>:<reason>` comment. The
   -- set is still declared (used by the DNAT chain below) but no longer
-  -- driven by a single drop rule. MACs without extraAllowed get one
-  -- family-agnostic per-MAC drop; MACs with extraAllowed get per-family
-  -- rules carrying the ea exception (same shape as pre-#1122).
+  -- driven by a single drop rule. MACs without extraAllowed (or a global
+  -- allow) get one family-agnostic per-MAC drop here.
   for _, mac in ipairs(blocked_macs_list) do
     emit_drop(string.format("ether saddr %s", mac),
               mac, blocked_reason_by_mac[mac] or "blocked")
   end
+  -- #2901: a MAC with extraAllowed hosts jumps to its carve chain (declared
+  -- above) for its whole-MAC, extraBlocked and blocklist drops. The jump sits
+  -- before the blockIpOnly and global drops, the same place those per-MAC
+  -- drops held inline, so the order a packet meets them in is unchanged.
+  for _, mac in ipairs(carve_macs) do
+    ind2(string.format("ether saddr %s jump %s", mac, carve_chain_name(mac)))
+  end
   -- #1319: each per-MAC blocked rule also carries the `!= @global_allow`
   -- carve-out (ga_suffix), so a globally-allowed host stays reachable for a
-  -- blocked MAC. ea_suffix (per-MAC allow) comes first, then ga_suffix.
+  -- blocked MAC. MACs with per-MAC extraAllowed went to a carve chain above,
+  -- so the ones left here are carved by the global allow only.
   for _, mac in ipairs(blocked_ea_macs) do
-    local reason = blocked_reason_by_mac[mac] or "blocked"
-    emit_drop(string.format("ether saddr %s%s%s", mac, ea_suffix(mac, "ip"),
-                            ga_suffix("ip")), mac, reason, "ip")
-    emit_drop(string.format("ether saddr %s%s%s", mac, ea_suffix(mac, "ip6"),
-                            ga_suffix("ip6")), mac, reason, "ip6")
+    if not carve[mac] then
+      local reason = blocked_reason_by_mac[mac] or "blocked"
+      emit_drop(string.format("ether saddr %s%s", mac, ga_suffix("ip")), mac, reason, "ip")
+      emit_drop(string.format("ether saddr %s%s", mac, ga_suffix("ip6")), mac, reason, "ip6")
+    end
   end
   -- v4 drops first, then v6 (#392). One ipset directive populates both sets
   -- at DNS time; here we gate on whichever family the destination matched.
-  -- #421: each eb_/bl_ drop carries `ip daddr != @ea_<a>` exception
-  -- clauses (one per a ∈ extraAllowed(m)) so an allowed host's resolved
-  -- IPs suppress the drop. ea_suffix("") for MACs with no extraAllowed,
-  -- so behaviour for those is unchanged.
-  -- #1319: ga_suffix appended after the per-MAC ea exception, so an allowed
-  -- host (per-MAC or global) suppresses the per-host / per-category drop.
+  -- #1319: ga_suffix lets a globally-allowed host suppress the per-host /
+  -- per-category drop. (Per-MAC extraAllowed carves happen in the carve
+  -- chains, #421/#2901.)
   -- #1645: `host:<host>` names the matched eb_<host> rule in the kernel
   -- log line and the nft comment. Kernel `log prefix` is bounded by
   -- NF_LOG_PREFIXLEN=128; with `wh_drop:<mac>:host:<host> ` the fixed
@@ -1367,24 +1442,32 @@ function M.nft(snapshot, opts)
   -- parser sees a partial host; for now we accept that gracefully (the
   -- drop still fires correctly — only the label is lossy).
   for _, p in ipairs(eb_pairs) do
-    emit_drop(string.format("ether saddr %s ip daddr @%s%s%s",
-                            p.mac, eb_set_name(p.host), ea_suffix(p.mac, "ip"),
-                            ga_suffix("ip")), p.mac, "host:" .. p.host, "ip")
+    if not carve[p.mac] then
+      emit_drop(string.format("ether saddr %s ip daddr @%s%s",
+                              p.mac, eb_set_name(p.host), ga_suffix("ip")),
+                p.mac, "host:" .. p.host, "ip")
+    end
   end
   for _, p in ipairs(eb_pairs) do
-    emit_drop(string.format("ether saddr %s ip6 daddr @%s%s%s",
-                            p.mac, eb6_set_name(p.host), ea_suffix(p.mac, "ip6"),
-                            ga_suffix("ip6")), p.mac, "host:" .. p.host, "ip6")
+    if not carve[p.mac] then
+      emit_drop(string.format("ether saddr %s ip6 daddr @%s%s",
+                              p.mac, eb6_set_name(p.host), ga_suffix("ip6")),
+                p.mac, "host:" .. p.host, "ip6")
+    end
   end
   for _, p in ipairs(bl_pairs) do
-    emit_drop(string.format("ether saddr %s ip daddr @%s%s%s",
-                            p.mac, bl_set_name(p.id), ea_suffix(p.mac, "ip"),
-                            ga_suffix("ip")), p.mac, "category:" .. tostring(p.id), "ip")
+    if not carve[p.mac] then
+      emit_drop(string.format("ether saddr %s ip daddr @%s%s",
+                              p.mac, bl_set_name(p.id), ga_suffix("ip")),
+                p.mac, "category:" .. tostring(p.id), "ip")
+    end
   end
   for _, p in ipairs(bl_pairs) do
-    emit_drop(string.format("ether saddr %s ip6 daddr @%s%s%s",
-                            p.mac, bl6_set_name(p.id), ea_suffix(p.mac, "ip6"),
-                            ga_suffix("ip6")), p.mac, "category:" .. tostring(p.id), "ip6")
+    if not carve[p.mac] then
+      emit_drop(string.format("ether saddr %s ip6 daddr @%s%s",
+                              p.mac, bl6_set_name(p.id), ga_suffix("ip6")),
+                p.mac, "category:" .. tostring(p.id), "ip6")
+    end
   end
   -- #353: blockIpOnly drop. Predicate `ip daddr != @resolved_<mac>` matches
   -- any v4 destination the device did not DNS-resolve via our resolver in
@@ -1417,9 +1500,8 @@ function M.nft(snapshot, opts)
   -- #1319: global lockdown (global.blocked) → whole-network kill switch. Drop
   -- all forwarded traffic for every managed MAC except @global_allow. Keyed on
   -- ether saddr so return traffic for allowed flows is unaffected. Emitted for
-  -- every managed MAC (even already-blocked ones) because this carry only the
-  -- ga carve-out, not the per-MAC ea exception that the per-MAC blocked rule
-  -- carries.
+  -- every managed MAC (even already-blocked ones) because these carry only the
+  -- ga carve-out, not the per-MAC ea carve the per-MAC blocked rule gets.
   if g_blocked then
     if has_global_allow then
       -- Per-family so each can carry its family-specific @global_allow carve-out.
@@ -1447,8 +1529,6 @@ function M.nft(snapshot, opts)
   -- blocklistId), and per-MAC blockIpOnly (un-resolved daddr).
   if #blocked_macs_list > 0 or #blocked_ea_macs > 0 or #eb_pairs > 0 or #bl_pairs > 0 or #bio_macs > 0
       or has_global_block or g_blocked then
-    ind("chain wifihaven_block_nat {")
-    ind2("type nat hook prerouting priority dstnat; policy accept;")
     -- #383: every block-page DNAT predicate emits a pair of rules — TCP/80 →
     -- the HTTP uhttpd listener AND TCP/443 → the parallel TLS uhttpd listener
     -- (self-signed cert, CN block.wifihaven.local). HTTPS used to time out
@@ -1457,8 +1537,8 @@ function M.nft(snapshot, opts)
     -- a CA on managed devices. The pair is emitted via the dnat4 / dnat6
     -- helpers below so the predicate construction is single-source-of-truth.
     local function dnat4(predicate)
-      ind2(predicate .. " tcp dport 80 dnat ip to 127.0.0.1:8081")
-      ind2(predicate .. " tcp dport 443 dnat ip to 127.0.0.1:8443")
+      emit_rule(predicate .. " tcp dport 80 dnat ip to 127.0.0.1:8081")
+      emit_rule(predicate .. " tcp dport 443 dnat ip to 127.0.0.1:8443")
     end
     -- #1865: IPv6 has no `route_localnet` equivalent, and ::1 must never appear
     -- on the wire (RFC 4291), so DNAT'ing forwarded v6 traffic to ::1 never
@@ -1472,26 +1552,56 @@ function M.nft(snapshot, opts)
     -- path keeps DNAT-to-127.0.0.1: route_localnet makes loopback deliverable on
     -- v4, and that path already works on prod — leave it untouched.)
     local function dnat6(predicate)
-      ind2(predicate .. " tcp dport 80 redirect to :8081")
-      ind2(predicate .. " tcp dport 443 redirect to :8443")
+      emit_rule(predicate .. " tcp dport 80 redirect to :8081")
+      emit_rule(predicate .. " tcp dport 443 redirect to :8443")
     end
+    -- #2901: per-MAC carve chains for the block-page DNAT, the same shape as
+    -- the forward ones: carve returns, then the MAC's whole-MAC, extraBlocked
+    -- and blocklist DNATs with no suffix. The v6 whole-MAC form keeps its
+    -- `ip6 daddr != ::1` self-redirect guard.
+    for _, mac in ipairs(carve_macs) do
+      local c = carve[mac]
+      ind(string.format("chain %s {", carve_nat_chain_name(mac)))
+      emit_carve_returns(mac)
+      if c.blocked then
+        dnat4("")
+        dnat6("ip6 daddr != ::1")
+      end
+      for _, host in ipairs(c.eb) do dnat4("ip daddr @" .. eb_set_name(host)) end
+      for _, host in ipairs(c.eb) do dnat6("ip6 daddr @" .. eb6_set_name(host)) end
+      for _, id in ipairs(c.bl) do dnat4("ip daddr @" .. bl_set_name(id)) end
+      for _, id in ipairs(c.bl) do dnat6("ip6 daddr @" .. bl6_set_name(id)) end
+      ind("}")
+      emit("")
+    end
+    ind("chain wifihaven_block_nat {")
+    ind2("type nat hook prerouting priority dstnat; policy accept;")
     if #blocked_macs_list > 0 then
       dnat4("ether saddr @blocked_macs")
     end
-    -- #421: blocked + extraAllowed → per-MAC v4 DNAT with ea exception.
+    -- #2901: one jump per carve MAC covers both families.
+    for _, mac in ipairs(carve_macs) do
+      ind2(string.format("ether saddr %s jump %s", mac, carve_nat_chain_name(mac)))
+    end
     -- #1319: ga_suffix adds the @global_allow carve-out so an allowed host is
-    -- never redirected to the block page.
+    -- never redirected to the block page. (Per-MAC extraAllowed carves are in
+    -- the carve chains, #421/#2901.)
     for _, mac in ipairs(blocked_ea_macs) do
-      dnat4(string.format("ether saddr %s%s%s",
-        mac, ea_suffix(mac, "ip"), ga_suffix("ip")))
+      if not carve[mac] then
+        dnat4(string.format("ether saddr %s%s", mac, ga_suffix("ip")))
+      end
     end
     for _, p in ipairs(eb_pairs) do
-      dnat4(string.format("ether saddr %s ip daddr @%s%s%s",
-        p.mac, eb_set_name(p.host), ea_suffix(p.mac, "ip"), ga_suffix("ip")))
+      if not carve[p.mac] then
+        dnat4(string.format("ether saddr %s ip daddr @%s%s",
+          p.mac, eb_set_name(p.host), ga_suffix("ip")))
+      end
     end
     for _, p in ipairs(bl_pairs) do
-      dnat4(string.format("ether saddr %s ip daddr @%s%s%s",
-        p.mac, bl_set_name(p.id), ea_suffix(p.mac, "ip"), ga_suffix("ip")))
+      if not carve[p.mac] then
+        dnat4(string.format("ether saddr %s ip daddr @%s%s",
+          p.mac, bl_set_name(p.id), ga_suffix("ip")))
+      end
     end
     -- #1319: global block / lockdown v4 DNAT → block page. Carved out only by
     -- @global_allow (per-MAC ea does not save a global block).
@@ -1522,20 +1632,24 @@ function M.nft(snapshot, opts)
     if #blocked_macs_list > 0 then
       dnat6("ether saddr @blocked_macs ip6 daddr != ::1")
     end
-    -- #421: blocked + extraAllowed → per-MAC v6 DNAT with ea6 exception.
-    -- `ip6 daddr != ::1` guards against self-DNAT (same as the @blocked_macs
-    -- v6 line above).
+    -- Blocked MACs carved only by the global allow. `ip6 daddr != ::1` guards
+    -- against self-DNAT (same as the @blocked_macs v6 line above).
     for _, mac in ipairs(blocked_ea_macs) do
-      dnat6(string.format("ether saddr %s ip6 daddr != ::1%s%s",
-        mac, ea_suffix(mac, "ip6"), ga_suffix("ip6")))
+      if not carve[mac] then
+        dnat6(string.format("ether saddr %s ip6 daddr != ::1%s", mac, ga_suffix("ip6")))
+      end
     end
     for _, p in ipairs(eb_pairs) do
-      dnat6(string.format("ether saddr %s ip6 daddr @%s%s%s",
-        p.mac, eb6_set_name(p.host), ea_suffix(p.mac, "ip6"), ga_suffix("ip6")))
+      if not carve[p.mac] then
+        dnat6(string.format("ether saddr %s ip6 daddr @%s%s",
+          p.mac, eb6_set_name(p.host), ga_suffix("ip6")))
+      end
     end
     for _, p in ipairs(bl_pairs) do
-      dnat6(string.format("ether saddr %s ip6 daddr @%s%s%s",
-        p.mac, bl6_set_name(p.id), ea_suffix(p.mac, "ip6"), ga_suffix("ip6")))
+      if not carve[p.mac] then
+        dnat6(string.format("ether saddr %s ip6 daddr @%s%s",
+          p.mac, bl6_set_name(p.id), ga_suffix("ip6")))
+      end
     end
     -- #1319: global block / lockdown v6 DNAT → block page. The @global_block6
     -- match can't include ::1 (the listener never resolves into a block set),

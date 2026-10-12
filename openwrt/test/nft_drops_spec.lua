@@ -108,11 +108,37 @@ end)
 
 describe("nft_drops.read", function()
   it("parses the injected exec_fn output", function()
-    local by = nft_drops.read(function(cmd)
-      assert.truthy(cmd:find("wifihaven_block", 1, true))
+    local by = nft_drops.read(function()
       return CHAIN_JSON
     end)
     assert.equal(1000, by.whole_mac)
     assert.equal(250, by.category_block)
+  end)
+
+  -- #2901: a MAC with extraAllowed hosts has its whole-MAC, host and category
+  -- drops in its own carve chain (wh_carve_<mac>), so reading only the
+  -- wifihaven_block chain would miss them. Read the whole table, terse (-t
+  -- leaves out set elements, which the counters don't need).
+  it("reads the whole table tersely, not one chain", function()
+    local seen
+    nft_drops.read(function(cmd) seen = cmd; return "" end)
+    assert.equal("nft -j -t list table inet wifihaven", seen)
+  end)
+
+  it("counts drops in a carve chain alongside the base chain", function()
+    local json = [[
+{ "nftables": [
+  { "chain": { "family": "inet", "table": "wifihaven", "name": "wh_carve_aabbccddee01" } },
+  { "rule": { "chain": "wh_carve_aabbccddee01", "comment": "wh_drop:aa:bb:cc:dd:ee:01:Paused",
+              "expr": [ { "counter": { "packets": 3, "bytes": 1 } }, { "drop": null } ] } },
+  { "rule": { "chain": "wh_carve_aabbccddee01", "comment": "wh_drop:aa:bb:cc:dd:ee:01:host:x.example",
+              "expr": [ { "counter": { "packets": 4, "bytes": 1 } }, { "drop": null } ] } },
+  { "rule": { "chain": "wifihaven_block", "comment": "wh_drop:aa:bb:cc:dd:ee:02:Paused",
+              "expr": [ { "counter": { "packets": 5, "bytes": 1 } }, { "drop": null } ] } }
+] }
+]]
+    local by = nft_drops.read(function() return json end)
+    assert.equal(8, by.whole_mac)
+    assert.equal(4, by.host_block)
   end)
 end)
