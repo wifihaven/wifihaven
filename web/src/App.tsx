@@ -3,6 +3,7 @@ import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-route
 import { AuthProvider, useAuth } from '@/hooks/useAuth'
 import { WsProvider, WsStaleInvalidator } from '@/hooks/useWs'
 import { AlertsNotifier } from '@/hooks/useNotifyOnNewAlerts'
+import { NewBuildBanner, BuildCheckOnWsReconnect } from '@/components/NewBuildBanner'
 import { Layout } from '@/components/layout/Layout'
 import { LoginPage } from '@/pages/LoginPage'
 import { DashboardPage } from '@/pages/DashboardPage'
@@ -101,7 +102,7 @@ function AppRoutes() {
         change-password form even when the server-side flag is set (#586).
         All other protected routes redirect to /account until the flag clears.
       */}
-      <Route path="/" element={<RequireAuth><WsProvider><AlertsNotifier /><WsStaleInvalidator /><Layout /></WsProvider></RequireAuth>}>
+      <Route path="/" element={<RequireAuth><WsProvider><AlertsNotifier /><WsStaleInvalidator /><BuildCheckOnWsReconnect /><Layout /></WsProvider></RequireAuth>}>
         {/* #2492: same ACCOUNT_PATH the transport's loop guard compares against — one source. */}
         <Route path={ACCOUNT_PATH} element={<AccountPage />} />
         <Route index element={<RequirePwChanged><Navigate to="/dashboard" replace /></RequirePwChanged>} />
@@ -138,6 +139,8 @@ function AppRoutes() {
 export default function App() {
   return (
     <BrowserRouter>
+      {/* #2903: above the routes so the login and block pages get it too. */}
+      <NewBuildBanner />
       <AuthProvider>
         <AppRoutes />
       </AuthProvider>
