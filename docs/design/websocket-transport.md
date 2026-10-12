@@ -223,7 +223,7 @@ change-detection key the server uses to decide *whether* to push (§6.2).
 > `nft -f` load (which *is* the enforcement change — the whole-MAC drop,
 > per-host drops, `blocked_macs`) now runs **before** the `/etc/init.d/dnsmasq
 > restart`, not after. The restart only propagates changed
-> `dhcp-host=`/`nftset=` directives (ipsets populate on the next resolve) and,
+> `nftset=` directives (ipsets populate on the next resolve) and,
 > because a pause toggles the profile's `extraAllowed` carve, it fires on nearly
 > every pause/unpause and can take seconds (much longer on a prod-sized config).
 > When it ran first it *gated* the block behind itself — the dominant part of the

@@ -39,9 +39,13 @@ end
 
 describe("render.dnsmasq", function()
 
-  it("emits dhcp-host entry that tags each device MAC to its profile", function()
+  -- #2900: device -> profile is nft state. The conf names hosts only, so a
+  -- profile assignment change doesn't force a dnsmasq restart.
+  it("emits no dhcp-host= line and never names a device MAC", function()
     local conf = render.dnsmasq(snap_one())
-    assert.truthy(conf:find("dhcp-host=aa:bb:cc:11:22:33,set:profile3", 1, true))
+    assert.is_nil(conf:find("dhcp-host=", 1, true))
+    assert.is_nil(conf:find("aa:bb:cc:11:22:33", 1, true))
+    assert.is_nil(conf:find("aa_bb_cc_11_22_33", 1, true))
   end)
 
   -- #351: extraBlocked is enforced at the connection layer via per-MAC nft
@@ -105,8 +109,9 @@ describe("render.dnsmasq", function()
       failureMode = "last-known-good",
     }
     local conf = render.dnsmasq(s)
-    assert.truthy(conf:find("dhcp-host=aa:bb:cc:11:22:33,set:profile3", 1, true))
-    assert.truthy(conf:find("dhcp-host=de:ad:be:ef:00:01,set:profile1", 1, true))
+    assert.is_nil(conf:find("dhcp-host=", 1, true))
+    -- The kids profile's extraBlocked populator is still there.
+    assert.truthy(conf:find("nftset=/tiktok.com/4#inet#wifihaven#eb_tiktok_com", 1, true))
   end)
 
   it("deduplicates extraBlocked nftset= lines across profiles", function()
@@ -168,8 +173,8 @@ describe("render.dnsmasq", function()
     local conf
     local ok = pcall(function() conf = render.dnsmasq(s) end)
     assert.is_true(ok)
-    assert.is_nil(conf:find("dhcp-host=be:89:10:82:c7:4c", 1, true))
-    assert.truthy(conf:find("dhcp-host=aa:bb:cc:11:22:33,set:profile3", 1, true))
+    assert.is_nil(conf:find("be:89:10:82:c7:4c", 1, true))
+    assert.truthy(conf:find("nftset=/tiktok.com/4#inet#wifihaven#eb_tiktok_com", 1, true))
   end)
 
   it("does NOT re-emit log-queries / log-facility (set via UCI)", function()
@@ -845,13 +850,13 @@ describe("render.nft #1865 block page is never dropped", function()
     -- v4 block-page DNAT for the blocked MAC carries the ea_ carve, so an
     -- allowed dest is NEVER DNAT'd to the local block page.
     assert.truthy(nft:find(
-      "ether saddr aa:bb:cc:11:22:33 ip daddr != @ea_aa_bb_cc_11_22_33_mathacademy_com tcp dport 80 dnat ip to 127.0.0.1:8081",
+      "ether saddr aa:bb:cc:11:22:33 ip daddr != @ea_mathacademy_com tcp dport 80 dnat ip to 127.0.0.1:8081",
       1, true),
       "expected v4 block-page DNAT to carve out the ea_ allowed dest")
     -- v6 block-page REDIRECT (the path #1868 made deliver) carries the ea6_
     -- carve, so an allowed v6 dest is NEVER redirected to the block page.
     assert.truthy(nft:find(
-      "ether saddr aa:bb:cc:11:22:33 ip6 daddr != ::1 ip6 daddr != @ea6_aa_bb_cc_11_22_33_mathacademy_com tcp dport 80 redirect to :8081",
+      "ether saddr aa:bb:cc:11:22:33 ip6 daddr != ::1 ip6 daddr != @ea6_mathacademy_com tcp dport 80 redirect to :8081",
       1, true),
       "expected v6 block-page redirect to carve out the ea6_ allowed dest")
     -- And the #1865 never-drop guard is still present so a FULLY-blocked dest
@@ -861,7 +866,7 @@ describe("render.nft #1865 block page is never dropped", function()
       "expected the #1865 block-page never-drop guard to coexist with the ea carve")
   end)
 
-  -- #2095: the per-(mac,host) extraAllowed CARVE sets (ea_/ea6_) must carry a
+  -- #2095: the extraAllowed CARVE sets (ea_/ea6_) must carry a
   -- LONGER timeout than the block-side eb_/bl_ sets. An ea_/ea6_ element
   -- expiring is FAIL-CLOSED — a still-cached, still-in-use extraAllowed host
   -- silently loses its carve and gets caught by the whole-MAC drop (the #2094
@@ -880,8 +885,8 @@ describe("render.nft #1865 block page is never dropped", function()
       local j = nft:find("}", i, true)
       return nft:sub(i, j)
     end
-    local ea  = set_body("ea_aa_bb_cc_11_22_33_mathacademy_com")
-    local ea6 = set_body("ea6_aa_bb_cc_11_22_33_mathacademy_com")
+    local ea  = set_body("ea_mathacademy_com")
+    local ea6 = set_body("ea6_mathacademy_com")
     assert.truthy(ea:find("timeout 24h", 1, true),
       "ea_ carve set must carry a 24h timeout; got:\n" .. ea)
     assert.truthy(ea6:find("timeout 24h", 1, true),
@@ -938,17 +943,17 @@ describe("render.nft drop rules carry log prefix + counter + comment (#1122/#112
     s.profiles["3"].rules.extraAllowed = { "school.example" }
     local nft = render.nft(s)
     assert.truthy(nft:find(
-      "ether saddr aa:bb:cc:11:22:33 ip daddr != @ea_aa_bb_cc_11_22_33_school_example counter drop comment \"wh_drop:aa:bb:cc:11:22:33:Paused\"",
+      "ether saddr aa:bb:cc:11:22:33 ip daddr != @ea_school_example counter drop comment \"wh_drop:aa:bb:cc:11:22:33:Paused\"",
       1, true))
     assert.truthy(nft:find(
-      "ether saddr aa:bb:cc:11:22:33 ip6 daddr != @ea6_aa_bb_cc_11_22_33_school_example counter drop comment \"wh_drop:aa:bb:cc:11:22:33:Paused\"",
+      "ether saddr aa:bb:cc:11:22:33 ip6 daddr != @ea6_school_example counter drop comment \"wh_drop:aa:bb:cc:11:22:33:Paused\"",
       1, true))
   end)
 
   it("#1413: Paused MAC carves out an allowed app host but still drops other traffic", function()
     -- Prod miss (Kids/Math Academy, 2026-06): an allowed-mode app appeared
     -- blocked while the profile was paused. The whole-MAC drop for a Paused MAC
-    -- with extraAllowed must carry `ip daddr != @ea_<m>_<allowed-host>` so the
+    -- with extraAllowed must carry `ip daddr != @ea_<allowed-host>` so the
     -- allowed app stays reachable, while general traffic (no ea_ carve-out)
     -- still drops. Reason-agnostic carve-out, locked here for the Paused reason.
     local s = snap_one()
@@ -958,14 +963,14 @@ describe("render.nft drop rules carry log prefix + counter + comment (#1122/#112
     local nft = render.nft(s)
     -- The per-MAC drop spares the allowed host via the ea_ exception (allow wins).
     assert.truthy(nft:find(
-      "ether saddr aa:bb:cc:11:22:33 ip daddr != @ea_aa_bb_cc_11_22_33_mathacademy_com counter drop comment \"wh_drop:aa:bb:cc:11:22:33:Paused\"",
+      "ether saddr aa:bb:cc:11:22:33 ip daddr != @ea_mathacademy_com counter drop comment \"wh_drop:aa:bb:cc:11:22:33:Paused\"",
       1, true))
     -- The MAC is pulled out of the family-agnostic @blocked_macs set (it has a
     -- per-MAC carve-out rule instead), so general traffic drops via that rule.
     assert.is_nil(nft:find("@blocked_macs drop", 1, true))
     -- No ea_ set is declared for an unrelated host, so non-allowed traffic has
     -- no carve-out and is dropped by the rule above.
-    assert.is_nil(nft:find("@ea_aa_bb_cc_11_22_33_example_com", 1, true))
+    assert.is_nil(nft:find("@ea_example_com", 1, true))
   end)
 
   it("MacBlockReason wire strings: Paused / Schedule / TimeLimit / Manual / Unmanaged", function()
@@ -2197,12 +2202,10 @@ describe("render blockIpOnly enforcement (#353)", function()
 
   -- ── dnsmasq side ────────────────────────────────────────────────────────
 
-  it("does NOT add a resolvetag tag to the dhcp-host line (#505: dns-tail populates)", function()
+  it("does NOT emit a resolvetag tag (#505: dns-tail populates)", function()
     local conf = render.dnsmasq(snap_bio())
-    -- dhcp-host carries only the profile tag; resolvetag_ is never emitted.
-    assert.truthy(conf:find("dhcp-host=aa:bb:cc:11:22:33,set:profile3\n", 1, true)
-               or conf:match("dhcp-host=aa:bb:cc:11:22:33,set:profile3$"))
     assert.is_nil(conf:find("resolvetag_", 1, true))
+    assert.is_nil(conf:find("dhcp-host=", 1, true))
   end)
 
   it("does NOT emit any nftset= directive for resolved_/resolved6_ (#505)", function()
@@ -2223,9 +2226,6 @@ describe("render blockIpOnly enforcement (#353)", function()
     assert.is_nil(conf:find("resolvetag_", 1, true))
     assert.is_nil(conf:find("resolved_", 1, true))
     assert.is_nil(conf:find("resolved6_", 1, true))
-    -- And the dhcp-host line carries only the profile tag.
-    assert.truthy(conf:find("dhcp-host=aa:bb:cc:11:22:33,set:profile3\n", 1, true)
-               or conf:match("dhcp-host=aa:bb:cc:11:22:33,set:profile3$"))
   end)
 
   it("device-override blockIpOnly=true takes effect even when profile is false", function()
@@ -2236,11 +2236,9 @@ describe("render blockIpOnly enforcement (#353)", function()
       extraBlocked = {}, extraAllowed = {}, blocklistIds = {}, blockIpOnly = true,
     }
     local conf = render.dnsmasq(s)
-    -- dhcp-host still carries only the profile tag; population still comes
-    -- from dns-tail, not dnsmasq. The nft side (declared sets + drop rule)
-    -- is what actually enforces blockIpOnly — see the nft-side tests below.
-    assert.truthy(conf:find("dhcp-host=aa:bb:cc:11:22:33,set:profile3\n", 1, true)
-               or conf:match("dhcp-host=aa:bb:cc:11:22:33,set:profile3$"))
+    -- Population comes from dns-tail, not dnsmasq. The nft side (declared
+    -- sets + drop rule) is what actually enforces blockIpOnly — see the
+    -- nft-side tests below.
     assert.is_nil(conf:find("resolvetag_", 1, true))
     assert.is_nil(conf:find("nftset=tag:", 1, true))
   end)
@@ -2387,7 +2385,7 @@ end)
 -- ── extraAllowed per-(MAC, host) exception (#421) ───────────────────────────
 --
 -- extraAllowed beats extraBlocked beats blocklists. Each eb_/bl_ drop rule
--- for MAC m carries `ip daddr != @ea_<m>_<a>` clauses (one per a ∈
+-- for MAC m carries `ip daddr != @ea_<a>` clauses (one per a ∈
 -- extraAllowed(m)) so a hit in any ea_ set for that MAC suppresses the drop.
 -- Scoping is per-(MAC, host): a host can be allowed for MAC A and blocked
 -- for MAC B independently. blockIpOnly is NOT suppressed by ea sets — its
@@ -2442,39 +2440,31 @@ describe("render extraAllowed enforcement (#421)", function()
 
   -- #496: dnsmasq 2.91's nftset= parser rejects a `tag:` prefix, so the
   -- ea_ populator must NOT be tag-scoped. The MAC scoping lives in the
-  -- nft rule (`ether saddr <mac> ... != @ea_<mac>_<host>`) instead.
-  it("does NOT append eatag_ to any dhcp-host line", function()
+  -- nft rule (`ether saddr <mac> ... != @ea_<host>`) instead.
+  it("emits no eatag_ and no dhcp-host= line", function()
     local conf = render.dnsmasq(snap_ea())
     assert.is_nil(conf:find("eatag_", 1, true))
-    -- The MAC with extraAllowed still gets its profile tag, just not an eatag.
-    assert.truthy(conf:find("dhcp-host=aa:bb:cc:11:22:33,set:profile3\n", 1, true)
-               or conf:match("dhcp-host=aa:bb:cc:11:22:33,set:profile3$"))
+    assert.is_nil(conf:find("dhcp-host=", 1, true))
   end)
 
-  it("does NOT append eatag_ to MACs with empty extraAllowed", function()
-    local conf = render.dnsmasq(snap_ea())
-    assert.truthy(conf:find("dhcp-host=de:ad:be:ef:00:01,set:profile1\n", 1, true)
-               or conf:match("dhcp-host=de:ad:be:ef:00:01,set:profile1$"))
-  end)
-
-  it("emits untagged nftset= populator for the per-(MAC, host) ea_ / ea6_ sets", function()
+  it("emits untagged nftset= populator for the per-host ea_ / ea6_ sets", function()
     local conf = render.dnsmasq(snap_ea())
     assert.truthy(conf:find(
-      "nftset=/music.tiktok.com/4#inet#wifihaven#ea_aa_bb_cc_11_22_33_music_tiktok_com,6#inet#wifihaven#ea6_aa_bb_cc_11_22_33_music_tiktok_com",
+      "nftset=/music.tiktok.com/4#inet#wifihaven#ea_music_tiktok_com,6#inet#wifihaven#ea6_music_tiktok_com",
       1, true))
     -- Regression guard: never emit the broken tag:-scoped form (#496).
     assert.is_nil(conf:find("nftset=tag:", 1, true))
   end)
 
-  it("emits one nftset= populator per (mac, host) when a MAC has multiple extraAllowed hosts", function()
+  it("emits one nftset= populator per host when a MAC has multiple extraAllowed hosts", function()
     local s = snap_ea()
     s.profiles["3"].rules.extraAllowed = { "music.tiktok.com", "khanacademy.org" }
     local conf = render.dnsmasq(s)
     assert.truthy(conf:find(
-      "nftset=/music.tiktok.com/4#inet#wifihaven#ea_aa_bb_cc_11_22_33_music_tiktok_com",
+      "nftset=/music.tiktok.com/4#inet#wifihaven#ea_music_tiktok_com",
       1, true))
     assert.truthy(conf:find(
-      "nftset=/khanacademy.org/4#inet#wifihaven#ea_aa_bb_cc_11_22_33_khanacademy_org",
+      "nftset=/khanacademy.org/4#inet#wifihaven#ea_khanacademy_org",
       1, true))
   end)
 
@@ -2486,7 +2476,7 @@ describe("render extraAllowed enforcement (#421)", function()
     assert.is_nil(conf:find("#wifihaven#ea_", 1, true))
   end)
 
-  it("device-override extraAllowed scopes the ea populator to that MAC only", function()
+  it("inline-rules extraAllowed carves only that MAC; the populator is per host", function()
     local s = snap_ea()
     s.profiles["3"].rules.extraAllowed = {}
     s.devices["11:22:33:44:55:66"] = { profileId = 3, name = "kid-phone", rules = nil }
@@ -2496,12 +2486,17 @@ describe("render extraAllowed enforcement (#421)", function()
       blocklistIds = {}, blockIpOnly = false,
     }
     local conf = render.dnsmasq(s)
-    -- Override MAC gets the populator under its own per-(MAC, host) set name.
     assert.truthy(conf:find(
-      "nftset=/music.tiktok.com/4#inet#wifihaven#ea_aa_bb_cc_11_22_33_music_tiktok_com",
+      "nftset=/music.tiktok.com/4#inet#wifihaven#ea_music_tiktok_com",
       1, true))
-    -- Sibling under same profile must NOT have a populator with its own set.
-    assert.is_nil(conf:find("ea_11_22_33_44_55_66", 1, true))
+    -- The scoping is in the nft rule: the override MAC's drop carries the
+    -- carve, its sibling on the same profile's does not.
+    local nft = render.nft(s)
+    assert.truthy(nft:find(
+      "ether saddr aa:bb:cc:11:22:33 ip daddr @eb_tiktok_com ip daddr != @ea_music_tiktok_com counter drop",
+      1, true))
+    assert.truthy(nft:find(
+      "ether saddr 11:22:33:44:55:66 ip daddr @eb_tiktok_com counter drop", 1, true))
   end)
 
   -- ── nft side: set declarations ──────────────────────────────────────────
@@ -2509,9 +2504,9 @@ describe("render extraAllowed enforcement (#421)", function()
   -- #2095: carve sets use a 24h timeout (longer than the 1h block-side sets) —
   -- an expiring ea_ entry is fail-closed. See the "#2095" test in the
   -- "#1865 block page is never dropped" describe block for the full rationale.
-  it("declares set ea_<sanmac>_<sanhost> (ipv4_addr, dynamic, 24h timeout)", function()
+  it("declares set ea_<sanhost> (ipv4_addr, dynamic, 24h timeout)", function()
     local nft = render.nft(snap_ea())
-    local pos = nft:find("set ea_aa_bb_cc_11_22_33_music_tiktok_com", 1, true)
+    local pos = nft:find("set ea_music_tiktok_com", 1, true)
     assert.truthy(pos)
     local blk = nft:sub(pos, pos + 200)
     assert.truthy(blk:find("type ipv4_addr", 1, true))
@@ -2521,7 +2516,7 @@ describe("render extraAllowed enforcement (#421)", function()
 
   it("declares set ea6_<sanmac>_<sanhost> (ipv6_addr, dynamic, 24h timeout)", function()
     local nft = render.nft(snap_ea())
-    local pos = nft:find("set ea6_aa_bb_cc_11_22_33_music_tiktok_com", 1, true)
+    local pos = nft:find("set ea6_music_tiktok_com", 1, true)
     assert.truthy(pos)
     local blk = nft:sub(pos, pos + 200)
     assert.truthy(blk:find("type ipv6_addr", 1, true))
@@ -2539,31 +2534,31 @@ describe("render extraAllowed enforcement (#421)", function()
 
   -- ── nft side: drop predicate gets `ip daddr != @ea_...` suffix ──────────
 
-  it("appends `ip daddr != @ea_<m>_<a>` to the eb_<host> drop for MAC m", function()
+  it("appends `ip daddr != @ea_<a>` to the eb_<host> drop for MAC m", function()
     local nft = render.nft(snap_ea())
     assert.truthy(nft:find(
-      "ether saddr aa:bb:cc:11:22:33 ip daddr @eb_tiktok_com ip daddr != @ea_aa_bb_cc_11_22_33_music_tiktok_com counter drop comment \"wh_drop:aa:bb:cc:11:22:33:host:tiktok.com\"",
+      "ether saddr aa:bb:cc:11:22:33 ip daddr @eb_tiktok_com ip daddr != @ea_music_tiktok_com counter drop comment \"wh_drop:aa:bb:cc:11:22:33:host:tiktok.com\"",
       1, true))
   end)
 
-  it("appends `ip6 daddr != @ea6_<m>_<a>` to the eb6_<host> drop for MAC m", function()
+  it("appends `ip6 daddr != @ea6_<a>` to the eb6_<host> drop for MAC m", function()
     local nft = render.nft(snap_ea())
     assert.truthy(nft:find(
-      "ether saddr aa:bb:cc:11:22:33 ip6 daddr @eb6_tiktok_com ip6 daddr != @ea6_aa_bb_cc_11_22_33_music_tiktok_com counter drop comment \"wh_drop:aa:bb:cc:11:22:33:host:tiktok.com\"",
+      "ether saddr aa:bb:cc:11:22:33 ip6 daddr @eb6_tiktok_com ip6 daddr != @ea6_music_tiktok_com counter drop comment \"wh_drop:aa:bb:cc:11:22:33:host:tiktok.com\"",
       1, true))
   end)
 
-  it("appends `ip daddr != @ea_<m>_<a>` to the bl_<id> drop for MAC m", function()
+  it("appends `ip daddr != @ea_<a>` to the bl_<id> drop for MAC m", function()
     local nft = render.nft(snap_ea())
     assert.truthy(nft:find(
-      "ether saddr aa:bb:cc:11:22:33 ip daddr @bl_test_ads ip daddr != @ea_aa_bb_cc_11_22_33_music_tiktok_com counter drop comment \"wh_drop:aa:bb:cc:11:22:33:category:test_ads\"",
+      "ether saddr aa:bb:cc:11:22:33 ip daddr @bl_test_ads ip daddr != @ea_music_tiktok_com counter drop comment \"wh_drop:aa:bb:cc:11:22:33:category:test_ads\"",
       1, true))
   end)
 
-  it("appends `ip6 daddr != @ea6_<m>_<a>` to the bl6_<id> drop for MAC m", function()
+  it("appends `ip6 daddr != @ea6_<a>` to the bl6_<id> drop for MAC m", function()
     local nft = render.nft(snap_ea())
     assert.truthy(nft:find(
-      "ether saddr aa:bb:cc:11:22:33 ip6 daddr @bl6_test_ads ip6 daddr != @ea6_aa_bb_cc_11_22_33_music_tiktok_com counter drop comment \"wh_drop:aa:bb:cc:11:22:33:category:test_ads\"",
+      "ether saddr aa:bb:cc:11:22:33 ip6 daddr @bl6_test_ads ip6 daddr != @ea6_music_tiktok_com counter drop comment \"wh_drop:aa:bb:cc:11:22:33:category:test_ads\"",
       1, true))
   end)
 
@@ -2573,7 +2568,7 @@ describe("render extraAllowed enforcement (#421)", function()
     local nft = render.nft(s)
     -- Both clauses present in the same eb_ drop rule, in sorted order.
     assert.truthy(nft:find(
-      "ether saddr aa:bb:cc:11:22:33 ip daddr @eb_tiktok_com ip daddr != @ea_aa_bb_cc_11_22_33_khanacademy_org ip daddr != @ea_aa_bb_cc_11_22_33_music_tiktok_com counter drop comment \"wh_drop:aa:bb:cc:11:22:33:host:tiktok.com\"",
+      "ether saddr aa:bb:cc:11:22:33 ip daddr @eb_tiktok_com ip daddr != @ea_khanacademy_org ip daddr != @ea_music_tiktok_com counter drop comment \"wh_drop:aa:bb:cc:11:22:33:host:tiktok.com\"",
       1, true))
   end)
 
@@ -2586,7 +2581,7 @@ describe("render extraAllowed enforcement (#421)", function()
       "ether saddr de:ad:be:ef:00:01 ip daddr @eb_tiktok_com counter drop comment \"wh_drop:de:ad:be:ef:00:01:host:tiktok.com\"", 1, true))
     -- And specifically not carrying the kid's ea set.
     assert.is_nil(nft:find(
-      "ether saddr de:ad:be:ef:00:01 ip daddr @eb_tiktok_com ip daddr != @ea_aa_bb_cc_11_22_33_music_tiktok_com",
+      "ether saddr de:ad:be:ef:00:01 ip daddr @eb_tiktok_com ip daddr != @ea_music_tiktok_com",
       1, true))
   end)
 
@@ -2600,24 +2595,24 @@ describe("render extraAllowed enforcement (#421)", function()
 
   -- ── DNAT chain: same suffix applied ─────────────────────────────────────
 
-  it("appends `ip daddr != @ea_<m>_<a>` to the eb_<host> DNAT for MAC m", function()
+  it("appends `ip daddr != @ea_<a>` to the eb_<host> DNAT for MAC m", function()
     local nft = render.nft(snap_ea())
     assert.truthy(nft:find(
-      "ether saddr aa:bb:cc:11:22:33 ip daddr @eb_tiktok_com ip daddr != @ea_aa_bb_cc_11_22_33_music_tiktok_com tcp dport 80 dnat ip to 127.0.0.1:8081",
+      "ether saddr aa:bb:cc:11:22:33 ip daddr @eb_tiktok_com ip daddr != @ea_music_tiktok_com tcp dport 80 dnat ip to 127.0.0.1:8081",
       1, true))
   end)
 
-  it("appends `ip6 daddr != @ea6_<m>_<a>` to the eb6_<host> DNAT for MAC m", function()
+  it("appends `ip6 daddr != @ea6_<a>` to the eb6_<host> DNAT for MAC m", function()
     local nft = render.nft(snap_ea())
     assert.truthy(nft:find(
-      "ether saddr aa:bb:cc:11:22:33 ip6 daddr @eb6_tiktok_com ip6 daddr != @ea6_aa_bb_cc_11_22_33_music_tiktok_com tcp dport 80 redirect to :8081",
+      "ether saddr aa:bb:cc:11:22:33 ip6 daddr @eb6_tiktok_com ip6 daddr != @ea6_music_tiktok_com tcp dport 80 redirect to :8081",
       1, true))
   end)
 
-  it("appends `ip daddr != @ea_<m>_<a>` to the bl_<id> DNAT for MAC m", function()
+  it("appends `ip daddr != @ea_<a>` to the bl_<id> DNAT for MAC m", function()
     local nft = render.nft(snap_ea())
     assert.truthy(nft:find(
-      "ether saddr aa:bb:cc:11:22:33 ip daddr @bl_test_ads ip daddr != @ea_aa_bb_cc_11_22_33_music_tiktok_com tcp dport 80 dnat ip to 127.0.0.1:8081",
+      "ether saddr aa:bb:cc:11:22:33 ip daddr @bl_test_ads ip daddr != @ea_music_tiktok_com tcp dport 80 dnat ip to 127.0.0.1:8081",
       1, true))
   end)
 
@@ -2648,7 +2643,7 @@ describe("render extraAllowed enforcement (#421)", function()
     local nft = render.nft(s)
     -- eb drop has ea suffix:
     assert.truthy(nft:find(
-      "ether saddr aa:bb:cc:11:22:33 ip daddr @eb_tiktok_com ip daddr != @ea_aa_bb_cc_11_22_33_music_tiktok_com counter drop comment \"wh_drop:aa:bb:cc:11:22:33:host:tiktok.com\"",
+      "ether saddr aa:bb:cc:11:22:33 ip daddr @eb_tiktok_com ip daddr != @ea_music_tiktok_com counter drop comment \"wh_drop:aa:bb:cc:11:22:33:host:tiktok.com\"",
       1, true))
     -- bio drop has no ea suffix:
     assert.truthy(nft:find(
@@ -2703,10 +2698,10 @@ describe("render extraAllowed enforcement (#421)", function()
     s.profiles["3"].rules.blockReason = "Paused"
     local nft = render.nft(s)
     assert.truthy(nft:find(
-      "ether saddr aa:bb:cc:11:22:33 ip daddr != @ea_aa_bb_cc_11_22_33_music_tiktok_com counter drop comment \"wh_drop:aa:bb:cc:11:22:33:Paused\"",
+      "ether saddr aa:bb:cc:11:22:33 ip daddr != @ea_music_tiktok_com counter drop comment \"wh_drop:aa:bb:cc:11:22:33:Paused\"",
       1, true))
     assert.truthy(nft:find(
-      "ether saddr aa:bb:cc:11:22:33 ip6 daddr != @ea6_aa_bb_cc_11_22_33_music_tiktok_com counter drop comment \"wh_drop:aa:bb:cc:11:22:33:Paused\"",
+      "ether saddr aa:bb:cc:11:22:33 ip6 daddr != @ea6_music_tiktok_com counter drop comment \"wh_drop:aa:bb:cc:11:22:33:Paused\"",
       1, true))
   end)
 
@@ -2716,10 +2711,10 @@ describe("render extraAllowed enforcement (#421)", function()
     s.profiles["3"].rules.blockReason = "Paused"
     local nft = render.nft(s)
     assert.truthy(nft:find(
-      "ether saddr aa:bb:cc:11:22:33 ip daddr != @ea_aa_bb_cc_11_22_33_music_tiktok_com tcp dport 80 dnat ip to 127.0.0.1:8081",
+      "ether saddr aa:bb:cc:11:22:33 ip daddr != @ea_music_tiktok_com tcp dport 80 dnat ip to 127.0.0.1:8081",
       1, true))
     assert.truthy(nft:find(
-      "ether saddr aa:bb:cc:11:22:33 ip6 daddr != ::1 ip6 daddr != @ea6_aa_bb_cc_11_22_33_music_tiktok_com tcp dport 80 redirect to :8081",
+      "ether saddr aa:bb:cc:11:22:33 ip6 daddr != ::1 ip6 daddr != @ea6_music_tiktok_com tcp dport 80 redirect to :8081",
       1, true))
   end)
 
@@ -2757,7 +2752,7 @@ describe("render extraAllowed enforcement (#421)", function()
       "ether saddr @blocked_macs ip6 daddr != ::1 tcp dport 80", 1, true))
     -- But the per-MAC ea-gated DNAT is present.
     assert.truthy(nft:find(
-      "ether saddr aa:bb:cc:11:22:33 ip daddr != @ea_aa_bb_cc_11_22_33_music_tiktok_com tcp dport 80 dnat ip to 127.0.0.1:8081",
+      "ether saddr aa:bb:cc:11:22:33 ip daddr != @ea_music_tiktok_com tcp dport 80 dnat ip to 127.0.0.1:8081",
       1, true))
   end)
 
@@ -2779,7 +2774,7 @@ describe("render extraAllowed enforcement (#421)", function()
     s.profiles["3"].rules.extraAllowed = { "music.tiktok.com", "khanacademy.org" }
     local nft = render.nft(s)
     assert.truthy(nft:find(
-      "ether saddr aa:bb:cc:11:22:33 ip daddr != @ea_aa_bb_cc_11_22_33_khanacademy_org ip daddr != @ea_aa_bb_cc_11_22_33_music_tiktok_com counter drop comment \"wh_drop:aa:bb:cc:11:22:33:Paused\"",
+      "ether saddr aa:bb:cc:11:22:33 ip daddr != @ea_khanacademy_org ip daddr != @ea_music_tiktok_com counter drop comment \"wh_drop:aa:bb:cc:11:22:33:Paused\"",
       1, true))
   end)
 
@@ -2801,14 +2796,14 @@ describe("render extraAllowed enforcement (#421)", function()
     assert.is_nil(blk:find("aa:bb:cc:11:22:33", 1, true))
     -- Per-MAC v4 + v6 drops carry the ea exception and the TimeLimit reason.
     assert.truthy(nft:find(
-      "ether saddr aa:bb:cc:11:22:33 ip daddr != @ea_aa_bb_cc_11_22_33_mathacademy_com counter drop comment \"wh_drop:aa:bb:cc:11:22:33:TimeLimit\"",
+      "ether saddr aa:bb:cc:11:22:33 ip daddr != @ea_mathacademy_com counter drop comment \"wh_drop:aa:bb:cc:11:22:33:TimeLimit\"",
       1, true))
     assert.truthy(nft:find(
-      "ether saddr aa:bb:cc:11:22:33 ip6 daddr != @ea6_aa_bb_cc_11_22_33_mathacademy_com counter drop comment \"wh_drop:aa:bb:cc:11:22:33:TimeLimit\"",
+      "ether saddr aa:bb:cc:11:22:33 ip6 daddr != @ea6_mathacademy_com counter drop comment \"wh_drop:aa:bb:cc:11:22:33:TimeLimit\"",
       1, true))
     -- And the block-page DNAT for the allowed host is likewise carved out.
     assert.truthy(nft:find(
-      "ether saddr aa:bb:cc:11:22:33 ip daddr != @ea_aa_bb_cc_11_22_33_mathacademy_com tcp dport 80 dnat ip to 127.0.0.1:8081",
+      "ether saddr aa:bb:cc:11:22:33 ip daddr != @ea_mathacademy_com tcp dport 80 dnat ip to 127.0.0.1:8081",
       1, true))
   end)
 
@@ -2925,9 +2920,9 @@ describe("render.dnsmasq global section (#1319)", function()
     assert.equals(1, count)
     -- That single directive carries BOTH the ea_ and global_block specs.
     assert.truthy(conf:find(
-      "4#inet#wifihaven#ea_aa_bb_cc_11_22_33_example_org", 1, true))
+      "4#inet#wifihaven#ea_example_org", 1, true))
     assert.truthy(conf:find(
-      "6#inet#wifihaven#ea6_aa_bb_cc_11_22_33_example_org", 1, true))
+      "6#inet#wifihaven#ea6_example_org", 1, true))
     assert.truthy(conf:find("4#inet#wifihaven#global_block", 1, true))
     assert.truthy(conf:find("6#inet#wifihaven#global_block6", 1, true))
   end)
@@ -2943,14 +2938,14 @@ describe("render.dnsmasq global section (#1319)", function()
   -- :53 returns "connection refused" — exactly the Gate 3a staging-smoke
   -- failure in #1489 (regression from #1483's merge).
   --
-  -- The per-(MAC,host) ea_ populator is the ONLY per-host spec that scales
+  -- Pre-#2900 the per-(MAC,host) ea_ populator was the ONLY per-host spec that scaled
   -- with device count. The #1307 infra-allow copy puts the same host into
   -- every profile's extraAllowed, so one ea_ spec per device lands on a
   -- single merged line. When that host is also in global.extraAllowed those
   -- ea_ specs are pure redundancy — @global_allow already carves the host out
   -- of every drop for every MAC (render.nft ga_suffix) — so render.dnsmasq
   -- must not emit them.
-  it("omits redundant per-(MAC,host) ea_ populators for a global.extraAllowed host (#1489)", function()
+  it("omits redundant ea_ populators for a global.extraAllowed host (#1489)", function()
     local s = snap_global()
     s.profiles["3"].rules.extraAllowed = { "infra.wifihaven.net" }
     s.profiles["3"].rules.extraBlocked = {}
@@ -2961,12 +2956,12 @@ describe("render.dnsmasq global section (#1319)", function()
     assert.truthy(conf:find(
       "nftset=/infra.wifihaven.net/4#inet#wifihaven#global_allow,6#inet#wifihaven#global_allow6",
       1, true))
-    -- ...but the redundant per-(MAC,host) ea_ spec is gone.
-    assert.is_nil(conf:find("ea_aa_bb_cc_11_22_33_infra_wifihaven_net", 1, true))
-    assert.is_nil(conf:find("ea6_aa_bb_cc_11_22_33_infra_wifihaven_net", 1, true))
+    -- ...but the redundant ea_ spec is gone.
+    assert.is_nil(conf:find("ea_infra_wifihaven_net", 1, true))
+    assert.is_nil(conf:find("ea6_infra_wifihaven_net", 1, true))
   end)
 
-  it("still emits per-(MAC,host) ea_ populators for a host NOT in global.extraAllowed", function()
+  it("still emits ea_ populators for a host NOT in global.extraAllowed", function()
     -- A normal per-device allow (not in the global layer) keeps its ea_ set —
     -- only the redundant global-allow copies are skipped.
     local s = snap_global()
@@ -2976,7 +2971,7 @@ describe("render.dnsmasq global section (#1319)", function()
     s.global.extraAllowed = { "infra.wifihaven.net" }
     local conf = render.dnsmasq(s)
     assert.truthy(conf:find(
-      "nftset=/khanacademy.org/4#inet#wifihaven#ea_aa_bb_cc_11_22_33_khanacademy_org,6#inet#wifihaven#ea6_aa_bb_cc_11_22_33_khanacademy_org",
+      "nftset=/khanacademy.org/4#inet#wifihaven#ea_khanacademy_org,6#inet#wifihaven#ea6_khanacademy_org",
       1, true))
   end)
 
@@ -3020,16 +3015,16 @@ describe("render.dnsmasq global section (#1319)", function()
   -- dnsmasq's 1024-byte config-line buffer.
   --
   -- render.dnsmasq must bound EVERY merged directive to 1024 bytes. The
-  -- per-(MAC,host) ea_ populator is droppable: dns-tail (#1346) repopulates
+  -- ea_ populator is droppable: dns-tail (#1346) repopulates
   -- ea_ sets from live replies, so a missing dnsmasq populator at startup
   -- only delays the first per-MAC carve-out for that host — far better than
   -- dnsmasq refusing to start and taking :53 down for everyone.
-  it("caps the merged directive even when the heavy host is NOT in global.extraAllowed (#1489)", function()
+  it("a host in 30 profiles' extraAllowed gets one ea_ spec pair, under the line limit (#1489/#2900)", function()
     local s = snap_global()
     s.devices = {}
     s.profiles = {}
-    -- 30 profiles each allow the same non-global host. With ea_/ea6_ specs
-    -- ~62 bytes each plus comma, that's ~3700 bytes on one line pre-cap.
+    -- 30 profiles each allow the same non-global host. Pre-#2900 that piled
+    -- one ea_/ea6_ spec pair per device (~3700 bytes) onto one line.
     for i = 1, 30 do
       local mac = string.format("aa:bb:cc:%02x:%02x:%02x", i, i, i)
       s.devices[mac] = { profileId = i }
@@ -3042,17 +3037,34 @@ describe("render.dnsmasq global section (#1319)", function()
         },
       }
     end
-    -- Deliberately NOT in global.extraAllowed — exercises the cap path.
+    -- Deliberately NOT in global.extraAllowed.
     local conf = render.dnsmasq(s)
     for line in (conf .. "\n"):gmatch("([^\n]*)\n") do
       assert.is_true(#line <= 1024, string.format(
         "nftset line exceeds dnsmasq's 1024-byte config-line limit (%d bytes): %s…",
         #line, line:sub(1, 72)))
     end
-    -- A trace comment must name the host so the operator can see what was
-    -- dropped (rather than silently degrading).
-    assert.truthy(conf:find("khanacademy.org", 1, true))
-    assert.truthy(conf:find("dropped", 1, true))
+    assert.truthy(conf:find(
+      "nftset=/khanacademy.org/4#inet#wifihaven#ea_khanacademy_org,6#inet#wifihaven#ea6_khanacademy_org\n",
+      1, true))
+    assert.is_nil(conf:find("dropped", 1, true))
+  end)
+
+  -- The cap still guards a single host whose own name makes the merged line
+  -- too long: drop its ea_ specs (dns-tail repopulates), keep the eb_ ones.
+  it("caps the merged directive for a very long hostname (#1489)", function()
+    local s = snap_global()
+    local label = string.rep("a", 60)
+    local host = table.concat({ label, label, label, label }, ".") .. ".com"
+    s.profiles["3"].rules.extraAllowed = { host }
+    s.profiles["3"].rules.extraBlocked = { host }
+    local conf = render.dnsmasq(s)
+    for line in (conf .. "\n"):gmatch("([^\n]*)\n") do
+      assert.is_true(#line <= 1024, string.format(
+        "line exceeds 1024 bytes (%d): %s…", #line, line:sub(1, 72)))
+    end
+    assert.truthy(conf:find("dropped 2 ea_ spec(s) for " .. host, 1, true))
+    assert.truthy(conf:find("nftset=/" .. host .. "/4#inet#wifihaven#eb_", 1, true))
   end)
 
   -- Post-#1782: bl_ specs are in shard files, not the main conf. A host that
@@ -3181,7 +3193,7 @@ describe("render.nft global composition (#1319)", function()
       1, true))
     -- No ea exception spliced into the global-block drop line.
     assert.is_nil(nft:find(
-      "ip daddr @global_block ip daddr != @ea_aa_bb_cc_11_22_33_school_example",
+      "ip daddr @global_block ip daddr != @ea_school_example",
       1, true))
   end)
 
@@ -3308,7 +3320,7 @@ describe("render.nft global composition — precedence compositions (#1322)", fu
     local nft = render.nft(s)
     -- 1) whole-MAC block, carved out by the per-MAC ea exception, DefaultDeny reason
     assert.truthy(nft:find(
-      "ether saddr aa:bb:cc:11:22:33 ip daddr != @ea_aa_bb_cc_11_22_33_pbskids_org counter drop comment \"wh_drop:aa:bb:cc:11:22:33:DefaultDeny\"",
+      "ether saddr aa:bb:cc:11:22:33 ip daddr != @ea_pbskids_org counter drop comment \"wh_drop:aa:bb:cc:11:22:33:DefaultDeny\"",
       1, true))
     -- 2) the independent strict-IP drop on resolved_<m>
     assert.truthy(nft:find("set resolved_aa_bb_cc_11_22_33 {", 1, true))
@@ -3412,9 +3424,9 @@ describe("render.nft #1174 schedule-block + ui-host allow", function()
     -- @global_allow is the sole carve-out path for ui hosts post-#1321, so any ea_
     -- spec for them would be the pre-#1318 redundancy we explicitly retired.
     local nft = render.nft(snap_174())
-    assert.is_nil(nft:find("ea_aa_bb_cc_11_22_33_wifihaven_net",     1, true))
-    assert.is_nil(nft:find("ea_aa_bb_cc_11_22_33_www_wifihaven_net", 1, true))
-    assert.is_nil(nft:find("ea_aa_bb_cc_11_22_33_api_wifihaven_net", 1, true))
+    assert.is_nil(nft:find("ea_wifihaven_net",     1, true))
+    assert.is_nil(nft:find("ea_www_wifihaven_net", 1, true))
+    assert.is_nil(nft:find("ea_api_wifihaven_net", 1, true))
   end)
 
   it("empty ui-host allow → no @global_allow carve in the schedule drop (no-op control)", function()
@@ -3426,5 +3438,137 @@ describe("render.nft #1174 schedule-block + ui-host allow", function()
     s.profiles["3"].rules.blockReason = "Schedule"
     local nft = render.nft(s)
     assert.is_nil(nft:find("!= @global_allow", 1, true))
+  end)
+end)
+
+-- ── #2900: a profile/holder change does not change the dnsmasq conf ─────────
+--
+-- A shared-device check-in gives the device a profileId; a check-out or holder
+-- swap moves it off one profile and onto another. Enforcement for that is all
+-- nft (per-MAC rules), and policy.apply restarts dnsmasq only when the rendered
+-- conf changed. So the conf must depend on the snapshot's HOSTS (which nftset=
+-- populators exist), never on which MAC holds which profile: no per-MAC
+-- dhcp-host tags (nothing reads them) and per-host ea_ carve sets (the MAC
+-- scoping lives in the nft rule, as it already did for eb_).
+
+describe("render: profile assignment does not change the dnsmasq conf (#2900)", function()
+  local SHARED = "02:aa:00:00:00:01"
+  local KID    = "aa:bb:cc:11:22:33"
+  local PARENT = "de:ad:be:ef:00:01"
+
+  local function rules(t)
+    return {
+      blocked      = t.blocked or false,
+      blockReason  = t.blockReason,
+      extraBlocked = t.extraBlocked or {},
+      extraAllowed = t.extraAllowed or {},
+      blocklistIds = t.blocklistIds or {},
+      blockIpOnly  = t.blockIpOnly or false,
+    }
+  end
+
+  -- shared_dev: the shared device's entry (checked out / held by a profile).
+  local function snap(shared_dev)
+    return {
+      etag = "sha256:2900", generatedAt = "2026-10-11T12:00:00Z",
+      devices = {
+        [KID]    = { profileId = 3, name = "kid-ipad" },
+        [PARENT] = { profileId = 1, name = "parent-phone" },
+        [SHARED] = shared_dev,
+      },
+      profiles = {
+        ["3"] = { name = "kids", failureMode = "block-all", rules = rules({
+          blocked = true, blockReason = "Schedule",
+          extraBlocked = { "tiktok.com" },
+          extraAllowed = { "khanacademy.org", "music.tiktok.com" },
+          blocklistIds = { "test_ads" },
+        }) },
+        ["1"] = { name = "adults", failureMode = "last-known-good", rules = rules({
+          extraBlocked = { "gambling.example" },
+          extraAllowed = { "1password.com" },
+          blockIpOnly  = true,
+        }) },
+      },
+      blocklists = {
+        test_ads = { version = "v1", url = "http://api/api/blocklists/test_ads" },
+      },
+    }
+  end
+
+  -- What the API ships for a shared device nobody holds (PolicyService
+  -- wholeMacBlock(CheckedOut)): inline rules, no profileId.
+  local function checked_out()
+    return { name = "family-ipad", rules = rules({ blocked = true, blockReason = "CheckedOut" }) }
+  end
+  local function held_by(pid)
+    return { profileId = pid, name = "family-ipad" }
+  end
+
+  it("check-in (checked out -> kids) renders a byte-identical conf", function()
+    assert.are.equal(render.dnsmasq(snap(checked_out())), render.dnsmasq(snap(held_by(3))))
+  end)
+
+  it("check-out (kids -> checked out) renders a byte-identical conf", function()
+    assert.are.equal(render.dnsmasq(snap(held_by(3))), render.dnsmasq(snap(checked_out())))
+  end)
+
+  it("holder swap (kids -> adults) renders a byte-identical conf", function()
+    assert.are.equal(render.dnsmasq(snap(held_by(3))), render.dnsmasq(snap(held_by(1))))
+  end)
+
+  it("an unassigned device getting a profile renders a byte-identical conf", function()
+    assert.are.equal(render.dnsmasq(snap({ name = "new-laptop" })), render.dnsmasq(snap(held_by(1))))
+  end)
+
+  it("emits no dhcp-host= lines (the profile tags had no reader)", function()
+    assert.is_nil(render.dnsmasq(snap(held_by(3))):find("dhcp-host=", 1, true))
+  end)
+
+  -- Attribution / ipset population is unchanged: every host that has an
+  -- nft set still gets a populator, and the ea_ populator names the per-host
+  -- set the nft rules reference.
+  it("still emits one merged populator per host for ea_, eb_ and the shard", function()
+    local conf = render.dnsmasq(snap(held_by(3)))
+    assert.truthy(conf:find(
+      "nftset=/khanacademy.org/4#inet#wifihaven#ea_khanacademy_org,6#inet#wifihaven#ea6_khanacademy_org\n",
+      1, true))
+    assert.truthy(conf:find(
+      "nftset=/1password.com/4#inet#wifihaven#ea_1password_com,6#inet#wifihaven#ea6_1password_com\n",
+      1, true))
+    assert.truthy(conf:find(
+      "nftset=/tiktok.com/4#inet#wifihaven#eb_tiktok_com,6#inet#wifihaven#eb6_tiktok_com\n", 1, true))
+    assert.truthy(conf:find(
+      "nftset=/gambling.example/4#inet#wifihaven#eb_gambling_example,6#inet#wifihaven#eb6_gambling_example\n",
+      1, true))
+    assert.truthy(conf:find("conf-file=" .. render.shard_path("test_ads"), 1, true))
+  end)
+
+  -- The conf still changes when the set of hosts changes: a holder whose
+  -- profile is the only one naming a host brings that host's populator in.
+  it("does change when the new holder's profile is the only one naming a host", function()
+    local before = snap(checked_out())
+    local after  = snap(held_by(5))
+    after.profiles["5"] = { name = "guest", failureMode = "block-all",
+      rules = rules({ extraAllowed = { "wikipedia.org" } }) }
+    before.profiles["5"] = after.profiles["5"]
+    assert.are_not.equal(render.dnsmasq(before), render.dnsmasq(after))
+    assert.truthy(render.dnsmasq(after):find("nftset=/wikipedia.org/4#inet#wifihaven#ea_wikipedia_org", 1, true))
+  end)
+
+  -- nft side: the shared MAC picks up the new holder's carve the moment nft
+  -- loads, against the same per-host sets the other holders use.
+  it("nft carves the new holder's allowed hosts out of its drops via the per-host sets", function()
+    local nft = render.nft(snap(held_by(3)))
+    for _, mac in ipairs({ KID, SHARED }) do
+      local line = nft:match("[^\n]*ether saddr " .. mac:gsub("%p", "%%%0") .. " ip daddr != @ea_[^\n]*Schedule[^\n]*")
+      assert.truthy(line, "missing carved v4 schedule drop for " .. mac)
+      assert.truthy(line:find("ip daddr != @ea_khanacademy_org", 1, true), line)
+      assert.truthy(line:find("ip daddr != @ea_music_tiktok_com", 1, true), line)
+    end
+    -- One declaration per host, not per (MAC, host).
+    local _, n = nft:gsub("set ea_khanacademy_org {", "")
+    assert.are.equal(1, n)
+    assert.is_nil(nft:find("ea_aa_bb_cc", 1, true))
+    assert.is_nil(nft:find("ea_02_aa", 1, true))
   end)
 end)

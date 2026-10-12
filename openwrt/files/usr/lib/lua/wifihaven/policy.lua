@@ -243,10 +243,11 @@ function M.apply(snapshot, write_fn, reload_fn, log, opts)
   end)
 
   -- #414: dnsmasq only needs a full restart when its config-dir file
-  -- actually changes (dhcp-host= and nftset= directives are NOT picked up
+  -- actually changes (nftset= / conf-file= directives are NOT picked up
   -- on SIGHUP — see #328). Most policy.apply calls flip only nft-side
   -- state (blocked_macs membership from schedules / pause / time limits,
-  -- failover transitions). Compare against the on-disk copy and skip the
+  -- failover transitions, and since #2900 a device's profile assignment, e.g.
+  -- a shared-device check-in: the conf names hosts, never MACs or profiles). Compare against the on-disk copy and skip the
   -- restart when the rendered content is byte-identical; this avoids a
   -- DNS service blip on every schedule boundary.
   local read_fn = opts.read_fn or default_read
@@ -282,7 +283,7 @@ function M.apply(snapshot, write_fn, reload_fn, log, opts)
   -- #2229: the dnsmasq restart is deferred until AFTER `nft -f` below. The
   -- enforcement plane (the whole-MAC drop, per-host drops, blocked_macs) lives
   -- ENTIRELY in the nft ruleset; the dnsmasq restart only propagates changed
-  -- dhcp-host=/nftset= *directives* (which populate ipsets on the NEXT resolve).
+  -- nftset= *directives* (which populate ipsets on the NEXT resolve).
   -- A pause toggles the profile's extraAllowed carve → its nftset= lines appear/
   -- disappear → dnsmasq_changed flips → a full ~3.6s (much more on prod)
   -- `/etc/init.d/dnsmasq restart`. When that restart ran FIRST it gated the
@@ -323,7 +324,7 @@ function M.apply(snapshot, write_fn, reload_fn, log, opts)
             tostring(nft_rc), nft_err)
   end
 
-  -- #2095: seed the per-(mac,host) extraAllowed carve sets (ea_/ea6_) from the
+  -- #2095: seed the extraAllowed carve sets (ea_/ea6_) from the
   -- persisted dns-tail ip->host cache immediately after the reload. The
   -- `nft -f` above delete+recreated `table inet wifihaven`, so every ea_/ea6_
   -- set is now EMPTY and only refills when the device next RESOLVES a carved
@@ -347,13 +348,8 @@ function M.apply(snapshot, write_fn, reload_fn, log, opts)
   if nft_ok and not enforcement_disabled then
     timed("ea_backfill", function()
     local carve = {}
-    for mac, hosts in pairs(render.effective_extra_allowed_by_mac(snapshot)) do
-      local sanmac = dns_sets.sanitize(mac)
-      for _, host in ipairs(hosts) do
-        local sanhost = dns_sets.sanitize(host)
-        carve[sanhost] = carve[sanhost] or {}
-        carve[sanhost][sanmac] = true
-      end
+    for _, host in ipairs(render.extra_allowed_hosts(render.effective_extra_allowed_by_mac(snapshot))) do
+      carve[dns_sets.sanitize(host)] = true
     end
     if next(carve) then
       local now_fn     = opts.now_fn or os.time
@@ -398,7 +394,7 @@ function M.apply(snapshot, write_fn, reload_fn, log, opts)
 
   -- #2229: dnsmasq restart, deferred to here (was above `nft -f`). Enforcement
   -- is already live from the load above, so this restart — needed only to make
-  -- dnsmasq re-read changed dhcp-host=/nftset= directives (#328: SIGHUP doesn't
+  -- dnsmasq re-read changed nftset= directives (#328: SIGHUP doesn't
   -- re-read conf-dir, so it must be a full `restart`, not `reload`) — no longer
   -- gates the block. Skipped when the rendered conf is byte-identical (#414), so
   -- a pure schedule/pause/time-limit flip that only moves nft state pays nothing.

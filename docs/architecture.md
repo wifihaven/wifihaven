@@ -561,7 +561,7 @@ Every router agent must:
 | DNS server | dnsmasq | Unbound |
 | Packet filter | nftables | pf / pfctl |
 | Traffic accounting | nftables counters | pflog / pf tables |
-| Per-MAC hostname attribution | dnsmasq `dhcp-host` tag + `--ipset=` callback | Unbound query log correlated to DHCP lease |
+| Per-MAC hostname attribution | dnsmasq `nftset=` callback (per host) + nft rule scoped by source MAC | Unbound query log correlated to DHCP lease |
 | Event sourcing | dnsmasq query log + `--dhcp-script` | Unbound query log + ISC dhcpd / Kea lease file |
 | Package system | opkg / OpenWRT SDK | FreeBSD pkg / OPNsense plugin system |
 | Config format | UCI | OPNsense XML API or conf files |
@@ -916,17 +916,19 @@ guidance, not part of the wire contract.
 - **Per-MAC nftables sets** — `ether saddr @blocked_macs` matches packets
   from any MAC in the named set. Used to express `blocked = true` from the
   resolved `BlockRules` (§0.2) and to scope per-MAC drop / accept chains.
-- **Per-(MAC, host) IP sets via dnsmasq `--ipset=`** — dnsmasq populates
-  named nftables sets with the IPs a hostname resolves to *for a given
-  client*. nftables matches destination IP against the set, scoped by
-  source MAC. This is how `extraBlocked` / `extraAllowed` / `blocklistIds`
-  are enforced without DNS-layer blocking: the host resolves normally, but
-  the forward rule for that MAC drops the resulting flow.
-- **Per-MAC dnsmasq tagging** — `dhcp-host=...,set:mac<N>` applies a
-  per-MAC tag so `--ipset=` callbacks can populate the right per-MAC ipset
-  for hostname attribution. Dnsmasq tags are **not** used for `address=` /
-  `server=` differentiation — there is no per-tag NXDOMAIN. dnsmasq always
-  resolves normally; enforcement happens in nftables.
+- **Per-host IP sets via dnsmasq `nftset=`** — dnsmasq populates named
+  nftables sets (`eb_<host>`, `ea_<host>`, `bl_<id>`) with the IPs a hostname
+  resolves to, from any client's lookup. nftables matches destination IP
+  against the set in a rule scoped by source MAC (`ether saddr <mac> ...`).
+  This is how `extraBlocked` / `extraAllowed` / `blocklistIds` are enforced
+  without DNS-layer blocking: the host resolves normally, but the forward rule
+  for that MAC drops the resulting flow.
+- **No per-MAC state in the dnsmasq conf** — dnsmasq 2.91 rejects a `tag:`
+  prefix on `nftset=` (#496), so per-MAC scoping lives only in the nft rules.
+  The conf names hosts, never MACs or profiles, so moving a device between
+  profiles (a shared-device check-in, #2900) changes nft state only and does
+  not restart dnsmasq. dnsmasq always resolves normally; enforcement happens
+  in nftables.
 - **nftables counter objects** keyed on `ether saddr . ip daddr` for per-MAC,
   per-IP byte counts.
 - **dnsmasq query log** (`--log-queries=extra`, written to a private file at
@@ -1053,10 +1055,11 @@ openwrt/
   on-disk copy (#414) — most policy applies flip nft-side state only
   (blocked_macs membership from schedule / pause / time-limit transitions)
   and don't require a DNS service blip. When the dnsmasq fragment does
-  change (new extraBlocked host, device profile reassignment, blocklist
-  membership), a full `/etc/init.d/dnsmasq restart` is required: SIGHUP
+  change (a host gains or loses its last referencing device, a blocklist
+  is added or removed), a full `/etc/init.d/dnsmasq restart` is required: SIGHUP
   does not re-read `conf-dir` files, so `reload` would leave new
-  `dhcp-host=` / `nftset=` directives silently inactive (#328). On `304`:
+  `nftset=` / `conf-file=` directives silently inactive (#328). A device's
+  profile reassignment alone does not change the conf (#2900). On `304`:
   do nothing.
 - **Usage timer (60 s)** — scrape nftables counters, correlate with dnsmasq
   query log + DHCP leases, POST to `/api/router/usage`. On 200, reset counters;

@@ -450,7 +450,7 @@ def test_ea_direct_requery_allowed_under_blocked_mac(router, client, fake_api):
     host's directly-queried leaf IP lands in ea_ and the connection is carved out.
 
     Pre-#1349 regression: the directly-queried leaf IP was absent from
-    `ea_<mac>_<brand>` so the carve-out did not fire and the app was falsely
+    `ea_<brand>` so the carve-out did not fire and the app was falsely
     blocked during a downtime schedule — the original prod incident with Khan
     Academy / Math Academy (#1344).
 
@@ -459,7 +459,7 @@ def test_ea_direct_requery_allowed_under_blocked_mac(router, client, fake_api):
     not populated for the directly-queried IP, the forward-drop rule fires and
     curl sees HTTPCODE:000 / connection reset — distinguishable from the block
     page by `wait_http_succeeds` which rejects block-page-looking bodies.
-    Secondary (diagnostic): the leaf IP appears in `ea_<mac>_<brand>` on the router.
+    Secondary (diagnostic): the leaf IP appears in `ea_<brand>` on the router.
     """
     snap = (
         SnapshotBuilder()
@@ -479,7 +479,7 @@ def test_ea_direct_requery_allowed_under_blocked_mac(router, client, fake_api):
     # Confirm the whole-MAC block is live. NOTE (#1360 / #421): this profile
     # has a non-empty extraAllowed, so render.lua deliberately pulls the MAC OUT
     # of the @blocked_macs set into a per-MAC forward-chain drop carrying the
-    # `ip daddr != @ea_<mac>_<brand>` carve-out — the set cannot hold an
+    # `ip daddr != @ea_<brand>` carve-out — the set cannot hold an
     # `ip daddr` predicate. Asserting @blocked_macs membership here therefore
     # never succeeds (it was the original G2 false-failure). Assert the per-MAC
     # drop rule instead, which is the correct "blocked right now" observable for
@@ -506,19 +506,19 @@ def test_ea_direct_requery_allowed_under_blocked_mac(router, client, fake_api):
     )
 
     # POPULATOR PROOF (hard, origin-independent): the directly-queried leaf IP
-    # must land in ea_<mac>_<brand>. This is the actual #1346 regression guard
+    # must land in ea_<brand>. This is the actual #1346 regression guard
     # and needs only DNS resolution — no reachable origin — so it stays hard
     # even with the unroutable TEST-NET leaf (#1360). Asserted BEFORE the
     # end-to-end HTTP check so it is never skipped by the xfail below.
-    ea_members = wait_ea_set_populated(client.mac, BRAND_HOST, timeout_s=60)
+    ea_members = wait_ea_set_populated(BRAND_HOST, timeout_s=60)
     assert ea_members, (
-        f"nft set {ea_set_name(client.mac, BRAND_HOST)} is empty — dns-tail "
+        f"nft set {ea_set_name(BRAND_HOST)} is empty — dns-tail "
         f"ea_ populator did not add the directly-queried leaf IP to the "
         f"brand's allow-set for this MAC"
     )
     assert any(LEAF_IP in m for m in ea_members), (
         f"leaf IP {LEAF_IP} not found in "
-        f"{ea_set_name(client.mac, BRAND_HOST)} members: {ea_members!r}"
+        f"{ea_set_name(BRAND_HOST)} members: {ea_members!r}"
     )
 
     # END-TO-END ALLOW-FLOW (xfail when the leaf origin is unreachable). With

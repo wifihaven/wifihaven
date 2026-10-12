@@ -119,16 +119,21 @@ describe("contract: API → router policy_snapshot (#634)", function()
   -- The real consumer test: feed the fixture through render.lua and assert
   -- it produces non-empty config without raising. Anything render.lua reads
   -- (camelCase field names, nested shapes) is covered here.
-  it("render.dnsmasq accepts the fixture and emits dhcp-host lines for every device", function()
+  it("render.dnsmasq accepts the fixture and emits a populator per extraBlocked host", function()
     local conf = render.dnsmasq(snap)
     assert.is_string(conf)
-    for mac, dev in pairs(snap.devices) do
-      if dev.profileId ~= nil then
-        local tag = "set:profile" .. string.format("%d", dev.profileId)
-        assert.truthy(conf:find("dhcp-host=" .. mac .. "," .. tag, 1, true),
-          "missing dhcp-host entry for " .. mac)
+    local n = 0
+    for _, dev in pairs(snap.devices) do
+      local r = render.effective_rules(dev, snap.profiles)
+      for _, host in ipairs((r and r.extraBlocked) or {}) do
+        n = n + 1
+        assert.truthy(conf:find("nftset=/" .. host .. "/", 1, true),
+          "missing nftset= populator for " .. host)
       end
     end
+    assert.is_true(n > 0, "fixture should carry at least one extraBlocked host")
+    -- #2900: device -> profile is nft state, never in the dnsmasq conf.
+    assert.is_nil(conf:find("dhcp-host=", 1, true))
   end)
 
   it("render.nft accepts the fixture and emits an nft ruleset", function()
@@ -137,7 +142,7 @@ describe("contract: API → router policy_snapshot (#634)", function()
     assert.is_true(#nft > 0)
   end)
 
-  -- #421: per-(MAC, host) extraAllowed sets only appear when the resolved
+  -- #421: extraAllowed (ea_) sets only appear when the resolved
   -- rules include extraAllowed entries. The fixture has at least one (kids
   -- profile -> khanacademy.org, and the per-MAC blocked device with
   -- school.example.org), so render.nft must reference an ea_ set.

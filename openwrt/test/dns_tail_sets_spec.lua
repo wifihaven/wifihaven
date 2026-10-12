@@ -4,7 +4,7 @@
 -- sidecar runs out of band against the dnsmasq query log:
 --   * resolved_<mac>  (#505, blockIpOnly)
 --   * eb_<sanhost>    (#515, extraBlocked)
---   * ea_<sanmac>_<sanhost> (#1346, extraAllowed carve-out)
+--   * ea_<sanhost> (#1346, extraAllowed carve-out; per host since #2900)
 --
 -- It was extracted from the sidecar script so the suffix-walk + #1344 alias
 -- recovery is unit-testable with an injected exec function (mirrors the
@@ -74,19 +74,17 @@ describe("classify_set_line", function()
     assert.is_true(s.eb6["example_com"])
   end)
 
-  it("indexes ea_/ea6_ sets by sanmac → {sanhost} splitting the fixed MAC prefix", function()
+  it("indexes ea_/ea6_ sets by sanitized host (#2900)", function()
     local s = blank()
-    -- real prod example: ea_04_72_ef_d6_e4_5a_kastatic_org
-    sets.classify_set_line("\t\tset ea_04_72_ef_d6_e4_5a_kastatic_org {", s)
-    sets.classify_set_line("\t\tset ea6_04_72_ef_d6_e4_5a_kastatic_org {", s)
-    assert.is_true(s.ea4["04_72_ef_d6_e4_5a"]["kastatic_org"])
-    assert.is_true(s.ea6["04_72_ef_d6_e4_5a"]["kastatic_org"])
-  end)
-
-  it("keeps a multi-label host intact after the MAC prefix", function()
-    local s = blank()
-    sets.classify_set_line("\t\tset ea_04_72_ef_d6_e4_5a_www_khanacademy_org {", s)
-    assert.is_true(s.ea4["04_72_ef_d6_e4_5a"]["www_khanacademy_org"])
+    sets.classify_set_line("\t\tset ea_kastatic_org {", s)
+    sets.classify_set_line("\t\tset ea6_kastatic_org {", s)
+    sets.classify_set_line("\t\tset ea_www_khanacademy_org {", s)
+    assert.is_true(s.ea4["kastatic_org"])
+    assert.is_true(s.ea6["kastatic_org"])
+    assert.is_true(s.ea4["www_khanacademy_org"])
+    -- ea6_ never lands in the v4 index and vice versa.
+    assert.is_nil(s.ea4["6_kastatic_org"])
+    assert.is_nil(s.ea6["www_khanacademy_org"])
   end)
 end)
 
@@ -152,30 +150,29 @@ describe("maybe_populate_eb", function()
 end)
 
 -- ---------------------------------------------------------------------------
--- ea_ / ea6_ populator (#1346 — new; mirrors eb_ but keyed by (mac, host))
+-- ea_ / ea6_ populator (#1346; per host since #2900, the same walk as eb_)
 -- ---------------------------------------------------------------------------
 
 describe("maybe_populate_ea", function()
   local function deps(extra)
     local d = {
       ea4 = {}, ea6 = {},
-      ip_to_mac = { ["192.168.10.159"] = "04:72:ef:d6:e4:5a" },
       nft_table = "inet wifihaven",
     }
     for k, v in pairs(extra or {}) do d[k] = v end
     return d
   end
 
-  it("adds the resolved IP to ea_<sanmac>_<sanhost> for the answering MAC", function()
+  it("adds the resolved IP to ea_<sanhost>", function()
     local cmds, exec = recorder()
     local r = { client_ip = "192.168.10.159", name = "static.kastatic.org",
                 ip = "151.101.1.42", family = "v4" }
     local n = sets.maybe_populate_ea(r, deps({
-      ea4 = { ["04_72_ef_d6_e4_5a"] = { kastatic_org = true } },
+      ea4 = { kastatic_org = true },
       exec_fn = exec,
     }))
     assert.equal(1, n)
-    assert.is_true(added(cmds, "ea_04_72_ef_d6_e4_5a_kastatic_org", "151.101.1.42"))
+    assert.is_true(added(cmds, "ea_kastatic_org", "151.101.1.42"))
   end)
 
   it("recovers the brand for a DIRECTLY-queried CDN target (#1346 headline case)", function()
@@ -193,11 +190,11 @@ describe("maybe_populate_ea", function()
     local r = { client_ip = "192.168.10.159", name = "prod.khan.map.fastly.net",
                 ip = "151.101.65.42", family = "v4" }
     local n = sets.maybe_populate_ea(r, deps({
-      ea4 = { ["04_72_ef_d6_e4_5a"] = { kastatic_org = true } },
+      ea4 = { kastatic_org = true },
       exec_fn = exec, resolve_head = c.resolve_head,
     }))
     assert.equal(1, n)
-    assert.is_true(added(cmds, "ea_04_72_ef_d6_e4_5a_kastatic_org", "151.101.65.42"))
+    assert.is_true(added(cmds, "ea_kastatic_org", "151.101.65.42"))
   end)
 
   it("populates ea6_ for AAAA answers", function()
@@ -205,32 +202,32 @@ describe("maybe_populate_ea", function()
     local r = { client_ip = "192.168.10.159", name = "static.kastatic.org",
                 ip = "2606:2800::5", family = "v6" }
     sets.maybe_populate_ea(r, deps({
-      ea6 = { ["04_72_ef_d6_e4_5a"] = { kastatic_org = true } },
+      ea6 = { kastatic_org = true },
       exec_fn = exec,
     }))
-    assert.is_true(added(cmds, "ea6_04_72_ef_d6_e4_5a_kastatic_org", "2606:2800::5"))
+    assert.is_true(added(cmds, "ea6_kastatic_org", "2606:2800::5"))
   end)
 
-  it("does nothing when the client IP maps to no MAC", function()
+  -- #2900: like dnsmasq's own nftset= callback, any client's reply fills the
+  -- set; which MACs it carves for is decided by the nft rules.
+  it("populates from any client, including one with no DHCP lease", function()
     local cmds, exec = recorder()
     local r = { client_ip = "10.0.0.99", name = "static.kastatic.org",
                 ip = "1.2.3.4", family = "v4" }
     local n = sets.maybe_populate_ea(r, deps({
-      ea4 = { ["04_72_ef_d6_e4_5a"] = { kastatic_org = true } },
+      ea4 = { kastatic_org = true },
       exec_fn = exec,
     }))
-    assert.equal(0, n)
-    assert.equal(0, #cmds)
+    assert.equal(1, n)
+    assert.is_true(added(cmds, "ea_kastatic_org", "1.2.3.4"))
   end)
 
-  it("does not add to another MAC's ea_ set", function()
-    -- The answering MAC has no ea_ set declared; a DIFFERENT MAC does. The
-    -- per-(mac,host) scoping must not leak the carve-out across devices.
+  it("does nothing for a host with no declared ea_ set", function()
     local cmds, exec = recorder()
     local r = { client_ip = "192.168.10.159", name = "static.kastatic.org",
                 ip = "1.2.3.4", family = "v4" }
     local n = sets.maybe_populate_ea(r, deps({
-      ea4 = { ["aa_bb_cc_dd_ee_ff"] = { kastatic_org = true } },
+      ea4 = { khanacademy_org = true },
       exec_fn = exec,
     }))
     assert.equal(0, n)
@@ -242,7 +239,7 @@ end)
 -- #2095: apply-time ea_/ea6_ backfill from the persisted ip→host cache.
 --
 -- The `nft -f` in policy.apply deletes+recreates `table inet wifihaven`, so
--- every per-(mac,host) ea_/ea6_ carve set is EMPTY right after a policy
+-- every ea_/ea6_ carve set is EMPTY right after a policy
 -- apply and only refills when the device next RESOLVES a carved host over
 -- the live query log (dns-tail tails with latency). A device holding a
 -- long-cached CDN IP (KaTeX/MathJax on cdn.jsdelivr.net) can reconnect
@@ -252,12 +249,10 @@ end)
 -- ip→host resolutions dns-tail already persisted — for BOTH families.
 -- ---------------------------------------------------------------------------
 describe("backfill_ea", function()
-  -- carve index: { [sanhost] = { [sanmac]=true, ... } } — the MACs that carve
-  -- each host, mirroring render.effective_extra_allowed_by_mac's output after
-  -- sanitization. jsdelivr.net carved for one MAC ca:ef:a1:72:6a:a3.
-  local KID = "ca_ef_a1_72_6a_a3"
+  -- carve index: { [sanhost] = true } — render.extra_allowed_hosts after
+  -- sanitization (#2900: the sets are per host).
   local function carve_jsdelivr()
-    return { jsdelivr_net = { [KID] = true } }
+    return { jsdelivr_net = true }
   end
   local function bdeps(extra)
     local d = { nft_table = "inet wifihaven" }
@@ -271,7 +266,7 @@ describe("backfill_ea", function()
     local cache = { ["151.101.1.229"] = "cdn.jsdelivr.net" }
     local n = sets.backfill_ea(cache, carve_jsdelivr(), bdeps({ exec_fn = exec }))
     assert.equal(1, n)
-    assert.is_true(added(cmds, "ea_" .. KID .. "_jsdelivr_net", "151.101.1.229"))
+    assert.is_true(added(cmds, "ea_jsdelivr_net", "151.101.1.229"))
   end)
 
   it("seeds ea6_ from a cached v6 resolution — the #2095 headline case", function()
@@ -279,7 +274,7 @@ describe("backfill_ea", function()
     local cache = { ["2606:4700::6811:d005"] = "cdn.jsdelivr.net" }
     local n = sets.backfill_ea(cache, carve_jsdelivr(), bdeps({ exec_fn = exec }))
     assert.equal(1, n)
-    assert.is_true(added(cmds, "ea6_" .. KID .. "_jsdelivr_net", "2606:4700::6811:d005"))
+    assert.is_true(added(cmds, "ea6_jsdelivr_net", "2606:4700::6811:d005"))
   end)
 
   it("seeds BOTH families so a carved host is reachable over v4 and v6", function()
@@ -290,19 +285,17 @@ describe("backfill_ea", function()
     }
     local n = sets.backfill_ea(cache, carve_jsdelivr(), bdeps({ exec_fn = exec }))
     assert.equal(2, n)
-    assert.is_true(added(cmds, "ea_"  .. KID .. "_jsdelivr_net", "151.101.1.229"))
-    assert.is_true(added(cmds, "ea6_" .. KID .. "_jsdelivr_net", "2606:4700::6811:d005"))
+    assert.is_true(added(cmds, "ea_jsdelivr_net", "151.101.1.229"))
+    assert.is_true(added(cmds, "ea6_jsdelivr_net", "2606:4700::6811:d005"))
   end)
 
-  it("seeds every MAC that carves the host (per-(mac,host) fan-out)", function()
+  it("seeds one set per host, however many MACs carve it (#2900)", function()
     local cmds, exec = recorder()
-    local OTHER = "76_2d_95_47_d1_8e"
-    local carve = { jsdelivr_net = { [KID] = true, [OTHER] = true } }
     local cache = { ["151.101.1.229"] = "cdn.jsdelivr.net" }
-    local n = sets.backfill_ea(cache, carve, bdeps({ exec_fn = exec }))
-    assert.equal(2, n)
-    assert.is_true(added(cmds, "ea_" .. KID   .. "_jsdelivr_net", "151.101.1.229"))
-    assert.is_true(added(cmds, "ea_" .. OTHER .. "_jsdelivr_net", "151.101.1.229"))
+    local n = sets.backfill_ea(cache, carve_jsdelivr(), bdeps({ exec_fn = exec }))
+    assert.equal(1, n)
+    assert.equal(1, #cmds)
+    assert.is_true(added(cmds, "ea_jsdelivr_net", "151.101.1.229"))
   end)
 
   it("recovers the branded head for a directly-queried CDN target (#1346 parity)", function()
@@ -311,14 +304,14 @@ describe("backfill_ea", function()
     -- resolve_head recovery the live populator uses.
     local cmds, exec = recorder()
     local cache = { ["199.232.65.42"] = "prod.khan.map.fastly.net" }
-    local carve = { kastatic_org = { [KID] = true } }
+    local carve = { kastatic_org = true }
     local resolve_head = function(name)
       if name == "prod.khan.map.fastly.net" then return "cdn.kastatic.org" end
       return name
     end
     local n = sets.backfill_ea(cache, carve, bdeps({ exec_fn = exec, resolve_head = resolve_head }))
     assert.equal(1, n)
-    assert.is_true(added(cmds, "ea_" .. KID .. "_kastatic_org", "199.232.65.42"))
+    assert.is_true(added(cmds, "ea_kastatic_org", "199.232.65.42"))
   end)
 
   it("adds nothing for a cached host that is not carved", function()
@@ -358,9 +351,8 @@ end)
 -- policy.apply pays O(1) process spawns regardless of element count.
 -- ---------------------------------------------------------------------------
 describe("build_ea_backfill_script (#2208)", function()
-  local KID = "ca_ef_a1_72_6a_a3"
   local function carve_jsdelivr()
-    return { jsdelivr_net = { [KID] = true } }
+    return { jsdelivr_net = true }
   end
   local function bdeps(extra)
     local d = { nft_table = "inet wifihaven" }
@@ -375,9 +367,9 @@ describe("build_ea_backfill_script (#2208)", function()
     }
     local script, n = sets.build_ea_backfill_script(cache, carve_jsdelivr(), bdeps())
     assert.equal(2, n)
-    -- Both v4 ips land in ONE line for the single (mac, host) set, sorted.
+    -- Both v4 ips land in ONE line for the host's set, sorted.
     assert.equal(
-      "add element inet wifihaven ea_" .. KID .. "_jsdelivr_net "
+      "add element inet wifihaven ea_jsdelivr_net "
         .. "{ 151.101.1.229, 151.101.65.229 }\n",
       script)
   end)
@@ -390,24 +382,21 @@ describe("build_ea_backfill_script (#2208)", function()
     local script, n = sets.build_ea_backfill_script(cache, carve_jsdelivr(), bdeps())
     assert.equal(2, n)
     assert.is_truthy(script:find(
-      "add element inet wifihaven ea_" .. KID .. "_jsdelivr_net { 151.101.1.229 }", 1, true))
+      "add element inet wifihaven ea_jsdelivr_net { 151.101.1.229 }", 1, true))
     assert.is_truthy(script:find(
-      "add element inet wifihaven ea6_" .. KID .. "_jsdelivr_net { 2606:4700::6811:d005 }", 1, true))
+      "add element inet wifihaven ea6_jsdelivr_net { 2606:4700::6811:d005 }", 1, true))
   end)
 
-  it("fans out to every MAC that carves the host (backfill_ea parity)", function()
-    local OTHER = "76_2d_95_47_d1_8e"
-    local carve = { jsdelivr_net = { [KID] = true, [OTHER] = true } }
+  it("targets the one per-host set (backfill_ea parity, #2900)", function()
     local cache = { ["151.101.1.229"] = "cdn.jsdelivr.net" }
-    local script, n = sets.build_ea_backfill_script(cache, carve, bdeps())
-    assert.equal(2, n)
-    assert.is_truthy(script:find("ea_" .. KID   .. "_jsdelivr_net { 151.101.1.229 }", 1, true))
-    assert.is_truthy(script:find("ea_" .. OTHER .. "_jsdelivr_net { 151.101.1.229 }", 1, true))
+    local script, n = sets.build_ea_backfill_script(cache, carve_jsdelivr(), bdeps())
+    assert.equal(1, n)
+    assert.equal("add element inet wifihaven ea_jsdelivr_net { 151.101.1.229 }\n", script)
   end)
 
   it("recovers the branded head via resolve_head (#1346 parity)", function()
     local cache = { ["199.232.65.42"] = "prod.khan.map.fastly.net" }
-    local carve = { kastatic_org = { [KID] = true } }
+    local carve = { kastatic_org = true }
     local resolve_head = function(name)
       if name == "prod.khan.map.fastly.net" then return "cdn.kastatic.org" end
       return name
@@ -416,7 +405,7 @@ describe("build_ea_backfill_script (#2208)", function()
       bdeps({ resolve_head = resolve_head }))
     assert.equal(1, n)
     assert.is_truthy(script:find(
-      "add element inet wifihaven ea_" .. KID .. "_kastatic_org { 199.232.65.42 }", 1, true))
+      "add element inet wifihaven ea_kastatic_org { 199.232.65.42 }", 1, true))
   end)
 
   it("returns empty script + 0 for no matches / empty cache / empty carve", function()

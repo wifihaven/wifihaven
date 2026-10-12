@@ -16,6 +16,6 @@ exception to eb_/bl_ drops, missing the @blocked_macs drop.
 `@blocked_macs` forward-chain drop, the @blocked_macs DNAT in v4 and v6,
 plus any future "fully-blocked" enforcement path), if the MAC has a
 non-empty effective extraAllowed list, gate the drop/DNAT with `ip daddr
-!= @ea_<m>_<a>` (resp. `ip6 daddr != @ea6_<m>_<a>`) per host a. The
+!= @ea_<a>` (resp. `ip6 daddr != @ea6_<a>`) per host a in m's own list (per-host sets since #2900). The
 predicate doc at the top of render.lua reflects this — `m ∈ blocked_macs ∧
 ¬ea_hit(m, d)`.

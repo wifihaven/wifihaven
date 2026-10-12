@@ -23,6 +23,9 @@ Gate-2 fake API and asserts, at the connection layer:
      measured and logged against the §11 target (5 s p95). The CI assertion is
      deliberately loose: one sample on a shared KVM runner is not a p95, and a
      tight bound would only make Gate 2 flaky.
+  5. The check-in leaves the dnsmasq conf byte-identical (#2900), so the apply
+     skips the dnsmasq restart and smoke probe: who holds the device is nft
+     state, and the conf names hosts only.
 
 Reachability is a connection-layer property, never "DNS resolved ⇒ allowed"
 (AGENTS.md). Every absence assertion here sits next to a positive one from the
@@ -143,6 +146,16 @@ def _forward_drop_logged(mac: str, port: int) -> bool:
     )
 
 
+DNSMASQ_CONF = "/tmp/dnsmasq.d/wifihaven.conf"
+
+
+def _dnsmasq_conf() -> str:
+    res = router_ssh(f"cat {DNSMASQ_CONF}", check=False, timeout=10)
+    if res.returncode != 0:
+        raise RuntimeError(f"cat {DNSMASQ_CONF} failed (rc={res.returncode}): {res.stderr!r}")
+    return res.stdout or ""
+
+
 def test_checked_out_device_is_blocked_and_check_in_unblocks(router, client, fake_api):
     mac = client.mac
 
@@ -215,6 +228,10 @@ def test_checked_out_device_is_blocked_and_check_in_unblocks(router, client, fak
     # Time the push only once the ws link is up, so the number is push→apply
     # and not reconnect time.
     fake_api.wait_for_ws_connected(timeout_s=180)
+    conf_before = _dnsmasq_conf()
+    # Liveness anchor for the equality check below: this is the conf the
+    # checked-out apply rendered, not an empty or missing file.
+    assert f"nftset=/{GLOBAL_ALLOW_HOST}/" in conf_before, conf_before[:500]
     pushed_at = time.monotonic()
     etag = fake_api.serve_snapshot(
         _snapshot(etag=ETAG_CHECKED_IN, mac=mac, checked_in=True)
@@ -253,6 +270,15 @@ def test_checked_out_device_is_blocked_and_check_in_unblocks(router, client, fak
             "(single sample on a shared runner; not failing CI on it)",
             latency, DESIGN_TARGET_P95_S,
         )
+
+    # #2900: policy.apply writes the conf before `nft -f`, so once the drop is
+    # gone the check-in's conf is on disk. Identical bytes mean the apply took
+    # the no-restart branch (dnsmasq restarts only when the conf changed).
+    conf_after = _dnsmasq_conf()
+    assert conf_after == conf_before, (
+        "check-in changed the dnsmasq conf, so the apply restarted dnsmasq:\n"
+        f"before:\n{conf_before}\nafter:\n{conf_after}"
+    )
 
     # The drop rule going away is an absence; this is the positive proof that
     # the same host blocked a moment ago now reaches its real upstream.

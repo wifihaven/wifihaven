@@ -50,7 +50,7 @@ def mac_drop_rule_present(mac: str) -> bool:
     effective rules have ``blocked = true`` — and the only correct one when the
     MAC also has a non-empty ``extraAllowed`` list. Per #421, render.lua pulls a
     blocked-with-extraAllowed MAC OUT of the ``@blocked_macs`` set into per-MAC
-    forward-chain rules that carry the ``ip daddr != @ea_<mac>_<host>`` carve-out
+    forward-chain rules that carry the ``ip daddr != @ea_<host>`` carve-out
     (the set cannot hold an ``ip daddr`` predicate). So such a MAC is
     deliberately ABSENT from ``blocked_macs`` while still fully blocked — asserting
     set membership there would never succeed (the #1360 G2 false-failure).
@@ -306,7 +306,7 @@ def wait_bl_set_populated(bl_id: str, *, timeout_s: float = 90) -> list[str]:
 # ── #1319 global policy sets (@global_allow / @global_block) ─────────────────
 #
 # Fleet-wide ipsets render.lua declares when the snapshot carries a populated
-# `global` section. Unlike the per-(MAC, host) `ea_<mac>_<host>` sets, these
+# `global` section. Unlike the per-host `ea_<host>` sets (scoped to a MAC by its rules), these
 # are NOT keyed by MAC — one `global_allow` / `global_block` set applies to
 # every MAC. Populated at DNS resolve time by dnsmasq `nftset=` callbacks, same
 # as eb_/bl_. See render.lua GLOBAL_ALLOW4 / GLOBAL_BLOCK4.
@@ -335,20 +335,27 @@ def wait_global_block_populated(*, timeout_s: float = 90) -> list[str]:
     return _wait_set_populated(GLOBAL_BLOCK_SET, timeout_s=timeout_s)
 
 
-def ea_set_exists_for_mac(mac: str) -> bool:
-    """True iff any per-(MAC, host) ea_<mac>_<host> allow-set has been rendered.
+def ea_carve_present_for_mac(mac: str) -> bool:
+    """True iff any forward rule for this MAC carves an ea_/ea6_ allow-set.
 
     Used to prove the global allow carve-out is genuinely *global* (a single
-    @global_allow set), not silently degraded into per-MAC ea_ sets. render.lua
-    names ea_ sets `ea_<sanmac>_<sanhost>`; a `nft list table` scan for the
-    `ea_<sanmac>_` prefix tells us whether the MAC got a per-MAC allow path.
+    @global_allow set), not silently degraded into a per-MAC extraAllowed
+    carve. Since #2900 the ea_ sets are per host (`ea_<sanhost>`) and the MAC
+    scoping lives in the rule (`ether saddr <mac> ... ip daddr != @ea_<host>`),
+    so this scans the MAC's rules rather than set names.
     """
-    prefix = "ea_" + _san(mac) + "_"
     res = router_ssh(
         "nft list table inet wifihaven 2>/dev/null || true",
         check=False, timeout=10,
     )
-    return prefix.lower() in (res.stdout or "").lower()
+    out = (res.stdout or "").lower()
+    # Liveness anchor: an empty listing would make the absence check pass for free.
+    assert "table inet wifihaven" in out, "nft list table inet wifihaven returned no table"
+    needle = "ether saddr " + mac.lower() + " "
+    return any(
+        needle in line and ("@ea_" in line or "@ea6_" in line)
+        for line in out.splitlines()
+    )
 
 
 def wait_event_for_mac(fake_api, mac: str, *, allowed: bool, reason: str,
@@ -368,21 +375,20 @@ def _san(s: str) -> str:
     return s.replace(".", "_").replace(":", "_")
 
 
-def ea_set_name(mac: str, host: str) -> str:
+def ea_set_name(host: str) -> str:
     """Return the nft set name for an ea_ allow-set.
 
-    render.lua names these `ea_<sanmac>_<sanhost>` where sanmac and sanhost
-    are the sanitized (dots/colons→underscores) forms. The mac is the full
-    colon-separated form as seen in the snapshot.
+    render.lua names these `ea_<sanhost>` (per host since #2900; the MAC
+    scoping is in the nft rule), sanhost being the sanitized (dots/colons ->
+    underscores) host.
 
-    Example: mac=aa:bb:cc:11:22:33, host=khanacademy.org
-             → ea_aa_bb_cc_11_22_33_khanacademy_org
+    Example: host=khanacademy.org -> ea_khanacademy_org
     """
-    return "ea_" + _san(mac) + "_" + _san(host)
+    return "ea_" + _san(host)
 
 
-def wait_ea_set_populated(mac: str, host: str, *, timeout_s: float = 90) -> list[str]:
-    """Wait until the nft ea_ allow-set for (mac, host) has at least one element.
+def wait_ea_set_populated(host: str, *, timeout_s: float = 90) -> list[str]:
+    """Wait until the nft ea_ allow-set for host has at least one element.
 
     This is the router-state side of the ea_ assertion — it confirms the
     dns-tail sidecar populated the kernel carve-out for a directly-queried
@@ -390,7 +396,7 @@ def wait_ea_set_populated(mac: str, host: str, *, timeout_s: float = 90) -> list
     / wait_block_page), but the set membership check surfaces the specific
     sub-component that failed when the traffic probe catches a regression.
     """
-    name = ea_set_name(mac, host)
+    name = ea_set_name(host)
 
     def probe():
         elems = router_nft_set(name)
