@@ -1080,17 +1080,17 @@ describe('DevicesPage — shared devices (#2850)', () => {
   const listShared = api.sharedDevices.list as unknown as ReturnType<typeof vi.fn>
   const listDevices = api.devices.list as unknown as ReturnType<typeof vi.fn>
 
-  it('lists a checked-out shared device as shared and "Checked out", not as unmanaged', async () => {
+  it('lists a checked-out shared device as shared and "Available", not as unmanaged', async () => {
     listDevices.mockResolvedValue([ipad, checkedOut])
     listShared.mockResolvedValue([{ mac: sharedMac, name: 'Family iPad', holder: null }])
     renderPage()
     const row = await screen.findByTestId(`device-row-${sharedMac}`)
     expect(within(row).getByTestId(`device-shared-badge-${sharedMac}`)).toHaveTextContent('Shared')
-    expect(await within(row).findByTestId(`device-holder-${sharedMac}`)).toHaveTextContent('Checked out')
+    expect(await within(row).findByTestId(`device-holder-${sharedMac}`)).toHaveTextContent('Available')
     expect(screen.queryByTestId('unmanaged-devices-section')).not.toBeInTheDocument()
   })
 
-  it('shows the holder profile, who checked it in, and since when', async () => {
+  it("shows whose session it is, who started it, and since when", async () => {
     listDevices.mockResolvedValue([held])
     listShared.mockResolvedValue([{
       mac: sharedMac, name: 'Family iPad',
@@ -1098,18 +1098,18 @@ describe('DevicesPage — shared devices (#2850)', () => {
     }])
     renderPage()
     const holder = await screen.findByTestId(`device-holder-${sharedMac}`)
-    await waitFor(() => expect(holder).toHaveTextContent('Kids'))
-    expect(holder).toHaveTextContent(/checked in by alex/i)
+    await waitFor(() => expect(holder).toHaveTextContent("In use: Kids' session"))
+    expect(holder).toHaveTextContent(/started by alex/i)
     expect(holder).toHaveTextContent(/since/i)
   })
 
-  it('shows a skeleton for the holder while the shared list loads, never "Checked out"', async () => {
+  it('shows a skeleton for the holder while the shared list loads, never "Available"', async () => {
     listDevices.mockResolvedValue([checkedOut])
     listShared.mockReturnValue(new Promise(() => {}))
     renderPage()
     const row = await screen.findByTestId(`device-row-${sharedMac}`)
     expect(within(row).getByTestId(`device-holder-loading-${sharedMac}`)).toBeInTheDocument()
-    expect(within(row).queryByText('Checked out')).not.toBeInTheDocument()
+    expect(within(row).queryByText('Available')).not.toBeInTheDocument()
   })
 
   it('the Shared toggle autosaves PATCH {shared:true}, with no Save button', async () => {
@@ -1130,7 +1130,7 @@ describe('DevicesPage — shared devices (#2850)', () => {
     }
   })
 
-  it('a shared device has no profile picker (it is checked in, never assigned)', async () => {
+  it('a shared device has no profile picker, and says sessions start from the dashboard', async () => {
     const user = userEvent.setup()
     listDevices.mockResolvedValue([held])
     renderPage()
@@ -1139,6 +1139,8 @@ describe('DevicesPage — shared devices (#2850)', () => {
     const editor = await screen.findByTestId(`device-editor-${sharedMac}`)
     expect((within(editor).getByTestId(`device-shared-toggle-${sharedMac}`) as HTMLInputElement).checked).toBe(true)
     expect(within(editor).queryByTestId(`device-profile-select-${sharedMac}`)).not.toBeInTheDocument()
+    expect(within(editor).getByTestId(`device-shared-note-${sharedMac}`))
+      .toHaveTextContent('Start and end sessions on this device from the dashboard.')
   })
 
   it('turning Shared off autosaves PATCH {shared:false}', async () => {

@@ -77,7 +77,7 @@ describe('BlockedPage — API-driven reason copy (#1615)', () => {
     mockBlockedInfo({ blocked: true, reasonClass: 'checked_out' })
     renderBlocked({ mac: 'aa:bb:cc:11:22:33', host: 'example.com' })
     await waitFor(() =>
-      expect(screen.getByText(/shared device.*check it in/i)).toBeInTheDocument(),
+      expect(screen.getByText(/shared device.*start a session/i)).toBeInTheDocument(),
     )
   })
 
@@ -191,15 +191,16 @@ describe('BlockedPage — ask-a-parent CTA (#960)', () => {
   // #2850: the Check in action. It leads to the dashboard's shared-devices card with this device
   // pre-selected (design §15 Q1: the MAC only pre-selects; the check-in itself is the normal flow).
   // An unauthenticated child goes through login first and comes back to it (RequireAuth/LoginPage).
-  it('offers a Check in action for reasonClass=checked_out that leads to the check-in flow', async () => {
+  it('offers a Start session action for reasonClass=checked_out that leads to the dashboard', async () => {
     mockBlockedInfo({ blocked: true, reasonClass: 'checked_out' })
     renderBlocked({ mac: 'aa:bb:cc:11:22:33', host: 'example.com' })
     const link = await screen.findByTestId('block-checkin')
-    expect(link).toHaveTextContent('Check in')
+    expect(screen.getByText('This is a shared device. Start a session on your profile to use it.')).toBeInTheDocument()
+    expect(link).toHaveTextContent('Start session')
     expect(link).toHaveAttribute('href', `/dashboard?checkin=${encodeURIComponent('aa:bb:cc:11:22:33')}`)
   })
 
-  it('offers no Check in action for other reasons', async () => {
+  it('offers no Start session action for other reasons', async () => {
     mockBlockedInfo({ blocked: true, reasonClass: 'paused', profileName: 'Kids' })
     renderBlocked({ mac: 'aa:bb:cc:11:22:33', host: 'example.com' })
     await waitFor(() => expect(screen.getByText(/profile is paused/i)).toBeInTheDocument())

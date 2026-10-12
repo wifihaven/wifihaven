@@ -1859,8 +1859,8 @@ describe('ProfilesPage — #973 inline devices subsection', () => {
 
   // #2850 review: a checked-in shared device lists under its holder, but it is held by a check-in,
   // not assigned. Remove would send PATCH {profileId:null}, which the API treats as a no-op on a
-  // shared device, so the row offers no Remove and says it is checked in.
-  it('a checked-in shared device shows as checked in, with no Remove', async () => {
+  // shared device, so the row offers no Remove and says it is in use.
+  it('a shared device in a session shows as in use, with no Remove', async () => {
     (api.devices.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([
       { ...phoneDevice, shared: true },
     ])
@@ -1869,7 +1869,7 @@ describe('ProfilesPage — #973 inline devices subsection', () => {
     const kidsCard = await screen.findByTestId('profile-card-1')
     await expand(1, user)
     const sub = within(kidsCard).getByTestId('profile-devices-subsection-1')
-    expect(within(sub).getByTestId('profile-device-100')).toHaveTextContent(/checked in/i)
+    expect(within(sub).getByTestId('profile-device-100')).toHaveTextContent('Shared · in use')
     expect(within(sub).queryByTestId('profile-device-100-detach')).not.toBeInTheDocument()
   })
 

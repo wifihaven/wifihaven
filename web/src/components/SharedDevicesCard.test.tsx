@@ -118,7 +118,7 @@ afterEach(() => {
 })
 
 describe('SharedDevicesCard — loading states (#2850)', () => {
-  it('shows a skeleton while the list loads, then "Checked out" as a loaded state', async () => {
+  it('shows a skeleton while the list loads, then "Available" as a loaded state', async () => {
     signIn('child', { profileIds: [1] })
     let resolve!: (v: SharedDevice[]) => void
     mocked(api.sharedDevices.list).mockReturnValue(new Promise(r => { resolve = r }))
@@ -126,10 +126,10 @@ describe('SharedDevicesCard — loading states (#2850)', () => {
     renderCard()
 
     expect(screen.getByTestId('shared-devices-loading')).toBeInTheDocument()
-    expect(screen.queryByText('Checked out')).not.toBeInTheDocument()
+    expect(screen.queryByText('Available')).not.toBeInTheDocument()
 
     await act(async () => resolve([checkedOutIpad]))
-    expect(await screen.findByTestId(`shared-device-status-${IPAD}`)).toHaveTextContent('Checked out')
+    expect(await screen.findByTestId(`shared-device-status-${IPAD}`)).toHaveTextContent('Available')
     expect(screen.queryByTestId('shared-devices-loading')).not.toBeInTheDocument()
   })
 
@@ -151,14 +151,14 @@ describe('SharedDevicesCard — loading states (#2850)', () => {
     expect(screen.queryByTestId('shared-devices-card')).not.toBeInTheDocument()
   })
 
-  it('shows the holder, who checked it in, and since when', async () => {
+  it("shows whose session it is, who started it, and since when", async () => {
     signIn('admin')
     mocked(api.sharedDevices.list).mockResolvedValue([ipadHeldByTeens])
     mocked(api.profiles.list).mockResolvedValue([kids, teens])
     renderCard()
     const status = await screen.findByTestId(`shared-device-status-${IPAD}`)
-    expect(status).toHaveTextContent('Teens')
-    expect(status).toHaveTextContent(/checked in by sam/i)
+    expect(status).toHaveTextContent("In use: Teens' session")
+    expect(status).toHaveTextContent(/started by sam/i)
     expect(status).toHaveTextContent(/since/i)
   })
 })
@@ -170,7 +170,7 @@ describe('SharedDevicesCard — actions error (#2850 review)', () => {
     mocked(api.profiles.list).mockRejectedValueOnce(new Error('boom')).mockResolvedValue([kids])
     renderCard()
     const err = await screen.findByTestId('shared-devices-actions-error')
-    expect(err).toHaveTextContent(/couldn't load your profiles/i)
+    expect(err).toHaveTextContent("Couldn't load your profiles, so you can't start or end sessions right now.")
     expect(screen.queryByTestId(`shared-device-checkin-${IPAD}`)).not.toBeInTheDocument()
     await userEvent.click(within(err).getByRole('button', { name: 'Retry' }))
     expect(await screen.findByTestId(`shared-device-checkin-${IPAD}`)).toBeInTheDocument()
@@ -188,6 +188,27 @@ describe('SharedDevicesCard — child check in / check out (#2850)', () => {
     await waitFor(() => expect(api.sharedDevices.checkIn).toHaveBeenCalledWith(IPAD, { profileId: 1 }))
   })
 
+  it('an Available device offers Start session; a held one offers End session to its holder', async () => {
+    signIn('child', { profileIds: [1] })
+    mocked(api.sharedDevices.list).mockResolvedValue([
+      checkedOutIpad,
+      { ...ipadHeldByKids, mac: 'aa:bb:cc:dd:ee:02', name: 'Den PC' },
+    ])
+    mocked(api.profiles.list).mockResolvedValue([kids])
+    renderCard()
+    expect(await screen.findByTestId(`shared-device-checkin-${IPAD}`)).toHaveTextContent(/^Start session$/)
+    expect(await screen.findByTestId('shared-device-checkout-aa:bb:cc:dd:ee:02')).toHaveTextContent(/^End session$/)
+  })
+
+  it('an adult with no profiles is told to add one to start a session', async () => {
+    signIn('admin', { profileIds: [] })
+    mocked(api.sharedDevices.list).mockResolvedValue([checkedOutIpad])
+    mocked(api.profiles.list).mockResolvedValue([])
+    renderCard()
+    expect(await screen.findByTestId(`shared-device-no-profile-${IPAD}`))
+      .toHaveTextContent('Add a profile to start a session on this device.')
+  })
+
   it('a child linked to several profiles picks one first', async () => {
     signIn('child', { profileIds: [1, 2] })
     mocked(api.sharedDevices.list).mockResolvedValue([checkedOutIpad])
@@ -197,7 +218,7 @@ describe('SharedDevicesCard — child check in / check out (#2850)', () => {
     expect(api.sharedDevices.checkIn).not.toHaveBeenCalled()
     const picker = screen.getByTestId(`shared-device-picker-${IPAD}`)
     await userEvent.selectOptions(within(picker).getByRole('combobox'), '2')
-    await userEvent.click(within(picker).getByRole('button', { name: 'Check in' }))
+    await userEvent.click(within(picker).getByRole('button', { name: 'Start session' }))
     await waitFor(() => expect(api.sharedDevices.checkIn).toHaveBeenCalledWith(IPAD, { profileId: 2 }))
   })
 
@@ -223,11 +244,11 @@ describe('SharedDevicesCard — child check in / check out (#2850)', () => {
   })
 
   it.each([
-    ['held', 409, {}, 'Someone else has this device checked in. They need to check it out first.'],
-    ['profile_blocked', 409, { reason: 'TimeLimit' }, "Kids is out of time for today, so it can't check in."],
-    ['profile_blocked', 409, { reason: 'Schedule' }, "Kids is outside its allowed time, so it can't check in right now."],
-    ['profile_blocked', 409, { reason: 'Paused' }, "Kids is paused, so it can't check in right now."],
-    ['not_linked', 403, {}, "You can only check in on a profile you're linked to."],
+    ['held', 409, {}, 'Someone else is using this device right now. You can start yours when their session ends.'],
+    ['profile_blocked', 409, { reason: 'TimeLimit' }, "Kids is out of time for today, so a session can't start."],
+    ['profile_blocked', 409, { reason: 'Schedule' }, "Kids is outside its allowed time, so a session can't start right now."],
+    ['profile_blocked', 409, { reason: 'Paused' }, "Kids is paused, so a session can't start right now."],
+    ['not_linked', 403, {}, "You can only start a session on your own profile."],
     ['not_shared', 409, {}, "This device isn't shared any more."],
   ])('shows a readable message for a %s refusal', async (code, status, extra, message) => {
     signIn('child', { profileIds: [1] })
@@ -248,7 +269,7 @@ describe('SharedDevicesCard — child check in / check out (#2850)', () => {
     mocked(api.sharedDevices.checkOut).mockRejectedValue(new HttpError(409, '{"error":"not_held"}'))
     renderCard()
     await userEvent.click(await screen.findByTestId(`shared-device-checkout-${IPAD}`))
-    expect(await screen.findByTestId(`shared-device-error-${IPAD}`)).toHaveTextContent('This device is already checked out.')
+    expect(await screen.findByTestId(`shared-device-error-${IPAD}`)).toHaveTextContent('This session has already ended.')
   })
 
   it('a child with no linked profile is told to ask a parent', async () => {
@@ -272,7 +293,7 @@ describe('SharedDevicesCard — adults (#2850, design §15 Q5/Q5a)', () => {
     const options = within(picker).getAllByRole('option').map(o => o.textContent)
     expect(options).toEqual(expect.arrayContaining(['Kids', 'Teens', 'Adults']))
     await userEvent.selectOptions(within(picker).getByRole('combobox'), '1')
-    await userEvent.click(within(picker).getByRole('button', { name: 'Check in' }))
+    await userEvent.click(within(picker).getByRole('button', { name: 'Start session' }))
     await waitFor(() => expect(api.sharedDevices.checkIn).toHaveBeenCalledWith(IPAD, { profileId: 1 }))
   })
 
@@ -282,17 +303,17 @@ describe('SharedDevicesCard — adults (#2850, design §15 Q5/Q5a)', () => {
     mocked(api.profiles.list).mockResolvedValue([kids, teens, adults])
     renderCard()
     const btn = await screen.findByTestId(`shared-device-checkout-${IPAD}`)
-    expect(btn).toHaveTextContent('Force check out')
+    expect(btn).toHaveTextContent("End Teens' session")
     await userEvent.click(btn)
     await waitFor(() => expect(api.sharedDevices.checkOut).toHaveBeenCalledWith(IPAD))
   })
 
-  it('an adult holding the device on their own profile sees a plain Check out', async () => {
+  it('an adult holding the device on their own profile sees a plain End session', async () => {
     signIn('adult', { profileIds: [2] })
     mocked(api.sharedDevices.list).mockResolvedValue([ipadHeldByTeens])
     mocked(api.profiles.list).mockResolvedValue([kids, teens])
     renderCard()
-    expect(await screen.findByTestId(`shared-device-checkout-${IPAD}`)).toHaveTextContent(/^Check out$/)
+    expect(await screen.findByTestId(`shared-device-checkout-${IPAD}`)).toHaveTextContent(/^End session$/)
   })
 })
 
@@ -327,7 +348,7 @@ describe('SharedDevicesCard — live updates (#2850)', () => {
       heartbeatMs: 100_000_000,
     })
     renderCard({ client })
-    expect(await screen.findByTestId(`shared-device-status-${IPAD}`)).toHaveTextContent('Checked out')
+    expect(await screen.findByTestId(`shared-device-status-${IPAD}`)).toHaveTextContent('Available')
 
     act(() => client.start())
     act(() => lastSocket().open())
@@ -342,7 +363,7 @@ describe('SharedDevicesCard — live updates (#2850)', () => {
 
     act(() => lastSocket().emit({ op: 'sharedDevices', payload: [ipadHeldByKids] }))
     await waitFor(() => expect(screen.getByTestId(`shared-device-status-${IPAD}`)).toHaveTextContent('Kids'))
-    expect(screen.getByTestId(`shared-device-status-${IPAD}`)).not.toHaveTextContent('Checked out')
+    expect(screen.getByTestId(`shared-device-status-${IPAD}`)).not.toHaveTextContent('Available')
     client.stop()
   })
 })

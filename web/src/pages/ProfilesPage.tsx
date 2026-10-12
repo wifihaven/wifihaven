@@ -2813,8 +2813,8 @@ function DevicesSubsection({
                 </div>
                 {d.shared ? (
                   // #2850: a shared device is held by a check-in, not assigned; PATCH {profileId:null}
-                  // is a no-op on it. It is checked out from the dashboard's Shared devices card.
-                  <span className="text-xs text-brand-text-muted">Shared · checked in</span>
+                  // is a no-op on it. Its session is ended from the dashboard's Shared devices card.
+                  <span className="text-xs text-brand-text-muted">Shared · in use</span>
                 ) : (
                   <button
                     type="button"
