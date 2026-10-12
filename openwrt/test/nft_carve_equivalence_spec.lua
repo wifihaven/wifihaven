@@ -423,6 +423,15 @@ describe("#2901 the equivalence check catches a broken precedence", function()
     end
   end
 
+  -- Add a line at the top of the named chain.
+  local function prepend_line_in_chain(chain, line)
+    return function(nft)
+      local out, n = nft:gsub("(\n  chain " .. chain .. " {\n)", "%1" .. line .. "\n", 1)
+      assert.are.equal(1, n, "chain " .. chain .. " not found")
+      return out
+    end
+  end
+
   local MUTATIONS = {
     { "global allow no longer carves a per-MAC drop",
       drop_line_in_chain("wh_carve_020000000003", "ip daddr @global_allow return") },
@@ -432,6 +441,10 @@ describe("#2901 the equivalence check catches a broken precedence", function()
       drop_line_in_chain("wh_carve_nat_020000000003", "ip daddr @ea_ta1_example return") },
     { "a carve accepts instead of returning (skips blockIpOnly and global drops)",
       gsub_n("(@ea6?_la1_example) return", "%1 accept") },
+    { "another MAC's allowed host carves this MAC's drops",
+      prepend_line_in_chain("wh_carve_020000000003", "    ip daddr @ea_ka1_example return") },
+    { "another MAC's allowed host carves this MAC's block-page DNAT",
+      prepend_line_in_chain("wh_carve_nat_020000000003", "    ip6 daddr @ea6_ka1_example return") },
     { "jump becomes goto (a carve return would end the base chain)",
       gsub_n("jump (wh_carve_)", "goto %1") },
     { "the jump moves after the global drops",
