@@ -185,6 +185,8 @@ object BundledBlocklistsSpec
         assertTrue(ads.contains(Hostname.unsafe("vdo.ai"))) &&
         // traffic-driven addition pinned for presence (#2836)
         assertTrue(ads.contains(Hostname.unsafe("adnami.io"))) &&
+        // traffic-driven addition pinned for presence (#2911)
+        assertTrue(ads.contains(Hostname.unsafe("bttrack.com"))) &&
         assertTrue(meta.isDefined) &&
         assertTrue(meta.exists(m => m.bundled && m.name == "Ads & Trackers"))
     },
@@ -498,6 +500,28 @@ object BundledBlocklistsSpec
             .filter { x =>
               val xv = x.value.toLowerCase
               xv == "ebayadservices.com" || xv.endsWith(".ebayadservices.com")
+            }
+            .map(x => s"${bl.id.value}:${x.value}")
+        }
+      } yield
+      // liveness anchor: the ads list loaded, so the absence check is not vacuous
+      assertTrue(inlineHostsOf(inlineLists, "ads").contains(Hostname.unsafe("mgid.com"))) &&
+        assertTrue(offenders.isEmpty)
+    },
+    test("#2911: Cloudflare-fronted theagenticx.ai stays out of every inline list") {
+      // The bare apex was observed in prod traffic and resolves onto Cloudflare,
+      // so listing it would put shared Cloudflare edges into `bl_ads`.
+      for {
+        inlineLists <- loadInlineOnly
+        offenders = inlineLists.flatMap { bl =>
+          val hosts = bl.content match {
+            case BundledBlocklistContent.Inline(hs) => hs
+            case _                                  => Nil
+          }
+          hosts
+            .filter { x =>
+              val xv = x.value.toLowerCase
+              xv == "theagenticx.ai" || xv.endsWith(".theagenticx.ai")
             }
             .map(x => s"${bl.id.value}:${x.value}")
         }

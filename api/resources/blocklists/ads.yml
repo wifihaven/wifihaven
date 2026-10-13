@@ -822,3 +822,43 @@ hosts:
   - adnpbs.com
   - adxflyer.com
   - nexverse.ai
+  #
+  # traffic-driven additions (#2911): 30-day prod recent-apexes sweep across
+  # all 30 devices, 2026-10-13. Observed hosts are from 90 days of
+  # /api/logs, resolved on 2026-10-13.
+  #
+  # bttrack.com is Bidtellect's native-advertising RTB exchange (Netify,
+  # Cookiepedia Targeting/Advertising cookies, a /pixel/cookiesync endpoint).
+  # The "bt" prefix reads like the unrelated open-source `bttrack` BitTorrent
+  # tracker, but the domain's owner is Bidtellect. Only the bare apex was ever
+  # observed (70 rows). It answers on two dedicated blocks, which rotated during
+  # the pass: 192.132.33.67-69 (whois: Bidtellect Inc.) and 64.38.119.42-44
+  # (whois: BroadbandONE). RESIDUAL RISK: cdn.bttrack.com and video.bttrack.com
+  # CNAME onto shared Akamai edges (a1093.dscb.akamai.net). Neither has been
+  # observed, but this apex entry suffix-matches them, so a device that ever
+  # resolves one would put Akamai edges into bl_ads. If either shows up in
+  # traffic, remove this entry and pin its absence (the ebayadservices.com
+  # precedent, #2816).
+  #
+  # loudecho.ai is LoudEcho, an agentic AI ad buyer for marketers and
+  # publishers: another `.ai`-TLD ad network (axon.ai/nexverse.ai class). The
+  # only observed host is cs.loudecho.ai, on a dedicated address
+  # (88.214.255.112). This reverses #2836, which held it out as
+  # Cloudflare-fronted: that judged the bare apex, which was never observed,
+  # instead of the observed host. RESIDUAL RISK: the bare apex does resolve to
+  # Cloudflare (104.21.x/172.67.x), so a device visiting the marketing site
+  # would arm Cloudflare edges. Same remedy as above if it appears.
+  #
+  # Held out this pass (recorded so a later pass does not re-guess):
+  # theagenticx.ai (agenticX, a confirmed agentic ad platform): the bare apex
+  # WAS observed and resolves to Cloudflare (172.67.x/104.21.x), an
+  # unconditional #2823 skip. Its absence is pinned in BundledBlocklistsSpec.
+  # syncingbridge.com: still no confirmed identity (same as #2836).
+  # delivrdsp.ai: self-descriptive "Deliver DSP" name only, 1 hit, no
+  # corroborating source, below the inhousedsp.com two-signal bar.
+  # verysane.ai is a Substack AI newsletter, not ad tech (#2816 evidence).
+  # linkedin-ei.com is LinkedIn Corporation's own RUM/perf domain (whois), but
+  # its only observed host, rum22.perf.linkedin-ei.com, answers on Cloudflare
+  # (104.18.x). Confirmed ownership does not clear the #2823 rule.
+  - bttrack.com
+  - loudecho.ai

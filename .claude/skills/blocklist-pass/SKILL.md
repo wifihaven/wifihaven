@@ -212,7 +212,8 @@ Before adding apex `X` to category `C`, confirm it isn't already blocked:
 
 1. Load `C`'s curated `hosts:` from `<C>.yml` and check exact + subdomain
    membership. **Smoke-test the extraction against a known sentinel** (e.g.
-   `grep -c '^doubleclick.net$'` for ads) before trusting it — a bad regex
+   `grep -c '^pubmatic.com$'` for ads; NOT `doubleclick.net`, which #2601
+   removed, so it correctly returns 0) before trusting it — a bad regex
    (macOS BSD `sed`/`grep` do NOT support `\s`; use `[[:space:]]`) silently
    returns all-negative and would re-add already-curated apexes.
 2. If `C` has a sibling `-extended` / upstream feed (per the pairing derived in
@@ -222,6 +223,37 @@ Before adding apex `X` to category `C`, confirm it isn't already blocked:
    under-states coverage, and the curated **apex** entry is the stronger block
    regardless (it suffix-matches all subdomains). Use the feed to *prioritize*
    (genuine gaps first), not to *disqualify*.
+3. **Observed-host CDN check, on EVERY addition** (#2823, #2911). List every
+   distinct host seen for the apex, then resolve each:
+
+   ```bash
+   curl -sS -H "Authorization: Bearer $TOKEN" \
+     "https://api.wifihaven.net/api/logs?domain=<apex>&hours=2160&limit=500" \
+     | jq -r '.rows[].host.value' | sort | uniq -c
+   dig +short <each observed host> A
+   ```
+
+   A full page is truncated, and a rare host can sit past the cap. The response
+   carries `.nextCursor` when there is more; pass it back as `&cursor=<value>`
+   (same `domain`/`hours`) until it comes back null. Don't page with `until=`:
+   it re-returns boundary rows and can loop forever when one timestamp has more
+   than 500 rows. Run these serially (see Step 0).
+
+   If any OBSERVED host answers on Cloudflare (check the address against
+   `https://www.cloudflare.com/ips-v4`; the common ones are `104.16.0.0/13`,
+   `104.24.0.0/14`, `172.64.0.0/13`), CloudFront, Akamai, Fastly, or Google's
+   shared GFE pool, do not add the apex;
+   pin its absence in `BundledBlocklistsSpec` instead. Then `dig` the
+   *unobserved* usual siblings (bare apex, `cdn.`, `video.`, `static.`). A CDN
+   answer there does not block the add, but record it in the `.yml` comment as
+   RESIDUAL RISK with its removal trigger. Put the observed-hosts table in the
+   evidence doc. Do this for hosts you are adding, not only the ones you already
+   expect to skip; #2911 skipped that and pushed a Cloudflare-fronted apex,
+   which the independent review caught before merge.
+4. **Re-check the residual-risk watchlist.** `grep -n 'RESIDUAL RISK'
+   api/resources/blocklists/*.yml`, and for each sibling listed there run the
+   step-3 `/api/logs` query. If one has now been observed, remove that entry
+   and pin its absence. This step is what owns those removal triggers.
 
 Only add genuine gaps. Record per-apex hits + a one-line "what it is" for each
 addition.
@@ -273,6 +305,49 @@ that edit in the same PR.** If a step above is now wrong, fix the step too.
 
 ## Learnings log (newest first)
 
+- **2026-10-13** (#2911) — **Run the observed-host CDN check on EVERY
+  addition, not only on candidates already headed for a skip.** This pass ran
+  it carefully for `linkedin-ei.com` (which it skipped) and never for the three
+  hosts it added. The independent review caught `bttrack.com`'s Akamai-fronted
+  `cdn.`/`video.` siblings. Running the check then found that `theagenticx.ai`'s
+  bare apex had been observed and resolves to Cloudflare, an unconditional
+  skip, so it was pulled and pinned absent. Procedure for each addition, before
+  writing it to a file: list every distinct `host.value` from
+  `/api/logs?domain=<apex>&hours=2160`, `dig` each one, and record the table in
+  the evidence doc. Also `dig` the unobserved well-known siblings (`cdn.`,
+  `video.`, the bare apex) and record any CDN answer as residual risk in the
+  `.yml` comment, so a later pass knows what to watch for. The author's own
+  review of the PR missed all of this. The review that caught it ran in a
+  separate agent.
+- **2026-10-13** (#2911) — **A name that resembles unrelated OPEN-SOURCE
+  tooling, not just an unrelated company, is the same trap as the
+  `ttdns2.com`/TheTradeDesk false match — verify ownership, don't stop at "this
+  name is already used by something else."** `bttrack.com` reads exactly like
+  the open-source `bttrack` BitTorrent-tracker daemon (Debian man pages, and
+  one automated classifier even calls the *domain* a BT tracker on that
+  basis) — but Netify/Cookiepedia/AlienVault OTX all independently confirm the
+  domain belongs to Bidtellect, a native-advertising RTB exchange, with a
+  `/pixel/cookiesync` endpoint and three subdomains (`api.`/`cdn.`/`video.`)
+  already in the `ads-extended` feed. The traffic context corroborated it too:
+  observed firing inside a dense RTB/prebid pixel burst on an ad-heavy page,
+  not alongside the household's actual BT-tracker-decoy hits that same week.
+  Lesson: a plausible non-ad-tech reading of a name — even a *correct* reading
+  of what that string means elsewhere — is not evidence about THIS domain's
+  owner. Check the owner.
+- **2026-10-13** (#2911) — **Confirmed first-party ownership of the APEX does
+  not clear the #2823 shared-CDN rule if the OBSERVED HOST is CDN-fronted —
+  the two checks are independent and both must pass.** `linkedin-ei.com` is
+  genuinely LinkedIn Corporation's domain (whois: registrant org "LinkedIn
+  Corporation", MarkMonitor registrar, 2012 creation date — this is not a
+  phishing lookalike), and the bare apex resolves to a dedicated Microsoft
+  address. But the only host ever observed in traffic,
+  `rum22.perf.linkedin-ei.com` (a RUM/performance-monitoring endpoint), answers
+  on Cloudflare (`104.18.x`). Per the #2823 rule ("check which host actually
+  appears in traffic, not which address the apex happens to answer on"), that
+  makes it a structural skip regardless of how solid the ownership
+  confirmation is — a verified-legitimate owner is not a carve-out from the
+  CDN-collateral rule, because the risk is to *other* Cloudflare tenants, not
+  to anything about LinkedIn's trustworthiness.
 - **2026-10-06** (#2836) — **A GCP customer load-balancer IP (`34.117.x` /
   similar single-tenant App Engine/GLB ranges) is NOT the same collateral risk
   as Google's own product shared-GFE pool (`173.194.x`, the range
