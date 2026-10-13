@@ -822,3 +822,32 @@ hosts:
   - adnpbs.com
   - adxflyer.com
   - nexverse.ai
+  #
+  # traffic-driven additions (#2911): 30-day prod recent-apexes sweep across
+  # all 30 devices, 2026-10-13. bttrack.com is Bidtellect's native-advertising
+  # RTB exchange (confirmed via Netify + Cookiepedia Targeting/Advertising
+  # cookies + a /pixel/cookiesync endpoint) — the "bt" prefix reads like a
+  # BitTorrent-tracker decoy (urlert.com's automated classifier even calls it
+  # one) but that is a name collision with an unrelated open-source project,
+  # not the owner; observed firing inside a dense RTB/prebid burst on an
+  # ad-heavy publisher page corroborates the Bidtellect identity. theagenticx.ai
+  # and loudecho.ai are two more instances of the `.ai`-TLD-hides-an-ad-network
+  # trap (axon.ai/programmaticx.ai/trygravity.ai/koah.ai/mediayo.ai/nexverse.ai)
+  # — both self-describe on their own marketing pages as agentic/programmatic
+  # ad-serving platforms for publishers and DSPs, not consumer AI products.
+  #
+  # Held out this pass (no action, recorded so a later pass does not re-guess):
+  # syncingbridge.com/verysane.ai — re-observed, still no confirmed identity
+  # (same conclusion as #2836, independently re-reached); delivrdsp.ai —
+  # maximally self-descriptive ("Deliver DSP") but only 1 hit / 13KB with no
+  # corroborating identity source and no ads-extended membership, below the
+  # inhousedsp.com two-signal bar. linkedin-ei.com (LinkedIn Corporation's own
+  # RUM/perf domain, MarkMonitor-registered, confirmed via whois) is a
+  # structural skip, not a false identity: the apex itself resolves to a
+  # dedicated Microsoft address, but the only observed host
+  # (rum22.perf.linkedin-ei.com) answers on Cloudflare (104.18.x) — the #2823
+  # rule is "check which host actually appears in traffic," and that host is
+  # shared-CDN-fronted regardless of apex ownership.
+  - bttrack.com
+  - theagenticx.ai
+  - loudecho.ai

@@ -273,6 +273,35 @@ that edit in the same PR.** If a step above is now wrong, fix the step too.
 
 ## Learnings log (newest first)
 
+- **2026-10-13** (#2911) — **A name that resembles unrelated OPEN-SOURCE
+  tooling, not just an unrelated company, is the same trap as the
+  `ttdns2.com`/TheTradeDesk false match — verify ownership, don't stop at "this
+  name is already used by something else."** `bttrack.com` reads exactly like
+  the open-source `bttrack` BitTorrent-tracker daemon (Debian man pages, and
+  one automated classifier even calls the *domain* a BT tracker on that
+  basis) — but Netify/Cookiepedia/AlienVault OTX all independently confirm the
+  domain belongs to Bidtellect, a native-advertising RTB exchange, with a
+  `/pixel/cookiesync` endpoint and three subdomains (`api.`/`cdn.`/`video.`)
+  already in the `ads-extended` feed. The traffic context corroborated it too:
+  observed firing inside a dense RTB/prebid pixel burst on an ad-heavy page,
+  not alongside the household's actual BT-tracker-decoy hits that same week.
+  Lesson: a plausible non-ad-tech reading of a name — even a *correct* reading
+  of what that string means elsewhere — is not evidence about THIS domain's
+  owner. Check the owner.
+- **2026-10-13** (#2911) — **Confirmed first-party ownership of the APEX does
+  not clear the #2823 shared-CDN rule if the OBSERVED HOST is CDN-fronted —
+  the two checks are independent and both must pass.** `linkedin-ei.com` is
+  genuinely LinkedIn Corporation's domain (whois: registrant org "LinkedIn
+  Corporation", MarkMonitor registrar, 2012 creation date — this is not a
+  phishing lookalike), and the bare apex resolves to a dedicated Microsoft
+  address. But the only host ever observed in traffic,
+  `rum22.perf.linkedin-ei.com` (a RUM/performance-monitoring endpoint), answers
+  on Cloudflare (`104.18.x`). Per the #2823 rule ("check which host actually
+  appears in traffic, not which address the apex happens to answer on"), that
+  makes it a structural skip regardless of how solid the ownership
+  confirmation is — a verified-legitimate owner is not a carve-out from the
+  CDN-collateral rule, because the risk is to *other* Cloudflare tenants, not
+  to anything about LinkedIn's trustworthiness.
 - **2026-10-06** (#2836) — **A GCP customer load-balancer IP (`34.117.x` /
   similar single-tenant App Engine/GLB ranges) is NOT the same collateral risk
   as Google's own product shared-GFE pool (`173.194.x`, the range
