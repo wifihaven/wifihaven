@@ -831,8 +831,9 @@ hosts:
   # Cookiepedia Targeting/Advertising cookies, a /pixel/cookiesync endpoint).
   # The "bt" prefix reads like the unrelated open-source `bttrack` BitTorrent
   # tracker, but the domain's owner is Bidtellect. Only the bare apex was ever
-  # observed (70 rows), and it resolves to dedicated BroadbandONE addresses
-  # (192.132.33.67-69). RESIDUAL RISK: cdn.bttrack.com and video.bttrack.com
+  # observed (70 rows). It answers on two dedicated blocks, which rotated during
+  # the pass: 192.132.33.67-69 (whois: Bidtellect Inc.) and 64.38.119.42-44
+  # (whois: BroadbandONE). RESIDUAL RISK: cdn.bttrack.com and video.bttrack.com
   # CNAME onto shared Akamai edges (a1093.dscb.akamai.net). Neither has been
   # observed, but this apex entry suffix-matches them, so a device that ever
   # resolves one would put Akamai edges into bl_ads. If either shows up in

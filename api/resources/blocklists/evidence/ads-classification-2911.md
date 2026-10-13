@@ -19,7 +19,7 @@ over `hours=2160` (90 days). Resolution is `dig +short A` on 2026-10-13.
 
 | apex | observed hosts (rows) | observed host resolves to | unobserved siblings |
 |---|---|---|---|
-| `bttrack.com` | `bttrack.com` (70) | 192.132.33.67-69, dedicated (BroadbandONE) | `cdn.`/`video.bttrack.com` → Akamai (`a1093.dscb.akamai.net`, 23.45.123.x) |
+| `bttrack.com` | `bttrack.com` (70) | dedicated, two blocks seen on 2026-10-13: 192.132.33.67-69 (whois Bidtellect Inc.) and 64.38.119.42-44 (whois BroadbandONE) | `cdn.`/`video.bttrack.com` → Akamai (`a1093.dscb.akamai.net`, 23.45.123.x) |
 | `loudecho.ai` | `cs.loudecho.ai` (1) | 88.214.255.112, dedicated | bare `loudecho.ai` → Cloudflare (104.21.x/172.67.x) |
 | `theagenticx.ai` | `sync.theagenticx.ai` (6), **`theagenticx.ai` (1)** | sync: 172.240.45.49; **bare apex: Cloudflare** (172.67.x/104.21.x) | — |
 

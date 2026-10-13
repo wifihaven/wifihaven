@@ -212,7 +212,8 @@ Before adding apex `X` to category `C`, confirm it isn't already blocked:
 
 1. Load `C`'s curated `hosts:` from `<C>.yml` and check exact + subdomain
    membership. **Smoke-test the extraction against a known sentinel** (e.g.
-   `grep -c '^doubleclick.net$'` for ads) before trusting it — a bad regex
+   `grep -c '^pubmatic.com$'` for ads; NOT `doubleclick.net`, which #2601
+   removed, so it correctly returns 0) before trusting it — a bad regex
    (macOS BSD `sed`/`grep` do NOT support `\s`; use `[[:space:]]`) silently
    returns all-negative and would re-add already-curated apexes.
 2. If `C` has a sibling `-extended` / upstream feed (per the pairing derived in
@@ -222,6 +223,30 @@ Before adding apex `X` to category `C`, confirm it isn't already blocked:
    under-states coverage, and the curated **apex** entry is the stronger block
    regardless (it suffix-matches all subdomains). Use the feed to *prioritize*
    (genuine gaps first), not to *disqualify*.
+3. **Observed-host CDN check, on EVERY addition** (#2823, #2911). List every
+   distinct host seen for the apex, then resolve each:
+
+   ```bash
+   curl -sS -H "Authorization: Bearer $TOKEN" \
+     "https://api.wifihaven.net/api/logs?domain=<apex>&hours=2160&limit=500" \
+     | jq -r '.rows[].host.value' | sort | uniq -c
+   dig +short <each observed host> A
+   ```
+
+   If any OBSERVED host answers on Cloudflare (check the address against
+   `https://www.cloudflare.com/ips-v4`; the common ones are `104.16.0.0/13`,
+   `104.24.0.0/14`, `172.64.0.0/13`), CloudFront, Akamai, Fastly, or Google's
+   shared GFE pool, do not add the apex;
+   pin its absence in `BundledBlocklistsSpec` instead. Then `dig` the
+   *unobserved* usual siblings (bare apex, `cdn.`, `video.`, `static.`). A CDN
+   answer there does not block the add, but record it in the `.yml` comment as
+   RESIDUAL RISK with its removal trigger. Put the observed-hosts table in the
+   evidence doc. Do this for hosts you are adding, not only the ones you already
+   expect to skip; #2911 skipped that and shipped a Cloudflare-fronted apex.
+4. **Re-check the residual-risk watchlist.** `grep -n 'RESIDUAL RISK'
+   api/resources/blocklists/*.yml`, and for each sibling listed there run the
+   step-3 `/api/logs` query. If one has now been observed, remove that entry
+   and pin its absence. This step is what owns those removal triggers.
 
 Only add genuine gaps. Record per-apex hits + a one-line "what it is" for each
 addition.
