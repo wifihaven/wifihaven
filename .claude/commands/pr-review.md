@@ -12,7 +12,9 @@ it. A review run in the author's context reads the diff the way the author
 meant it. On #2912 the authoring session reviewed its own PR inline and posted
 APPROVE over a real blocker, which a separately spawned reviewer then caught.
 
-Your only action is to spawn the reviewer with the Agent tool:
+Push everything first: the reviewer reviews the PR head, and stops if this
+worktree differs from it. Then your only action is to spawn the reviewer with
+the Agent tool:
 
 ```
 Agent(
@@ -44,11 +46,10 @@ guess at the findings. It must start cold.
 Follow this section only if your prompt says you are the independent reviewer.
 
 Run the standard WifiHaven **independent PR review** pass, **post it to the PR**,
-and on a re-run **status the prior findings + review only the new delta**. Load
-the full checklist and follow it verbatim — including its **Posting & re-runs**
-section, which is authoritative:
-
-@docs/pr-review-checklist.md
+and on a re-run **status the prior findings + review only the new delta**. Read
+`docs/pr-review-checklist.md` in full with the Read tool and follow it verbatim,
+including its **Posting & re-runs** section, which is authoritative. (It is not
+inlined here, so the dispatching author never loads it.)
 
 Apply the checklist's 9 dimensions to the diff (the 9th, **Unsourced facts &
 magic constants**, catches the #2018 class — behavior-driving magic numbers and
@@ -73,6 +74,17 @@ review of an older head never authorizes a merge.
    ```bash
    gh pr view <n> --repo wifihaven/wifihaven --json headRefOid -q .headRefOid
    ```
+
+   Then confirm the checkout is exactly that commit, since the verdict is
+   stamped with it:
+
+   ```bash
+   git fetch origin
+   test "$(git rev-parse HEAD)" = "<HEAD_SHA>" && test -z "$(git status --porcelain)"
+   ```
+
+   If either test fails, stop and report it instead of reviewing. Do not check
+   out or reset anything; the worktree belongs to the author.
 
 2. **Look for a prior marked review comment** (the marker is
    `<!-- wifihaven-pr-review reviewed-sha=<sha> -->`):
