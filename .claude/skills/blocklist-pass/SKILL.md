@@ -273,6 +273,20 @@ that edit in the same PR.** If a step above is now wrong, fix the step too.
 
 ## Learnings log (newest first)
 
+- **2026-10-13** (#2911) — **Run the observed-host CDN check on EVERY
+  addition, not only on candidates already headed for a skip.** This pass ran
+  it carefully for `linkedin-ei.com` (which it skipped) and never for the three
+  hosts it added. The independent review caught `bttrack.com`'s Akamai-fronted
+  `cdn.`/`video.` siblings. Running the check then found that `theagenticx.ai`'s
+  bare apex had been observed and resolves to Cloudflare, an unconditional
+  skip, so it was pulled and pinned absent. Procedure for each addition, before
+  writing it to a file: list every distinct `host.value` from
+  `/api/logs?domain=<apex>&hours=2160`, `dig` each one, and record the table in
+  the evidence doc. Also `dig` the unobserved well-known siblings (`cdn.`,
+  `video.`, the bare apex) and record any CDN answer as residual risk in the
+  `.yml` comment, so a later pass knows what to watch for. The author's own
+  review of the PR missed all of this. The review that caught it ran in a
+  separate agent.
 - **2026-10-13** (#2911) — **A name that resembles unrelated OPEN-SOURCE
   tooling, not just an unrelated company, is the same trap as the
   `ttdns2.com`/TheTradeDesk false match — verify ownership, don't stop at "this

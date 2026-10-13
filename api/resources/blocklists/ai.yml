@@ -119,6 +119,8 @@ hosts:
   # theagenticx.ai remain held out unverified (low hit counts, no
   # confirmed identity, carried forward again). See
   # evidence/multi-category-classification-2759.md.
+  # (Superseded #2911: theagenticx.ai is an ad platform, not an AI product,
+  # and stays out of ads.yml too because its observed apex is on Cloudflare.)
   - delphi.ai
   - deepai.org
   #
@@ -132,6 +134,8 @@ hosts:
   # (#2729). nexverse.ai moved to ads.yml (confirmed AI-ad-network, not an
   # AI product — see that file). verysane.ai/loudecho.ai held out
   # unverified/CDN-fronted. See evidence/multi-category-classification-2836.md.
+  # (Superseded #2911: loudecho.ai is an ad platform and moved to ads.yml;
+  # verysane.ai is a Substack newsletter, out of scope for every list.)
   - hellohaven.ai
   #
   # ── preemptive hardening (#2768), 2026-09-10 ────────────────────────────

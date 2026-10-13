@@ -1,55 +1,127 @@
 # Blocklist pass — ads classification evidence (#2911)
 
 30-day prod `recent-apexes` sweep, all 30 devices, run 2026-10-13 (1,823
-unique apexes observed). Also ran a serial `/api/logs` keyword sweep for
-common adult-site substrings (`chaturbat`, `livejasmin`, `myfreecams`,
-`stripchat`, `bongacams`, `xvideos`, `xhamster`, `brazzers`, `onlyfans`,
-`hours=720`) — zero rows across all nine, consistent with the historical
-pattern of adult going full passes with zero new signal (#2212, #2503).
+unique apexes observed). Also ran a serial `/api/logs` keyword sweep over
+`hours=720` for nine common adult-site substrings (`chaturbat`, `livejasmin`,
+`myfreecams`, `stripchat`, `bongacams`, `xvideos`, `xhamster`, `brazzers`,
+`onlyfans`). All nine returned zero rows, matching the history of adult passes
+with no new signal (#2212, #2503).
 
 Every candidate was checked against `evidence/*.md` history (not just the
-current `.yml`) and against every curated category's host set (ads, adult,
+current `.yml`) and against all six curated category host sets (ads, adult,
 ai, gambling, games, social-media) before being treated as a new gap.
 
-## ads.yml — 3 additions
+## Observed hosts and where they resolve
+
+The #2823 rule judges the host that actually appears in traffic, not the apex.
+Observed hosts are every distinct `host.value` from `/api/logs?domain=<name>`
+over `hours=2160` (90 days). Resolution is `dig +short A` on 2026-10-13.
+
+| apex | observed hosts (rows) | observed host resolves to | unobserved siblings |
+|---|---|---|---|
+| `bttrack.com` | `bttrack.com` (70) | 192.132.33.67-69, dedicated (BroadbandONE) | `cdn.`/`video.bttrack.com` → Akamai (`a1093.dscb.akamai.net`, 23.45.123.x) |
+| `loudecho.ai` | `cs.loudecho.ai` (1) | 88.214.255.112, dedicated | bare `loudecho.ai` → Cloudflare (104.21.x/172.67.x) |
+| `theagenticx.ai` | `sync.theagenticx.ai` (6), **`theagenticx.ai` (1)** | sync: 172.240.45.49; **bare apex: Cloudflare** (172.67.x/104.21.x) | — |
+
+## ads.yml — 2 additions
 
 | apex | bytes | hits | what it is |
 |---|---|---|---|
-| `bttrack.com` | 816,324 | 91 | Bidtellect — US native-advertising RTB exchange. Confirmed via Netify (lists `api.bttrack.com`/`cdn.bttrack.com`/`video.bttrack.com` as Bidtellect infra) and Cookiepedia (classifies its cookies as Targeting/Advertising; AlienVault OTX logs show a `/pixel/cookiesync` endpoint). Also already present in the `ads-extended` (StevenBlack) feed under the apex and all three subdomains. The "bt" prefix superficially resembles the open-source `bttrack` BitTorrent-tracker tool, but that is an unrelated project with the same name, not the owner — observed firing inside a dense RTB/prebid ad-pixel burst (alongside `tps.doubleverify.com`, `prebid-server.rubiconproject.com`, `pixel-sync.sitescout.com`, etc.) on an ad-heavy publisher page, on a *different* MAC than this household's actual BT-tracker-decoy traffic this week (see below) — that burst context corroborates the Bidtellect identity over the name-collision reading. |
-| `theagenticx.ai` | 11,008 | 1 | agenticX — self-described (own marketing page) as "a true agentic advertising platform" where AI agents predict, negotiate, and act in real time to optimize programmatic advertising; serves both publishers (PMP deals) and DSPs/agencies (OpenRTB-compatible demand access). Another instance of the `.ai`-TLD-hides-an-ad-network trap (`axon.ai`/`programmaticx.ai`/`trygravity.ai`/`koah.ai`/`mediayo.ai`/`nexverse.ai`) — filed in `ads.yml`, not `ai.yml`. Observed host: `sync.theagenticx.ai` (cookie-sync-shaped subdomain, consistent with the identity). |
-| `loudecho.ai` | 9,611 | 2 | LoudEcho — self-described (own marketing page) as an "agentic AI ad platform" that buys media, generates ad creative, and optimizes placements in real time for marketers and publishers; explicitly "aimed at marketers and publishers, not consumers." Same `.ai`-TLD ad-network trap as above. Observed host: `cs.loudecho.ai`. |
+| `bttrack.com` | 816,324 | 91 | Bidtellect, a US native-advertising RTB exchange. Netify lists `api.`/`cdn.`/`video.bttrack.com` as Bidtellect infra; Cookiepedia classifies its cookies as Targeting/Advertising; AlienVault OTX logs a `/pixel/cookiesync` endpoint. The "bt" prefix resembles the unrelated open-source `bttrack` BitTorrent-tracker tool, and one automated classifier (urlert.com) labels the domain a tracker on that basis, but the owner is Bidtellect. It was observed firing inside a dense RTB/prebid burst on an ad-heavy publisher page, not alongside this household's actual BT-tracker traffic, which came from a different device. |
+| `loudecho.ai` | 9,611 | 2 | LoudEcho, an agentic AI ad buyer. Its own site describes an ad platform that buys media and generates creative for marketers and publishers, "not consumers". Another `.ai`-TLD ad network (`axon.ai`/`programmaticx.ai`/`nexverse.ai` class), so it is filed in `ads.yml`, not `ai.yml`. |
+
+**Residual risk, accepted and recorded in `ads.yml`.** An apex entry
+suffix-matches every subdomain. If a device ever resolves `cdn.bttrack.com`,
+`video.bttrack.com`, or the bare `loudecho.ai`, shared Akamai or Cloudflare
+edges enter `bl_ads`. None of those was observed in 90 days. If one appears,
+the entry should come out and its absence be pinned, as `ebayadservices.com`
+was (#2816).
+
+**Reversal of #2836.** #2836 held `loudecho.ai` out as Cloudflare-fronted. That
+judged the bare apex, which was never observed. The observed host is
+`cs.loudecho.ai`, on a dedicated address, so this pass adds it.
 
 ### Held out / skipped this pass (ads)
 
-- `syncingbridge.com` (548,551B/42 hits) — re-observed (same apex #2836 held out), still no confirmed company identity; ScamAdviser shows it as a recently-registered domain with an average/good trust score, Joe Sandbox rates a scanned URL clean, but no source names an owner or product. Co-occurs on the same two MACs as `bttrack.com` within minutes on several dates, which is suggestive but not itself identity confirmation — held out again rather than added on traffic-proximity alone.
-- `delivrdsp.ai` (13,081B/1 hit) — maximally self-descriptive ("Deliver DSP") in the `inhousedsp.com` style, but the site didn't load (TLS error), no identity source confirms a company, and it's absent from the `ads-extended` feed — below the two-signal bar `inhousedsp.com` needed (self-descriptive name + independent corroboration). Only 1 hit in 30 days and zero rows in `/api/logs` over 744h (consistent with the #2823 cross-surface-disagreement finding — a `recent-apexes` hit with no `connection_events` corroboration is still treated as real, just thin). Carried forward for a future pass.
-- `linkedin-ei.com` (134,702B/24 hits) — confirmed LinkedIn Corporation ownership (whois: registrant org "LinkedIn Corporation", registrar MarkMonitor, created 2012; the bare apex resolves to a dedicated Microsoft address, 150.171.22.16) but the only observed host, `rum22.perf.linkedin-ei.com` (a RUM/performance-monitoring endpoint), resolves onto Cloudflare (`104.18.17.118`/`104.18.16.118`). Per the #2823 rule ("check which host actually appears in traffic, not which address the apex happens to answer on"), this is a structural CDN skip regardless of confirmed ownership — adding it would arm `bl_ads` with shared Cloudflare edges.
-- Genuine BitTorrent-tracker decoy traffic this pass (`demonii.com`, `opentrackr.org`, `desync.com`, `glotorrents.pw`, `bittor.pw`, `coppersurfer.tk`, `popcorn-tracker.org`, `internetwarriors.net`, `rarbg.to`) was confirmed on a *different* MAC (`b0:41:6f:10:40:fd`) than `bttrack.com`'s/`syncingbridge.com`'s (`6a:d7:c8:9a:14:97`/`52:1a:60:d8:4e:32`) — out of scope for any curated category here (already standing, documented skips), noted only because it was briefly, and incorrectly, suspected to co-locate with `bttrack.com`'s traffic before the device-level check ruled that out.
+- `theagenticx.ai` (11,008B/1 hit in `recent-apexes`). Confirmed ad tech: its
+  own homepage calls it "a true agentic advertising platform" for publishers
+  and DSPs. Held out because the bare apex was observed once and resolves to
+  Cloudflare, an unconditional #2823 skip. Its absence is pinned in
+  `BundledBlocklistsSpec`. It was briefly added in this PR and removed after
+  the independent review prompted the observed-host check.
+- `syncingbridge.com` (548,551B/42 hits). Re-observed, still no confirmed
+  identity (same as #2836). ScamAdviser shows a recently registered domain; a
+  Joe Sandbox scan rated a URL clean; no source names an owner. It co-occurs
+  with `bttrack.com` on the same devices within minutes, which is suggestive
+  but not identity confirmation.
+- `delivrdsp.ai` (13,081B/1 hit). Self-descriptive "Deliver DSP" name, but the
+  site failed TLS, no source confirms a company, and it is absent from the
+  `ads-extended` feed. That is below the two-signal bar `inhousedsp.com`
+  needed. It had zero `/api/logs` rows over `hours=744`, consistent with the
+  #2823 finding that the two surfaces disagree; a `recent-apexes` hit still
+  counts, it is just thin.
+- `linkedin-ei.com` (134,702B/24 hits). LinkedIn Corporation's own domain
+  (whois registrant org "LinkedIn Corporation", MarkMonitor, created 2012); the
+  bare apex resolves to a dedicated Microsoft address. The only observed host,
+  `rum22.perf.linkedin-ei.com`, a RUM endpoint, answers on Cloudflare
+  (104.18.16.118/104.18.17.118). Confirmed ownership does not clear the #2823
+  rule.
+- This week's BitTorrent-tracker traffic (`demonii.com`, `opentrackr.org`,
+  `desync.com`, `glotorrents.pw`, `bittor.pw`, `coppersurfer.tk`,
+  `popcorn-tracker.org`, `internetwarriors.net`, `rarbg.to`) all came from one
+  device that is not either of the devices that hit `bttrack.com`. These are
+  standing skips; listed only because a co-location with `bttrack.com` was
+  briefly suspected and ruled out.
+
+### Correction to an earlier evidence doc
+
+`multi-category-classification-2836.md:50` lists `theagenticx.ai` as "already
+curated in `ads.yml`". It was not, on `main` before this PR or after. Do not
+rely on that line.
+
+The `ads-extended` membership claim for `bttrack.com` is from the StevenBlack
+`hosts` file fetched 2026-10-13 (apex plus `api.`, `cdn.`, `video.`); the feed
+is fetched at API startup and is not in the repo.
 
 ## adult.yml / gambling.yml — no changes
 
-Zero hits across both `recent-apexes` and the nine-keyword `/api/logs` sweep
-for adult. `gambling.yml`'s existing entries (`stake.us`, `betrivers.com`,
-etc.) appeared in traffic but are already curated; `betweendigital.com`
-(ad-tech SSP, already correctly filed under `ads.yml` per #2503) was the
-only `bet`-substring match and is not a new gap.
+Zero hits for adult on both `recent-apexes` and the `/api/logs` keyword sweep.
+The gambling apexes seen in traffic (`stake.us`, `betrivers.com`) are already
+curated; the only other `bet` match, `betweendigital.com`, is an SSP already in
+`ads.yml` (#2503).
 
-## ai.yml — no changes
+## ai.yml — no additions
 
-`.ai`-TLD sweep surfaced several candidates, all resolved to out-of-scope
-or ad-tech, none to a genuine `ai.yml` gap:
+The `.ai`-TLD sweep surfaced several candidates. None was a consumer AI
+product the household would want blocked:
 
-- `sierra.ai` (26,124,808B/4 hits) — Bret Taylor's enterprise customer-service-AI platform (Sierra, $4.5B valuation per TechCrunch). The household's own traffic includes `sonos.com` (a confirmed early Sierra customer); this is a B2B chat widget embedded in another company's support flow, not a product the household chose directly — same content-collateral/widget class as `trinitymedia.ai`/`kapa.ai` (#2729).
-- `typesafe.ai` (3,162,731B/14 hits) — observed host `docs.typesafe.ai`. TypeSafe AI's product (Jev) is explicitly "AI for software, not people" — a developer-facing structured-decision API, out of `ai.yml`'s consumer-product scope (same class as `dxtech.ai`/`castify.ai`, #2792).
-- `ivy.ai` (2,833,266B/28 hits) — observed host `bot.ivy.ai`. Confirmed B2B white-label chatbot platform sold to colleges/universities/healthcare/government, embedded on institutional sites — same widget-collateral class as `sierra.ai` above.
-- `verysane.ai` (653,884B/38 hits) — confirmed to be a Substack newsletter ("Very Sane AI Newsletter"), not a product at all.
-- `wandb.ai` (10,556,153B/34 hits) — Weights & Biases, an MLOps/experiment-tracking SaaS for ML engineers; B2B developer tooling, out of scope regardless of ad-tech status.
-- `learnings.ai` (74,309,282B/1,959 hits) — observed hosts `api.learnings.ai`/`api-abtest-cdn.learnings.ai`/`hermes-api.learnings.ai`. Highest-traffic unidentified candidate this pass; no search or page fetch confirmed a company or product. Held out unverified — worth a focused look next pass given the traffic volume.
-- `hellohaven.ai` — already curated (added #2836 after the "is this us" check cleared it); re-confirmed present, no action.
+- `sierra.ai` (26,124,808B/4 hits): Sierra, an enterprise customer-service AI
+  platform. The household also hits `sonos.com`, an early Sierra customer.
+  This is a support widget embedded in another company's site, the same class
+  as `trinitymedia.ai`/`kapa.ai` (#2729).
+- `typesafe.ai` (3,162,731B/14 hits), observed `docs.typesafe.ai`: TypeSafe
+  AI's Jev is a developer API that returns structured decisions to software,
+  out of scope like `dxtech.ai`/`castify.ai` (#2792).
+- `ivy.ai` (2,833,266B/28 hits), observed `bot.ivy.ai`: a white-label chatbot
+  sold to colleges, healthcare and government, embedded on their sites. Same
+  widget class as `sierra.ai`.
+- `verysane.ai` (653,884B/38 hits): a Substack AI newsletter, as #2816 found.
+  Not a product.
+- `wandb.ai` (10,556,153B/34 hits): Weights & Biases, MLOps tooling for ML
+  engineers. Out of scope.
+- `learnings.ai` (74,309,282B/1,959 hits), observed `api.`,
+  `api-abtest-cdn.`, `hermes-api.learnings.ai`: the highest-traffic
+  unidentified candidate. No search or page fetch named a company or product.
+  Held out; worth a focused look next pass.
+- `hellohaven.ai`: already curated (#2836), no action.
+
+The stale held-out notes for `theagenticx.ai` and `loudecho.ai` in `ai.yml`
+now carry a "Superseded #2911" line pointing here.
 
 ## Self-update
 
-Appended to `.claude/skills/blocklist-pass/SKILL.md`'s Learnings log in the
-same PR: the `bttrack.com`/Bidtellect name-collision-with-an-unrelated-
-open-source-tool finding, and the `linkedin-ei.com` "confirmed first-party
-ownership does not clear the #2823 CDN rule" finding.
+Appended two learnings to `.claude/skills/blocklist-pass/SKILL.md` in the same
+PR: the `bttrack.com` name collision with an open-source tool, and that
+confirmed first-party ownership does not clear the #2823 CDN rule. A third
+learning covers the `theagenticx.ai` miss: the observed-host check has to run
+on every addition, not only on candidates already headed for a skip.
