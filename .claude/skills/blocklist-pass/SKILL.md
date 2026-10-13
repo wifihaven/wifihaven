@@ -233,6 +233,10 @@ Before adding apex `X` to category `C`, confirm it isn't already blocked:
    dig +short <each observed host> A
    ```
 
+   A response of exactly 500 rows is truncated, and a rare host can sit past the
+   cap. Page back with `&until=<oldest .ts in the last page>` until a page
+   returns fewer than 500 rows. Run these serially (see Step 0).
+
    If any OBSERVED host answers on Cloudflare (check the address against
    `https://www.cloudflare.com/ips-v4`; the common ones are `104.16.0.0/13`,
    `104.24.0.0/14`, `172.64.0.0/13`), CloudFront, Akamai, Fastly, or Google's
@@ -242,7 +246,8 @@ Before adding apex `X` to category `C`, confirm it isn't already blocked:
    answer there does not block the add, but record it in the `.yml` comment as
    RESIDUAL RISK with its removal trigger. Put the observed-hosts table in the
    evidence doc. Do this for hosts you are adding, not only the ones you already
-   expect to skip; #2911 skipped that and shipped a Cloudflare-fronted apex.
+   expect to skip; #2911 skipped that and pushed a Cloudflare-fronted apex,
+   which the independent review caught before merge.
 4. **Re-check the residual-risk watchlist.** `grep -n 'RESIDUAL RISK'
    api/resources/blocklists/*.yml`, and for each sibling listed there run the
    step-3 `/api/logs` query. If one has now been observed, remove that entry
