@@ -1,15 +1,55 @@
 ---
-description: Independent, read-only adversarial review of a PR — posts a marked comment and re-runs incrementally on each push
+description: Independent, read-only adversarial review of a PR — dispatches a separate reviewer agent, which posts a marked comment and re-runs incrementally on each push
 ---
 
-Run the standard WifiHaven **independent PR review** pass, **post it to the PR**,
-and on a re-run **status the prior findings + review only the new delta**. Load
-the full checklist and follow it verbatim — including its **Posting & re-runs**
-section, which is authoritative:
-
-@docs/pr-review-checklist.md
-
 Target PR: `$ARGUMENTS` (a PR number, or the current branch's PR if empty).
+
+## If you were not spawned as the reviewer: dispatch, do not review
+
+Do **not** apply the checklist in this context. The review has to come from an
+agent that did not write the PR and has not seen the conversation that produced
+it. A review run in the author's context reads the diff the way the author
+meant it. On #2912 the authoring session reviewed its own PR inline and posted
+APPROVE over a real blocker, which a separately spawned reviewer then caught.
+
+Push everything first: the reviewer reviews the PR head, and stops if this
+worktree differs from it. Then your only action is to spawn the reviewer with
+the Agent tool:
+
+```
+Agent(
+  subagent_type: "general-purpose",
+  model: "opus",
+  description: "Independent review of PR <n>",
+  prompt: "You are the independent reviewer for wifihaven/wifihaven PR <n>.
+    Checkout: <absolute path of this worktree>. Read
+    .claude/commands/pr-review.md and follow its 'Reviewer instructions'
+    section for PR <n>. You did not write this PR. Report back the verdict,
+    the findings, and the URL of the comment you posted.")
+```
+
+Give the reviewer nothing else: no summary of the PR, no reasoning about it, no
+guess at the findings. It must start cold.
+
+- **Re-run after a push:** send the new head to the **same** reviewer agent with
+  `SendMessage`, so it can status its own prior findings. If it is gone, spawn a
+  fresh one with the prompt above; the re-run flow finds the prior marked
+  comment either way.
+- **Never** post a review comment, a `VERDICT:` line, or a `reviewed-sha`
+  marker from the authoring context, including after fixing the reviewer's
+  findings. Fix, push, and re-dispatch.
+- A spawned subagent is not a new session, so this is compatible with
+  "don't spawn sessions" instructions.
+
+## Reviewer instructions
+
+Follow this section only if your prompt says you are the independent reviewer.
+
+Run the standard WifiHaven **independent PR review** pass, **post it to the PR**,
+and on a re-run **status the prior findings + review only the new delta**. Read
+`docs/pr-review-checklist.md` in full with the Read tool and follow it verbatim,
+including its **Posting & re-runs** section, which is authoritative. (It is not
+inlined here, so the dispatching author never loads it.)
 
 Apply the checklist's 9 dimensions to the diff (the 9th, **Unsourced facts &
 magic constants**, catches the #2018 class — behavior-driving magic numbers and
@@ -27,13 +67,24 @@ with `<HEAD_SHA>` the full 40-char SHA from step 1, the same SHA as the marker.
 Never APPROVE with an open BLOCKER. A verdict for any other SHA is void, so a
 review of an older head never authorizes a merge.
 
-## Flow
+### Flow
 
 1. **Resolve the PR number `<n>` and head SHA.**
 
    ```bash
    gh pr view <n> --repo wifihaven/wifihaven --json headRefOid -q .headRefOid
    ```
+
+   Then confirm the checkout is exactly that commit, since the verdict is
+   stamped with it:
+
+   ```bash
+   git fetch origin
+   test "$(git rev-parse HEAD)" = "<HEAD_SHA>" && test -z "$(git status --porcelain)"
+   ```
+
+   If either test fails, stop and report it instead of reviewing. Do not check
+   out or reset anything; the worktree belongs to the author.
 
 2. **Look for a prior marked review comment** (the marker is
    `<!-- wifihaven-pr-review reviewed-sha=<sha> -->`):
@@ -73,5 +124,5 @@ review of an older head never authorizes a merge.
    PARTIAL, or newly introduced) keeps the verdict at REQUEST-CHANGES and stays
    merge-gating. Post exactly one updated comment per run — don't duplicate a
    comment for the same SHA. Re-read `headRefOid` just before posting; if the
-   head moved while you reviewed, review the new delta first rather than posting
-   a verdict for a SHA that is already stale.
+   head moved while you reviewed, do not post. Stop and report it; the author
+   re-dispatches once the worktree is at the new head.

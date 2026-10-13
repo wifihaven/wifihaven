@@ -2,10 +2,13 @@
 
 This is the prompt for the **independent review pass** every WifiHaven PR gets
 before it is authorized to merge (see the *Independent PR review* rule in
-[`AGENTS.md`](../AGENTS.md)). Hand it to a review subagent verbatim, or run the
-equivalent review command (`/code-review`). The reviewer is a **separate
-agent** — not the author self-reviewing. The author self-runs this checklist
-before opening the PR, but the independent pass is the gate.
+[`AGENTS.md`](../AGENTS.md)). The reviewer is a **separate agent**, spawned
+with the Agent tool, that did not write the PR and has not seen the
+conversation that produced it. The author starts the review with
+`/pr-review`, which does nothing but spawn the reviewer. The author may check
+its own work against this checklist before opening the PR, but that pass is
+never the review: it does not count toward the gate, and the author never posts
+a marked review comment or a `VERDICT:` line.
 
 Our prod incidents cluster around a few recurring failure modes — duplicated
 logic paths that drift ([#1531](https://github.com/wifihaven/wifihaven/issues/1531) /
@@ -416,10 +419,13 @@ These rules used to live in AGENTS.md; the TOC there now points here.
 ### Independent PR review (required before merge) {#independent-pr-review}
 
 **Every PR gets an independent review pass before merge using this checklist.**
-Spawn a review subagent against the diff (or run `/code-review` / the equivalent
-review command); treat **BLOCKERS as merge-gating**. The author should self-run
-the checklist before opening the PR, but the **independent pass — a separate
-agent, not the author self-reviewing — is the gate.** It is read-only and
+The authoring session spawns a reviewer subagent with the Agent tool (running
+`/pr-review` does this) and treats **BLOCKERS as merge-gating**. **The review is
+never run in the authoring agent's own context.** A pass the author runs itself,
+with this checklist or `/code-review`, never counts as the review, and the
+author never posts a marked review comment or `VERDICT:` line. On #2912 an
+inline self-review posted APPROVE over a blocker the spawned reviewer caught.
+The **independent pass, by a separate agent, is the gate.** It is read-only and
 adversarial: the reviewer cites `file:line`, classifies findings BLOCKER /
 SHOULD-FIX / NIT, and ends with APPROVE or REQUEST-CHANGES, never approving with
 an open BLOCKER. The checklist leads with duplicated-logic / single-source-of-truth
