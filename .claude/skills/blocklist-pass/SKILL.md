@@ -233,9 +233,11 @@ Before adding apex `X` to category `C`, confirm it isn't already blocked:
    dig +short <each observed host> A
    ```
 
-   A response of exactly 500 rows is truncated, and a rare host can sit past the
-   cap. Page back with `&until=<oldest .ts in the last page>` until a page
-   returns fewer than 500 rows. Run these serially (see Step 0).
+   A full page is truncated, and a rare host can sit past the cap. The response
+   carries `.nextCursor` when there is more; pass it back as `&cursor=<value>`
+   (same `domain`/`hours`) until it comes back null. Don't page with `until=`:
+   it re-returns boundary rows and can loop forever when one timestamp has more
+   than 500 rows. Run these serially (see Step 0).
 
    If any OBSERVED host answers on Cloudflare (check the address against
    `https://www.cloudflare.com/ips-v4`; the common ones are `104.16.0.0/13`,
