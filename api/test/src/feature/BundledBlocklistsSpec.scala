@@ -508,6 +508,28 @@ object BundledBlocklistsSpec
       assertTrue(inlineHostsOf(inlineLists, "ads").contains(Hostname.unsafe("mgid.com"))) &&
         assertTrue(offenders.isEmpty)
     },
+    test("#2911: Cloudflare-fronted theagenticx.ai stays out of every inline list") {
+      // The bare apex was observed in prod traffic and resolves onto Cloudflare,
+      // so listing it would put shared Cloudflare edges into `bl_ads`.
+      for {
+        inlineLists <- loadInlineOnly
+        offenders = inlineLists.flatMap { bl =>
+          val hosts = bl.content match {
+            case BundledBlocklistContent.Inline(hs) => hs
+            case _                                  => Nil
+          }
+          hosts
+            .filter { x =>
+              val xv = x.value.toLowerCase
+              xv == "theagenticx.ai" || xv.endsWith(".theagenticx.ai")
+            }
+            .map(x => s"${bl.id.value}:${x.value}")
+        }
+      } yield
+      // liveness anchor: the ads list loaded, so the absence check is not vacuous
+      assertTrue(inlineHostsOf(inlineLists, "ads").contains(Hostname.unsafe("mgid.com"))) &&
+        assertTrue(offenders.isEmpty)
+    },
     test("#2823: held-out CAM4-chain hosts stay out of every inline list") {
       // Each of these was observed in the measured chain and investigated, and each
       // is held out. Fourteen are held out because they resolve onto a shared
