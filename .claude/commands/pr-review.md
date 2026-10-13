@@ -124,5 +124,5 @@ review of an older head never authorizes a merge.
    PARTIAL, or newly introduced) keeps the verdict at REQUEST-CHANGES and stays
    merge-gating. Post exactly one updated comment per run — don't duplicate a
    comment for the same SHA. Re-read `headRefOid` just before posting; if the
-   head moved while you reviewed, review the new delta first rather than posting
-   a verdict for a SHA that is already stale.
+   head moved while you reviewed, do not post. Stop and report it; the author
+   re-dispatches once the worktree is at the new head.
