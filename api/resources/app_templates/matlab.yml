@@ -12,7 +12,10 @@ icon_type: url
 #   matlab.mathworks.com      MATLAB Online ("matlab-live")
 #   www.mathworks.com         main site / docs
 #   account.mathworks.com     sign-in / account management
-#   login.mathworks.com       sign-in (geo-restricted login service)
+#   login.mathworks.com       sign-in (CNAMEs to `geo-restrict-login.wsroute.
+#                              mathworks.com` — the CNAME target's own name is
+#                              the only source for "geo-restrict" here, not an
+#                              independently confirmed behavior)
 #   services.mathworks.com    shared app services (same Akamai edge as www/account)
 #   images.mathworks.com      static image CDN (dedicated CloudFront distribution)
 #   starget.mathworks.com     observed live, purpose not independently confirmed

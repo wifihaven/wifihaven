@@ -17,7 +17,9 @@ profiles, FQDN hosts only (bare-IP literals excluded).
 
 `lego.yml` — a second generation of LEGO digital-play products on
 `legogroup.io`/`thelegogroup.com` (not `lego.com`), ~73 min/30d combined
-across 7 hosts, all title/HTTP-confirmed live and non-shop:
+across 6 new host entries (7 FQDNs, since `kids-creations.legogroup.io`
+covers both its `bff.` and `cdn.` children by suffix match), all
+title/HTTP-confirmed live and non-shop:
 `kids-creations.legogroup.io` (bff+cdn), `cont.kids.thelegogroup.com`,
 `minigames.thelegogroup.com` ("Kids Mini Games"), `buildertool.thelegogroup.com`
 ("Brick Kit Studio"), `new.avatar.lego.com` ("Avatar Site"), `cube.lego.com`
@@ -34,8 +36,8 @@ digital play"; shop/marketing/corporate apexes stay excluded.
   `evs.aayinltcs.arduino.cc` — already deliberately excluded by `arduino.yml`
   (Shopify shared pool / analytics-telemetry); orphaning is expected, not a
   gap.
-- `ic.svvsd.org` (St. Vrain Valley School District student info system),
-  `*.myapps.apis.classlink.com`'s downstream apps already covered elsewhere.
+- `ic.svvsd.org` (St. Vrain Valley School District student info system) —
+  below the engagement bar this pass, watch-item.
 - `coddy.tech` (Cloudflare-challenged, ~26 min) and `api.teamwood.games`
   (~12.5 min) — plausible kid-facing sites but too little evidence/could not
   verify cleanly past the Cloudflare challenge this pass; left as watch-items

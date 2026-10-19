@@ -266,8 +266,11 @@ above is now wrong, fix the step too — don't just log around it.
   templated under a different domain?" **When a major, frequently-updated
   brand (LEGO, any big platform) shows a new cluster that LOOKS unrelated to
   its existing template, `curl` the title before assuming it's a different
-  company** — four of these five hosts answered with first-party LEGO
-  product titles on the first request.
+  company** — all four of these hosts answered with first-party LEGO
+  product titles on the first request. (Two more backend/CDN hosts in the
+  same cluster, `bff.`/`cdn.kids-creations.legogroup.io`, don't serve
+  titled pages — they're APIs — and were confirmed live by HTTP status
+  instead.)
 - **2026-10-19 (#2915)** — **An overlapping CloudFront `/24` across unrelated
   brands is NOT a demonstrated collision by itself — check the actual 4-tuple
   of IPs, not just the range.** This pass almost excluded four live,

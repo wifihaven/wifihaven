@@ -6,7 +6,7 @@ icon_type: url
 # Realize) — a K-12 curriculum / assignment / assessment platform assigned by
 # schools. 30d kid-profile orphanHosts showed ~32 proportional minutes spread
 # across 13 distinct `savvasrealize.com` subdomains with no covering app:
-#   www.savvasrealize.com                      dashboard shell
+#   www.savvasrealize.com                      main site / student dashboard shell
 #   assignment-viewer-bff-service-v2.savvasrealize.com   assignment reading/viewing
 #   assessments-bff.savvasrealize.com          assessments
 #   discussions-bff.savvasrealize.com          class discussions
@@ -37,8 +37,8 @@ icon_type: url
 # these hosts carries this app's own dedicated bytes with no alternative to
 # point a block at.
 #
-# www.savvasrealize.com is a marketing/legacy-brand page returning no title
-# via `curl` (client-rendered SPA shell) but resolves and answers HTTP 200 —
-# not our own block page.
+# www.savvasrealize.com returns no `<title>` via `curl` (client-rendered SPA
+# shell, consistent with the dashboard description above) but resolves and
+# answers HTTP 200 — not our own block page.
 hosts:
   - savvasrealize.com
