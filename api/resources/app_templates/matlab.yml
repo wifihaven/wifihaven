@@ -1,0 +1,55 @@
+slug: matlab
+name: MATLAB
+icon: "https://icons.duckduckgo.com/ip3/mathworks.com.ico"
+icon_type: url
+# #2915 (2026-10-19 orphan-driven pass): MathWorks — maker of MATLAB and
+# Simulink, web title-confirmed ("MathWorks - Maker of MATLAB and Simulink").
+# 30d kid-profile orphanHosts showed ~78 proportional minutes across
+# `mathworks.com` subdomains with no covering app, consistent with a STEM
+# class using MATLAB Online for coursework (the same evidence tier as
+# `freckle.yml`: real subdomain diversity, not a single beacon):
+#   matlab-1b.mathworks.com   MATLAB Online session routing ("wsroute")
+#   matlab.mathworks.com      MATLAB Online ("matlab-live")
+#   www.mathworks.com         main site / docs
+#   account.mathworks.com     sign-in / account management
+#   login.mathworks.com       sign-in (CNAMEs to `geo-restrict-login.wsroute.
+#                              mathworks.com` — the CNAME target's own name is
+#                              the only source for "geo-restrict" here, not an
+#                              independently confirmed behavior)
+#   services.mathworks.com    shared app services (same Akamai edge as www/account)
+#   images.mathworks.com      static image CDN (dedicated CloudFront distribution)
+#   starget.mathworks.com     observed live, purpose not independently confirmed
+#   viewer.mathworks.com      observed live, purpose not independently confirmed
+#   udc-service.mathworks.com observed live on MathWorks' own dedicated AWS ELB
+#                              ("udc-svc-prod"), purpose not independently
+#                              confirmed beyond that — same zero-incremental-IP
+#                              basis `arduino.yml` used for `builder.arduino.cc`
+#
+# Left OUT as analytics/marketing SDK collateral, not app content — same call
+# as `cs.analytics.lego.com`/`sgtm.arduino.cc` elsewhere in this catalog:
+#   smetrics.mathworks.com   Adobe Omniture/SiteCatalyst analytics
+#   tracking.mathworks.com   Oracle Eloqua marketing-email tracking
+#   cdp.mathworks.com        customer-data-platform telemetry
+# `addons.mathworks.com` (File Exchange / Add-On Explorer) was below the
+# engagement bar this pass (31s/30d) — watch-item, add if it grows.
+#
+# `www.mathworks.com`, `account.mathworks.com` and `services.mathworks.com`
+# share one Akamai edge IP (`wildcard.mathworks.com.edgekey.net`) — a
+# domain-wide wildcard edge, not a cross-brand shared pool. `matlab-1b.` sits
+# on CloudFront's 99.84.105.x /24 and `matlab.` on 18.154.101.x — both /24s
+# also carry unrelated brands elsewhere in this catalog (`sportys.yml`/
+# `bricklink.yml`; `lego.yml`/`savvas-realize.yml`) but no specific IP
+# collided — the standard accepted Class-2 CDN-edge-sharing latent risk, and
+# each host here is its own dedicated-bytes content, with no alternative to
+# point a block at.
+hosts:
+  - matlab-1b.mathworks.com
+  - matlab.mathworks.com
+  - www.mathworks.com
+  - account.mathworks.com
+  - login.mathworks.com
+  - services.mathworks.com
+  - images.mathworks.com
+  - starget.mathworks.com
+  - viewer.mathworks.com
+  - udc-service.mathworks.com

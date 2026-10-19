@@ -1,5 +1,5 @@
 slug: lego
-name: LEGO Builder
+name: LEGO
 icon: "https://icons.duckduckgo.com/ip3/lego.com.ico"
 icon_type: url
 # Added from prod evidence (#1815, evidence/classification-1815.md): 30d kid
@@ -30,10 +30,73 @@ icon_type: url
 #   services.lego.com   → appconfig/scout/videoprocessingpipeline.services.lego.com
 #   apps.lego.com       → buggy.apps.lego.com
 # Sibling LEGO properties on distinct apexes are excluded as before: BrickLink
-# (bricklink.com, marketplace), LEGO Education (legoeducation.com, classroom),
-# and the corporate analytics apex thelegogroup.com (97 kB).
+# (bricklink.com, marketplace), LEGO Education (legoeducation.com,
+# classroom), and the corporate/analytics `thelegogroup.com` apex itself
+# (including `sentry.thelegogroup.com`) — none of the #2915 additions below
+# sweep that apex in, since every one of them is a specific child host, not
+# the apex or the `kids.thelegogroup.com` parent.
+#
+# #2915 (2026-10-19 orphan-driven pass): 30d kid-profile orphanHosts showed a
+# whole second generation of LEGO digital-play products that #1815 didn't
+# catch, because they're on apexes other than `lego.com`/`services.lego.com`.
+# This app's scope broadens here from just the 3D Builder tool to "LEGO kids
+# digital play", still excluding the shop/marketing/corporate surfaces — the
+# `name` is renamed from "LEGO Builder" to plain "LEGO" to match, since the
+# host-set now also covers Mini Games / Avatar / Cube, which aren't the
+# Builder tool. This fixes the label going forward for any HOUSEHOLD NOT YET
+# SEEDED with this app; `AppReconciler` adds a template's new hosts to an
+# already-seeded app in an existing household but never updates its stored
+# `name` (only read at app-creation time), so an existing household keeps
+# the stale "LEGO Builder" label until that reconciler gap is fixed — see
+# #2917. Hosts and blocking behavior are identical either way; only the
+# displayed label is stale for existing households:
+#   bff.kids-creations.legogroup.io   Builder "kids-creations" API (~32 min)
+#   cdn.kids-creations.legogroup.io   Builder "kids-creations" asset CDN (~5 min)
+#   cont.kids.thelegogroup.com        Builder kids-content delivery (~10 min)
+#   minigames.thelegogroup.com        "Kids Mini Games" portal, title-confirmed (~19 min)
+#   buildertool.thelegogroup.com      "Brick Kit Studio" tool, title-confirmed (~1 min)
+#   new.avatar.lego.com               "Avatar Site", title-confirmed (~1 min)
+#   cube.lego.com                     "LEGO | Cube", title-confirmed (~5 min)
+# `dig` confirms `kids-creations.legogroup.io` itself has no A record (only
+# its two children resolve), so adding the parent as the host entry sweeps in
+# exactly those two FQDNs and nothing else; `cont.kids.thelegogroup.com` is
+# listed on its own rather than via the `kids.thelegogroup.com` parent,
+# because that parent DOES have its own A record (a separate, unobserved
+# surface) and using it would risk sweeping in whatever else lives there.
+# Every host here answered live at verification time (`bff.`→404, `cont.`→401
+# — API routes with no root page, not our own block page; the four titled
+# ones →200 with the titles above, not a parked/squatted page).
+#
+# All seven sit on AWS CloudFront edges, several on the SAME /24s as
+# unrelated brands already in this catalog (`minigames`/`buildertool`/
+# `new.avatar`/`cube` on 99.84.118.x, the exact range `arduino.yml` and
+# `instructables.yml` also sit on; `bff.kids-creations` on 18.154.101.x,
+# which `savvas-realize.yml`'s `api.savvasrealize.com` also uses). Per
+# `bricklink.yml`'s and `sportys.yml`'s precedent this is the standard
+# accepted Class-2 CDN-edge-sharing latent risk, not grounds for exclusion —
+# none of the specific IPs collide across brands (CloudFront allocates many
+# distributions per /24; only an identical 4-tuple would be a real collision,
+# and none was found), and every one of these seven hosts is itself the
+# dedicated-bytes content host with no alternative to point the block at.
+#
+# Considered and left OUT, all under the same thelegogroup.com / legogroup.io
+# family:
+#   prod.lake-router.legogroup.io — answers HTTP 400 with no path (an API
+#   gateway, not a content page); "lake router" reads as data-lake/telemetry
+#   ingestion, treated like `cs.analytics.lego.com` (analytics, already
+#   excluded) rather than app content.
+#   identity.lego.com, avatar.lego.com, kids.lego.com, play.lego.com — real
+#   and live, but very low volume (<=2 min/30d each); left as watch-items
+#   rather than added on this little evidence. Re-check next pass if volume
+#   grows.
 hosts:
   - cobuild.i.lego.com
   - dbix.i.lego.com
   - services.lego.com
   - apps.lego.com
+  - kids-creations.legogroup.io
+  - cont.kids.thelegogroup.com
+  - minigames.thelegogroup.com
+  - buildertool.thelegogroup.com
+  - new.avatar.lego.com
+  - cube.lego.com

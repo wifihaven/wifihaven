@@ -96,3 +96,11 @@ slugs:
   # Display-cleanup apps, attribution only — not blocking/time-limit targets.
   - blocksi
   - goguardian
+  # #2915: orphan-driven catalog pass (see evidence/classification-2915.md) —
+  # Savvas Realize (school curriculum/assessment platform) and MATLAB
+  # (MathWorks), both genuine kid-engagement apps. ClassLink (school SSO
+  # portal) is a display-cleanup app, attribution only, same class as
+  # blocksi/goguardian.
+  - savvas-realize
+  - matlab
+  - classlink

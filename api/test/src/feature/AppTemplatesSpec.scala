@@ -195,6 +195,12 @@ object AppTemplatesSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
           // school-Chromebook content-filter/monitoring display-cleanup apps
           "blocksi",
           "goguardian",
+          // #2915: orphan-driven catalog pass — Savvas Realize + MATLAB
+          // (genuine kid-engagement apps), ClassLink (school SSO,
+          // display-cleanup)
+          "savvas-realize",
+          "matlab",
+          "classlink",
         )
         val slugs    = templates.map(_.slug.value).toSet
         assertTrue(slugs == expected) &&
