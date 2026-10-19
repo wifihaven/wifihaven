@@ -252,6 +252,54 @@ above is now wrong, fix the step too — don't just log around it.
 
 ## Learnings log (newest first)
 
+- **2026-10-19 (#2915)** — **A brand's digital-experience footprint can
+  migrate to a whole new apex family over time, and the gap hides from a
+  simple `_index.yml` diff because the OLD app slug still looks covered.**
+  `lego.yml` (written at #1815) scoped the Builder app to `lego.com`/
+  `services.lego.com`/`apps.lego.com`; this pass's orphan sweep found a
+  second generation of LEGO kids products — "Kids Mini Games", "Brick Kit
+  Studio", "Avatar Site", "LEGO | Cube" — all living on `legogroup.io` /
+  `thelegogroup.com`, apexes the original pass never saw. None of this shows
+  up by diffing `_index.yml` slugs against observed apexes, because the
+  `lego` slug "exists" — it only shows up by reading the ACTUAL orphan host
+  list and asking, for every surviving candidate, "is this brand already
+  templated under a different domain?" **When a major, frequently-updated
+  brand (LEGO, any big platform) shows a new cluster that LOOKS unrelated to
+  its existing template, `curl` the title before assuming it's a different
+  company** — four of these five hosts answered with first-party LEGO
+  product titles on the first request.
+- **2026-10-19 (#2915)** — **An overlapping CloudFront `/24` across unrelated
+  brands is NOT a demonstrated collision by itself — check the actual 4-tuple
+  of IPs, not just the range.** This pass almost excluded four live,
+  title-confirmed LEGO hosts because they resolved into the same `99.84.118.x`
+  /24 that `arduino.yml`/`instructables.yml` flag, and almost repeated the
+  mistake with LEGO/MathWorks/Savvas hosts on `18.154.101.x` and
+  `99.84.105.x`. In every case the SPECIFIC four IPs each host answered with
+  were disjoint from the other brands' — same CDN provider's address space,
+  different distribution. `bricklink.yml` and `sportys.yml` already
+  established this as the accepted Class-2 latent risk, not a Class-1
+  strip-it signal; this pass is the first to spell out the actual test:
+  **diff the 4-tuples, not just the /24 prefix, before treating "same range as
+  an existing template" as a reason to exclude a dedicated-bytes host with no
+  alternative.**
+- **2026-10-19 (#2915)** — **ClassLink (and by extension any school SSO/
+  LaunchPad vendor — Clever is the other common one) is the same
+  display-cleanup class as Blocksi/GoGuardian, but a DIFFERENT function**:
+  those two are passive content filters; an SSO portal is how the district
+  routes the student INTO their actually-assigned apps, so it shows up as a
+  single-sign-on identity host (`myapps.<vendor>.com`, "My Apps" title) with
+  real recurring minutes (~76 min/30d here) that has nothing to do with
+  content filtering. Check for both vendor classes separately — a
+  Chromebook profile can have a content filter AND an SSO portal AND no
+  overlap between their learnings.
+- **2026-10-19 (#2915)** — A Cloudflare bot-challenge ("Just a moment...")
+  blocked clean title verification of a candidate (`coddy.tech`, a plausible
+  kids'-coding-education site, ~26 min/30d) over BOTH HTTPS and plain HTTP.
+  Per the `rebrickable.com` precedent (#2774) this means inconclusive, not
+  dead — but with no other way to positively confirm the site's purpose this
+  pass, it stayed a watch-item rather than being templated on partial
+  evidence. Re-check next pass; the Cloudflare challenge may not always
+  trigger for this UA/IP.
 - **2026-10-12 (#2908)** — **Chromebook content-filter/monitoring vendors
   (Blocksi, GoGuardian) are a recurring display-cleanup class distinct from
   utility pings and widget polling**, and worth checking for on every pass
