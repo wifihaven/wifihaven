@@ -41,9 +41,15 @@ icon_type: url
 # catch, because they're on apexes other than `lego.com`/`services.lego.com`.
 # This app's scope broadens here from just the 3D Builder tool to "LEGO kids
 # digital play", still excluding the shop/marketing/corporate surfaces — the
-# `name` is renamed from "LEGO Builder" to plain "LEGO" to match, since a
-# time limit set under the old name would otherwise quietly also apply to
-# Mini Games / Avatar / Cube, which aren't the Builder tool:
+# `name` is renamed from "LEGO Builder" to plain "LEGO" to match, since the
+# host-set now also covers Mini Games / Avatar / Cube, which aren't the
+# Builder tool. This fixes the label going forward for any HOUSEHOLD NOT YET
+# SEEDED with this app; `AppReconciler` adds a template's new hosts to an
+# already-seeded app in an existing household but never updates its stored
+# `name` (only read at app-creation time), so an existing household keeps
+# the stale "LEGO Builder" label until that reconciler gap is fixed — see
+# #2917. Hosts and blocking behavior are identical either way; only the
+# displayed label is stale for existing households:
 #   bff.kids-creations.legogroup.io   Builder "kids-creations" API (~32 min)
 #   cdn.kids-creations.legogroup.io   Builder "kids-creations" asset CDN (~5 min)
 #   cont.kids.thelegogroup.com        Builder kids-content delivery (~10 min)
