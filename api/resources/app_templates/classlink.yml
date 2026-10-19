@@ -1,0 +1,37 @@
+slug: classlink
+name: ClassLink
+icon: "https://icons.duckduckgo.com/ip3/classlink.com.ico"
+icon_type: url
+# Display-cleanup app (#2915, orphan-driven catalog pass): ClassLink is a
+# school identity-and-access-management portal ("My Apps" LaunchPad) that
+# districts use to single-sign-on students into their assigned web apps —
+# web title confirms it ("ClassLink | Identity & Access Management for
+# Education", myapps.classlink.com → "My Apps"). Not something a kid chooses
+# to use; it runs whenever the school-issued device launches an assigned app
+# through the district's SSO flow. 30d kid-profile orphanHosts showed ~76
+# proportional minutes across 12 `classlink.com` subdomains (myapps.,
+# myapps.apis., applications.apis., auth.apis., notifications.apis.,
+# nodeapi., clouddrivecdn., cdn., launchpad., aup.apis., products.apis.,
+# analytics-events.apis.) with no covering app — a large enough recurring
+# cluster to clutter the per-device orphan list, so it gets the same #2805
+# named-row treatment as `blocksi.yml`/`goguardian.yml`/`icanhazip.yml`.
+#
+# Scoped to the bare `classlink.com` apex rather than enumerating: it's a
+# single-purpose vendor domain, not a shared platform, so the apex is the
+# stable anchor for whatever subdomain ClassLink adds next. Two of the
+# observed hosts (myapps.classlink.com, launchpad.classlink.com) sit on AWS
+# CloudFront's 99.84.118.x pool — the same /24 `arduino.yml`/`instructables.yml`/
+# `lego.yml` already note as shared CDN-edge space — and www.classlink.com
+# (marketing site, not part of this app's observed traffic) CNAMEs to
+# Webflow's shared hosting. Neither matters for enforcement here: this app
+# is attribution-only, never blocked (see below), so there is no drop set to
+# collide into.
+#
+# FOR ATTRIBUTION/VISIBILITY ONLY, NOT BLOCKING. This is school-mandated
+# SSO infrastructure the student doesn't choose and the operator can't
+# meaningfully override (the district controls which apps are assigned
+# through it) — same reasoning as Blocksi/GoGuardian: blocking the portal
+# itself would risk breaking the student's ability to reach schoolwork
+# assigned through other, legitimate apps.
+hosts:
+  - classlink.com

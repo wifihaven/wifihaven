@@ -1,0 +1,44 @@
+slug: savvas-realize
+name: Savvas Realize
+icon: "https://icons.duckduckgo.com/ip3/savvasrealize.com.ico"
+icon_type: url
+# #2915 (2026-10-19 orphan-driven pass): Savvas Realize (formerly Pearson
+# Realize) — a K-12 curriculum / assignment / assessment platform assigned by
+# schools. 30d kid-profile orphanHosts showed ~32 proportional minutes spread
+# across 13 distinct `savvasrealize.com` subdomains with no covering app:
+#   www.savvasrealize.com                      dashboard shell
+#   assignment-viewer-bff-service-v2.savvasrealize.com   assignment reading/viewing
+#   assessments-bff.savvasrealize.com          assessments
+#   discussions-bff.savvasrealize.com          class discussions
+#   content-viewer-service.savvasrealize.com   lesson content
+#   assist-panel.savvasrealize.com             in-lesson help panel
+#   api.savvasrealize.com                      general API backend
+#   user-service.savvasrealize.com             account/profile
+#   class-listing-service.savvasrealize.com    class roster
+#   configuration.savvasrealize.com            app config
+#   prod.assignment-return.savvasrealize.com    assignment submission
+#   rr-auth-gateway.savvasrealize.com          sign-in
+#   heartbeat.savvasrealize.com                keep-alive/presence ping
+# The subdomain shape (viewer/bff/assignment/discussion/assist services, not
+# a single tracking pixel) is the same recurring-engagement signal
+# `freckle.yml`/`lexia.yml` were added on — a kid working through assigned
+# lessons, not a stray background beacon. Scoped to the bare `savvasrealize.com`
+# apex rather than enumerating all 13: it's a single-purpose vendor platform
+# (same convention as `blocksi.yml`/`goguardian.yml`), so the apex is the
+# stable anchor for whatever BFF service the platform adds or renames next.
+#
+# Several of these subdomains sit on AWS CloudFront/ELB edges also used by
+# unrelated brands elsewhere in this catalog (`api.savvasrealize.com` on
+# 18.154.101.x, the same /24 as `lego.yml`'s `bff.kids-creations.legogroup.io`;
+# `discussions-bff.savvasrealize.com` on 99.84.105.x, the same /24
+# `bricklink.yml`/`sportys.yml` already accept) — the standard Class-2
+# CDN-edge-sharing latent risk per those templates' precedent, not grounds
+# for exclusion: no specific IP collided across brands, and every one of
+# these hosts carries this app's own dedicated bytes with no alternative to
+# point a block at.
+#
+# www.savvasrealize.com is a marketing/legacy-brand page returning no title
+# via `curl` (client-rendered SPA shell) but resolves and answers HTTP 200 —
+# not our own block page.
+hosts:
+  - savvasrealize.com
