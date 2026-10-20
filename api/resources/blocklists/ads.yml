@@ -862,3 +862,47 @@ hosts:
   # (104.18.x). Confirmed ownership does not clear the #2823 rule.
   - bttrack.com
   - loudecho.ai
+  #
+  # traffic-driven pass (#2918): 30-day prod recent-apexes sweep across all 29
+  # devices, 2026-10-20. No additions this pass — every candidate that read as
+  # genuine ad-tech turned out to be CDN-fronted on its actual serving host.
+  #
+  # Held out (recorded so a later pass does not re-guess):
+  # carbonads.com and servedby-buysellads.com are both BuySellAds' developer-
+  # focused native ad network (Carbon Ads, founded 2010, confirmed via
+  # carbonads.com/about + buysellads.com's own Carbon media kit) — genuine
+  # ad-tech identity, but CDN-fronted on the host that actually serves the ad
+  # unit. First pass of this PR checked only the bare `carbonads.com` apex
+  # (dedicated EC2, 52.1.179.177) and judged `servedby-buysellads.com` by its
+  # failure to resolve — both wrong per the #2823 rule ("check the host that
+  # actually appears in traffic"). Independent review caught it:
+  # `cdn.carbonads.com` and `m.servedby-buysellads.com` (the StevenBlack
+  # `ads-extended` feed's listed subdomain for the latter) both CNAME onto
+  # CloudFront (`d2w5yq7htjp2h0.cloudfront.net` / `d2yy6p64xsttp1.cloudfront.net`,
+  # 3.169.202.x) — the identical range `binsiad.com` below is held out for.
+  # skmads.com (self-described "Performance-Driven Advertising" firm, in-app/
+  # web mobile UA + CTV): one of its two observed hosts, cdn.skmads.com,
+  # answers on Cloudflare (104.21.x/172.67.x) — an unconditional #2823 skip
+  # even though the dominant host, rtb-us.skmads.com, is on dedicated
+  # Latitude.sh infra. The CDN-fronted host is enough to disqualify the apex.
+  # trackcmp.net is ActiveCampaign's site/event-tracking domain (CRM/
+  # marketing-automation SaaS, same dual-use class as hs-analytics.net) —
+  # also Cloudflare-fronted (172.64.x/104.18.x), a second independent reason
+  # to skip.
+  # instaread.co is an embeddable article-to-audio narration widget
+  # (publisher-facing SDK), same content-collateral class as
+  # trinitymedia.ai/gpteng.co — its observed host,
+  # player-metrics.instaread.co, is also CloudFront-fronted (99.84.x).
+  # supersonicads.com (ironSource/Unity's "Supersonic Ads" mobile network,
+  # since announced for shutdown) — its only observed host,
+  # init.supersonicads.com, is CloudFront-fronted (13.225.61.x).
+  # ncaudienceexchange.com (self-descriptive "audience exchange" name, no
+  # independent company confirmation) — its only observed host,
+  # www.ncaudienceexchange.com, is also CloudFront-fronted (13.225.61.x).
+  # mmganalytics.com, binsiad.com: no confirmed identity (websearch found
+  # nothing specific to these domains); both are also Cloudflare/CloudFront-
+  # fronted on their only observed host (t.mmganalytics.com,
+  # cdn.binsiad.com respectively), so even a future identity confirmation
+  # would not clear the #2823 rule without a different observed host.
+  # coderpad.io: false positive (developer technical-interview platform, no
+  # ad-tech signal at all).
