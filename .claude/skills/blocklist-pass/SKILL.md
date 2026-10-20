@@ -305,6 +305,48 @@ that edit in the same PR.** If a step above is now wrong, fix the step too.
 
 ## Learnings log (newest first)
 
+- **2026-10-20** (#2918) — **A confirmed genuine ad-tech identity is not
+  enough to add if ANY observed host for that apex is CDN-fronted, even
+  when a different observed host for the SAME apex is on dedicated
+  infra.** `skmads.com` is a self-described "Performance-Driven
+  Advertising" firm (own site confirms mobile UA, programmatic, CTV) with
+  two observed hosts: `rtb-us.skmads.com` (dedicated Latitude.sh, 6 of 8
+  hits) and `cdn.skmads.com` (Cloudflare, 2 of 8 hits). Because the curated
+  entry is an apex that suffix-matches every subdomain, adding it would
+  also arm the Cloudflare-fronted `cdn.` host — so the #2823 rule applies
+  per-apex, not per-dominant-host. Skipped and pinned absent is unnecessary
+  here since it was never added to begin with; just held out and documented.
+- **2026-10-20** (#2918) — **The AWS published IP-ranges JSON
+  (`ip-ranges.amazonaws.com/ip-ranges.json`) resolves the single hardest
+  ambiguity in the #2823 CDN check: whether an Amazon-owned address is
+  CloudFront (shared, skip) or plain EC2 (dedicated, fine to add).** `whois`
+  on an Amazon IP only ever says "Amazon Technologies Inc.", which looks
+  identical for both. Downloading the ranges file and filtering by
+  `ip_prefix` + `service` disambiguated four candidates this pass in one
+  shot: `13.225.61.x` and `99.84.0.0/16` came back `CLOUDFRONT` (used to
+  skip `supersonicads.com`'s `init.` host, `ncaudienceexchange.com`'s `www.`
+  host, and `instaread.co`'s `player-metrics.` host), while `52.0.0.0/15`
+  came back plain `EC2` in `us-east-1` (used to clear `carbonads.com` for
+  addition). Worth running this lookup as a standard step whenever a
+  candidate's observed host resolves into `3.x`/`13.x`/`18.x`/`52.x`/`54.x`/
+  `99.x` — don't eyeball those ranges or trust `whois`'s org name alone.
+- **2026-10-20** (#2918) — **A domain that does not currently resolve at all
+  (`servedby-buysellads.com`: no A record on the bare apex or `www.` at
+  verification time) is still a legitimate traffic-driven addition if
+  `recent-apexes` shows real bytes/hits for it, and the observed-host CDN
+  check simply has nothing to check — no IP, no shared-pool collateral
+  risk.** Don't block on a failed `dig`; note it in the evidence doc and
+  move on. The `ads-extended` feed listing a subdomain of it
+  (`m.servedby-buysellads.com`, not the apex) was the corroborating signal
+  that it's genuinely known ad infra, not a typo or dead domain.
+- **2026-10-20** (#2918) — **`instaread.co` (an embeddable article-to-audio
+  narration widget for publishers) is a second confirmed instance of the
+  trinityaudio.ai/gpteng.co "publisher-embedded widget" dual-use class —
+  worth checking by product type (narration/TTS SDK embedded on unrelated
+  sites) whenever a `track`/`player`-shaped candidate turns out to be a
+  content tool rather than ad infra.** Its dominant observed host
+  (`player-metrics.instaread.co`) was also CloudFront-fronted, an
+  independent second reason to skip.
 - **2026-10-13** (#2911) — **Run the observed-host CDN check on EVERY
   addition, not only on candidates already headed for a skip.** This pass ran
   it carefully for `linkedin-ei.com` (which it skipped) and never for the three

@@ -862,3 +862,43 @@ hosts:
   # (104.18.x). Confirmed ownership does not clear the #2823 rule.
   - bttrack.com
   - loudecho.ai
+  #
+  # traffic-driven additions (#2918): 30-day prod recent-apexes sweep across
+  # all 29 devices, 2026-10-20.
+  #
+  # carbonads.com and servedby-buysellads.com are both BuySellAds' developer-
+  # focused native ad network (Carbon Ads, founded 2010, confirmed via
+  # carbonads.com/about + buysellads.com's own Carbon media kit). The bare
+  # apex carbonads.com resolves to a dedicated EC2 address (52.1.179.177,
+  # us-east-1), not a CloudFront/shared-CDN pool, clearing the #2823 rule.
+  # servedby-buysellads.com did not resolve at verification time (neither the
+  # bare apex nor www.), so no observed-host CDN check was possible, but a
+  # non-resolving apex also carries no IP-layer collateral risk; the
+  # StevenBlack `ads-extended` feed already lists its sibling subdomain
+  # `m.servedby-buysellads.com` (not the apex), corroborating the gap per the
+  # standard "feed lists a subdomain, not the apex" pattern.
+  #
+  # Held out this pass (recorded so a later pass does not re-guess):
+  # skmads.com (self-described "Performance-Driven Advertising" firm, in-app/
+  # web mobile UA + CTV): one of its two observed hosts, cdn.skmads.com,
+  # answers on Cloudflare (104.21.x/172.67.x) — an unconditional #2823 skip
+  # even though the dominant host, rtb-us.skmads.com, is on dedicated
+  # Latitude.sh infra. The CDN-fronted host is enough to disqualify the apex.
+  # trackcmp.net is ActiveCampaign's site/event-tracking domain (CRM/
+  # marketing-automation SaaS, same dual-use class as hs-analytics.net) —
+  # also Cloudflare-fronted (172.64.x/104.18.x), a second independent reason
+  # to skip.
+  # instaread.co is an embeddable article-to-audio narration widget
+  # (publisher-facing SDK), same content-collateral class as
+  # trinitymedia.ai/gpteng.co — its observed host,
+  # player-metrics.instaread.co, is also CloudFront-fronted (99.84.x).
+  # mmganalytics.com, binsiad.com, ncaudienceexchange.com: no confirmed
+  # identity (websearch found nothing specific to these domains); all three
+  # are also CloudFront/Cloudflare-fronted on their only observed host
+  # (t.mmganalytics.com, cdn.binsiad.com, www.ncaudienceexchange.com
+  # respectively), so even a future identity confirmation would not clear
+  # the #2823 rule without a different observed host.
+  # coderpad.io: false positive (developer technical-interview platform, no
+  # ad-tech signal at all).
+  - carbonads.com
+  - servedby-buysellads.com
