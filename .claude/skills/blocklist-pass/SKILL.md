@@ -305,6 +305,24 @@ that edit in the same PR.** If a step above is now wrong, fix the step too.
 
 ## Learnings log (newest first)
 
+- **2026-10-20** (#2918) — **"The bare apex resolves to dedicated infra" and
+  "the bare apex doesn't resolve at all" are BOTH non-answers to the #2823
+  CDN check — only the host that actually appears in traffic counts, and
+  this pass got both wrong on the first attempt.** `carbonads.com`'s bare
+  apex is a dedicated EC2 address, but its real serving host,
+  `cdn.carbonads.com`, CNAMEs onto CloudFront (`3.169.202.x`) — the PR
+  initially added it on the bare-apex reading alone, the same
+  `loudecho.ai`/#2836 mistake recurring. `servedby-buysellads.com`'s bare
+  apex and `www.` didn't resolve at verification time, which the PR first
+  read as "no IP, no collateral risk" — but `m.servedby-buysellads.com`
+  (the exact subdomain the `ads-extended` feed lists as the corroborating
+  gap signal, which should have been dug directly instead of guessed-at)
+  also CNAMEs onto CloudFront. Independent review caught both; neither was
+  added — see the corrected `ads.yml` comment and
+  `evidence/ads-classification-2918.md`. **When `/api/logs` returns zero
+  rows for a candidate, dig the specific subdomain the `ads-extended` feed
+  names for it, not just the bare apex and `www.`** — that subdomain is
+  frequently the one that actually serves traffic.
 - **2026-10-20** (#2918) — **A confirmed genuine ad-tech identity is not
   enough to add if ANY observed host for that apex is CDN-fronted, even
   when a different observed host for the SAME apex is on dedicated
@@ -314,31 +332,30 @@ that edit in the same PR.** If a step above is now wrong, fix the step too.
   hits) and `cdn.skmads.com` (Cloudflare, 2 of 8 hits). Because the curated
   entry is an apex that suffix-matches every subdomain, adding it would
   also arm the Cloudflare-fronted `cdn.` host — so the #2823 rule applies
-  per-apex, not per-dominant-host. Skipped and pinned absent is unnecessary
-  here since it was never added to begin with; just held out and documented.
+  per-apex, not per-dominant-host. Held out, and (per the established
+  `ebayadservices.com`/`theagenticx.ai` convention) pinned absent in
+  `BundledBlocklistsSpec` alongside the rest of this pass's CDN-fronted
+  held-outs — the first draft of this entry wrongly called that pin
+  unnecessary.
 - **2026-10-20** (#2918) — **The AWS published IP-ranges JSON
   (`ip-ranges.amazonaws.com/ip-ranges.json`) resolves the single hardest
   ambiguity in the #2823 CDN check: whether an Amazon-owned address is
-  CloudFront (shared, skip) or plain EC2 (dedicated, fine to add).** `whois`
-  on an Amazon IP only ever says "Amazon Technologies Inc.", which looks
-  identical for both. Downloading the ranges file and filtering by
-  `ip_prefix` + `service` disambiguated four candidates this pass in one
-  shot: `13.225.61.x` and `99.84.0.0/16` came back `CLOUDFRONT` (used to
-  skip `supersonicads.com`'s `init.` host, `ncaudienceexchange.com`'s `www.`
-  host, and `instaread.co`'s `player-metrics.` host), while `52.0.0.0/15`
-  came back plain `EC2` in `us-east-1` (used to clear `carbonads.com` for
-  addition). Worth running this lookup as a standard step whenever a
-  candidate's observed host resolves into `3.x`/`13.x`/`18.x`/`52.x`/`54.x`/
-  `99.x` — don't eyeball those ranges or trust `whois`'s org name alone.
-- **2026-10-20** (#2918) — **A domain that does not currently resolve at all
-  (`servedby-buysellads.com`: no A record on the bare apex or `www.` at
-  verification time) is still a legitimate traffic-driven addition if
-  `recent-apexes` shows real bytes/hits for it, and the observed-host CDN
-  check simply has nothing to check — no IP, no shared-pool collateral
-  risk.** Don't block on a failed `dig`; note it in the evidence doc and
-  move on. The `ads-extended` feed listing a subdomain of it
-  (`m.servedby-buysellads.com`, not the apex) was the corroborating signal
-  that it's genuinely known ad infra, not a typo or dead domain.
+  CloudFront (shared, skip) or plain EC2 (dedicated, fine to add) — but it
+  only answers that question for the host you actually look up, so look up
+  the OBSERVED host, never the bare apex as a stand-in for it (see the
+  entry above).** `whois` on an Amazon IP only ever says "Amazon
+  Technologies Inc.", which looks identical for both. Downloading the
+  ranges file and filtering by `ip_prefix` + `service` disambiguated five
+  hosts this pass: `13.225.61.x` and `99.84.0.0/16` came back `CLOUDFRONT`
+  (`supersonicads.com`'s `init.` host, `ncaudienceexchange.com`'s `www.`
+  host, `instaread.co`'s `player-metrics.` host), and `3.168.0.0/14` also
+  came back `CLOUDFRONT` (`binsiad.com`'s `cdn.` host, and — found only on
+  review — `carbonads.com`'s `cdn.` and `servedby-buysellads.com`'s `m.`
+  hosts). `52.0.0.0/15` came back plain `EC2`, but that was `carbonads.com`'s
+  *bare apex*, which was never the observed host — a dead end, not a
+  clearance. A CNAME straight to `*.cloudfront.net` is a faster tell than
+  the ranges-file lookup when it's present; use the ranges file when the
+  record is a bare A/AAAA instead.
 - **2026-10-20** (#2918) — **`instaread.co` (an embeddable article-to-audio
   narration widget for publishers) is a second confirmed instance of the
   trinityaudio.ai/gpteng.co "publisher-embedded widget" dual-use class —

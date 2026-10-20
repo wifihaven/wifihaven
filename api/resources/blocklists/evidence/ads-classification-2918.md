@@ -21,24 +21,35 @@ Cloudflare ranges, run 2026-10-20.
 
 | apex | observed host(s) | resolves to | verdict |
 |---|---|---|---|
-| `carbonads.com` | none in `/api/logs` (90d); real per `recent-apexes` bytes/hits | bare apex: 52.1.179.177 (AWS EC2, us-east-1 — confirmed via `ip-ranges.json`, NOT CloudFront) | ADD — dedicated |
-| `servedby-buysellads.com` | none in `/api/logs` (90d); real per `recent-apexes` bytes/hits | bare apex and `www.` do not resolve at all at verification time | ADD — no IP-layer collateral possible if it isn't resolving |
-| `skmads.com` | `cdn.skmads.com` (2), `rtb-us.skmads.com` (6) | `cdn.`: Cloudflare (104.21.55.34/172.67.144.105); `rtb-us.`: 64.34.89.x (Latitude.sh, dedicated) | SKIP — one observed host is Cloudflare |
-| `trackcmp.net` | (keyword matched; ActiveCampaign tracking script) | 172.64.153.42/104.18.34.214 — Cloudflare | SKIP — dual-use CRM tool + CDN |
-| `instaread.co` | `instaread.co` (3), `player-api.` (2), `player-metrics.` (17), `player.` (4) | `player-metrics.instaread.co`: 99.84.118.x — confirmed CloudFront via `ip-ranges.json` | SKIP — content-widget dual-use + CDN |
+| `carbonads.com` | none in `/api/logs` (90d); real per `recent-apexes` bytes/hits | bare apex: 52.1.179.177 (AWS EC2, us-east-1, NOT CloudFront) — but the actual serving host, `cdn.carbonads.com`, CNAMEs to `d2w5yq7htjp2h0.cloudfront.net` (3.169.202.x) | HELD OUT — CDN-fronted on the real serving host |
+| `servedby-buysellads.com` | none in `/api/logs` (90d); real per `recent-apexes` bytes/hits | bare apex and `www.` do not resolve — but `m.servedby-buysellads.com` (the `ads-extended` feed's listed subdomain) CNAMEs to `d2yy6p64xsttp1.cloudfront.net` (3.169.202.x) | HELD OUT — CDN-fronted on the real serving host |
+| `skmads.com` | `cdn.skmads.com` (2), `rtb-us.skmads.com` (6) | `cdn.`: Cloudflare (104.21.55.34/172.67.144.105); `rtb-us.`: 64.34.89.x (Latitude.sh, dedicated) | HELD OUT — one observed host is Cloudflare |
+| `trackcmp.net` | (keyword matched; ActiveCampaign tracking script) | 172.64.153.42/104.18.34.214 — Cloudflare | HELD OUT — dual-use CRM tool + CDN |
+| `instaread.co` | `instaread.co` (3), `player-api.` (2), `player-metrics.` (17), `player.` (4) | `player-metrics.instaread.co`: 99.84.118.x — confirmed CloudFront via `ip-ranges.json` | HELD OUT — content-widget dual-use + CDN |
+| `supersonicads.com` | `init.supersonicads.com` (18) | 13.225.61.x — confirmed CloudFront via `ip-ranges.json` | HELD OUT — CDN |
+| `ncaudienceexchange.com` | `www.ncaudienceexchange.com` (7) | 13.225.61.x — confirmed CloudFront via `ip-ranges.json` | HELD OUT — unverified identity + CDN |
 | `mmganalytics.com` | `t.mmganalytics.com` (20) | 104.21.8.196/172.67.157.212 — Cloudflare | HELD OUT — unverified identity + CDN |
 | `binsiad.com` | `cdn.binsiad.com` (5) | 3.169.202.x — confirmed CloudFront via `ip-ranges.json` | HELD OUT — unverified identity + CDN |
-| `ncaudienceexchange.com` | `www.ncaudienceexchange.com` (7) | 13.225.61.x — confirmed CloudFront via `ip-ranges.json` | HELD OUT — unverified identity + CDN |
 
-## ads.yml — 2 additions
+## ads.yml — no additions this pass
 
-| apex | bytes | hits | what it is |
-|---|---|---|---|
-| `carbonads.com` | 23,590 | 5 | Carbon Ads, BuySellAds' developer-focused native ad network (founded 2010; self-described on carbonads.com/about as reaching developers/designers on documentation sites and developer tools via 260x200 native units). |
-| `servedby-buysellads.com` | 30,920 | 5 | BuySellAds' own ad-serving sibling domain for the same Carbon Ads product. The StevenBlack `ads-extended` feed lists `m.servedby-buysellads.com` (a subdomain, not the apex) — the standard "feed under-states apex coverage" corroboration. |
+**Correction (post-review):** the PR as first opened added `carbonads.com`
+and `servedby-buysellads.com` to `ads.yml`, judging them cleared on the bare
+apex (dedicated EC2) and on a failed `dig` respectively — both wrong per the
+#2823 rule, which checks the host that actually appears in traffic.
+Independent review caught it: the real serving hosts
+(`cdn.carbonads.com`, `m.servedby-buysellads.com`) both CNAME onto
+CloudFront. Both are reclassified HELD OUT below and pinned absent in
+`BundledBlocklistsSpec` alongside this pass's other CDN-fronted candidates.
+Net result: **zero ads.yml additions this pass.**
 
 ## Held out / skipped this pass (recorded so a later pass does not re-guess)
 
+- **`carbonads.com` / `servedby-buysellads.com`** — both BuySellAds' Carbon
+  Ads developer-focused native ad network (founded 2010; self-described on
+  carbonads.com/about). Genuine ad-tech identity, confirmed via the
+  vendor's own site, but CDN-fronted on the host that actually serves the
+  ad unit (see correction above and the observed-hosts table).
 - **`skmads.com`** — self-described "Performance-Driven Advertising" firm
   (own site: mobile UA, performance lead-gen, programmatic, CTV, in-house
   anti-fraud). Genuine ad-tech identity, but `cdn.skmads.com` — one of its
@@ -55,6 +66,10 @@ Cloudflare ranges, run 2026-10-20.
   article-to-audio tool"). Same content-collateral/widget-embedded-on-
   unrelated-sites class as `trinitymedia.ai`/`gpteng.co` (#2729). Its
   dominant observed host is also CloudFront-fronted.
+- **`supersonicads.com`** — confirmed ironSource/Unity's "Supersonic Ads"
+  mobile ad network (now being wound down per 2026 Unity divestiture news,
+  but still live and resolving at verification time). Its only observed
+  host, `init.supersonicads.com`, is CloudFront-fronted.
 - **`mmganalytics.com`**, **`binsiad.com`**, **`ncaudienceexchange.com`** —
   no identity confirmation found (websearch returned nothing specific to
   any of these three domains). All three are also Cloudflare/CloudFront-
