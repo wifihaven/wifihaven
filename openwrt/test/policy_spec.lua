@@ -982,6 +982,109 @@ describe("policy.apply ea_/ea6_ backfill (#2095)", function()
   end)
 end)
 
+-- #2923: a checked-out shared device has no carve of its own; it reaches the
+-- WifiHaven UI / API only through global.extraAllowed (@global_allow /
+-- @global_allow6). The check-out apply's `nft -f` empties both sets, the conf is
+-- unchanged so dnsmasq isn't restarted, and its `cached` answers never run the
+-- nftset= callback, so before this fix the sets stayed empty and the device could
+-- not reach WifiHaven to check in (prod, ca:ef:a1:72:6a:a3, 2026-10-22). The apply
+-- now seeds them from the dns-tail cache like the ea_ carve, and writes the
+-- global-allow index the dns-tail populator reads.
+describe("policy.apply global-allow backfill for a checked-out device (#2923)", function()
+  local paths = require("wifihaven.paths")
+  local host_norm = require("wifihaven.host_norm")
+
+  local MAC    = "ca:ef:a1:72:6a:a3"
+  local NOW    = 2000000
+  local APP_V4 = "104.21.73.230"
+  local APP_V6 = "2606:4700:3031::6815:49e6"
+  local OTHER  = "93.184.215.14"
+
+  local function snapshot()
+    return require("cjson").decode([[{
+      "etag": "sha256:2923",
+      "generatedAt": "2026-10-22T00:12:00Z",
+      "global": {
+        "blocked": false, "extraBlocked": [],
+        "extraAllowed": ["api.wifihaven.net", "app.wifihaven.net"],
+        "blocklistIds": [], "blockIpOnly": false
+      },
+      "devices": {
+        "ca:ef:a1:72:6a:a3": {
+          "profileId": null, "name": "kid-mac",
+          "rules": {
+            "blocked": true, "blockReason": "CheckedOut",
+            "extraBlocked": [], "extraAllowed": [],
+            "blocklistIds": [], "blockIpOnly": false
+          }
+        }
+      },
+      "profiles": {},
+      "blocklists": {}
+    }]])
+  end
+
+  -- The device used the app moments before check-out, so the dns-tail cache
+  -- holds the app host's answers; example.org is any other host it visited.
+  local CACHE =
+    APP_V4 .. "\tapp.wifihaven.net\t" .. NOW .. "\n" ..
+    APP_V6 .. "\tapp.wifihaven.net\t" .. NOW .. "\n" ..
+    OTHER  .. "\texample.org\t" .. NOW .. "\n"
+
+  local function run()
+    local reloads, writes = {}, {}
+    local ok = policy.apply(snapshot(),
+      function(path, content) writes[path] = content; return true, nil end,
+      function(cmd) reloads[#reloads + 1] = cmd; return 0 end,
+      nil,
+      { now_fn = function() return NOW end,
+        read_fn = function(path)
+          if path == paths.dns_cache then return CACHE end
+          return nil
+        end })
+    return ok, reloads, writes
+  end
+
+  local function loaded(reloads)
+    for _, c in ipairs(reloads) do
+      if c:find("nft -f " .. paths.ea_backfill_nft, 1, true) then return true end
+    end
+    return false
+  end
+
+  it("renders the whole-MAC CheckedOut drop with only the global-allow carve", function()
+    local ok, _, writes = run()
+    assert.is_true(ok)
+    local nft = writes["/tmp/nftables.d/wifihaven.nft"]
+    assert.is_truthy(nft, "expected the ruleset to be written")
+    assert.is_truthy(nft:find("wh_drop:" .. MAC .. ":CheckedOut", 1, true), "whole-MAC drop missing")
+    assert.is_truthy(nft:find("@global_allow", 1, true), "global-allow carve missing")
+    -- Nothing else is carved for this MAC: no ea_ set is declared at all.
+    assert.is_nil(nft:find("set ea_", 1, true), "a checked-out device must carve nothing else")
+  end)
+
+  it("seeds @global_allow and @global_allow6 from the cache right after the reload", function()
+    local _, reloads, writes = run()
+    local script = writes[paths.ea_backfill_nft]
+    assert.is_truthy(script, "expected a backfill script for the global-allow hosts")
+    assert.is_true(loaded(reloads), "the backfill script must be loaded")
+    assert.is_truthy(script:find("global_allow { " .. APP_V4 .. " }", 1, true), script)
+    assert.is_truthy(script:find("global_allow6 { " .. host_norm.canon_ip(APP_V6) .. " }", 1, true), script)
+  end)
+
+  it("seeds nothing for any other cached host (anchored on the app host's seed)", function()
+    local _, _, writes = run()
+    local script = writes[paths.ea_backfill_nft] or ""
+    assert.is_truthy(script:find(APP_V4, 1, true), "liveness anchor: the app host must be seeded")
+    assert.is_nil(script:find(OTHER, 1, true), "example.org must not be carved: " .. script)
+  end)
+
+  it("writes the global-allow index the dns-tail populator reads", function()
+    local _, _, writes = run()
+    assert.equal("api.wifihaven.net\napp.wifihaven.net\n", writes[paths.global_allow_index])
+  end)
+end)
+
 -- #2900: a shared-device check-in only moves the MAC onto a profile. That is
 -- nft state; the dnsmasq conf is unchanged, so the apply must not pay the
 -- dnsmasq restart or the smoke probe that follows it.
