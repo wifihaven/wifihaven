@@ -46,7 +46,7 @@ import pytest
 
 from lib.traffic import http_get
 from lib.vm import router_nft_set, router_ssh
-from lib.wait import wait_until
+from lib.wait import router_snapshot_etag, wait_until
 
 from ._observers import (
     dig_ipv4_answers,
@@ -319,13 +319,20 @@ def test_check_out_after_use_keeps_global_allow_reachable(router, client, fake_a
         _snapshot(etag=ETAG_WARM_CHECKED_IN, mac=mac, checked_in=True)
     )
     fake_api.wait_for_etag_served(etag=etag, timeout_s=240)
+    # Apply barrier: "no CheckedOut drop" and the conf both already hold from the
+    # previous test, so neither shows this snapshot landed; the router's on-disk
+    # etag does. The apply may restart dnsmasq, so the lookup below retries.
     wait_until(
-        lambda: True if _checked_out_drop_state(mac) is False else None,
+        lambda: True if router_snapshot_etag() == ETAG_WARM_CHECKED_IN else None,
         timeout_s=180, interval_s=2,
-        description=f"no CheckedOut drop for {mac} while checked in",
+        description=f"checked-in snapshot applied (etag {ETAG_WARM_CHECKED_IN})",
     )
-    allow_v4 = dig_ipv4_answers(client, GLOBAL_ALLOW_HOST)
-    assert allow_v4, f"no A records for {GLOBAL_ALLOW_HOST}"
+    assert _checked_out_drop_state(mac) is False, f"{mac} is dropped while checked in"
+    allow_v4 = wait_until(
+        lambda: dig_ipv4_answers(client, GLOBAL_ALLOW_HOST) or None,
+        timeout_s=60, interval_s=2,
+        description=f"A records for {GLOBAL_ALLOW_HOST} after the checked-in apply",
+    )
     wait_http_succeeds(client, host=GLOBAL_ALLOW_HOST, timeout_s=120, ipv4_only=True)
     # The backfill reads the dns-tail cache, so it must hold the answer first.
     wait_dns_cache_attributed(allow_v4[0], GLOBAL_ALLOW_HOST, timeout_s=120)
