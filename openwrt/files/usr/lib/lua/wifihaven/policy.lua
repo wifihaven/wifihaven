@@ -268,6 +268,17 @@ function M.apply(snapshot, write_fn, reload_fn, log, opts)
     return false
   end
 
+  -- #2923: global.extraAllowed hosts for the dns-tail @global_allow populator.
+  -- The set's name doesn't carry its hosts the way ea_<host> does, so dns-tail
+  -- can't read them off the live table. Best-effort: the sets still fill from
+  -- dnsmasq's callback and the backfill below if this write fails.
+  local ga_hosts = render.global_allow_hosts(snapshot)
+  local ga_index = #ga_hosts > 0 and (table.concat(ga_hosts, "\n") .. "\n") or ""
+  local ok_ga, err_ga = write_fn(paths.global_allow_index, ga_index)
+  if not ok_ga then
+    log.warn("policy.apply: write global-allow index failed: %s", tostring(err_ga))
+  end
+
   -- #1348: blocklist member → bl_ set index for the dns-tail bl_ populator.
   -- Post-#1782: this write is a no-op (the agent writes paths.bl_member_index
   -- from blocklists.render_member_index, which streams from the cache files).
@@ -338,7 +349,14 @@ function M.apply(snapshot, write_fn, reload_fn, log, opts)
   -- Runs only when the reload succeeded and some MAC has a non-empty effective
   -- extraAllowed (skips the cache read + scan otherwise).
   --
-  -- Scope: only the ALLOW carve (ea_/ea6_) is re-seeded here. The other dynamic
+  -- #2923: @global_allow / @global_allow6 are re-seeded the same way. They are
+  -- the only way a whole-MAC blocked device (CheckedOut, Paused, ...) reaches the
+  -- WifiHaven UI / API, and since #1489 those hosts have no ea_ set. A check-out
+  -- leaves the dnsmasq conf unchanged (#2900), so dnsmasq keeps answering from
+  -- its cache, which never runs the nftset= callback; without this the sets
+  -- stayed empty after the apply and the device couldn't reach WifiHaven.
+  --
+  -- Scope: only the ALLOW carve (ea_/ea6_, global_allow/6) is re-seeded here. The other dynamic
   -- sets share the flush but don't need it: eb_/bl_ are BLOCK sets, so a flush
   -- fails OPEN (host briefly not-blocked) and the #1658 eb_refresh timer already
   -- re-resolves them on a cadence; resolved_ (blockIpOnly) is a separate, rarely
@@ -351,7 +369,8 @@ function M.apply(snapshot, write_fn, reload_fn, log, opts)
     for _, host in ipairs(render.extra_allowed_hosts(render.effective_extra_allowed_by_mac(snapshot))) do
       carve[dns_sets.sanitize(host)] = true
     end
-    if next(carve) then
+    local ga = dns_sets.parse_global_allow_index(ga_index)
+    if next(carve) or next(ga) then
       local now_fn     = opts.now_fn or os.time
       local cache_text = read_fn(paths.dns_cache)
       local cache      = dns_log.load_table(cache_text or "", DNS_CACHE_ACCEPT_ALL, now_fn())
@@ -363,6 +382,7 @@ function M.apply(snapshot, write_fn, reload_fn, log, opts)
       -- `nft -f` above from the same SSOT, so the single transaction is safe.
       local script, n = dns_sets.build_ea_backfill_script(cache, carve, {
         nft_table = "inet wifihaven",
+        ga        = ga,
       })
       if n > 0 then
         local ok_batch, err_batch = write_fn(paths.ea_backfill_nft, script)
@@ -381,6 +401,7 @@ function M.apply(snapshot, write_fn, reload_fn, log, opts)
                    tostring(ok_batch), tostring(batch_rc or err_batch))
           ea_backfilled = dns_sets.backfill_ea(cache, carve, {
             nft_table = "inet wifihaven",
+            ga        = ga,
             exec_fn   = reload_fn,
           })
         end

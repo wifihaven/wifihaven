@@ -11,6 +11,8 @@
 --   * ea_<sanhost>          — extraAllowed carve-out (#421); dns-tail
 --                             populator added in #1346 (was dnsmasq-only);
 --                             per host, not per (MAC, host), since #2900.
+--   * global_allow/6        — global.extraAllowed carve-out (#1319); dns-tail
+--                             populator added in #2923 (was dnsmasq-only).
 --
 -- #1346 — the directly-queried CNAME-target gap. Some clients (Apple devices)
 -- resolve a branded host, then re-query the FINAL CNAME target *directly* as a
@@ -160,6 +162,51 @@ function M.maybe_populate_ea(r, deps)
   return populate_per_host(r, v6 and deps.ea6 or deps.ea4, v6 and "ea6_" or "ea_", deps)
 end
 
+-- #2923: the fleet-wide global.extraAllowed sets. Names mirror render.lua's
+-- GLOBAL_ALLOW4 / GLOBAL_ALLOW6, which declares them.
+M.GLOBAL_ALLOW4 = "global_allow"
+M.GLOBAL_ALLOW6 = "global_allow6"
+
+-- parse_global_allow_index(text) -> { [sanhost] = true }
+-- policy.apply writes paths.global_allow_index (one global.extraAllowed host
+-- per line, from render.global_allow_hosts) so the sidecar knows which answered
+-- names belong in @global_allow: unlike ea_<sanhost>, the set's name doesn't
+-- carry its hosts, so they can't be read off `nft list table`.
+function M.parse_global_allow_index(text)
+  local ga = {}
+  if type(text) ~= "string" then return ga end
+  for line in text:gmatch("[^\n]+") do
+    local host = line:match("^%s*(.-)%s*$")
+    if host ~= "" then ga[M.sanitize(host)] = true end
+  end
+  return ga
+end
+
+-- maybe_populate_ga(r, deps) — global.extraAllowed populator (#2923).
+-- @global_allow / @global_allow6 used to be filled only by dnsmasq's nftset=
+-- callback, which never runs on a `cached` answer and fails for hours at a
+-- time on the deployed 2.91 build (`cache initialization failed: Protocol
+-- error`). Every apply's `nft -f` empties the sets, so a whole-MAC blocked
+-- device whose lookups came from dnsmasq's cache could not reach the WifiHaven
+-- UI / API it needs to check in. Same suffix walk + #1346 head recovery as the
+-- ea_ path; the target is the one fleet-wide set per family.
+-- r    : a dns_log.parse_resolved_reply result { name, ip, family }.
+-- deps : { ga, nft_table, exec_fn?, resolve_head?, log? }
+-- Returns the number of `nft add element` commands issued (0 or 1).
+function M.maybe_populate_ga(r, deps)
+  if not r or not r.name or type(deps.ga) ~= "table" then return 0 end
+  local set = (r.family == "v6") and M.GLOBAL_ALLOW6 or M.GLOBAL_ALLOW4
+  local hit = false
+  M.each_candidate_host(r.name, deps.resolve_head, function(sanhost)
+    if deps.ga[sanhost] then hit = true; return true end
+    return false
+  end)
+  if not hit then return 0 end
+  if not M.nft_add_element(deps.nft_table, set, r.ip, deps.exec_fn) then return 0 end
+  if deps.log then deps.log(set, r) end
+  return 1
+end
+
 -- backfill_ea(cache, carve, deps) — apply-time pre-population of the
 -- extraAllowed carve sets (#2095).
 --
@@ -201,13 +248,19 @@ end
 -- vs ea6_) is chosen from the ip literal; ips
 -- failing safe_addr are skipped before the walk so a malformed cache line can
 -- never reach an emitter.
+--
+-- #2923: deps.ga ({ [sanhost] = true }, the global.extraAllowed hosts) seeds
+-- @global_allow / @global_allow6 the same way, with the same walk as
+-- maybe_populate_ga. A host in both indexes seeds both kinds of set.
 local function each_ea_backfill_element(cache, carve, deps, emit)
   if type(cache) ~= "table" or type(carve) ~= "table" then return end
+  local ga = type(deps.ga) == "table" and deps.ga or {}
   for ip, name in pairs(cache) do
     if type(name) == "string" then
       local safe = M.safe_addr(ip)
       if safe then
-        local prefix = safe:find(":", 1, true) and "ea6_" or "ea_"
+        local v6     = safe:find(":", 1, true) ~= nil
+        local prefix = v6 and "ea6_" or "ea_"
         local seen   = {}
         M.each_candidate_host(name, deps.resolve_head, function(sanhost)
           if carve[sanhost] then
@@ -219,6 +272,12 @@ local function each_ea_backfill_element(cache, carve, deps, emit)
           end
           return false
         end)
+        local ga_hit = false
+        M.each_candidate_host(name, deps.resolve_head, function(sanhost)
+          if ga[sanhost] then ga_hit = true; return true end
+          return false
+        end)
+        if ga_hit then emit(v6 and M.GLOBAL_ALLOW6 or M.GLOBAL_ALLOW4, safe, name) end
       end
     end
   end
