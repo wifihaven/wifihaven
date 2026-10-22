@@ -197,6 +197,12 @@ local ip_to_mac       = refresh_ip_to_mac()
 local nft_sets        = refresh_nft_sets()
 local bl_member_index = refresh_bl_member_index()
 local ga_index        = refresh_global_allow_index()
+-- #2923: the sidecar can start before the agent's first apply writes the index
+-- (a fresh boot or agent restart). While it is empty, re-read it every
+-- ga_empty_retry_seconds instead of waiting for the 30s set refresh, so the
+-- first check-out after a restart is covered too.
+local ga_empty_retry_seconds = 2
+local last_ga_refresh        = os.time()
 local last_lease_refresh = os.time()
 local last_bio_refresh   = os.time()
 local bio_adds_total     = 0
@@ -396,6 +402,10 @@ while true do
 
     -- #2923: same first-SYN race for the global.extraAllowed carve, which is
     -- how a whole-MAC blocked device reaches the WifiHaven UI / API.
+    if not next(ga_index) and (now - last_ga_refresh) >= ga_empty_retry_seconds then
+      ga_index = refresh_global_allow_index()
+      last_ga_refresh = now
+    end
     maybe_populate_ga(line)
 
     -- #1348: same lockstep argument — close the category-blocklist bypass for
@@ -432,6 +442,7 @@ while true do
       nft_sets = refresh_nft_sets()
       bl_member_index = refresh_bl_member_index()  -- #1348
       ga_index = refresh_global_allow_index()         -- #2923
+      last_ga_refresh = now
       last_bio_refresh = now
     end
 
