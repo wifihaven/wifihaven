@@ -407,7 +407,7 @@ function M.apply(snapshot, write_fn, reload_fn, log, opts)
         end
       end
       if ea_backfilled > 0 then
-        log.debug("policy.apply: ea_/ea6_ carve backfill added %d element(s)", ea_backfilled)
+        log.debug("policy.apply: carve backfill (ea_/ea6_, global_allow/6) added %d element(s)", ea_backfilled)
       end
     end
     end)

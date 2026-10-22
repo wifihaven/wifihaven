@@ -3665,3 +3665,22 @@ describe("render: profile assignment does not change the dnsmasq conf (#2900)", 
     assert.is_nil(nft:find("ea_02_aa", 1, true))
   end)
 end)
+
+-- #2923: dns-tail and the apply-time backfill add to the global-allow sets by
+-- the names in dns_tail_sets. A drifted name makes those adds fail silently, so
+-- pin that render.nft declares exactly those sets.
+describe("render.nft global-allow set names (#2923)", function()
+  local render = require("render")
+  local sets   = require("dns_tail_sets")
+
+  it("declares both global-allow sets under the names dns_tail_sets adds to", function()
+    local nft = render.nft({
+      etag = "sha256:2923",
+      global = { blocked = false, extraBlocked = {}, extraAllowed = { "app.wifihaven.net" },
+                 blocklistIds = {}, blockIpOnly = false },
+      devices = {}, profiles = {}, blocklists = {},
+    }, {})
+    assert.is_truthy(nft:find("set " .. sets.GLOBAL_ALLOW4 .. " {", 1, true), nft)
+    assert.is_truthy(nft:find("set " .. sets.GLOBAL_ALLOW6 .. " {", 1, true), nft)
+  end)
+end)

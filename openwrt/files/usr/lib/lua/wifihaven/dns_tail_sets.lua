@@ -162,8 +162,8 @@ function M.maybe_populate_ea(r, deps)
   return populate_per_host(r, v6 and deps.ea6 or deps.ea4, v6 and "ea6_" or "ea_", deps)
 end
 
--- #2923: the fleet-wide global.extraAllowed sets. Names mirror render.lua's
--- GLOBAL_ALLOW4 / GLOBAL_ALLOW6, which declares them.
+-- #2923: the fleet-wide global.extraAllowed sets. The single source of these
+-- names: render.lua declares the sets under them.
 M.GLOBAL_ALLOW4 = "global_allow"
 M.GLOBAL_ALLOW6 = "global_allow6"
 
@@ -272,6 +272,8 @@ local function each_ea_backfill_element(cache, carve, deps, emit)
           end
           return false
         end)
+        -- A separate walk: folding it into the one above would change where
+        -- the ea_ walk stops when nested hosts are both carved.
         local ga_hit = false
         M.each_candidate_host(name, deps.resolve_head, function(sanhost)
           if ga[sanhost] then ga_hit = true; return true end
