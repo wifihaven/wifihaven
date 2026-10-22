@@ -30,6 +30,7 @@ local aliases_path = paths.dns_aliases
 -- into dns_queries_total{result}. Flushed in lockstep with the hostname cache.
 local dns_metrics_path = paths.dns_metrics
 local bl_index_path = paths.bl_member_index  -- #1348
+local ga_index_path = paths.global_allow_index  -- #2923
 local leases_path = "/tmp/dhcp.leases"
 local nft_table   = "inet wifihaven"
 -- How often to refresh the bio-set membership cache (which MACs have a
@@ -182,15 +183,33 @@ local function refresh_bl_member_index()
   return dns_log.parse_blocklist_member_index(text)
 end
 
+-- #2923: global.extraAllowed hosts → { [sanhost] = true } for the
+-- @global_allow populator. policy.apply rewrites the index on every apply.
+local function refresh_global_allow_index()
+  local f = io.open(ga_index_path, "r")
+  if not f then return {} end
+  local text = f:read("*a")
+  f:close()
+  return dns_sets.parse_global_allow_index(text)
+end
+
 local ip_to_mac       = refresh_ip_to_mac()
 local nft_sets        = refresh_nft_sets()
 local bl_member_index = refresh_bl_member_index()
+local ga_index        = refresh_global_allow_index()
+-- #2923: the sidecar can start before the agent's first apply writes the index
+-- (a fresh boot or agent restart). While it is empty, re-read it every
+-- ga_empty_retry_seconds instead of waiting for the 30s set refresh, so the
+-- first check-out after a restart is covered too.
+local ga_empty_retry_seconds = 2
+local last_ga_refresh        = os.time()
 local last_lease_refresh = os.time()
 local last_bio_refresh   = os.time()
 local bio_adds_total     = 0
 local eb_adds_total      = 0
 local ea_adds_total      = 0
 local bl_adds_total      = 0
+local ga_adds_total      = 0
 
 local function maybe_populate_bio(line, now)
   local r = dns_log.parse_resolved_reply(line)
@@ -269,6 +288,24 @@ local function maybe_populate_bl(line)
     log.debug("dns-tail: bl add %s { %s } name=%s head-via-alias",
               set, ip, r.name)
   end)
+end
+
+-- #2923: global.extraAllowed populator. @global_allow / @global_allow6 were
+-- filled only by dnsmasq's nftset= callback, which never runs on a `cached`
+-- answer and fails for hours on the deployed 2.91 build. Every apply's `nft -f`
+-- empties them, so a whole-MAC blocked device answered from dnsmasq's cache
+-- couldn't reach the WifiHaven UI / API it needs to check in.
+local function maybe_populate_ga(line)
+  local r = dns_log.parse_resolved_reply(line)
+  if not r then return end
+  ga_adds_total = ga_adds_total + dns_sets.maybe_populate_ga(r, {
+    ga = ga_index,
+    nft_table    = nft_table,
+    resolve_head = cache.resolve_head,
+    log = function(set_name)
+      log.debug("dns-tail: ga add %s { %s } name=%s", set_name, r.ip, r.name)
+    end,
+  })
 end
 
 log.info("dns-tail: populator init — %d lease(s), %d bio set(s), %d eb set(s), %d ea set(s)",
@@ -363,6 +400,14 @@ while true do
     -- flow's first packet, a whole-MAC block drops an explicitly-allowed app.
     maybe_populate_ea(line)
 
+    -- #2923: same first-SYN race for the global.extraAllowed carve, which is
+    -- how a whole-MAC blocked device reaches the WifiHaven UI / API.
+    if not next(ga_index) and (now - last_ga_refresh) >= ga_empty_retry_seconds then
+      ga_index = refresh_global_allow_index()
+      last_ga_refresh = now
+    end
+    maybe_populate_ga(line)
+
     -- #1348: same lockstep argument — close the category-blocklist bypass for
     -- directly-queried CNAME targets by adding the resolved IP to the member's
     -- bl_ set when the answered name attributes (via the alias map) to a member.
@@ -396,6 +441,8 @@ while true do
     if (now - last_bio_refresh) >= bio_refresh_seconds then
       nft_sets = refresh_nft_sets()
       bl_member_index = refresh_bl_member_index()  -- #1348
+      ga_index = refresh_global_allow_index()         -- #2923
+      last_ga_refresh = now
       last_bio_refresh = now
     end
 
@@ -403,10 +450,10 @@ while true do
     -- dropping the pipe, regex never matching) are diagnosable from logread
     -- alone without on-VM access (#480).
     if (now - last_stats_log) >= 60 then
-      log.info("dns-tail: ingested=%d (+%d in last %ds) cache_size=%d bio_adds=%d eb_adds=%d ea_adds=%d bl_adds=%d sni_inserts=%d",
+      log.info("dns-tail: ingested=%d (+%d in last %ds) cache_size=%d bio_adds=%d eb_adds=%d ea_adds=%d ga_adds=%d bl_adds=%d sni_inserts=%d",
                lines_ingested, lines_since_stat, now - last_stats_log,
                cache.size(), bio_adds_total, eb_adds_total, ea_adds_total,
-               bl_adds_total, sni_inserts)
+               ga_adds_total, bl_adds_total, sni_inserts)
       last_stats_log   = now
       lines_since_stat = 0
     end

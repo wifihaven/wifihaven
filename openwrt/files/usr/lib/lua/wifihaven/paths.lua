@@ -54,6 +54,12 @@ M.ea_backfill_nft = "/tmp/nftables.d/wifihaven-ea-backfill.nft"
 -- wifihaven-dns-tail bl_ populator reads it on its set-refresh cadence.
 M.bl_member_index = "/tmp/wifihaven-bl-members.txt"
 
+-- global.extraAllowed host index (#2923): policy.apply rewrites it on every
+-- apply (one host per line, render.global_allow_hosts); the wifihaven-dns-tail
+-- @global_allow populator reads it on its set-refresh cadence. Truncate-rewrite,
+-- bounded by the global allow list.
+M.global_allow_index = "/tmp/wifihaven-global-allow.txt"
+
 -- SNI capture spool (#573): wifihaven-sni-tail parses the first packet of every
 -- outbound TCP/443 flow off the LAN bridge, extracts the TLS ClientHello SNI,
 -- and appends one "SNI\t<dst_ip>\t<src_mac>\t<server_name>" line per capture to

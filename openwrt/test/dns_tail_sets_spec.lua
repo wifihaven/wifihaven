@@ -430,3 +430,134 @@ describe("build_ea_backfill_script (#2208)", function()
     assert.is_truthy(script:find("{ 151.101.1.229 }", 1, true))
   end)
 end)
+
+-- ---------------------------------------------------------------------------
+-- #2923: @global_allow / @global_allow6 populator + backfill
+-- ---------------------------------------------------------------------------
+--
+-- global.extraAllowed carries the WifiHaven UI / API hosts, which a whole-MAC
+-- blocked device (CheckedOut, Paused, ...) must still reach. Its two fleet-wide
+-- sets were filled ONLY by dnsmasq's nftset= callback, which never fires on a
+-- `cached` answer and fails for hours on the deployed 2.91 build. Every apply's
+-- `nft -f` empties them, and since #2900 a check-out doesn't restart dnsmasq, so
+-- a device that was using the app keeps getting cached answers and the sets stay
+-- empty: the checked-out device can't reach WifiHaven to check in (prod,
+-- ca:ef:a1:72:6a:a3, 2026-10-22). dns-tail and the apply-time backfill now fill
+-- them the same way they fill ea_.
+
+local APP_V4   = "104.21.73.230"
+local APP_V6   = "2606:4700:3031::6815:49e6"
+local OTHER_V4 = "93.184.215.14"
+
+describe("parse_global_allow_index (#2923)", function()
+  it("maps each listed host to its sanitized name", function()
+    local ga = sets.parse_global_allow_index("api.wifihaven.net\napp.wifihaven.net\n")
+    assert.same({ api_wifihaven_net = true, app_wifihaven_net = true }, ga)
+  end)
+
+  it("ignores blank lines and returns an empty index for empty/nil input", function()
+    assert.same({ app_wifihaven_net = true }, sets.parse_global_allow_index("\n app.wifihaven.net \n\n"))
+    assert.same({}, sets.parse_global_allow_index(""))
+    assert.same({}, sets.parse_global_allow_index(nil))
+  end)
+end)
+
+describe("maybe_populate_ga (#2923)", function()
+  local GA = { api_wifihaven_net = true, app_wifihaven_net = true }
+  local function gdeps(exec)
+    return { ga = GA, nft_table = "inet wifihaven", exec_fn = exec }
+  end
+
+  it("adds a CACHED v4 answer for a global-allow host to @global_allow", function()
+    -- The prod line: dnsmasq answered the checked-out device from its cache, so
+    -- its own nftset= callback never ran.
+    local cmds, exec = recorder()
+    local r = dns_log.parse_resolved_reply(
+      "Oct 22 00:13:08 dnsmasq[1]: 7191 192.168.10.239/46019 cached app.wifihaven.net is " .. APP_V4)
+    assert.is_truthy(r, "fixture line must parse")
+    assert.equal(1, sets.maybe_populate_ga(r, gdeps(exec)))
+    assert.is_true(added(cmds, "global_allow ", APP_V4))
+  end)
+
+  it("adds a v6 answer to @global_allow6, not @global_allow", function()
+    local cmds, exec = recorder()
+    local r = dns_log.parse_resolved_reply(
+      "Oct 22 00:13:08 dnsmasq[1]: 7190 192.168.10.239/13928 cached app.wifihaven.net is " .. APP_V6)
+    assert.is_truthy(r, "fixture line must parse")
+    assert.equal(1, sets.maybe_populate_ga(r, gdeps(exec)))
+    assert.equal(1, #cmds)
+    assert.is_truthy(cmds[1]:find("global_allow6 ", 1, true), cmds[1])
+  end)
+
+  it("adds the WifiHaven answer and nothing for any other host (anchored)", function()
+    -- Liveness anchor and absence in the same run: the populator is shown live
+    -- by the app host's add, so the other host's missing add is a real absence.
+    local cmds, exec = recorder()
+    local d = gdeps(exec)
+    sets.maybe_populate_ga({ name = "app.wifihaven.net", ip = APP_V4, family = "v4" }, d)
+    sets.maybe_populate_ga({ name = "example.org", ip = OTHER_V4, family = "v4" }, d)
+    -- A name that merely ends in the same letters is not a subdomain.
+    sets.maybe_populate_ga({ name = "evilapp.wifihaven.net.example", ip = "198.51.100.7", family = "v4" }, d)
+    assert.is_true(added(cmds, "global_allow ", APP_V4))
+    assert.equal(1, #cmds, table.concat(cmds, "\n"))
+  end)
+
+  it("recovers the head for a directly-queried CNAME target (api.wifihaven.net)", function()
+    local cmds, exec = recorder()
+    local d = gdeps(exec)
+    d.resolve_head = function(name)
+      if name == "gcp-us-west1-1.origin.onrender.com.cdn.cloudflare.net" then
+        return "api.wifihaven.net"
+      end
+      return name
+    end
+    sets.maybe_populate_ga({ name = "gcp-us-west1-1.origin.onrender.com.cdn.cloudflare.net",
+                             ip = "216.24.57.16", family = "v4" }, d)
+    assert.is_true(added(cmds, "global_allow ", "216.24.57.16"))
+  end)
+
+  it("is a no-op with no index", function()
+    local cmds, exec = recorder()
+    assert.equal(0, sets.maybe_populate_ga({ name = "app.wifihaven.net", ip = APP_V4, family = "v4" },
+      { nft_table = "inet wifihaven", exec_fn = exec }))
+    assert.equal(0, #cmds)
+  end)
+end)
+
+describe("build_ea_backfill_script with global allow (#2923)", function()
+  local GA = { app_wifihaven_net = true }
+
+  it("seeds @global_allow and @global_allow6 from the cache, and nothing else", function()
+    local cache = {
+      [APP_V4]   = "app.wifihaven.net",
+      [APP_V6]   = "app.wifihaven.net",
+      [OTHER_V4] = "example.org",
+    }
+    local script, n = sets.build_ea_backfill_script(cache, {}, { nft_table = "inet wifihaven", ga = GA })
+    assert.equal(2, n)
+    assert.equal(
+      "add element inet wifihaven global_allow { " .. APP_V4 .. " }\n" ..
+      "add element inet wifihaven global_allow6 { " .. APP_V6 .. " }\n",
+      script)
+  end)
+
+  it("seeds global allow alongside the ea_ carve in one script", function()
+    local cache = {
+      [APP_V4]          = "app.wifihaven.net",
+      ["151.101.1.229"] = "cdn.jsdelivr.net",
+    }
+    local script, n = sets.build_ea_backfill_script(cache, { jsdelivr_net = true },
+      { nft_table = "inet wifihaven", ga = GA })
+    assert.equal(2, n)
+    assert.is_truthy(script:find("ea_jsdelivr_net { 151.101.1.229 }", 1, true), script)
+    assert.is_truthy(script:find("global_allow { " .. APP_V4 .. " }", 1, true), script)
+  end)
+
+  it("backfill_ea (per-element fallback) seeds global allow too", function()
+    local cmds, exec = recorder()
+    local n = sets.backfill_ea({ [APP_V6] = "app.wifihaven.net", [OTHER_V4] = "example.org" }, {},
+      { nft_table = "inet wifihaven", ga = GA, exec_fn = exec })
+    assert.equal(1, n)
+    assert.is_true(added(cmds, "global_allow6 ", APP_V6))
+  end)
+end)

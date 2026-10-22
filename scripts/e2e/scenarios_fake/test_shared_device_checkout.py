@@ -26,6 +26,10 @@ Gate-2 fake API and asserts, at the connection layer:
   5. The check-in leaves the dnsmasq conf byte-identical (#2900), so the apply
      skips the dnsmasq restart and smoke probe: who holds the device is nft
      state, and the conf names hosts only.
+  6. Checked in and using the app, THEN checked out (#2923): the real-world
+     order. The check-out apply empties @global_allow and keeps dnsmasq's
+     cache, so the apply must re-seed the set from the dns-tail cache before
+     the client asks again.
 
 Reachability is a connection-layer property, never "DNS resolved ⇒ allowed"
 (AGENTS.md). Every absence assertion here sits next to a positive one from the
@@ -41,13 +45,14 @@ import time
 import pytest
 
 from lib.traffic import http_get
-from lib.vm import router_ssh
-from lib.wait import wait_until
+from lib.vm import router_nft_set, router_ssh
+from lib.wait import router_snapshot_etag, wait_until
 
 from ._observers import (
     dig_ipv4_answers,
     norm_mac,
     wait_block_page,
+    wait_dns_cache_attributed,
     wait_global_allow_populated,
     wait_http_succeeds,
 )
@@ -70,6 +75,9 @@ FORWARD_PORT = 8080
 
 ETAG_CHECKED_OUT = '"sha256:shared-checked-out-v1"'
 ETAG_CHECKED_IN = '"sha256:shared-checked-in-v2"'
+# #2923: the real-world order, checked in first and then checked out.
+ETAG_WARM_CHECKED_IN = '"sha256:shared-warm-checked-in-v3"'
+ETAG_WARM_CHECKED_OUT = '"sha256:shared-warm-checked-out-v4"'
 
 # §11 design target for check-in → router apply (p95). Logged, not asserted.
 DESIGN_TARGET_P95_S = 5.0
@@ -284,3 +292,91 @@ def test_checked_out_device_is_blocked_and_check_in_unblocks(router, client, fak
     # the same host blocked a moment ago now reaches its real upstream.
     ok = wait_http_succeeds(client, host=OTHER_HOST, timeout_s=120)
     assert ok.http_code is not None and 200 <= ok.http_code < 400
+
+
+def _set_ips(name: str) -> set[str]:
+    """Addresses in an nft set. Elements of a timeout set print as
+    `<ip> expires <t>`, so keep only the address token."""
+    return {e.split()[0] for e in router_nft_set(name)}
+
+
+def test_check_out_after_use_keeps_global_allow_reachable(router, client, fake_api):
+    """#2923: the order a real device goes through, which the test above skips.
+
+    The device is checked in and uses WifiHaven, so dnsmasq's cache and the
+    dns-tail cache both hold the allow host's answers. Then it is checked out.
+    The check-out apply's `nft -f` recreates the table, emptying @global_allow,
+    and leaves the dnsmasq conf unchanged (#2900), so dnsmasq isn't restarted and
+    keeps answering from cache, which never runs its nftset= callback. Before the
+    fix nothing refilled @global_allow and the device could not reach WifiHaven to
+    check in. The apply now seeds it from the dns-tail cache, so the allow host's
+    address must be in the set before the client sends a single new query.
+    """
+    mac = client.mac
+
+    # ── Checked in, using the allow host ─────────────────────────────────────
+    etag = fake_api.serve_snapshot(
+        _snapshot(etag=ETAG_WARM_CHECKED_IN, mac=mac, checked_in=True)
+    )
+    fake_api.wait_for_etag_served(etag=etag, timeout_s=240)
+    # Apply barrier: "no CheckedOut drop" and the conf both already hold from the
+    # previous test, so neither shows this snapshot landed; the router's on-disk
+    # etag does. The apply may restart dnsmasq, so the lookup below retries.
+    wait_until(
+        lambda: True if router_snapshot_etag() == ETAG_WARM_CHECKED_IN else None,
+        timeout_s=180, interval_s=2,
+        description=f"checked-in snapshot applied (etag {ETAG_WARM_CHECKED_IN})",
+    )
+    assert _checked_out_drop_state(mac) is False, f"{mac} is dropped while checked in"
+    allow_v4 = wait_until(
+        lambda: dig_ipv4_answers(client, GLOBAL_ALLOW_HOST) or None,
+        timeout_s=60, interval_s=2,
+        description=f"A records for {GLOBAL_ALLOW_HOST} after the checked-in apply",
+    )
+    wait_http_succeeds(client, host=GLOBAL_ALLOW_HOST, timeout_s=120, ipv4_only=True)
+    # The backfill reads the dns-tail cache, so it must hold the answer first.
+    wait_dns_cache_attributed(allow_v4[0], GLOBAL_ALLOW_HOST, timeout_s=120)
+    conf_before = _dnsmasq_conf()
+    assert f"nftset=/{GLOBAL_ALLOW_HOST}/" in conf_before, conf_before[:500]
+
+    # ── Check out ────────────────────────────────────────────────────────────
+    etag = fake_api.serve_snapshot(
+        _snapshot(etag=ETAG_WARM_CHECKED_OUT, mac=mac, checked_in=False)
+    )
+    fake_api.wait_for_etag_served(etag=etag, timeout_s=240)
+    wait_until(
+        lambda: True if _checked_out_drop_state(mac) is True else None,
+        timeout_s=180, interval_s=2,
+        description=f"nft carries wh_drop:{mac}:{CHECKED_OUT}",
+    )
+    # The real-world condition: the conf didn't change, so dnsmasq kept its cache.
+    assert _dnsmasq_conf() == conf_before, "check-out changed the dnsmasq conf"
+
+    # No client query since the apply: only the apply-time backfill can have put
+    # the address back. Waits briefly because the backfill runs just after the
+    # `nft -f` that installed the drop.
+    seeded = wait_until(
+        lambda: (_set_ips("global_allow") & set(allow_v4)) or None,
+        timeout_s=15, interval_s=1,
+        description=f"@global_allow re-seeded with {GLOBAL_ALLOW_HOST} {allow_v4} after check-out",
+    )
+    log.info("global_allow re-seeded after check-out: %s", sorted(seeded))
+
+    # Both halves from the same client in the same state: the allow host still
+    # connects (dnsmasq answers it from cache), and any other host is dropped.
+    probe = wait_http_succeeds(client, host=GLOBAL_ALLOW_HOST, timeout_s=60, ipv4_only=True)
+    assert probe.http_code is not None and 200 <= probe.http_code < 400
+    before = _checked_out_drop_packets(mac)
+    fwd = http_get(client, f"http://{OTHER_HOST}:{FORWARD_PORT}/", timeout_s=3, ipv4_only=True)
+    assert fwd.http_code in (None, 0), (
+        f"{OTHER_HOST}:{FORWARD_PORT} answered (http_code={fwd.http_code}) from a "
+        "checked-out device"
+    )
+    wait_until(
+        lambda: True if _checked_out_drop_packets(mac) > before else None,
+        timeout_s=30, interval_s=2,
+        description=f"wh_drop:{mac}:{CHECKED_OUT} counter rises past {before}",
+    )
+    assert not (_set_ips("global_allow") & set(dig_ipv4_answers(client, OTHER_HOST))), (
+        f"{OTHER_HOST}'s address landed in @global_allow"
+    )

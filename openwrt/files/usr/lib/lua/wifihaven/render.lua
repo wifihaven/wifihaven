@@ -358,8 +358,15 @@ M.block_ip_only_macs = block_ip_only_macs
 -- exactly like the per-host eb_/bl_ sets. blockIpOnly is intentionally NOT
 -- carved by ga (allowed hosts are resolved into resolved_<m> naturally), same
 -- as the per-MAC ea sets.
-local GLOBAL_ALLOW4 = "global_allow"
-local GLOBAL_ALLOW6 = "global_allow6"
+-- #2923: the global-allow set names have one source, dns_tail_sets, whose
+-- dns-tail populator and apply-time backfill add to the sets declared here. A
+-- drifted name would make those adds fail silently (ENOENT is tolerated).
+-- Dual-path require as for encrypted_dns: wifihaven.* on the router, bare name
+-- under busted.
+local _ok_dts, _dts = pcall(require, "wifihaven.dns_tail_sets")
+if not _ok_dts then _dts = require("dns_tail_sets") end
+local GLOBAL_ALLOW4 = _dts.GLOBAL_ALLOW4
+local GLOBAL_ALLOW6 = _dts.GLOBAL_ALLOW6
 local GLOBAL_BLOCK4 = "global_block"
 local GLOBAL_BLOCK6 = "global_block6"
 
@@ -587,9 +594,10 @@ function M.dnsmasq(snapshot, opts)
   -- #1489: a host that is also in global.extraAllowed needs NO ea_ populator.
   -- @global_allow already carves it out of every drop for every MAC
   -- (render.nft's ga_suffix), so the ea_ specs are pure redundancy. Skip them;
-  -- enforcement rides on @global_allow, and dns-tail (#1346) still populates
-  -- the ea_ sets from live replies regardless. This mirrors the #1307→#1321
-  -- redundancy the global-allow layer retires.
+  -- enforcement rides on @global_allow, which dns-tail and the apply-time
+  -- backfill fill from live and cached replies (#2923; before that only
+  -- dnsmasq's callback did, and the set sat empty after every apply). This
+  -- mirrors the #1307→#1321 redundancy the global-allow layer retires.
   local ga_host_set = {}
   for _, h in ipairs(ga_hosts) do ga_host_set[h] = true end
 
