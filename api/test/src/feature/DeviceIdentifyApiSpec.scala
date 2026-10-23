@@ -157,7 +157,9 @@ object DeviceIdentifyApiSpec
         assertTrue(!out.managed) &&
         assertTrue(out.vendor.kind == "vendor") &&
         assertTrue(out.vendor.name.contains("NETGEAR")) &&
-        assertTrue(out.firstSeenAt.isDefined) &&
+        // created_at is the DB's wall clock (later than the injected test clock), so first seen
+        // is the earliest event
+        assertTrue(out.firstSeenAt.map(Instant.parse).contains(now.minusSeconds(3000))) &&
         assertTrue(out.destinations.length == 2) &&
         // most attempts first
         assertTrue(out.destinations.head.host == fqdn("api.roku.com")) &&
@@ -224,6 +226,28 @@ object DeviceIdentifyApiSpec
         ) &&
         // 3 of 4 attempts → 75%, above the guess threshold
         assertTrue(out.guess.exists(g => g.appSlug == "test-streamy" && g.sharePct == 75))
+    },
+    test("first seen is the earliest event when it predates the device row (late ingest)") {
+      for {
+        _          <- cleanDb
+        two        <- TestLayers.seedTwoHouseholds(managedA, managedB)
+        deviceRepo <- ZIO.service[DeviceRepo]
+        connRepo   <- ZIO.service[ConnectionEventRepo]
+        now        <- ZIO.serviceWithZIO[Clock](_.instant)
+        _          <- deviceRepo.upsertUnknown(netgearMac, "late", None, now, two.hhA)
+        created    <- deviceRepo.firstSeenAtInHousehold(netgearMac, two.hhA)
+        early = now.minusSeconds(60)
+        _  <- connRepo.insertBatch(
+          List(event(two.routerIdA, netgearMac, fqdn("x.example.com"), false, early)),
+        )
+        rb <- buildRoutes
+        (routes, auth) = rb
+        token <- auth.login(two.adminA, two.password).map(_.token.value)
+        out   <- get(routes, token, netgearMac).flatMap(decode)
+      } yield
+      // precondition: the row really was created after the event, so the test can fail
+      assertTrue(created.exists(_.isAfter(early))) &&
+        assertTrue(out.firstSeenAt.map(Instant.parse).contains(early))
     },
     test("a locally-administered (randomized) MAC shows a private address, not a vendor") {
       for {

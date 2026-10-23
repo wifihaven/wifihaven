@@ -1202,6 +1202,8 @@ case class MacDestinations(
     hostCount: Int,
     totalAllowed: Long,
     totalBlocked: Long,
+    // the earliest `ts` over every host in the window (not just the top-N rows)
+    earliest: Option[Instant] = None,
 )
 
 case class ConnectionEventInsert(
@@ -4495,7 +4497,8 @@ class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo 
                    MIN(ce.ts), MAX(ce.ts),
                    COUNT(*) OVER (),
                    SUM(COUNT(*) FILTER (WHERE ce.allowed)) OVER (),
-                   SUM(COUNT(*) FILTER (WHERE NOT ce.allowed)) OVER ()
+                   SUM(COUNT(*) FILTER (WHERE NOT ce.allowed)) OVER (),
+                   MIN(MIN(ce.ts)) OVER ()
             FROM connection_events ce
             JOIN routers r ON r.id = ce.router_id
             WHERE ce.mac = $mac AND ce.ts > $from AND ce.ts <= $to AND""" ++
@@ -4503,7 +4506,7 @@ class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo 
         fr"""GROUP BY 1, 2
             ORDER BY COUNT(*) DESC, 2
             LIMIT $limit""")
-        .query[(HostId, Long, Long, Instant, Instant, Int, Long, Long)]
+        .query[(HostId, Long, Long, Instant, Instant, Int, Long, Long, Instant)]
         .to[List]
         .transact(xa)
         .map { rows =>
@@ -4514,6 +4517,7 @@ class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo 
             hosts,
             allowed,
             blocked,
+            rows.headOption.map(_._9),
           )
         },
     )

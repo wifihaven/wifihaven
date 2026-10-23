@@ -544,9 +544,10 @@ case class IdentifyGuess(appSlug: String, appName: String, sharePct: Int) derive
 
 /**
  * `name` is `devices.name`, which first-seen discovery seeds from the DHCP-advertised hostname
- * (#2927 stores that hostname separately). `firstSeenAt` is when the device row was created, so
- * history before it does not exist. Totals and `hostCount` cover every destination in the window;
- * `destinations` is the top slice by attempts and `truncated` says whether more exist.
+ * (#2927 stores that hostname separately). `firstSeenAt` is the earlier of the device row's
+ * creation and its earliest recorded event — history before it does not exist. Totals and
+ * `hostCount` cover every destination in the window; `destinations` is the top slice by attempts
+ * and `truncated` says whether more exist.
  */
 case class DeviceIdentity(
     mac: MacAddress,

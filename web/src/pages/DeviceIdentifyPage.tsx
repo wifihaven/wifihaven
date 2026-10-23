@@ -16,10 +16,11 @@ const AUTO_NAME = /^device-[0-9a-f]+$/i
 
 function ago(iso: string): string {
   const s = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000)
+  const n = (v: number, unit: string) => `${v} ${unit}${v === 1 ? '' : 's'} ago`
   if (s < 60) return 'just now'
-  if (s < 3600) return `${Math.round(s / 60)} minutes ago`
-  if (s < 86_400) return `${Math.round(s / 3600)} hours ago`
-  return `${Math.round(s / 86_400)} days ago`
+  if (s < 3600) return n(Math.round(s / 60), 'minute')
+  if (s < 86_400) return n(Math.round(s / 3600), 'hour')
+  return n(Math.round(s / 86_400), 'day')
 }
 
 function when(iso: string): string {

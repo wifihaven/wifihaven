@@ -80,7 +80,9 @@ object DeviceIdentifyRoutes {
             body   = build(
               device,
               vendor,
-              firstSeen.map(_.toString),
+              // The row is created at INGEST time; an event that arrived late (router retry queue)
+              // can be older, and the device was evidently on the network by then.
+              (firstSeen.toList ++ dests.earliest).minOption.map(_.toString),
               windowDays,
               dests,
               appList,
