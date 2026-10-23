@@ -154,6 +154,7 @@ object DeviceIdentifyApiSpec
         roku = out.destinations.find(_.host == fqdn("api.roku.com"))
       } yield assertTrue(resp.status == Status.Ok) &&
         assertTrue(out.name == "Roku-Living-Room") &&
+        assertTrue(out.sentName.contains("Roku-Living-Room")) &&
         assertTrue(!out.managed) &&
         assertTrue(out.vendor.kind == "vendor") &&
         assertTrue(out.vendor.name.contains("NETGEAR")) &&
@@ -263,6 +264,8 @@ object DeviceIdentifyApiSpec
         out   <- decode(resp)
       } yield assertTrue(resp.status == Status.Ok) &&
         assertTrue(out.vendor.kind == "private") &&
+        // our own placeholder is not a name the device sent
+        assertTrue(out.sentName.isEmpty) &&
         assertTrue(out.vendor.name.isEmpty) &&
         // genuinely empty, not an error: a device with no traffic yet
         assertTrue(out.destinations.isEmpty) &&

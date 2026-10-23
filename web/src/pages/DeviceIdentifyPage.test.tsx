@@ -39,6 +39,7 @@ function identity(over: Partial<DeviceIdentity> = {}): DeviceIdentity {
   return {
     mac: MAC,
     name: 'Roku-Living-Room',
+    sentName: 'Roku-Living-Room',
     managed: false,
     vendor: { kind: 'vendor', name: 'NETGEAR' },
     firstSeenAt: new Date(now - 12 * 60_000).toISOString(),
@@ -105,6 +106,14 @@ describe('DeviceIdentifyPage (#2926)', () => {
     const vendor = await screen.findByTestId('identify-vendor')
     expect(vendor).toHaveTextContent('Private address')
     expect(vendor).not.toHaveTextContent('NETGEAR')
+  })
+
+  it('a device that sent no DHCP name says so, even though it has a placeholder name', async () => {
+    identify.mockResolvedValue(identity({ name: 'unknown', sentName: null }))
+    renderPage()
+    const name = await screen.findByTestId('identify-name')
+    expect(name).toHaveTextContent("didn't send a name")
+    expect(name).not.toHaveTextContent('unknown')
   })
 
   it('a loaded device with no traffic says so, distinct from loading', async () => {

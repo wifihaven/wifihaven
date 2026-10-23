@@ -12,8 +12,6 @@ import type { DeviceIdentity, DeviceVendor } from '@/types/api'
 // "private address" for a randomized MAC), and every destination it tried to reach — blocked
 // attempts included — so the operator can work out what it is before enrolling it.
 
-const AUTO_NAME = /^device-[0-9a-f]+$/i
-
 function ago(iso: string): string {
   const s = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000)
   const n = (v: number, unit: string) => `${v} ${unit}${v === 1 ? '' : 's'} ago`
@@ -50,14 +48,14 @@ function VendorHint({ vendor }: { vendor: DeviceVendor }) {
 }
 
 function IdentityCard({ d }: { d: DeviceIdentity }) {
-  const sentNoName = AUTO_NAME.test(d.name)
+  const sentNoName = !d.sentName
   return (
     <div className="bg-white rounded-2xl border border-brand-border p-5">
       <dl className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-4 text-sm">
         <div>
           <dt className="text-xs uppercase tracking-wider text-brand-text-muted">Name it sent</dt>
           <dd className="text-brand-ink font-medium" data-testid="identify-name">
-            {sentNoName ? 'None' : d.name}
+            {d.sentName ?? 'None'}
             <span className="block text-xs text-brand-text-muted font-normal">
               {sentNoName
                 ? "It didn't send a name over DHCP. Phones using a private address often don't."
@@ -94,7 +92,7 @@ function Traffic({ d }: { d: DeviceIdentity }) {
         <EmptyState
           data-testid="identify-no-traffic"
           title={`No connection attempts recorded in the last ${d.windowDays} days.`}
-          hint="The device hasn't tried to reach anything we could see since it was first seen, or it has been offline."
+          hint="The device hasn't tried to reach anything we could see in that time, or it has been offline."
         />
       </div>
     )

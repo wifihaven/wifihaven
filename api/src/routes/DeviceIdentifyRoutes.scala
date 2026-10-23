@@ -4,7 +4,7 @@ import wifihaven.api.auth.*
 import wifihaven.api.db.*
 import wifihaven.api.identify.MacVendors
 import wifihaven.api.metrics.AppMetrics
-import wifihaven.api.usage.RetentionSweepJob
+import wifihaven.api.usage.{AppMembership, RetentionSweepJob}
 import wifihaven.shared.*
 import wifihaven.shared.types.*
 import zio.{Clock as _, *}
@@ -27,7 +27,11 @@ object DeviceIdentifyRoutes {
   val DefaultLimit      = 200
   val MaxLimit          = 500
 
-  /** A recognised app must carry at least this share of all attempts to be offered as a guess. */
+  /**
+   * A recognised app must carry at least this share of all attempts to be offered as a guess. A
+   * product choice, not a measured threshold: "most of its traffic" is the bar the label claims, so
+   * the label is only offered when that is literally true.
+   */
   val GuessMinSharePct = 50
 
   def routes(
@@ -95,21 +99,18 @@ object DeviceIdentifyRoutes {
     )
 
   /**
-   * Host → app over DISTINCTIVE app hosts only. A shared host (a multi-tenant vendor backend,
-   * #1898) says little about which product a device is, so it labels nothing here. When two apps
-   * claim the same host the lowest id wins, the same tie-break usage attribution uses.
+   * Host → app over DISTINCTIVE app hosts only ([[AppMembership.distinctiveOwners]]). A shared host
+   * (a multi-tenant vendor backend, #1898) says little about which product a device is, so it
+   * labels nothing here.
    */
   private[routes] def appIndex(
       appList: List[App],
       mappings: List[AppHost],
   ): Map[String, IdentifyAppRef] = {
     val byId = appList.map(a => a.id -> a).toMap
-    mappings
-      .filterNot(_.shared)
-      .groupBy(_.host.value)
-      .flatMap { case (host, hs) =>
-        byId.get(hs.minBy(_.appId.value).appId).map(a => host -> IdentifyAppRef(a.slug, a.name))
-      }
+    AppMembership.distinctiveOwners(mappings).flatMap { case (host, id) =>
+      byId.get(id).map(a => host -> IdentifyAppRef(a.slug, a.name))
+    }
   }
 
   private[routes] def build(
@@ -149,6 +150,7 @@ object DeviceIdentifyRoutes {
     DeviceIdentity(
       mac = device.mac,
       name = device.name,
+      sentName = Option.when(!DeviceNames.isPlaceholder(device.name))(device.name),
       managed = device.profileId.isDefined,
       vendor = vendor,
       firstSeenAt = firstSeenAt,

@@ -552,6 +552,10 @@ case class IdentifyGuess(appSlug: String, appName: String, sharePct: Int) derive
 case class DeviceIdentity(
     mac: MacAddress,
     name: String,
+    // `name` unless it is one of OUR placeholders (`device-xxxxxx` / legacy "unknown",
+    // `DeviceNames.isPlaceholder`), i.e. the device sent no DHCP hostname. Server-computed so the
+    // SPA never re-derives the placeholder rule.
+    sentName: Option[String],
     managed: Boolean,
     vendor: DeviceVendor,
     firstSeenAt: Option[String],

@@ -215,6 +215,8 @@ export interface IdentifyGuess {
 export interface DeviceIdentity {
   mac: string
   name: string
+  // `name` unless it is a server placeholder (the device sent no DHCP hostname).
+  sentName?: string | null
   managed: boolean
   vendor: DeviceVendor
   firstSeenAt?: string | null
