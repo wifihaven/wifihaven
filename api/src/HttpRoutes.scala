@@ -57,6 +57,8 @@ object HttpRoutes {
       alertRepo      <- ZIO.service[AlertRepo]
       appRepo        <- ZIO.service[AppRepo]
       appRollupRepo  <- ZIO.service[wifihaven.api.db.AppUsedRollupRepo]
+      // #2926: the bundled IEEE OUI table. Loaded once here so a build missing it fails boot.
+      macVendors     <- wifihaven.api.identify.MacVendors.load
       // #2132 (multi-tenant P5-2): the beta request → provisioning → invite-accept pipeline repos.
       householdRepo  <- ZIO.service[HouseholdRepo]
       betaRepo       <- ZIO.service[BetaRequestRepo]
@@ -361,6 +363,7 @@ object HttpRoutes {
           blCache,
           blFetcher2,
           bundledBlocklists,
+          macVendors,
           blockPageHousehold,
           // Named: two same-typed RateLimiters with very different budgets (60 vs 300), so a
           // positional transposition would compile and silently swap the fairness bound with the
@@ -609,6 +612,7 @@ object HttpRoutes {
       blCache: BlocklistCache,
       blFetcher2: BlocklistFetcher,
       bundledBlocklists: Map[wifihaven.shared.types.BlocklistId, BundledBlocklist],
+      macVendors: wifihaven.api.identify.MacVendors,
       // #2569: shared block-page household derivation + the two limiters on GET /api/blocked.
       // Threaded in (not re-resolved) so the limiter state is shared across the route table.
       blockPageHousehold: BlockPageHousehold,
@@ -648,6 +652,16 @@ object HttpRoutes {
         appRollupRepo,
         clock,
         ambientRepoR,
+      ) ++
+      DeviceIdentifyRoutes.routes(
+        auth,
+        deviceRepo,
+        connRepo,
+        appRepo,
+        upRepo,
+        profileRepo,
+        macVendors,
+        clock,
       ) ++
       DashboardNowRoutes.routes(
         auth,

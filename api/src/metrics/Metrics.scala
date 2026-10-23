@@ -235,6 +235,9 @@ object MetricGuard {
     // by temporal co-presence with apps' distinctive sessions. `outcome` is a
     // bounded 3-value enum (attributed / split / other); no per-mac/host/app label.
     "usage_shared_host_attribution_total"         -> Set("outcome"),
+    // #2926 — "What is this?" device views, by what the MAC's vendor lookup found. `result` is a
+    // fixed 3-value enum (vendor / private / unknown) from `MacVendors.lookup`.
+    "device_identify_views_total"                 -> Set("result"),
     // #1885 — log events the loki4j appender shed because its bounded send queue
     // (sendQueueMaxBytes) was full while Loki was slow/unreachable. The appender
     // is async/drop-on-backpressure by construction (fail-open: the request path
@@ -1625,6 +1628,14 @@ object AppMetrics {
         ),
       )
       .unit
+
+  // ── Device identify view (#2926) ─────────────────────────────────────────────
+  // One count per successful `GET /api/devices/{mac}/identify`, labelled with the vendor-lookup
+  // kind. A high `private` share says the OUI hint is useless for most new devices (randomized
+  // Wi-Fi addresses) and the traffic list is doing the identifying.
+
+  def recordDeviceIdentifyView(vendorKind: String): UIO[Unit] =
+    MetricGuard.counter("device_identify_views_total", Map("result" -> vendorKind), 1L)
 
   // ── Fleet liveness (#1204) ───────────────────────────────────────────────────
   // Set by RouterPresenceMetrics: routers seen (last_seen_at) within the window.

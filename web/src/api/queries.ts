@@ -9,7 +9,7 @@ import { useQuery, useQueryClient, type UseQueryOptions } from '@tanstack/react-
 import { api } from '@/api/client'
 import { qk } from '@/api/queryKeys'
 import type {
-  Alert, BetaRequestStatus, BetaRequestSummary, BlocklistSummary, DashboardNow, Device, HouseholdSettings, MeResponse, NamedSchedule, ProfileDetail,
+  Alert, BetaRequestStatus, BetaRequestSummary, BlocklistSummary, DashboardNow, Device, DeviceIdentity, HouseholdSettings, MeResponse, NamedSchedule, ProfileDetail,
   ProfileTimeStatus,
   ProfileAppWeeklyUsage,
   ProfileTimeStatusWeek, ProfileTimeSummary, ProfileTimeSummaryWeek, ProfileUsageByApp,
@@ -197,6 +197,17 @@ export function useDevices(opts?: QueryOpts<Device[]>) {
     queryKey: qk.devices(),
     queryFn: () => api.devices.list(),
     staleTime: STALE.devices,
+    ...opts,
+  })
+}
+
+// #2926: what an (unmanaged) device has been trying to reach. Never written to by a mutation:
+// viewing it changes nothing.
+export function useDeviceIdentify(mac: string, opts?: QueryOpts<DeviceIdentity>) {
+  return useQuery({
+    queryKey: qk.deviceIdentify(mac),
+    queryFn: () => api.devices.identify(mac),
+    staleTime: 30_000,
     ...opts,
   })
 }

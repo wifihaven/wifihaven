@@ -122,6 +122,17 @@ describe('DevicesPage — unmanaged split against the real wire shape (#2621)', 
     expect(within(section).getByTestId('unmanaged-enroll-aa:bb:cc:dd:ee:09')).toBeInTheDocument()
     expect(screen.getAllByText('guest-phone')).toHaveLength(1)
   })
+
+  // #2926: the unmanaged row is the way into "What is this?".
+  it('links an unmanaged row to its identify view', async () => {
+    (api.devices.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([ipad, wireUnassigned])
+    renderPage()
+
+    const section = await screen.findByTestId('unmanaged-devices-section')
+    const link = within(section).getByTestId('device-identify-link-aa:bb:cc:dd:ee:09')
+    expect(link).toHaveAttribute('href', `/devices/${encodeURIComponent('aa:bb:cc:dd:ee:09')}/identify`)
+    expect(link).toHaveTextContent('guest-phone')
+  })
 })
 
 describe('DevicesPage — add', () => {

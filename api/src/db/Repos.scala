@@ -760,6 +760,12 @@ trait DeviceRepo {
   def findByMacInHousehold(mac: MacAddress, household: HouseholdId): Task[Option[Device]]
 
   /**
+   * #2926: when this household first saw `mac` — the device row's `created_at`, written by
+   * first-seen discovery (`upsertUnknown`) or by enrolment. None when there is no such row.
+   */
+  def firstSeenAtInHousehold(mac: MacAddress, household: HouseholdId): Task[Option[Instant]]
+
+  /**
    * #2566/#2322: the household that owns `mac`, lowest id first when several do — the ONLY
    * cross-tenant read on devices, and deliberately so.
    *
@@ -1181,6 +1187,23 @@ case class BlockEventInsert(
     reason: BlockReason,
 )
 
+/** #2926: one host row of [[ConnectionEventRepo.destinationsForMac]]. */
+case class MacDestinationRow(
+    host: HostId,
+    allowed: Long,
+    blocked: Long,
+    firstSeen: Instant,
+    lastSeen: Instant,
+)
+
+/** #2926: the top-N rows plus totals over every host in the window. */
+case class MacDestinations(
+    rows: List[MacDestinationRow],
+    hostCount: Int,
+    totalAllowed: Long,
+    totalBlocked: Long,
+)
+
 case class ConnectionEventInsert(
     routerId: RouterId,
     mac: Option[MacAddress],
@@ -1524,6 +1547,26 @@ trait ConnectionEventRepo {
       since: Instant,
       household: Option[HouseholdId] = None,
   ): Task[Map[MacAddress, Instant]]
+
+  /**
+   * #2926: every destination `mac` contacted in `(from, to]`, grouped by (post-resolution) host,
+   * with allowed / blocked attempt counts and first / last `ts` — the "What is this?" view for an
+   * unmanaged device. Top `limit` hosts by attempts; the window totals in [[MacDestinations]] are
+   * over ALL hosts (window aggregates evaluated before the LIMIT), so a truncated list still
+   * reports true totals.
+   *
+   * Household-scoped by `routers.household_id` (connection_events are router_id-keyed), so a
+   * same-MAC device in another household (#2125) contributes nothing. Multicast / broadcast
+   * destinations are excluded, as on the Logs page. Plan: `*_mac_ts_idx` bitmap scans with weekly
+   * partition pruning; ~300ms for the busiest prod MAC over 30 days (EXPLAIN on #2926).
+   */
+  def destinationsForMac(
+      household: HouseholdId,
+      mac: MacAddress,
+      from: Instant,
+      to: Instant,
+      limit: Int,
+  ): Task[MacDestinations]
 
   /**
    * #720 backfill: look up the most recent fqdn-typed connection_event with the given (router_id,
@@ -2289,7 +2332,13 @@ class DeviceRepoLive(xa: Transactor[Task], clock: wifihaven.shared.Clock) extend
   // #2108: same projection as findByMac, AND-scoped to one household. The user-facing device routes
   // resolve through this so an hh-A admin gets a clean 404 for an hh-B MAC. Index-backed by V65's
   // uq_devices_household_mac leading column.
-  def findByMacInHousehold(mac: MacAddress, household: HouseholdId) =
+  def firstSeenAtInHousehold(mac: MacAddress, household: HouseholdId) =
+    (fr"SELECT created_at FROM devices WHERE mac=$mac AND" ++
+      SqlFragments.householdEq(household, "household_id"))
+      .query[Instant]
+      .option
+      .transact(xa)
+  def findByMacInHousehold(mac: MacAddress, household: HouseholdId)   =
     DbMetrics.timed("device.findByMacInHousehold")(
       (fr"SELECT d.id,d.mac,d.name,d.profile_id,p.name,d.last_seen_ip,d.last_seen_at::TEXT,d.shared FROM devices d LEFT JOIN profiles p ON p.id=d.profile_id WHERE d.mac=$mac AND" ++
         SqlFragments.householdEq(household, "d.household_id"))
@@ -4430,6 +4479,44 @@ class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo 
       .map(DomainCount.apply)
       .to[List]
       .transact(xa)
+
+  def destinationsForMac(
+      household: HouseholdId,
+      mac: MacAddress,
+      from: Instant,
+      to: Instant,
+      limit: Int,
+  ): Task[MacDestinations] =
+    DbMetrics.timed("connectionEvent.destinationsForMac")(
+      (fr"""SELECT CASE WHEN ce.resolved_host_value IS NOT NULL THEN 'fqdn' ELSE ce.host_type END,
+                   COALESCE(ce.resolved_host_value, ce.host_value),
+                   COUNT(*) FILTER (WHERE ce.allowed),
+                   COUNT(*) FILTER (WHERE NOT ce.allowed),
+                   MIN(ce.ts), MAX(ce.ts),
+                   COUNT(*) OVER (),
+                   SUM(COUNT(*) FILTER (WHERE ce.allowed)) OVER (),
+                   SUM(COUNT(*) FILTER (WHERE NOT ce.allowed)) OVER ()
+            FROM connection_events ce
+            JOIN routers r ON r.id = ce.router_id
+            WHERE ce.mac = $mac AND ce.ts > $from AND ce.ts <= $to AND""" ++
+        SqlFragments.householdEq(household, "r.household_id") ++ multicastFilterSql ++
+        fr"""GROUP BY 1, 2
+            ORDER BY COUNT(*) DESC, 2
+            LIMIT $limit""")
+        .query[(HostId, Long, Long, Instant, Instant, Int, Long, Long)]
+        .to[List]
+        .transact(xa)
+        .map { rows =>
+          val (hosts, allowed, blocked) =
+            rows.headOption.fold((0, 0L, 0L))(r => (r._6, r._7, r._8))
+          MacDestinations(
+            rows.map(r => MacDestinationRow(r._1, r._2, r._3, r._4, r._5)),
+            hosts,
+            allowed,
+            blocked,
+          )
+        },
+    )
 
   def lastSeenByMacSince(
       since: Instant,

@@ -16,6 +16,7 @@ import zio.{Clock as _, *}
 import zio.http.*
 import zio.json.*
 import zio.test.*
+import zio.interop.catz.*
 
 import java.time.Instant
 
@@ -33,7 +34,8 @@ import java.time.Instant
  *     household contributes nothing to this household's counts (#2125);
  *   - reading the view changes no policy state.
  */
-object DeviceIdentifyApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clock] {
+object DeviceIdentifyApiSpec
+    extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Transactor[Task] & Clock] {
 
   override val bootstrap =
     TestDatabase.layer ++ TestLayers.withClock(TestClock.schoolDayAfternoon)
@@ -42,8 +44,10 @@ object DeviceIdentifyApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPos
   private def makeAuth =
     for {
       ur    <- ZIO.service[UserRepo]
+      // the DB-backed HouseholdRepo, so login can resolve household B's slug
+      hr    <- ZIO.service[HouseholdRepo]
       clock <- ZIO.service[Clock]
-    } yield AuthServiceLive(ur, jwtCfg, clock)
+    } yield AuthServiceLive(ur, jwtCfg, clock, hr): AuthService
   private val cleanDb  = TestDatabase.cleanAndMigrate
 
   // 84:1b:5e is NETGEAR in the IEEE MA-L table; 6a:… has the locally-administered bit set.
@@ -122,7 +126,7 @@ object DeviceIdentifyApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPos
     test("unmanaged device: blocked + allowed attempts grouped by host, name and vendor shown") {
       for {
         _          <- cleanDb
-        two        <- TestDatabase.seedTwoHouseholds(managedA, managedB)
+        two        <- TestLayers.seedTwoHouseholds(managedA, managedB)
         deviceRepo <- ZIO.service[DeviceRepo]
         connRepo   <- ZIO.service[ConnectionEventRepo]
         now        <- ZIO.serviceWithZIO[Clock](_.instant)
@@ -169,7 +173,7 @@ object DeviceIdentifyApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPos
     test("catalog app attribution groups hosts by app and the guess is labelled from it") {
       for {
         _          <- cleanDb
-        two        <- TestDatabase.seedTwoHouseholds(managedA, managedB)
+        two        <- TestLayers.seedTwoHouseholds(managedA, managedB)
         deviceRepo <- ZIO.service[DeviceRepo]
         connRepo   <- ZIO.service[ConnectionEventRepo]
         appRepo    <- ZIO.service[AppRepo]
@@ -224,7 +228,7 @@ object DeviceIdentifyApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPos
     test("a locally-administered (randomized) MAC shows a private address, not a vendor") {
       for {
         _          <- cleanDb
-        two        <- TestDatabase.seedTwoHouseholds(managedA, managedB)
+        two        <- TestLayers.seedTwoHouseholds(managedA, managedB)
         deviceRepo <- ZIO.service[DeviceRepo]
         now        <- ZIO.serviceWithZIO[Clock](_.instant)
         _          <- deviceRepo.upsertUnknown(privateMac, "device-aabb01", None, now, two.hhA)
@@ -243,7 +247,7 @@ object DeviceIdentifyApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPos
     test("a MAC that only exists in another household is a 404") {
       for {
         _          <- cleanDb
-        two        <- TestDatabase.seedTwoHouseholds(managedA, managedB)
+        two        <- TestLayers.seedTwoHouseholds(managedA, managedB)
         deviceRepo <- ZIO.service[DeviceRepo]
         connRepo   <- ZIO.service[ConnectionEventRepo]
         now        <- ZIO.serviceWithZIO[Clock](_.instant)
@@ -266,7 +270,7 @@ object DeviceIdentifyApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPos
     test("the same MAC in another household contributes nothing to this household's counts") {
       for {
         _          <- cleanDb
-        two        <- TestDatabase.seedTwoHouseholds(managedA, managedB)
+        two        <- TestLayers.seedTwoHouseholds(managedA, managedB)
         deviceRepo <- ZIO.service[DeviceRepo]
         connRepo   <- ZIO.service[ConnectionEventRepo]
         now        <- ZIO.serviceWithZIO[Clock](_.instant)
@@ -303,7 +307,7 @@ object DeviceIdentifyApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPos
     test("reading the view changes no policy state") {
       for {
         _          <- cleanDb
-        two        <- TestDatabase.seedTwoHouseholds(managedA, managedB)
+        two        <- TestLayers.seedTwoHouseholds(managedA, managedB)
         deviceRepo <- ZIO.service[DeviceRepo]
         connRepo   <- ZIO.service[ConnectionEventRepo]
         alertRepo  <- ZIO.service[AlertRepo]

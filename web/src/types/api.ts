@@ -174,6 +174,62 @@ export interface Device {
   shared?: boolean
 }
 
+// #2926: GET /api/devices/{mac}/identify — the "What is this?" view for an unmanaged device.
+// Read-only; nothing here feeds policy.
+export type DeviceVendorKind = 'vendor' | 'private' | 'unknown'
+
+export interface DeviceVendor {
+  kind: DeviceVendorKind
+  name?: string | null
+}
+
+export interface IdentifyAppRef {
+  slug: string
+  name: string
+}
+
+export interface IdentifyDestination {
+  host: HostId
+  app?: IdentifyAppRef | null
+  allowed: number
+  // Blocked whole-MAC drops are rate-limited at the router, so this is a floor.
+  blocked: number
+  firstSeen: string
+  lastSeen: string
+}
+
+export interface IdentifyApp {
+  slug: string
+  name: string
+  allowed: number
+  blocked: number
+  hosts: number
+}
+
+export interface IdentifyGuess {
+  appSlug: string
+  appName: string
+  sharePct: number
+}
+
+export interface DeviceIdentity {
+  mac: string
+  name: string
+  managed: boolean
+  vendor: DeviceVendor
+  firstSeenAt?: string | null
+  lastSeenAt?: string | null
+  lastSeenIp?: string | null
+  windowDays: number
+  totalAllowed: number
+  totalBlocked: number
+  hostCount: number
+  truncated: boolean
+  destinations: IdentifyDestination[]
+  apps: IdentifyApp[]
+  guess?: IdentifyGuess | null
+}
+
 // #2848: GET /api/shared-devices. `holder` is null while the device is checked out.
 export interface SharedDeviceHolder {
   profileId: number

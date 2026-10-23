@@ -10,7 +10,7 @@ import type {
   AcceptInviteRequest, AcceptInviteResponse, ApproveBetaResponse, BetaRequestAck, BetaRequestStatus, BetaRequestSummary, CreateBetaRequest,
   ForgotPasswordAck, ForgotPasswordRequest, ResetPasswordRequest, ResetPasswordResponse,
   AccessRequestReceipt, Alert, AppDetail, ApproveAlertRequest, BlockedInfoResponse, BlocklistHosts, BlocklistSummary, CreateRouterRequest, CreateRouterResponse, CreateUserRequest,
-  DashboardNow, DashboardStats, Device,
+  DashboardNow, DashboardStats, Device, DeviceIdentity,
   CreateAccessRequest, DeviceTimeStatus, DeviceTimeStatusWeek, EnforcementStatus, HouseholdSettings, LoginResponse, MeResponse, ProfileAppWeeklyUsage, ProfileDetail, ProfileTimeStatus, ProfileTimeStatusWeek, ProfileTimeSummary, ProfileTimeSummaryWeek, ProfileUsageByApp,
   ConnectionEventSeriesPage, QueryLogPage,
   PatchUserRequest,
@@ -431,6 +431,8 @@ export const api = {
     patch: (mac: string, data: PatchDeviceRequest) =>
       req<void>('PATCH', `/devices/${mac}`, data),
     delete: (mac: string) => req<void>('DELETE', `/devices/${encodeURIComponent(mac)}`),
+    // #2926: read-only "What is this?" view. Raw MAC path segment, like `patch`.
+    identify: (mac: string) => req<DeviceIdentity>('GET', `/devices/${mac}/identify`),
   },
 
   // ── Shared devices (#2848) ─────────────────────────────────────────────
