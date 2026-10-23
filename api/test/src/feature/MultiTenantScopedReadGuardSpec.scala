@@ -562,6 +562,7 @@ object MultiTenantScopedReadGuardSpec extends ZIOSpecDefault {
         "api/src caller passes one explicitly, which B11 enforces (#2312/#2569/#2322)",
     ),
     "DeviceRepo.findByMacInHousehold"              -> Scoped,
+    "DeviceRepo.firstSeenAtInHousehold"            -> Scoped,
     // #2843: takes the household and refuses a device outside it (DeviceNotInHousehold).
     "DeviceAssignmentRepo.assign"                  -> Scoped,
     "DeviceRepo.findOwningHousehold"               -> TenancyKey(
