@@ -9,6 +9,7 @@ import { LoginPage } from '@/pages/LoginPage'
 import { DashboardPage } from '@/pages/DashboardPage'
 import { DevicesPage } from '@/pages/DevicesPage'
 import { DeviceTimelinePage } from '@/pages/DeviceTimelinePage'
+import { DeviceIdentifyPage } from '@/pages/DeviceIdentifyPage'
 import { ProfilesPage } from '@/pages/ProfilesPage'
 import { ProfileTimelinePage } from '@/pages/ProfileTimelinePage'
 import { LogsPage } from '@/pages/LogsPage'
@@ -109,6 +110,7 @@ function AppRoutes() {
         <Route path="dashboard" element={<RequirePwChanged><DashboardPage /></RequirePwChanged>} />
         <Route path="devices"   element={<RequirePwChanged><DevicesPage /></RequirePwChanged>} />
         <Route path="devices/:mac/timeline" element={<RequirePwChanged><DeviceTimelinePage /></RequirePwChanged>} />
+        <Route path="devices/:mac/identify" element={<RequirePwChanged><DeviceIdentifyPage /></RequirePwChanged>} />
         <Route path="profiles"  element={<RequirePwChanged><ProfilesPage /></RequirePwChanged>} />
         <Route path="profiles/:profileId/timeline" element={<RequirePwChanged><ProfileTimelinePage /></RequirePwChanged>} />
         <Route path="logs"      element={<Navigate to="/usage/events" replace />} />

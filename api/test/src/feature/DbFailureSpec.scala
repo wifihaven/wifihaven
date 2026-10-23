@@ -153,6 +153,7 @@ object DbFailureSpec extends ZIOSpecDefault {
   }
 
   private def brokenDeviceRepo: DeviceRepo = new DeviceRepo {
+    def firstSeenAtInHousehold(m: MacAddress, h: HouseholdId)                   = throwing
     def listAllForHousehold(household: HouseholdId)                             = throwing
     def attributionScope(household: HouseholdId, from: Instant, until: Instant) = throwing
     def findByMac(mac: MacAddress, household: HouseholdId)                      = throwing
@@ -231,11 +232,11 @@ object DbFailureSpec extends ZIOSpecDefault {
   }
 
   private def brokenConnectionEventRepo: ConnectionEventRepo = new ConnectionEventRepo {
-    def insertBatch(es: List[ConnectionEventInsert])                                    = throwing
-    def recent(l: Int)                                                                  = throwing
-    def listForRouter(r: RouterId, l: Int)                                              = throwing
-    def query(f: LogFilter)                                                             = throwing
-    def querySeries(f: LogFilter, bucketSeconds: Int, groupBy: Set[String])             = throwing
+    def insertBatch(es: List[ConnectionEventInsert])                                      = throwing
+    def recent(l: Int)                                                                    = throwing
+    def listForRouter(r: RouterId, l: Int)                                                = throwing
+    def query(f: LogFilter)                                                               = throwing
+    def querySeries(f: LogFilter, bucketSeconds: Int, groupBy: Set[String])               = throwing
     def querySeriesRollup(
         f: LogFilter,
         bucketSeconds: Int,
@@ -243,15 +244,17 @@ object DbFailureSpec extends ZIOSpecDefault {
         grain: BucketGrain,
     ) =
       throwing
-    def stats(household: HouseholdId)                                                   = throwing
-    def topBlocked(h: Int, l: Int)                                                      = throwing
-    def lastSeenByMacSince(since: Instant, household: Option[HouseholdId] = None)       = throwing
-    def findRecentFqdnFor(r: RouterId, ip: IpAddress, since: Instant)                   = throwing
-    def findRecentFqdnForBatch(r: RouterId, ips: List[IpAddress], since: Instant)       = throwing
-    def backfillResolvedFor(r: RouterId, ip: IpAddress, fqdn: Hostname, since: Instant) =
+    def stats(household: HouseholdId)                                                     = throwing
+    def topBlocked(h: Int, l: Int)                                                        = throwing
+    def lastSeenByMacSince(since: Instant, household: Option[HouseholdId] = None)         = throwing
+    def destinationsForMac(h: HouseholdId, m: MacAddress, f: Instant, t: Instant, l: Int) =
       throwing
-    def rerollConnEventsHourly(since: Instant)                                          = throwing
-    def rerollConnEventsDaily(sinceDate: LocalDate)                                     = throwing
+    def findRecentFqdnFor(r: RouterId, ip: IpAddress, since: Instant)                     = throwing
+    def findRecentFqdnForBatch(r: RouterId, ips: List[IpAddress], since: Instant)         = throwing
+    def backfillResolvedFor(r: RouterId, ip: IpAddress, fqdn: Hostname, since: Instant)   =
+      throwing
+    def rerollConnEventsHourly(since: Instant)                                            = throwing
+    def rerollConnEventsDaily(sinceDate: LocalDate)                                       = throwing
   }
 
   private def jsonField(body: String, key: String): Option[String] =

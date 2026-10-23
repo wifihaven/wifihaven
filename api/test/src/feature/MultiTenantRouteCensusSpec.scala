@@ -407,6 +407,9 @@ object MultiTenantRouteCensusSpec extends ZIOSpecDefault {
     "GET /api/devices/{}/recent-apexes"     -> Scoped,
     "GET /api/profiles/{}/usage-by-app"     -> Scoped,
     "GET /api/profiles/{}/usage/app/weekly" -> Scoped,
+
+    // ── DeviceIdentifyRoutes ───────────────────────────────────────────────────────────────────
+    "GET /api/devices/{}/identify" -> Scoped,
   )
 
   // ── the scanner ──────────────────────────────────────────────────────────────────────────────

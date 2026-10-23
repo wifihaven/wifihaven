@@ -28,6 +28,21 @@ object AppMembership {
   // memberships (NOT one shared `__other__` bucket).
   def forUnmatchedHost(host: HostId): AppMembership =
     AppMembership(slug = host.value, name = host.value, icon = None, appId = None)
+
+  /**
+   * Distinctive host → owning app: the lowest appId wins when a host is in several apps (#1061).
+   * #1898: SHARED rows are excluded — a shared host is never distinctively credited to one app.
+   * Keys are the apex-form `app_hosts.host`; callers walk an FQDN onto them with
+   * `HostMatch.lookupApex` (#1161). The one place this index is built (#2926 collapsed three inline
+   * copies).
+   */
+  def distinctiveOwners(mappings: List[AppHost]): Map[String, AppId] =
+    mappings
+      .filterNot(_.shared)
+      .groupBy(_.host.value)
+      .view
+      .mapValues(ms => ms.iterator.map(_.appId).minBy(_.value))
+      .toMap
 }
 
 /**

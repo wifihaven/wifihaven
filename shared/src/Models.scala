@@ -498,6 +498,79 @@ case class RecentApexesResponse(
     items: List[RecentApex],
 ) derives JsonCodec
 
+// #2926: the "What is this?" view for a device (built for unmanaged ones) —
+// `GET /api/devices/{mac}/identify`. Read-only: nothing here feeds policy.
+
+/**
+ * The MAC's vendor from the bundled IEEE MA-L table. `kind` is one of:
+ *   - "vendor": the OUI is registered; `name` is the organisation.
+ *   - "private": a locally-administered (randomized / private Wi-Fi) address — the prefix means
+ *     nothing, so no `name` is given even if the table happens to list it.
+ *   - "unknown": a universal address whose prefix is not in the table, or a group address.
+ */
+case class DeviceVendor(kind: String, name: Option[String]) derives JsonCodec
+
+case class IdentifyAppRef(slug: String, name: String) derives JsonCodec
+
+/**
+ * One contacted destination over the window. `allowed` / `blocked` count connection attempts;
+ * blocked whole-MAC drops are rate-limited at the router (`wh_drop` log, 1/min burst 5 per
+ * destination IP), so `blocked` is a floor. `app` is set when the catalog recognises the host by a
+ * distinctive (non-shared) app host.
+ */
+case class IdentifyDestination(
+    host: HostId,
+    app: Option[IdentifyAppRef],
+    allowed: Long,
+    blocked: Long,
+    firstSeen: String,
+    lastSeen: String,
+) derives JsonCodec
+
+/** Per-app roll-up of the destinations the catalog recognised. `hosts` counts distinct hosts. */
+case class IdentifyApp(
+    slug: String,
+    name: String,
+    allowed: Long,
+    blocked: Long,
+    hosts: Int,
+) derives JsonCodec
+
+/**
+ * A heuristic label: one recognised app took `sharePct`% of all attempts in the window. Shown as a
+ * guess only — it never assigns a profile or changes policy.
+ */
+case class IdentifyGuess(appSlug: String, appName: String, sharePct: Int) derives JsonCodec
+
+/**
+ * `name` is `devices.name`, which first-seen discovery seeds from the DHCP-advertised hostname
+ * (#2927 stores that hostname separately). `firstSeenAt` is the earlier of the device row's
+ * creation and its earliest recorded event — history before it does not exist. Totals and
+ * `hostCount` cover every destination in the window; `destinations` is the top slice by attempts
+ * and `truncated` says whether more exist.
+ */
+case class DeviceIdentity(
+    mac: MacAddress,
+    name: String,
+    // `name` unless it is one of OUR placeholders (`device-xxxxxx` / legacy "unknown",
+    // `DeviceNames.isPlaceholder`), i.e. the device sent no DHCP hostname. Server-computed so the
+    // SPA never re-derives the placeholder rule.
+    sentName: Option[String],
+    managed: Boolean,
+    vendor: DeviceVendor,
+    firstSeenAt: Option[String],
+    lastSeenAt: Option[String],
+    lastSeenIp: Option[IpAddress],
+    windowDays: Int,
+    totalAllowed: Long,
+    totalBlocked: Long,
+    hostCount: Int,
+    truncated: Boolean,
+    destinations: List[IdentifyDestination],
+    apps: List[IdentifyApp],
+    guess: Option[IdentifyGuess],
+) derives JsonCodec
+
 case class TimeUsage(
     id: TimeUsageId,
     deviceMac: MacAddress,

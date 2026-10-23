@@ -206,7 +206,13 @@ export function DevicesPage() {
           <div className="bg-white rounded-2xl border border-brand-border overflow-hidden">
             {unknownDevices.map(d => (
               <div key={d.mac} data-testid={`device-row-${d.mac}`} className={`flex items-center gap-4 px-5 py-4 border-b border-brand-border last:border-0 transition-shadow ${highlightMac === d.mac ? 'ring-2 ring-brand-accent/60 ring-inset' : ''}`}>
-                <div className="flex-1 min-w-0">
+                {/* #2926: an unmanaged row links to "What is this?" — its DHCP name, vendor, and
+                    every destination it tried, blocked ones included. Read-only. */}
+                <Link
+                  to={`/devices/${encodeURIComponent(d.mac)}/identify`}
+                  className="flex-1 min-w-0 hover:text-brand-accent transition-colors"
+                  data-testid={`device-identify-link-${d.mac}`}
+                >
                   <p className="font-medium text-brand-text truncate">{d.name}</p>
                   <p className="text-xs text-brand-text-muted font-mono">{d.mac}</p>
                   {d.lastSeenIp && (
@@ -220,7 +226,8 @@ export function DevicesPage() {
                       last seen {new Date(d.lastSeenAt).toLocaleString()}
                     </p>
                   )}
-                </div>
+                  <p className="text-xs text-brand-accent">What is this? See its traffic</p>
+                </Link>
                 <div className="hidden sm:block text-sm">
                   <span className={`px-2 py-1 rounded-lg text-xs border ${
                     unmanagedPolicy?.policy === 'allow'

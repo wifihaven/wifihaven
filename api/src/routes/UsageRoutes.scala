@@ -609,12 +609,7 @@ object UsageRoutes {
     // Distinctive host → owning-app: lowest appId wins when a host is in multiple apps (#1061),
     // apex-aware so subdomain traffic attributes to the apex-form entry (#1161). #1898: SHARED rows
     // are EXCLUDED from this map — a shared host is never distinctively credited to one app.
-    val distinctiveByApex = mappings
-      .filterNot(_.shared)
-      .groupBy(_.host.value)
-      .view
-      .mapValues(ms => ms.iterator.map(_.appId).minBy(_.value))
-      .toMap
+    val distinctiveByApex = AppMembership.distinctiveOwners(mappings)
     // #1898: apps that LIST a host as shared (the co-presence candidates), apex-keyed. Global
     // consistency (validation S1b) guarantees a host shared on any app is shared on every app
     // listing it, so a host is never simultaneously distinctive and shared.
@@ -900,11 +895,7 @@ object UsageRoutes {
     } yield {
       val mappings       = allMaps.filterNot(_.shared)
       val appById        = apps.iterator.map(a => a.id -> a).toMap
-      val byApex         = mappings
-        .groupBy(_.host.value)
-        .view
-        .mapValues(ms => ms.iterator.map(_.appId).minBy(_.value))
-        .toMap
+      val byApex         = AppMembership.distinctiveOwners(allMaps)
       val appOf          = (h: HostId) =>
         h.asFqdn
           .flatMap(fqdn => HostMatch.lookupApex(fqdn.value, byApex))

@@ -1140,6 +1140,147 @@
           "refId": "A"
         }
       ]
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "title": "Device identify views by vendor-lookup result (#2926)",
+      "description": "sum by (result) (increase(device_identify_views_total[1h])) — one count per successful GET /api/devices/{mac}/identify (the \"What is this?\" view for unmanaged devices), labelled with what the MAC's OUI lookup found: `vendor` (registered OUI), `private` (locally-administered / randomized address, no meaningful vendor), `unknown` (prefix not in the bundled IEEE MA-L table). Bounded 3-value enum. A high `private` share means the vendor hint rarely helps and the traffic list is doing the identifying. From AppMetrics.recordDeviceIdentifyView (DeviceIdentifyRoutes).",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 104
+      },
+      "id": 29,
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "short",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 20,
+            "showPoints": "never",
+            "lineWidth": 1
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (result) (increase(device_identify_views_total{env=\"$env\"}[1h]))",
+          "legendFormat": "{{result}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "title": "Device identify query p50 / p95 (#2926)",
+      "description": "histogram_quantile over db_query_duration_seconds for op=connectionEvent.destinationsForMac — the per-MAC grouped connection_events aggregate behind the identify view. Prod EXPLAIN on #2926: ~300ms for the busiest MAC over a 30-day window; the default window is 7 days. From DbMetrics.timed in ConnectionEventRepoLive.destinationsForMac.",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 104
+      },
+      "id": 30,
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "s",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 20,
+            "showPoints": "never",
+            "lineWidth": 1
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "histogram_quantile(0.5, sum by (le) (rate(db_query_duration_seconds_bucket{env=\"$env\",op=\"connectionEvent.destinationsForMac\"}[15m])))",
+          "legendFormat": "p50",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(db_query_duration_seconds_bucket{env=\"$env\",op=\"connectionEvent.destinationsForMac\"}[15m])))",
+          "legendFormat": "p95",
+          "refId": "B"
+        }
+      ]
     }
   ],
   "refresh": "30s",
