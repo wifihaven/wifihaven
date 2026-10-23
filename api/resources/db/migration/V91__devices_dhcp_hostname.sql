@@ -1,0 +1,14 @@
+-- V91__devices_dhcp_hostname.sql
+-- #2926 / #2927: the hostname a device advertised over DHCP, kept apart from `devices.name`.
+--
+-- Today the router's `dhcp_lease` / `first_seen_mac` hostname is used once — to seed `devices.name`
+-- when the row is created, or to replace a `device-xxxxxx` placeholder — and then dropped. Nothing
+-- records whether a name came from DHCP or from an operator, so the "What is this?" view for an
+-- unmanaged device (#2926) cannot show what the device calls itself. #2927 writes this column on
+-- every lease that carries a hostname and reads it back on the identify view.
+--
+-- Nullable, no default: absent means "no DHCP hostname seen since this column existed" (iOS/Android
+-- private addresses often send none). `ADD COLUMN` without a default is a catalog-only change in
+-- PG 11+, so it does not rewrite `devices`. Image-(N-1) never names the column, so its inserts and
+-- selects are unaffected.
+ALTER TABLE devices ADD COLUMN dhcp_hostname TEXT NULL;
