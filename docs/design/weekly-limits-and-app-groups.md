@@ -390,8 +390,12 @@ budget for the current week:
   to every profile the group is attached to. An app-template sync that changes
   an app's hosts counts too, for every profile that uses the app. Settings save
   keeps its existing all-dates DELETE (`Repos.scala:2078-2082`), and
-  `app_group_used_daily` joins it. Limit and exempt-flag edits change no usage
-  minutes, so they invalidate nothing. The next read recomputes at most six
+  `app_group_used_daily` joins it. An exempt-flag edit (on an assignment or an
+  attachment) changes which traffic the profile daily total counts, so it
+  deletes that profile's current-week settled `time_used_daily` rows
+  (`TimeUsedRollupJob.scala:333` rolls through the exempt-filtered
+  `usedSecondsForProfile`). It changes no app or group minutes. Limit edits
+  change no usage at all, so they invalidate nothing. The next read recomputes at most six
   days per affected profile, once, under the new definition (D7,
   retroactive).
 - **Late reports.** A report that arrives after its day was settled is not
@@ -415,8 +419,9 @@ budget for the current week:
   come from settled `time_used_daily` rows (§6.4), and today comes from the
   existing rolled-plus-tail read, so the total costs one small range read. The
   hourly bars, per-device summary and top hosts still need presence rows. They
-  keep today's single 7-day range read, which is behind `TimeStatusCache`, so
-  the view costs what it costs now plus that one query. That read passes the
+  keep today's single 7-day range read. On `/api/time/status/week` that read
+  is behind `TimeStatusCache`; `/api/time/status/summary/week` has no cache
+  today. Either way the view costs what it costs now plus that one query. That read passes the
   profile's exempt patterns to the `Presence` calls, which already take an
   exclusion list (`Routes.scala:1722-1735` passes `Nil` today), so the bars add
   up to the total. The total stops running its own unfiltered aggregation. Days
@@ -682,7 +687,9 @@ Settling:
      that arrives after settling increments the late-row counter.
 18b. An assignment mode change and an attachment create or delete each delete
      the profile's current-week settled rows, and the week recomputes to the
-     same value a cold read gives.
+     same value a cold read gives. An exempt-flag edit deletes only the
+     current-week `time_used_daily` rows, and the weekly view total then
+     matches a cold read.
 19. A membership edit recomputes the week under the new membership for every
     attached profile.
 
@@ -692,7 +699,8 @@ Each step is one PR and one sub-issue under the epic.
 
 1. **Schema only.** The next free Flyway version (V92 at the time of writing,
    after V91 from #2928 merged; check `origin/main` for a newer one before
-   opening the PR): `household_settings.week_start_day`,
+   opening the PR): `household_settings.week_start_day`, the
+   `UNIQUE (id, household_id)` on `profiles` that the composite FKs need,
    `app_policy_assignments.weekly_minutes`, `app_groups`, `app_group_members`,
    `profile_app_groups`, `app_group_used_daily`. SQL and docs only. It waits
    for the operator to merge.
