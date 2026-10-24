@@ -769,8 +769,10 @@ trait DeviceRepo {
   /**
    * #2927: record the hostname `mac` advertised on a `dhcp_lease` / `first_seen_mac`, apart from
    * `devices.name` (which an operator may have changed). Household-scoped like the rest of ingest;
-   * a no-op when the stored value is already `hostname`, so a lease renewal writes nothing. Returns
-   * rows changed.
+   * a no-op when the stored value is already `hostname`, so a lease renewal writes nothing. The
+   * most recently INGESTED lease wins, not the one with the latest event `ts`: a lease replayed
+   * late from the router's retry queue can restore an older hostname until the next lease (the same
+   * ordering `touchLastSeenBatch` has; hostnames rarely change). Returns rows changed.
    */
   def recordDhcpHostname(mac: MacAddress, hostname: String, household: HouseholdId): Task[Int]
 

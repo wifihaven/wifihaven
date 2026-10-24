@@ -217,7 +217,7 @@ export interface DeviceIdentity {
   name: string
   // `name` unless it is a server placeholder (the device sent no DHCP hostname).
   sentName?: string | null
-  // #2927: what the device last advertised over DHCP, stored apart from `name` (survives a rename).
+  // #2927: the hostname from the most recently ingested DHCP lease, stored apart from `name` (survives a rename).
   dhcpHostname?: string | null
   managed: boolean
   vendor: DeviceVendor

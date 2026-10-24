@@ -47,9 +47,9 @@ function VendorHint({ vendor }: { vendor: DeviceVendor }) {
   )
 }
 
-// #2927: the stored DHCP hostname is authoritative when present. Without it (a device that
-// sent none since it was stored separately) fall back to `sentName`, which is only `name` when
-// that is not our placeholder, and say where it came from.
+// #2927: the stored DHCP hostname is authoritative when present. A device with none stored (it
+// has sent no hostname since V91 added the column) falls back to `sentName` — `name`, unless that
+// is our placeholder — and the hint says where the value came from.
 function nameHint(d: DeviceIdentity): string {
   if (d.dhcpHostname) {
     return d.dhcpHostname === d.name
