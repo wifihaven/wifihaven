@@ -1675,7 +1675,12 @@ object PolicyService {
       // still under cap)" — same family as `appCapExhaustedHosts` above so the
       // two cannot disagree on what "exhausted" means (AGENTS.md §single-
       // source-of-truth).
-      case sd if sd.exemptFromDaily && sd.dailyLimitMinutes.forall(sd.usedMinutes < _) =>
+      // #2932: an app a group covers is carved by neither under-cap carve until group budgets are
+      // enforced: the carve would keep it reachable past its group's limits, which nothing checks
+      // yet. TODO(#2933): carve it when it is under every budget that contains it (`appsOverBudget`).
+      case sd
+          if sd.groupId.isEmpty && sd.exemptFromDaily &&
+            sd.dailyLimitMinutes.forall(sd.usedMinutes < _) =>
         sd.hosts.map(Hostname.unsafe)
     }.flatten
 
@@ -1700,7 +1705,8 @@ object PolicyService {
    */
   private[policy] def timeLimitedUnderCapHosts(state: ProfileDayState): List[Hostname] =
     state.perApp.collect {
-      case sd if sd.dailyLimitMinutes.forall(lim => sd.usedMinutes < lim) =>
+      // #2932: no carve for a group-covered app yet; see `exemptUnderCapHosts`. TODO(#2933).
+      case sd if sd.groupId.isEmpty && sd.dailyLimitMinutes.forall(lim => sd.usedMinutes < lim) =>
         sd.hosts.map(Hostname.unsafe)
     }.flatten
 

@@ -191,6 +191,17 @@ trait SettledUsageRepo {
    * `rolled_through >= dayEnd`). The late-presence meter's test.
    */
   def anySettled(household: HouseholdId, date: LocalDate, dayEnd: Instant): Task[Boolean]
+
+  /**
+   * A value that changes whenever anything the settled rows depend on changes for `household`: its
+   * settings row, its assignments, attachments and memberships (each row's `xmin`, so an update,
+   * insert or delete all show), and the global host-set version. The refill reads it before its
+   * live compute and after its write; a difference means an invalidating write raced it.
+   */
+  def fingerprint(household: HouseholdId): Task[String]
+
+  /** Delete `profiles`' settled rows of `date` in all three tables: undo a raced refill write. */
+  def discard(household: HouseholdId, date: LocalDate, profiles: List[ProfileId]): Task[Int]
 }
 
 /**
@@ -210,8 +221,12 @@ object NoopSettledUsageRepo extends SettledUsageRepo {
       rows: Map[ProfileId, DayUsage],
       settledThrough: Instant,
   ): Task[Unit] = ZIO.unit
-  def anySettled(household: HouseholdId, date: LocalDate, dayEnd: Instant): Task[Boolean] =
+  def anySettled(household: HouseholdId, date: LocalDate, dayEnd: Instant): Task[Boolean]    =
     ZIO.succeed(false)
+  def fingerprint(household: HouseholdId): Task[String]                                      =
+    ZIO.succeed("")
+  def discard(household: HouseholdId, date: LocalDate, profiles: List[ProfileId]): Task[Int] =
+    ZIO.succeed(0)
 }
 
 class SettledUsageRepoLive(xa: Transactor[Task]) extends SettledUsageRepo {
@@ -321,4 +336,38 @@ class SettledUsageRepoLive(xa: Transactor[Task]) extends SettledUsageRepo {
         .unique
         .transact(xa),
     )
+
+  def fingerprint(household: HouseholdId): Task[String] =
+    DbMetrics.timed("settledUsage.fingerprint")(
+      sql"""SELECT md5(concat_ws('|',
+                (SELECT xmin::text FROM household_settings WHERE household_id = $household),
+                (SELECT string_agg(apa.id::text || ':' || apa.xmin::text, ',' ORDER BY apa.id)
+                   FROM app_policy_assignments apa
+                   JOIN profiles p ON p.id = apa.profile_id
+                  WHERE p.household_id = $household),
+                (SELECT string_agg(pag.id::text || ':' || pag.xmin::text, ',' ORDER BY pag.id)
+                   FROM profile_app_groups pag WHERE pag.household_id = $household),
+                (SELECT string_agg(m.group_id::text || ':' || m.app_id::text || ':' || m.xmin::text,
+                                   ',' ORDER BY m.group_id, m.app_id)
+                   FROM app_group_members m WHERE m.household_id = $household),
+                (SELECT version::text FROM app_hosts_version)))"""
+        .query[String]
+        .unique
+        .transact(xa),
+    )
+
+  def discard(household: HouseholdId, date: LocalDate, profiles: List[ProfileId]): Task[Int] =
+    NonEmptyList.fromList(profiles.distinct) match {
+      case None      => ZIO.succeed(0)
+      case Some(nel) =>
+        val own = fr"AND profile_id IN (SELECT id FROM profiles WHERE household_id = $household)"
+        def del(table: String) =
+          (fr"DELETE FROM" ++ Fragment.const(table) ++ fr"WHERE date = $date AND" ++
+            Fragments.in(fr"profile_id", nel) ++ own).update.run
+        DbMetrics.timed("settledUsage.discard")(
+          (del("time_used_daily"), del("app_used_daily"), del("app_group_used_daily"))
+            .mapN(_ + _ + _)
+            .transact(xa),
+        )
+    }
 }

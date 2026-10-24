@@ -252,7 +252,9 @@ class TimeStatusServiceLive(
   def settleWeek(household: HouseholdId, now: Instant, settings: HouseholdSettings): Task[Int] = {
     val today = PolicyService.householdLocalDate(now, settings)
     rawDayStateAll(household, now, today, settings).flatMap(states =>
-      priorDays(household, now, settings, states).map(_._2),
+      // A household with no profiles (a new one before onboarding) has nothing to settle.
+      if states.isEmpty then ZIO.succeed(0)
+      else priorDays(household, now, settings, states).map(_._2),
     )
   }
 
@@ -288,7 +290,7 @@ class TimeStatusServiceLive(
 
   // The usage of each day of the week before the states' date, per profile, plus the number of
   // days refilled. `states` are the profiles' states for that date: their budgets are the keys a
-  // settled day must hold.
+  // settled day must hold. `states` must be non-empty; both callers check.
   private def priorDays(
       household: HouseholdId,
       now: Instant,
@@ -356,13 +358,23 @@ class TimeStatusServiceLive(
         .flatMap {
           case Left(theirs) => theirs.await
           case Right(p)     =>
-            rawDayStateAllLive(household, now, date, settings)
-              .map(_.map((pid, st) => pid -> TimeStatusService.dayUsage(st)))
-              .tap(rows =>
-                settledRepo
-                  .writeSettled(household, date, rows, SettledUsage.dayEnd(date, settings)),
+            // An invalidating write (an assignment, group or settings edit) that commits while this
+            // computes would have its delete land before our write, leaving rows computed under the
+            // old definition marked settled. So compare the household's dispositions fingerprint
+            // before the compute and after the write, and undo the write when it moved. A write that
+            // commits after ours deletes our rows itself.
+            (for {
+              before <- settledRepo.fingerprint(household)
+              rows   <- rawDayStateAllLive(household, now, date, settings)
+                .map(_.map((pid, st) => pid -> TimeStatusService.dayUsage(st)))
+              _      <- settledRepo
+                .writeSettled(household, date, rows, SettledUsage.dayEnd(date, settings))
+              after  <- settledRepo.fingerprint(household)
+              _      <- ZIO.when(after != before)(
+                settledRepo.discard(household, date, rows.keys.toList) *>
+                  ZIO.logInfo(s"settled usage: discarded a raced refill of $date"),
               )
-              .exit
+            } yield rows).exit
               .flatMap(ex => p.done(ex) *> refills.update(_ - ((household, date))) *> ZIO.done(ex))
         }
     }
