@@ -5,7 +5,7 @@
 // Mutations live alongside their existing imperative call-sites; this
 // module exposes an `invalidate` helper plus the key factory so the
 // pages can invalidate the right keys onSuccess.
-import { useQuery, useQueryClient, type UseQueryOptions } from '@tanstack/react-query'
+import { useQuery, useQueries, useQueryClient, type UseQueryOptions } from '@tanstack/react-query'
 import { api } from '@/api/client'
 import { qk } from '@/api/queryKeys'
 import type {
@@ -285,6 +285,19 @@ export function useProfileAppGroups(profileId: number, opts?: QueryOpts<ProfileA
     queryFn: () => api.appGroups.forProfile(profileId),
     staleTime: 5 * MIN,
     ...opts,
+  })
+}
+
+// #2935 — which of `profileIds` attach each group, for the "Also used by" line. One attachments
+// query per profile, on the same keys as `useProfileAppGroups`, so a cached profile costs nothing.
+export function useGroupAttachmentsOf(profileIds: number[], enabled: boolean) {
+  return useQueries({
+    queries: profileIds.map(id => ({
+      queryKey: qk.profileAppGroups(id),
+      queryFn: () => api.appGroups.forProfile(id),
+      staleTime: 5 * MIN,
+      enabled,
+    })),
   })
 }
 

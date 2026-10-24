@@ -181,7 +181,9 @@ function offeredKindsFor(info: BlockedInfoResponse | null): AccessRequestKind[] 
   if (cls === 'paused')          return ['unpause', 'extension']
   if (cls === 'schedule')        return ['unpause', 'extension']
   if (cls === 'time_limit')      return ['extension']
-  if (cls === 'app_time_limit')  return ['extension', 'exemption']
+  // #2935 (D8): an extension raises only the profile daily total, so it never lifts an app or
+  // group budget. Offering it here would be a dead control.
+  if (cls === 'app_time_limit')  return ['exemption']
   if (cls === 'category')        return ['exemption']
   if (cls === 'extra_blocked')   return ['exemption']
   // API in flight or unknown class — offer everything so the kid still has a

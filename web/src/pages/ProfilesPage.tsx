@@ -3,7 +3,7 @@ import { useMutation } from '@tanstack/react-query'
 import { Link, useSearchParams } from 'react-router-dom'
 import { api } from '@/api/client'
 import { newProfileDefaults } from '@/api/profileDefaults'
-import { useBlocklists, useGlobalProfile, useProfiles, useDevices, useInvalidators, useNamedSchedules, useProfileUsageByApp, useTimeStatusSummary } from '@/api/queries'
+import { useBlocklists, useGlobalProfile, useProfiles, useDevices, useInvalidators, useNamedSchedules, useProfileUsageByApp, useAppGroups, useProfileAppGroups, useTimeStatusSummary } from '@/api/queries'
 import { isManaged, isUnmanaged } from '@/lib/devices'
 import { useAuth } from '@/hooks/useAuth'
 import { useWsTimeStatus, useWsTopicLive } from '@/hooks/useWs'
@@ -17,6 +17,7 @@ import type {
   UpsertAppAssignmentRequest, UpsertProfileRequest, User,
 } from '@/types/api'
 import { AppIcon } from '@/components/AppIcon'
+import { AddGroupMenu, GroupsSubList } from '@/components/AppGroups'
 import { AppBlocklistWarningBadge } from '@/components/AppBlocklistWarning'
 import { ProfileTimelineChart } from '@/components/usage/ProfileTimelineChart'
 import { ProfileUsageBreakdown } from '@/components/usage/ProfileUsageBreakdown'
@@ -1751,6 +1752,18 @@ function AppsSection({ profileId, isNew, apps, onChanged, testIdPrefix = 'apps-s
     for (const b of blocklists) m.set(b.id, b.name)
     return m
   }, [blocklists])
+  // #2935 — household groups, and this profile's attachments of them. A group COVERS its members
+  // (D6): a covered app is not an app row of its own, it lives inside its group's row.
+  const groupsQ = useAppGroups({ enabled: profileId != null && !isNew })
+  const attachQ = useProfileAppGroups(profileId ?? -1, { enabled: profileId != null && !isNew })
+  const attached = attachQ.data ?? []
+  const groupsStatus: UsageStatus = attachQ.isPending || groupsQ.isPending ? 'pending'
+    : attachQ.isError || groupsQ.isError ? 'error' : 'success'
+  const coveredNameByAppId = useMemo(() => {
+    const m = new Map<number, string>()
+    for (const a of attached) for (const id of a.memberAppIds) m.set(id, a.name)
+    return m
+  }, [attached])
   const assigned = useMemo(
     () => (profileId == null ? [] : apps.filter(a => findAssignment(a, profileId) != null)),
     [apps, profileId],
@@ -1793,6 +1806,13 @@ function AppsSection({ profileId, isNew, apps, onChanged, testIdPrefix = 'apps-s
   const addBtn = 'text-xs px-2 py-1 rounded-lg border bg-white transition-colors disabled:opacity-50'
   const headerCta = !isNew && profileId != null && apps.length > 0 && (
     <>
+      <AddGroupMenu
+        profileId={profileId}
+        testIdPrefix={testIdPrefix}
+        groups={groupsQ.data ?? []}
+        attached={attached}
+        onChanged={onChanged}
+      />
       <button
         type="button"
         data-testid={`${testIdPrefix}-add-allowed`}
@@ -1908,6 +1928,15 @@ function AppsSection({ profileId, isNew, apps, onChanged, testIdPrefix = 'apps-s
               {' '}from the {apps.length}-app library.
             </p>
           )}
+          <GroupsSubList
+            profileId={profileId}
+            testIdPrefix={testIdPrefix}
+            status={groupsStatus}
+            attached={attached}
+            groups={groupsQ.data ?? []}
+            apps={apps}
+            onChanged={onChanged}
+          />
           {assigned.length > 0 && renderList('allowed', allowedApps)}
           {assigned.length > 0 && renderList('blocked', blockedApps)}
           {pickerMode != null && (
@@ -1950,6 +1979,12 @@ function AppsSection({ profileId, isNew, apps, onChanged, testIdPrefix = 'apps-s
                       <AppIcon icon={a.app.icon} iconType={a.app.iconType} size="sm" className="w-5 text-center" />
                       <span className="text-sm text-brand-ink flex-1 truncate">{a.app.name}</span>
                       <AppBlocklistWarningBadge blocklisted={a.blocklisted} nameById={blocklistNameById} />
+                      {coveredNameByAppId.has(a.app.id) && (
+                        <span
+                          data-testid={`${testIdPrefix}-picker-covered-${a.app.id}`}
+                          className="text-[10.5px] font-semibold px-1.5 rounded-full bg-amber-500/15 border border-amber-500/40 text-amber-800 shrink-0"
+                        >In {coveredNameByAppId.get(a.app.id)}</span>
+                      )}
                       <span className="text-xs text-brand-text-muted">{a.hosts.length} host{a.hosts.length === 1 ? '' : 's'}</span>
                     </button>
                   ))}
@@ -2011,8 +2046,14 @@ function AppRow({ app, profileId, onChanged, usedMins, usageStatus, blocklistNam
       ? String(current.dailyMinutes)
       : '',
   )
+  // #2935 — the weekly limit beside min/day; same seeding and re-seeding as the daily draft.
+  const [weeklyDraft, setWeeklyDraft] = useState<string>(() =>
+    current?.mode === 'time_limited' && current.weeklyMinutes != null ? String(current.weeklyMinutes) : '',
+  )
   const [busy, setBusy] = useState(false)
   const [localError, setLocalError] = useState<string | null>(null)
+  // #2935 (D14) — the overlap drawer behind the "Also in <group>" chip.
+  const [overlapOpen, setOverlapOpen] = useState(false)
   // #2764 — the two expanders. Both default closed; a row that uses neither
   // feature never pays for them.
   const [limitOpen, setLimitOpen] = useState(false)
@@ -2034,6 +2075,11 @@ function AppRow({ app, profileId, onChanged, usedMins, usageStatus, blocklistNam
   }, [current?.mode, current?.dailyMinutes])
   useEffect(() => {
     if (busy) return
+    setWeeklyDraft(current?.mode === 'time_limited' && current.weeklyMinutes != null
+      ? String(current.weeklyMinutes) : '')
+  }, [current?.mode, current?.weeklyMinutes])
+  useEffect(() => {
+    if (busy) return
     setScheduleRules(current?.scheduleRules ?? [])
   }, [rulesSig])
 
@@ -2048,8 +2094,12 @@ function AppRow({ app, profileId, onChanged, usedMins, usageStatus, blocklistNam
     // #1679: when omitted, preserves the current assignment's value (defaulting to
     // true). Callers that don't change this dimension leave it undefined.
     allowedDuringScheduleBlock?: boolean,
+    // #2935: omitted keeps the current weekly limit (PUT replaces the whole assignment, so a
+    // write that forgot it would silently drop it); null clears it.
+    weeklyMinutes?: number | null,
   ) {
     const effectiveRules = rules ?? scheduleRules
+    const effectiveWeekly = weeklyMinutes !== undefined ? weeklyMinutes : current?.weeklyMinutes ?? null
     // #1679: allowedDuringScheduleBlock is only meaningful for 'allowed' mode (it controls
     // whether the extraAllowed carve-out survives a Schedule block). Only include it in the
     // request when submitting an 'allowed' assignment so it:
@@ -2063,6 +2113,7 @@ function AppRow({ app, profileId, onChanged, usedMins, usageStatus, blocklistNam
     const req: UpsertAppAssignmentRequest = {
       mode,
       dailyMinutes,
+      ...(effectiveWeekly != null ? { weeklyMinutes: effectiveWeekly } : {}),
       ...(exemptFromDaily !== undefined ? { exemptFromDaily } : {}),
       ...(effectiveRules.length > 0 ? { scheduleRules: effectiveRules } : {}),
       ...(effectiveScheduleBlock !== undefined ? { allowedDuringScheduleBlock: effectiveScheduleBlock } : {}),
@@ -2096,6 +2147,8 @@ function AppRow({ app, profileId, onChanged, usedMins, usageStatus, blocklistNam
   const mode = current?.mode ?? null
   const isTimeLimited = mode === 'time_limited'
   const currentMinutes = isTimeLimited ? current?.dailyMinutes ?? null : null
+  const currentWeekly = isTimeLimited ? current?.weeklyMinutes ?? null : null
+  const coveredBy = current?.coveredBy ?? null
   const isAllowedList = mode != null && listOf(mode) === 'allowed'
   const exempt = current?.exemptFromDaily ?? true
   // Which of the two flags this row can actually WRITE. Both predicates are the
@@ -2124,7 +2177,7 @@ function AppRow({ app, profileId, onChanged, usedMins, usageStatus, blocklistNam
   // Do NOT collapse this into the pill's condition: they differ on `blocked`,
   // and conflating them makes that in-window toggle a dead control.
   const canWriteBudgetFlag =
-    mode != null && !(mode === 'time_limited' && current?.dailyMinutes == null)
+    mode != null && !(mode === 'time_limited' && current?.dailyMinutes == null && current?.weeklyMinutes == null)
   const hasExceptions = canWriteBudgetFlag || canWriteDowntimeFlag
   const allowedDuringDowntime = current?.allowedDuringScheduleBlock ?? true
   const hasSchedule = scheduleRules.length > 0
@@ -2187,7 +2240,8 @@ function AppRow({ app, profileId, onChanged, usedMins, usageStatus, blocklistNam
   // "fix" it here by having the client resend the flags on every mode switch;
   // that hides a partial-update bug every other client still has.
   async function move() {
-    await apply(isAllowedList ? 'blocked' : 'allowed', null)
+    // A blocked app accrues nothing to cap, so the weekly limit goes with the daily one.
+    await apply(isAllowedList ? 'blocked' : 'allowed', null, undefined, undefined, undefined, null)
   }
 
   // Operator feedback: the old UX made you type minutes AND click a
@@ -2205,7 +2259,8 @@ function AppRow({ app, profileId, onChanged, usedMins, usageStatus, blocklistNam
       // the assignment entirely). For apps that weren't time-limited in
       // the first place this is a no-op.
       if (isTimeLimited) {
-        await apply('allowed', null)
+        // A weekly limit alone keeps the app time-limited.
+        await apply(current?.weeklyMinutes != null ? 'time_limited' : 'allowed', null)
       }
       return
     }
@@ -2221,6 +2276,29 @@ function AppRow({ app, profileId, onChanged, usedMins, usageStatus, blocklistNam
     // to TRUE (matches the schema default and the wire default in
     // #761/#763) when transitioning into time_limited.
     await apply('time_limited', n, current?.exemptFromDaily ?? true)
+  }
+
+  // #2935 — same contract as commitMinutes, for the weekly limit. Setting either limit implies
+  // time_limited; clearing the last one demotes to plain Allow.
+  async function commitWeekly() {
+    const trimmed = weeklyDraft.trim()
+    if (trimmed === '') {
+      setLocalError(null)
+      if (isTimeLimited && current?.weeklyMinutes != null) {
+        await apply(current.dailyMinutes != null ? 'time_limited' : 'allowed', current.dailyMinutes ?? null,
+          undefined, undefined, undefined, null)
+      }
+      return
+    }
+    const n = Number(trimmed)
+    if (!Number.isFinite(n) || n <= 0) {
+      setLocalError('Enter minutes > 0')
+      return
+    }
+    setLocalError(null)
+    if (isTimeLimited && currentWeekly === n) return
+    await apply('time_limited', current?.dailyMinutes ?? null, current?.exemptFromDaily ?? true,
+      undefined, undefined, n)
   }
 
   const tid = `app-row-${app.app.id}`
@@ -2303,8 +2381,24 @@ function AppRow({ app, profileId, onChanged, usedMins, usageStatus, blocklistNam
 
           {/* Limit expander — allowed list only. A blocked app drops all
               traffic, so it accrues nothing to cap and nothing to exempt. */}
+          {/* #2935 (D14) — an assignment a group also covers. The chip takes the limit
+              chip's slot width-wise (it is short), so the collapsed row stays one line. */}
+          {isAllowedList && coveredBy != null && (
+            <button
+              type="button"
+              data-testid={`${tid}-overlap-chip`}
+              aria-expanded={overlapOpen}
+              disabled={busy}
+              onClick={() => setOverlapOpen(v => !v)}
+              title={`${app.app.name} is also covered by the ${coveredBy.name} group. Both apply.`}
+              className={`${chipBase} max-w-[9rem] bg-amber-500/15 border-amber-500/40 text-amber-800`}
+            >
+              <span className="truncate">Also in <em className="not-italic font-semibold">{coveredBy.name}</em></span>
+              <span className="text-[8px] opacity-60">{overlapOpen ? '▲' : '▼'}</span>
+            </button>
+          )}
           {isAllowedList && (
-            isTimeLimited && currentMinutes != null ? (
+            isTimeLimited && (currentMinutes != null || currentWeekly != null) ? (
               <button
                 type="button"
                 data-testid={`${tid}-limit-toggle`}
@@ -2312,11 +2406,14 @@ function AppRow({ app, profileId, onChanged, usedMins, usageStatus, blocklistNam
                 disabled={busy}
                 onClick={() => setLimitOpen(v => !v)}
                 className={`${chipBase} ${
-                  loadedMins != null && loadedMins >= currentMinutes
+                  currentMinutes != null && loadedMins != null && loadedMins >= currentMinutes
                     ? 'bg-red-500/15 border-red-500/40 text-red-700'
                     : 'bg-amber-500/15 border-amber-500/40 text-amber-800'
                 }`}
               >
+                {currentMinutes == null && currentWeekly != null ? (
+                  <span className="font-mono">{formatMins(currentWeekly)}/week</span>
+                ) : (<>
                 {usageStatus === 'pending' ? (
                   <span
                     data-testid={`${tid}-usage-loading`}
@@ -2328,7 +2425,8 @@ function AppRow({ app, profileId, onChanged, usedMins, usageStatus, blocklistNam
                 ) : (
                   <span className="font-mono">{formatMins(loadedMins ?? 0)}</span>
                 )}
-                <span className="font-mono">/ {formatMins(currentMinutes)}</span>
+                <span className="font-mono">/ {formatMins(currentMinutes ?? 0)}</span>
+                </>)}
                 <span className="text-[8px] opacity-60">{limitOpen ? '▲' : '▼'}</span>
               </button>
             ) : (
@@ -2424,7 +2522,37 @@ function AppRow({ app, profileId, onChanged, usedMins, usageStatus, blocklistNam
             <span className="text-xs text-brand-text-muted">
               min/day{isTimeLimited ? '' : ' — leave empty for no limit'}
             </span>
+            {/* #2935 — weekly limit beside the daily one. Either makes the app time-limited;
+                the lower one runs out first (D11). */}
+            <input
+              type="number"
+              min={1}
+              value={weeklyDraft}
+              onChange={e => setWeeklyDraft(e.target.value)}
+              onBlur={commitWeekly}
+              onKeyDown={e => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  (e.currentTarget as HTMLInputElement).blur()
+                }
+              }}
+              disabled={busy}
+              placeholder="min"
+              aria-label="Weekly time-limit minutes"
+              data-testid={`${tid}-weekly-minutes`}
+              className={`w-16 rounded-lg px-2 py-1 text-xs border transition-colors disabled:opacity-50 ${
+                currentWeekly != null
+                  ? 'bg-amber-500/10 border-amber-500/40 text-amber-800'
+                  : 'bg-white border-brand-border-strong text-brand-ink'
+              }`}
+            />
+            <span className="text-xs text-brand-text-muted">min/week</span>
           </div>
+          {currentMinutes != null && currentWeekly != null && currentMinutes > currentWeekly && (
+            <p data-testid={`${tid}-daily-over-weekly`} className="mt-1.5 text-[11px] text-amber-800">
+              The daily limit is higher than the weekly one, so the weekly limit runs out first.
+            </p>
+          )}
 
           {/* #1061 — usage bar for time-limited apps. Mirrors the profile-wide
               bar (w-full h-1, accent on track, red over limit). Renders only
@@ -2458,7 +2586,11 @@ function AppRow({ app, profileId, onChanged, usedMins, usageStatus, blocklistNam
               : 'bg-brand-alt border-brand-border-strong text-brand-text'
           }`}>
             {isTimeLimited && currentMinutes != null
-              ? `At ${formatMins(currentMinutes)} ${app.app.name} is blocked for the rest of the day. It comes back at midnight.`
+              ? `At ${formatMins(currentMinutes)} ${app.app.name} is blocked for the rest of the day. It comes back at midnight.${
+                  currentWeekly != null ? ` The weekly limit blocks it for the rest of the week.` : ''
+                }`
+              : isTimeLimited && currentWeekly != null
+              ? `At ${formatMins(currentWeekly)} in a week ${app.app.name} is blocked until the week resets.`
               : `With no limit set, ${app.app.name} stays reachable all day.${
                   hasExceptions ? " The exceptions below decide how the profile's budget and downtime apply to it." : ''
                 }`}
@@ -2538,6 +2670,26 @@ function AppRow({ app, profileId, onChanged, usedMins, usageStatus, blocklistNam
             </span>
           </label>
           )}
+        </div>
+      )}
+
+      {/* ---- overlap drawer (#2935, D14) ------------------------------ */}
+      {overlapOpen && coveredBy != null && (
+        <div data-testid={`${tid}-overlap-drawer`} className="border-t border-brand-border px-3 py-2.5 bg-brand-surface rounded-b-xl">
+          <p className="text-[11px] leading-relaxed text-amber-800">
+            {app.app.name} is also in the {coveredBy.name} group on this profile. Both budgets
+            apply, and whichever runs out first blocks it.
+          </p>
+          <button
+            type="button"
+            data-testid={`${tid}-overlap-remove`}
+            disabled={busy}
+            onClick={clear}
+            className="mt-2 text-[11px] font-semibold px-2 h-6 rounded-lg border border-red-500/40 text-red-700 bg-white hover:bg-red-500/10 disabled:opacity-50"
+          >Remove from this profile</button>
+          <span className="ml-2 text-[11px] text-brand-text-muted">
+            {coveredBy.name} keeps covering it.
+          </span>
         </div>
       )}
 

@@ -580,6 +580,11 @@ function HeartbeatFilterCard({
   )
 }
 
+// ISO weekday numbers, as `weekStartDay` carries them (1 = Monday .. 7 = Sunday).
+const WEEK_DAYS: [number, string][] = [
+  [1, 'Monday'], [2, 'Tuesday'], [3, 'Wednesday'], [4, 'Thursday'], [5, 'Friday'], [6, 'Saturday'], [7, 'Sunday'],
+]
+
 function DailyResetCard({
   value, reload,
 }: {
@@ -590,6 +595,9 @@ function DailyResetCard({
   const [tz, setTz] = useState(value.dailyResetTz)
   useEffect(() => { setTime(value.dailyResetTime) }, [value.dailyResetTime])
   useEffect(() => { setTz(value.dailyResetTz) }, [value.dailyResetTz])
+  // #2935 (D1): weekly app and group limits reset at the daily reset time on this day.
+  const [weekStart, setWeekStart] = useState(value.weekStartDay ?? 1)
+  useEffect(() => { setWeekStart(value.weekStartDay ?? 1) }, [value.weekStartDay])
 
   const timeSave = useDebouncedSave(
     time,
@@ -605,7 +613,14 @@ function DailyResetCard({
       await reload()
     },
   )
-  const merged = mergeSaveStatus([timeSave, tzSave])
+  const weekSave = useDebouncedSave(
+    weekStart,
+    async (next) => {
+      await api.household.patch({ weekStartDay: next })
+      await reload()
+    },
+  )
+  const merged = mergeSaveStatus([timeSave, tzSave, weekSave])
 
   return (
     <div
@@ -625,7 +640,7 @@ function DailyResetCard({
       <p className="text-xs text-brand-text">
         The wall-clock time at which daily usage limits reset. Both the reset time and
         timezone are stored together — the reset always fires at the configured local clock
-        time, even across DST.
+        time, even across DST. Weekly limits reset at the same time on the day the week starts.
       </p>
       <div className="flex flex-wrap gap-3 items-end">
         <div>
@@ -645,6 +660,20 @@ function DailyResetCard({
             onChange={setTz}
             testId="household-reset-tz"
           />
+        </div>
+        <div>
+          <label className="block text-xs text-brand-text-muted mb-1" htmlFor="household-week-start-select">
+            Week starts on
+          </label>
+          <select
+            id="household-week-start-select"
+            value={weekStart}
+            onChange={e => setWeekStart(Number(e.target.value))}
+            data-testid="household-week-start-select"
+            className="bg-white border border-brand-border-strong rounded-lg px-3 py-2 text-brand-ink text-sm"
+          >
+            {WEEK_DAYS.map(([n, label]) => <option key={n} value={n}>{label}</option>)}
+          </select>
         </div>
       </div>
     </div>
