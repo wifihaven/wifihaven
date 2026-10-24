@@ -108,6 +108,14 @@ describe('DeviceIdentifyPage (#2926)', () => {
     expect(vendor).not.toHaveTextContent('NETGEAR')
   })
 
+  it('#2927: shows the stored DHCP hostname, and the local name when someone renamed it', async () => {
+    identify.mockResolvedValue(identity({ name: 'Den TV', sentName: 'Den TV', dhcpHostname: 'roku-ultra' }))
+    renderPage()
+    const name = await screen.findByTestId('identify-name')
+    expect(name).toHaveTextContent('roku-ultra')
+    expect(name).toHaveTextContent('called "Den TV" here')
+  })
+
   it('a device that sent no DHCP name says so, even though it has a placeholder name', async () => {
     identify.mockResolvedValue(identity({ name: 'unknown', sentName: null }))
     renderPage()

@@ -556,6 +556,10 @@ case class DeviceIdentity(
     // `DeviceNames.isPlaceholder`), i.e. the device sent no DHCP hostname. Server-computed so the
     // SPA never re-derives the placeholder rule.
     sentName: Option[String],
+    // #2927: the hostname the device last advertised over DHCP (`devices.dhcp_hostname`), stored
+    // apart from `name`, so it survives an operator rename. None for a device that has sent none
+    // since V91, in which case `sentName` is the best available signal.
+    dhcpHostname: Option[String] = None,
     managed: Boolean,
     vendor: DeviceVendor,
     firstSeenAt: Option[String],
