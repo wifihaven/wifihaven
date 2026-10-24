@@ -153,7 +153,8 @@ object DbFailureSpec extends ZIOSpecDefault {
   }
 
   private def brokenDeviceRepo: DeviceRepo = new DeviceRepo {
-    def firstSeenAtInHousehold(m: MacAddress, h: HouseholdId)                   = throwing
+    def discoveryInHousehold(m: MacAddress, h: HouseholdId)                     = throwing
+    def recordDhcpHostname(m: MacAddress, n: String, h: HouseholdId)            = throwing
     def listAllForHousehold(household: HouseholdId)                             = throwing
     def attributionScope(household: HouseholdId, from: Instant, until: Instant) = throwing
     def findByMac(mac: MacAddress, household: HouseholdId)                      = throwing

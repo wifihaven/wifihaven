@@ -47,20 +47,30 @@ function VendorHint({ vendor }: { vendor: DeviceVendor }) {
   )
 }
 
+// #2927: the stored DHCP hostname is authoritative when present. A device with none stored (it
+// has sent no hostname since V91 added the column) falls back to `sentName` — `name`, unless that
+// is our placeholder — and the hint says where the value came from.
+function nameHint(d: DeviceIdentity): string {
+  if (d.dhcpHostname) {
+    return d.dhcpHostname === d.name
+      ? 'The name the device sent over DHCP.'
+      : `The name the device sent over DHCP. It's called "${d.name}" here.`
+  }
+  if (d.sentName) {
+    return 'Taken from the name the device sent over DHCP when it was first seen, unless someone renamed it.'
+  }
+  return "It didn't send a name over DHCP. Phones using a private address often don't."
+}
+
 function IdentityCard({ d }: { d: DeviceIdentity }) {
-  const sentNoName = !d.sentName
   return (
     <div className="bg-white rounded-2xl border border-brand-border p-5">
       <dl className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-4 text-sm">
         <div>
           <dt className="text-xs uppercase tracking-wider text-brand-text-muted">Name it sent</dt>
           <dd className="text-brand-ink font-medium" data-testid="identify-name">
-            {d.sentName ?? 'None'}
-            <span className="block text-xs text-brand-text-muted font-normal">
-              {sentNoName
-                ? "It didn't send a name over DHCP. Phones using a private address often don't."
-                : 'Taken from the name the device sent over DHCP when it was first seen, unless someone renamed it.'}
-            </span>
+            {d.dhcpHostname ?? d.sentName ?? 'None'}
+            <span className="block text-xs text-brand-text-muted font-normal">{nameHint(d)}</span>
           </dd>
         </div>
         <div>

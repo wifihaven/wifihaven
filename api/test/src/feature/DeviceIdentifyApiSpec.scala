@@ -236,7 +236,7 @@ object DeviceIdentifyApiSpec
         connRepo   <- ZIO.service[ConnectionEventRepo]
         now        <- ZIO.serviceWithZIO[Clock](_.instant)
         _          <- deviceRepo.upsertUnknown(netgearMac, "late", None, now, two.hhA)
-        created    <- deviceRepo.firstSeenAtInHousehold(netgearMac, two.hhA)
+        created    <- deviceRepo.discoveryInHousehold(netgearMac, two.hhA).map(_.map(_.firstSeenAt))
         early = now.minusSeconds(60)
         _  <- connRepo.insertBatch(
           List(event(two.routerIdA, netgearMac, fqdn("x.example.com"), false, early)),
@@ -249,6 +249,23 @@ object DeviceIdentifyApiSpec
       // precondition: the row really was created after the event, so the test can fail
       assertTrue(created.exists(_.isAfter(early))) &&
         assertTrue(out.firstSeenAt.map(Instant.parse).contains(early))
+    },
+    test("#2927: the stored DHCP hostname is returned, even after the device is renamed") {
+      for {
+        _          <- cleanDb
+        two        <- TestLayers.seedTwoHouseholds(managedA, managedB)
+        deviceRepo <- ZIO.service[DeviceRepo]
+        now        <- ZIO.serviceWithZIO[Clock](_.instant)
+        id         <- deviceRepo.upsertUnknown(netgearMac, "roku-ultra", None, now, two.hhA)
+        _          <- deviceRepo.recordDhcpHostname(netgearMac, "roku-ultra", two.hhA)
+        _          <- deviceRepo.patch(two.hhA, id, "Den TV", None, None, None)
+        rb         <- buildRoutes
+        (routes, auth) = rb
+        token <- auth.login(two.adminA, two.password).map(_.token.value)
+        out   <- get(routes, token, netgearMac).flatMap(decode)
+      } yield assertTrue(out.name == "Den TV") && assertTrue(
+        out.dhcpHostname.contains("roku-ultra"),
+      )
     },
     test("a locally-administered (randomized) MAC shows a private address, not a vendor") {
       for {
@@ -266,6 +283,7 @@ object DeviceIdentifyApiSpec
         assertTrue(out.vendor.kind == "private") &&
         // our own placeholder is not a name the device sent
         assertTrue(out.sentName.isEmpty) &&
+        assertTrue(out.dhcpHostname.isEmpty) &&
         assertTrue(out.vendor.name.isEmpty) &&
         // genuinely empty, not an error: a device with no traffic yet
         assertTrue(out.destinations.isEmpty) &&

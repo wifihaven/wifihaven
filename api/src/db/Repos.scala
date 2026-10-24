@@ -760,10 +760,21 @@ trait DeviceRepo {
   def findByMacInHousehold(mac: MacAddress, household: HouseholdId): Task[Option[Device]]
 
   /**
-   * #2926: when this household first saw `mac` — the device row's `created_at`, written by
-   * first-seen discovery (`upsertUnknown`) or by enrolment. None when there is no such row.
+   * #2926 / #2927: discovery facts for `mac` in `household` — when the row was created (first-seen
+   * discovery or enrolment) and the hostname the device last advertised over DHCP. None when there
+   * is no such row.
    */
-  def firstSeenAtInHousehold(mac: MacAddress, household: HouseholdId): Task[Option[Instant]]
+  def discoveryInHousehold(mac: MacAddress, household: HouseholdId): Task[Option[DeviceDiscovery]]
+
+  /**
+   * #2927: record the hostname `mac` advertised on a `dhcp_lease` / `first_seen_mac`, apart from
+   * `devices.name` (which an operator may have changed). Household-scoped like the rest of ingest;
+   * a no-op when the stored value is already `hostname`, so a lease renewal writes nothing. The
+   * most recently INGESTED lease wins, not the one with the latest event `ts`: a lease replayed
+   * late from the router's retry queue can restore an older hostname until the next lease (the same
+   * ordering `touchLastSeenBatch` has; hostnames rarely change). Returns rows changed.
+   */
+  def recordDhcpHostname(mac: MacAddress, hostname: String, household: HouseholdId): Task[Int]
 
   /**
    * #2566/#2322: the household that owns `mac`, lowest id first when several do — the ONLY
@@ -1186,6 +1197,9 @@ case class BlockEventInsert(
     host: HostId,
     reason: BlockReason,
 )
+
+/** #2926 / #2927: see [[DeviceRepo.discoveryInHousehold]]. */
+case class DeviceDiscovery(firstSeenAt: Instant, dhcpHostname: Option[String])
 
 /** #2926: one host row of [[ConnectionEventRepo.destinationsForMac]]. */
 case class MacDestinationRow(
@@ -2334,7 +2348,7 @@ class DeviceRepoLive(xa: Transactor[Task], clock: wifihaven.shared.Clock) extend
   // #2108: same projection as findByMac, AND-scoped to one household. The user-facing device routes
   // resolve through this so an hh-A admin gets a clean 404 for an hh-B MAC. Index-backed by V65's
   // uq_devices_household_mac leading column.
-  def findByMacInHousehold(mac: MacAddress, household: HouseholdId)   =
+  def findByMacInHousehold(mac: MacAddress, household: HouseholdId)                 =
     DbMetrics.timed("device.findByMacInHousehold")(
       (fr"SELECT d.id,d.mac,d.name,d.profile_id,p.name,d.last_seen_ip,d.last_seen_at::TEXT,d.shared FROM devices d LEFT JOIN profiles p ON p.id=d.profile_id WHERE d.mac=$mac AND" ++
         SqlFragments.householdEq(household, "d.household_id"))
@@ -2354,12 +2368,20 @@ class DeviceRepoLive(xa: Transactor[Task], clock: wifihaven.shared.Clock) extend
         .option
         .transact(xa),
     )
-  def firstSeenAtInHousehold(mac: MacAddress, household: HouseholdId) =
-    DbMetrics.timed("device.firstSeenAtInHousehold")(
-      (fr"SELECT created_at FROM devices WHERE mac=$mac AND" ++
+  def discoveryInHousehold(mac: MacAddress, household: HouseholdId)                 =
+    DbMetrics.timed("device.discoveryInHousehold")(
+      (fr"SELECT created_at, dhcp_hostname FROM devices WHERE mac=$mac AND" ++
         SqlFragments.householdEq(household, "household_id"))
-        .query[Instant]
+        .query[(Instant, Option[String])]
+        .map(DeviceDiscovery.apply)
         .option
+        .transact(xa),
+    )
+  def recordDhcpHostname(mac: MacAddress, hostname: String, household: HouseholdId) =
+    DbMetrics.timed("device.recordDhcpHostname")(
+      sql"""UPDATE devices SET dhcp_hostname=$hostname
+          WHERE mac=$mac AND household_id=$household
+            AND dhcp_hostname IS DISTINCT FROM $hostname""".update.run
         .transact(xa),
     )
   def upsert(

@@ -72,8 +72,8 @@ object DeviceIdentifyRoutes {
               .min(MaxLimit)
             now <- clock.instant
             from = now.minus(Duration.ofDays(windowDays.toLong))
-            firstSeen <- deviceRepo
-              .firstSeenAtInHousehold(mac, claims.hh)
+            discovery <- deviceRepo
+              .discoveryInHousehold(mac, claims.hh)
               .mapError(ApiError.Db(_))
             dests     <- connectionEventRepo
               .destinationsForMac(claims.hh, mac, from, now, limit)
@@ -86,7 +86,8 @@ object DeviceIdentifyRoutes {
               vendor,
               // The row is created at INGEST time; an event that arrived late (router retry queue)
               // can be older, and the device was evidently on the network by then.
-              (firstSeen.toList ++ dests.earliest).minOption.map(_.toString),
+              (discovery.map(_.firstSeenAt).toList ++ dests.earliest).minOption.map(_.toString),
+              discovery.flatMap(_.dhcpHostname),
               windowDays,
               dests,
               appList,
@@ -117,6 +118,7 @@ object DeviceIdentifyRoutes {
       device: Device,
       vendor: DeviceVendor,
       firstSeenAt: Option[String],
+      dhcpHostname: Option[String],
       windowDays: Int,
       dests: MacDestinations,
       appList: List[App],
@@ -151,6 +153,7 @@ object DeviceIdentifyRoutes {
       mac = device.mac,
       name = device.name,
       sentName = Option.when(!DeviceNames.isPlaceholder(device.name))(device.name),
+      dhcpHostname = dhcpHostname,
       managed = device.profileId.isDefined,
       vendor = vendor,
       firstSeenAt = firstSeenAt,

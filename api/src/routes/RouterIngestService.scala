@@ -489,6 +489,13 @@ final class RouterIngestService(
                   // replayed event won't re-nudge a meaningful change. Never fails ingest.
                   bus.publish(SpaEvent.Stale(StaleTopic.Alerts))
             }
+            // #2927: what the device calls itself, kept apart from `name` (which only takes the
+            // hostname while it is still a placeholder, and which an operator may rename).
+            _        <- ZIO.foreachDiscard(e.hostname)(h =>
+              deviceRepo
+                .recordDhcpHostname(mac, h.value, household)
+                .mapError(ApiError.Db(_)),
+            )
           } yield ()
       }
 }
