@@ -190,13 +190,92 @@ object WeeklyBudgetSpec
         .unit,
     )
 
+  // #2932: a TrafficReportRepo that runs `race` (once) at the start of the day read of `onDay`, so a
+  // write can commit while a refill of that day computes. Every other read passes straight through.
+  private final class RacingTrafficRepo(
+      underlying: TrafficReportRepo,
+      onDay: LocalDate,
+      race: Ref[Option[Task[Unit]]],
+  ) extends TrafficReportRepo {
+    def insertBatch(reports: List[TrafficReportInsert]) = underlying.insertBatch(reports)
+    def listForDevice(household: HouseholdId, mac: MacAddress, date: java.time.LocalDate) =
+      underlying.listForDevice(household, mac, date)
+    def listForRouter(routerId: RouterId, limit: Int) = underlying.listForRouter(routerId, limit)
+    def listTrafficRollupRows(household: HouseholdId, f: TrafficRollupFilter)              =
+      underlying.listTrafficRollupRows(household, f)
+    def listPresenceRows(spans: wifihaven.api.db.PresenceSpans, date: java.time.LocalDate) =
+      race.getAndSet(None).when(date == onDay).flatMap(_.flatten.getOrElse(ZIO.unit)) *>
+        underlying.listPresenceRows(spans, date)
+    def listPresenceRows(
+        spans: wifihaven.api.db.PresenceSpans,
+        from: java.time.LocalDate,
+        to: java.time.LocalDate,
+    ) =
+      underlying.listPresenceRows(spans, from, to)
+    def listPresenceRowsSince(
+        spans: wifihaven.api.db.PresenceSpans,
+        date: java.time.LocalDate,
+        since: java.time.Instant,
+    ) =
+      underlying.listPresenceRowsSince(spans, date, since)
+    def listPresenceRowsInWindow(
+        spans: wifihaven.api.db.PresenceSpans,
+        fromInstant: java.time.Instant,
+        toInstant: java.time.Instant,
+    ) =
+      underlying.listPresenceRowsInWindow(spans, fromInstant, toInstant)
+    def listDevicePresenceRows(
+        household: HouseholdId,
+        macs: List[MacAddress],
+        from: java.time.LocalDate,
+        to: java.time.LocalDate,
+    ) =
+      underlying.listDevicePresenceRows(household, macs, from, to)
+    def listDevicePresenceRowsInWindow(
+        household: HouseholdId,
+        macs: List[MacAddress],
+        fromInstant: java.time.Instant,
+        toInstant: java.time.Instant,
+    ) = underlying.listDevicePresenceRowsInWindow(household, macs, fromInstant, toInstant)
+    def listRawInRange(
+        household: HouseholdId,
+        macs: List[MacAddress],
+        fromInstant: java.time.Instant,
+        toInstant: java.time.Instant,
+        cursor: Option[wifihaven.api.usage.RawTrafficCursorKey],
+        limit: Option[Int],
+        spans: Option[wifihaven.api.db.PresenceSpans],
+    ) = underlying.listRawInRange(household, macs, fromInstant, toInstant, cursor, limit, spans)
+    def listRawAggregatedInRange(
+        household: HouseholdId,
+        macs: List[MacAddress],
+        fromInstant: java.time.Instant,
+        toInstant: java.time.Instant,
+        stepSeconds: Long,
+        spans: Option[wifihaven.api.db.PresenceSpans],
+    ) = underlying.listRawAggregatedInRange(
+      household,
+      macs,
+      fromInstant,
+      toInstant,
+      stepSeconds,
+      spans,
+    )
+    def listFqdnHostAggregatesForDevice(
+        household: HouseholdId,
+        mac: MacAddress,
+        fromInstant: java.time.Instant,
+        toInstant: java.time.Instant,
+    ) = underlying.listFqdnHostAggregatesForDevice(household, mac, fromInstant, toInstant)
+  }
   // The REAL service: the real per-app rollup reader and the real settled-usage repo.
-  private val svc = for {
+  private val svc = ZIO.service[TrafficReportRepo].flatMap(svcWith)
+
+  private def svcWith(trr: TrafficReportRepo) = for {
     pr  <- ZIO.service[ProfileRepo]
     tlr <- ZIO.service[TimeLimitRepo]
     atl <- ZIO.service[AppTimeLimitRepo]
     dr  <- ZIO.service[DeviceRepo]
-    trr <- ZIO.service[TrafficReportRepo]
     er  <- ZIO.service[TimeExtensionRepo]
     ru  <- ZIO.service[TimeUsedRollupRepo]
     nsr <- ZIO.service[NamedScheduleRepo]
@@ -215,6 +294,21 @@ object WeeklyBudgetSpec
     NoopAmbientHostsRepo,
     sur,
   )
+
+  // The real snapshot builder, with its clock at `now`.
+  private def policyAt(now: Instant) =
+    for {
+      pr  <- ZIO.service[ProfileRepo]
+      hsr <- ZIO.service[HouseholdSettingsRepo]
+      tlr <- ZIO.service[TimeLimitRepo]
+      atl <- ZIO.service[AppTimeLimitRepo]
+      dr  <- ZIO.service[DeviceRepo]
+      blr <- ZIO.service[BlocklistRepo]
+      trr <- ZIO.service[TrafficReportRepo]
+      er  <- ZIO.service[TimeExtensionRepo]
+      ar  <- ZIO.service[AppRepo]
+      c   <- Clock.TestClock.makeWithControl(LocalDateTime.ofInstant(now, ZoneOffset.UTC))
+    } yield PolicyServiceLive(pr, hsr, tlr, atl, dr, blr, trr, er, ar, c._1): PolicyService
 
   private def states(r: Rig, now: Instant) =
     svc.flatMap(
@@ -673,6 +767,40 @@ object WeeklyBudgetSpec
         )
       },
     ),
+    suite("no enforcement change before #2933")(
+      test("an app a group covers gets no extraAllowed carve, exempt or not") {
+        for {
+          r    <- rig()
+          pr   <- ZIO.service[ProfileRepo]
+          a    <- pr.create("A", Nil)
+          rb   <- app1("roblox.com")
+          mc   <- app1("minecraft.net")
+          y    <- app1("youtube.com")
+          // Control: a TimeLimited app no group covers is carved while under its cap (#1980).
+          _    <- assign(y, a)
+          // Minecraft also has its own TimeLimited row; Roblox is covered only by the group.
+          _    <- assign(mc, a)
+          g    <- group("Games", rb, mc)
+          // The default attachment flag is exempt (V92), the carve that beats Schedule and Pause.
+          _    <- attach(a, g, exempt = true)
+          _    <- device(macA, a)
+          svc  <- policyAt(nowThu)
+          snap <- svc.snapshot
+          allowed = snap.profiles(a).rules.extraAllowed.map(_.value).toSet
+          // The non-exempt attachment form, on a second profile.
+          b     <- pr.create("B", Nil)
+          _     <- attach(b, g, exempt = false)
+          snapB <- svc.snapshot
+          allowedB = snapB.profiles(b).rules.extraAllowed.map(_.value).toSet
+        } yield assertTrue(
+          allowed.contains("youtube.com"),
+          !allowed.contains("roblox.com"),
+          !allowed.contains("minecraft.net"),
+          !allowedB.contains("roblox.com"),
+          !allowedB.contains("minecraft.net"),
+        )
+      },
+    ),
     suite("display reads the enforced figure (design §6.5, test 4)")(
       test("4: /api/time/status shows the week minutes the snapshot's day state carries") {
         for {
@@ -760,6 +888,70 @@ object WeeklyBudgetSpec
           settled == List(mon, tue, wed).map(d => d -> at(d.plusDays(1), 0)),
           // Zero-usage days are settled too, so they are recognisable as settled.
           groupRows == 3,
+        )
+      },
+      test("a write that commits while a day refills discards that refill's rows") {
+        for {
+          r   <- rig()
+          pr  <- ZIO.service[ProfileRepo]
+          xa  <- ZIO.service[Transactor[Task]]
+          trr <- ZIO.service[TrafficReportRepo]
+          a   <- pr.create("A", Nil)
+          rb  <- app1("roblox.com")
+          y   <- app1("youtube.com")
+          _   <- assign(rb, a, daily = Some(60), exempt = true)
+          _   <- assign(y, a)
+          _   <- device(macA, a)
+          _   <- traffic(r, macA, "roblox.com", at(mon, 10), 25)
+          _   <- traffic(r, macA, "youtube.com", at(mon, 11), 10)
+          // While Monday refills, Roblox's flag flips to counting toward the daily total. Its
+          // invalidation finds nothing to delete yet, and the refill's total still excludes it.
+          flip = assign(rb, a, daily = Some(60), exempt = false)
+            .provideEnvironment(ZEnvironment(xa))
+          race    <- Ref.make(Option(flip))
+          raced   <- svcWith(new RacingTrafficRepo(trr, mon, race))
+          first   <- raced.dayStateAll(hh, nowThu, thu, r.settings)
+          monRows <- ZIO.serviceWithZIO[Transactor[Task]](x =>
+            sql"SELECT COUNT(*) FROM time_used_daily WHERE profile_id = $a AND date = $mon"
+              .query[Int]
+              .unique
+              .transact(x),
+          )
+          fired   <- race.get
+          again   <- states(r, nowThu)
+        } yield assertTrue(
+          fired.isEmpty,
+          // The raced read itself used the old definition; its rows are not kept.
+          first(a).week.map(_.usedMinutes).contains(10),
+          monRows == 0,
+          // The next read recomputes Monday under the new definition.
+          again(a).week.map(_.usedMinutes).contains(35),
+          appWeek(again(a), rb).contains(25),
+        )
+      },
+      test("the settle pass passes over a household with no profiles") {
+        for {
+          r     <- rig()
+          // A second, just-provisioned household: settings and the global sentinel, no profiles.
+          empty <- ZIO.serviceWithZIO[HouseholdRepo](_.create("Empty", "empty-2932"))
+          // Its settings exist, so the tick reaches its settle pass rather than skipping it.
+          _     <- ZIO.serviceWithZIO[HouseholdSettingsRepo](_.getForHousehold(empty))
+          pr    <- ZIO.service[ProfileRepo]
+          hhs   <- pr.distinctHouseholds
+          a     <- pr.create("A", Nil)
+          y     <- app1("youtube.com")
+          _     <- assign(y, a)
+          _     <- device(macA, a)
+          _     <- traffic(r, macA, "youtube.com", at(tue, 10), 20)
+          ran   <- tick(nowThu).either
+          tot   <- rowCount("time_used_daily", a)
+          s     <- states(r, nowThu)
+        } yield assertTrue(
+          hhs.contains(empty),
+          ran.isRight,
+          // Monday to Wednesday settled by the tick, plus today's rolled row.
+          tot == 4,
+          appWeek(s(a), y).contains(20),
         )
       },
       test("the rollup tick settles yesterday on its first tick after SettleDelay") {
