@@ -560,6 +560,63 @@
       ]
     },
     {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "title": "App-group mutations (#2934)",
+      "description": "Rate of app-group and group-attachment writes via /api/app-groups and /api/profiles/{id}/app-groups, by op (create, update, delete, attach, detach) and outcome. A rising rejected rate is clients hitting validation (the app-already-in-a-group rule, a missing limit, a foreign id).",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 80
+      },
+      "id": 38,
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "short",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 20,
+            "showPoints": "never",
+            "lineWidth": 1
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (op, outcome) (rate(wifihaven_app_group_mutations_total{env=\"$env\"}[5m]))",
+          "legendFormat": "{{op}} {{outcome}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "title": "API error rate by route + status (#1570)",
       "description": "sum by (route, status) (rate(api_errors_total[5m])) — error responses (status >= 400) emitted by the centralized ErrorBoundary, by templated route + HTTP status. Each series is also logged (4xx WARN / 5xx ERROR) in the API logs. Labels are bounded (route/status); never per-mac/host/ip.",

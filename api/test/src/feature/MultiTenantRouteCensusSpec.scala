@@ -141,6 +141,7 @@ object MultiTenantRouteCensusSpec extends ZIOSpecDefault {
     "requireProfileReadAccess",
     "requireScheduleInHousehold",
     "requireAlertInHousehold",
+    "requireAppGroupInHousehold",
     "ownUser",
     "findByMacInHousehold",
     "householdOf",
@@ -184,6 +185,15 @@ object MultiTenantRouteCensusSpec extends ZIOSpecDefault {
     ),
     "PUT /api/apps/{}/policy/{}"               -> Scoped,
     "DELETE /api/apps/{}/policy/{}"            -> Scoped,
+
+    // ── AppGroupRoutes (#2934) ─────────────────────────────────────────────────────────────────
+    "GET /api/app-groups"                   -> Scoped,
+    "POST /api/app-groups"                  -> Scoped,
+    "PATCH /api/app-groups/{}"              -> Scoped,
+    "DELETE /api/app-groups/{}"             -> Scoped,
+    "GET /api/profiles/{}/app-groups"       -> Scoped,
+    "PUT /api/profiles/{}/app-groups/{}"    -> Scoped,
+    "DELETE /api/profiles/{}/app-groups/{}" -> Scoped,
 
     // ── BetaRoutes ─────────────────────────────────────────────────────────────────────────────
     "POST /api/beta/request"                      -> Unauthenticated(

@@ -19,6 +19,8 @@ import type {
   TrafficUsageBucket, TrafficUsageGroupBy, TrafficUsageResponse, UsageConfig,
   PatchDeviceRequest, PatchProfileRequest,
   SharedDevice, SharedDeviceCheckInRequest,
+  AppGroup, CreateAppGroupRequest, UpdateAppGroupRequest, ProfileAppGroup,
+  UpsertProfileAppGroupRequest,
   UpsertAppAssignmentRequest, UpsertDeviceRequest, UpsertProfileRequest, GrantExtensionRequest,
   UsageSeriesBatchResponse, UsageSeriesResponse, User,
   BillingStatusResponse, BillingRedirect,
@@ -678,6 +680,22 @@ export const api = {
       req<void>('PUT', `/apps/${id}/policy/${profileId}`, data),
     deletePolicy: (id: number, profileId: number) =>
       req<void>('DELETE', `/apps/${id}/policy/${profileId}`),
+  },
+
+  // ── App groups (#2934) ─────────────────────────────────────────────────
+  // A group is a household-wide name + member list; each profile attaches it with its own limits.
+  appGroups: {
+    list: () => req<AppGroup[]>('GET', '/app-groups'),
+    create: (data: CreateAppGroupRequest) => req<AppGroup>('POST', '/app-groups', data),
+    update: (id: number, data: UpdateAppGroupRequest) =>
+      req<AppGroup>('PATCH', `/app-groups/${id}`, data),
+    delete: (id: number) => req<void>('DELETE', `/app-groups/${id}`),
+    forProfile: (profileId: number) =>
+      req<ProfileAppGroup[]>('GET', `/profiles/${profileId}/app-groups`),
+    attach: (profileId: number, groupId: number, data: UpsertProfileAppGroupRequest) =>
+      req<ProfileAppGroup>('PUT', `/profiles/${profileId}/app-groups/${groupId}`, data),
+    detach: (profileId: number, groupId: number) =>
+      req<void>('DELETE', `/profiles/${profileId}/app-groups/${groupId}`),
   },
 
   // #959: kid-side block-page lookup. Unauthenticated — hit from a blocked

@@ -1967,7 +1967,8 @@ class HouseholdSettingsRepoLive(xa: Transactor[Task]) extends HouseholdSettingsR
                  ambient_gate_enabled, ambient_isolation_max_hosts,
                  ambient_min_isolated_days, ambient_learning_window_days,
                  notify_email,
-                 shared_device_idle_minutes
+                 shared_device_idle_minutes,
+                 week_start_day
             FROM household_settings WHERE""" ++ where)
       .query[
         (
@@ -1985,6 +1986,7 @@ class HouseholdSettingsRepoLive(xa: Transactor[Task]) extends HouseholdSettingsR
             Option[
               String,
             ],
+            Int,
             Int,
         ),
       ]
@@ -2005,6 +2007,7 @@ class HouseholdSettingsRepoLive(xa: Transactor[Task]) extends HouseholdSettingsR
                 ambWindow,
                 notifyEmail,
                 idleMinutes,
+                weekStart,
               ) =>
             val umm = ummJson.fromJson[UnmanagedMacPolicy].getOrElse(UnmanagedMacPolicy.Default)
             HouseholdSettings(
@@ -2021,6 +2024,7 @@ class HouseholdSettingsRepoLive(xa: Transactor[Task]) extends HouseholdSettingsR
               // #578: NULL notify_email → None (no recipient configured).
               notifyEmail.map(_.trim).filter(_.nonEmpty),
               idleMinutes,
+              weekStart,
             )
         }
       }
@@ -2069,7 +2073,7 @@ class HouseholdSettingsRepoLive(xa: Transactor[Task]) extends HouseholdSettingsR
     )
 
   def update(household: HouseholdId, s: HouseholdSettings): Task[Unit] = {
-    val ummJson       = s.unmanagedMacPolicy.toJson
+    val ummJson         = s.unmanagedMacPolicy.toJson
     // #1160 / #1464: invalidate the time-used rollup atomically with the
     // settings update. Any change to the daily-reset boundary (tz / reset hour),
     // the heartbeat filter, or the presence session-stitch knob
@@ -2106,6 +2110,7 @@ class HouseholdSettingsRepoLive(xa: Transactor[Task]) extends HouseholdSettingsR
                   ambient_learning_window_days=${s.ambientLearningWindowDays},
                   notify_email=${s.notifyEmail},
                   shared_device_idle_minutes=${s.sharedDeviceIdleMinutes},
+                  week_start_day=${s.weekStartDay},
                   updated_at=NOW()
             WHERE """ ++ SqlFragments.householdEq(household)).update.run
     // #2553: the invalidation is SCOPED to the writing household's profiles. #2533 deliberately
@@ -2131,14 +2136,16 @@ class HouseholdSettingsRepoLive(xa: Transactor[Task]) extends HouseholdSettingsR
     // household is the durable fix — #2583.
     // `time_used_daily` / `app_used_daily` carry no household_id of their own (V43 / V53) — they key
     // on `profile_id`, which does (V65) — so the scope is a semijoin through `profiles`.
-    val ownProfiles   =
+    val ownProfiles     =
       fr"profile_id IN (SELECT id FROM profiles WHERE" ++
         SqlFragments.householdEq(household) ++ fr")"
-    val invalidate    = (fr"DELETE FROM time_used_daily WHERE" ++ ownProfiles).update.run
+    val invalidate      = (fr"DELETE FROM time_used_daily WHERE" ++ ownProfiles).update.run
     // #1516: the per-app rollup (`app_used_daily`) is gated by the SAME active-minute definition
     // (heartbeat filter, daily-reset boundary, presence session-stitch knob), so invalidate it
     // atomically too — the next tick refills both from first principles.
-    val invalidateApp = (fr"DELETE FROM app_used_daily WHERE" ++ ownProfiles).update.run
+    val invalidateApp   = (fr"DELETE FROM app_used_daily WHERE" ++ ownProfiles).update.run
+    // #2934 (design §6.4): the group rollup is gated by the same definition, so it rides along.
+    val invalidateGroup = (fr"DELETE FROM app_group_used_daily WHERE" ++ ownProfiles).update.run
     // A settings write for a household that owns no row is a provisioning bug, not a silent no-op:
     // every household gets its row from `HouseholdSeed.insertHousehold` / `backfillMissingSettings`
     // (#2386), so 0 rows updated means the caller's household is unprovisioned. Fail loud rather
@@ -2152,7 +2159,7 @@ class HouseholdSettingsRepoLive(xa: Transactor[Task]) extends HouseholdSettingsR
           ),
         )
       case n => doobie.free.connection.pure(n)
-    } *> invalidate *> invalidateApp).transact(xa).unit
+    } *> invalidate *> invalidateApp *> invalidateGroup).transact(xa).unit
   }
 
   def ensureDefault(defaultZone: ZoneId): Task[Unit] =
@@ -4656,7 +4663,14 @@ trait AppRepo {
    */
   def listAllHostMappings: Task[List[AppHost]]
 
-  /** Upsert a (app, profile) assignment. Existing row at that key is overwritten. */
+  /**
+   * Upsert a (app, profile) assignment. Existing row at that key is overwritten.
+   *
+   * #2934 (design §6.4): a create or a mode change, and a delete, drop the profile's current-week
+   * settled usage rows in the same transaction; an exempt-flag edit drops only the profile daily
+   * total; a limit edit drops nothing. The drop lives here, not in the route, because the alert
+   * approval path writes assignments too and must not be able to skip it.
+   */
   def upsertAssignment(
       appId: AppId,
       profileId: ProfileId,
@@ -4665,6 +4679,8 @@ trait AppRepo {
       exemptFromDaily: Boolean,
       // #1679: default true for back-compat — all existing callers keep current behavior.
       allowedDuringScheduleBlock: Boolean = true,
+      // #2934: weekly limit beside `dailyMinutes`; default None keeps every existing caller as it was.
+      weeklyMinutes: Option[Int] = None,
   ): Task[AppPolicyAssignmentId]
   def deleteAssignment(appId: AppId, profileId: ProfileId): Task[Unit]
   def listAssignmentsForApp(appId: AppId): Task[List[AppPolicyAssignment]]
@@ -4706,7 +4722,7 @@ trait AppRepo {
   ): Task[Map[AppPolicyAssignmentId, List[(AppScheduleMode, ScheduleWindow)]]]
 }
 
-class AppRepoLive(xa: Transactor[Task]) extends AppRepo {
+class AppRepoLive(xa: Transactor[Task], clock: wifihaven.shared.Clock) extends AppRepo {
   private type R =
     (AppId, String, String, Option[AppTemplateId], Option[String], IconType, Instant)
   private def toApp(r: R) = App(r._1, r._2, r._3, r._4, r._5, r._6, r._7)
@@ -4925,35 +4941,61 @@ class AppRepoLive(xa: Transactor[Task]) extends AppRepo {
       dailyMinutes: Option[Int],
       exemptFromDaily: Boolean,
       allowedDuringScheduleBlock: Boolean = true,
+      weeklyMinutes: Option[Int] = None,
   ) =
-    sql"""INSERT INTO app_policy_assignments
-            (app_id, profile_id, mode, daily_minutes, exempt_from_daily,
-             allowed_during_schedule_block)
-          VALUES ($appId, $profileId, ${AppMode.asString(mode)}, $dailyMinutes, $exemptFromDaily,
-                  $allowedDuringScheduleBlock)
-          ON CONFLICT (app_id, profile_id) DO UPDATE SET
-            mode = EXCLUDED.mode,
-            daily_minutes = EXCLUDED.daily_minutes,
-            exempt_from_daily = EXCLUDED.exempt_from_daily,
-            allowed_during_schedule_block = EXCLUDED.allowed_during_schedule_block
-          RETURNING id"""
-      .query[AppPolicyAssignmentId]
-      .unique
-      .transact(xa)
+    clock.today.map(SettledUsage.weekFloor).flatMap { from =>
+      (for {
+        prior <- sql"""SELECT mode, exempt_from_daily FROM app_policy_assignments
+                        WHERE app_id=$appId AND profile_id=$profileId"""
+          .query[(AppMode, Boolean)]
+          .option
+        id    <- sql"""INSERT INTO app_policy_assignments
+                    (app_id, profile_id, mode, daily_minutes, weekly_minutes, exempt_from_daily,
+                     allowed_during_schedule_block)
+                  VALUES ($appId, $profileId, ${AppMode.asString(mode)}, $dailyMinutes,
+                          $weeklyMinutes, $exemptFromDaily, $allowedDuringScheduleBlock)
+                  ON CONFLICT (app_id, profile_id) DO UPDATE SET
+                    mode = EXCLUDED.mode,
+                    daily_minutes = EXCLUDED.daily_minutes,
+                    weekly_minutes = EXCLUDED.weekly_minutes,
+                    exempt_from_daily = EXCLUDED.exempt_from_daily,
+                    allowed_during_schedule_block = EXCLUDED.allowed_during_schedule_block
+                  RETURNING id"""
+          .query[AppPolicyAssignmentId]
+          .unique
+        // Design §6.4: create / mode change => all three settled kinds; exempt-flag edit => the
+        // profile daily total only; a limit edit changes no usage.
+        _     <- prior match {
+          case None                                 =>
+            SettledUsage.invalidate(List(profileId), SettledUsage.Kinds.All, from)
+          case Some((m, _)) if m != mode            =>
+            SettledUsage.invalidate(List(profileId), SettledUsage.Kinds.All, from)
+          case Some((_, e)) if e != exemptFromDaily =>
+            SettledUsage.invalidate(List(profileId), SettledUsage.Kinds.ProfileTotalOnly, from)
+          case Some(_)                              => doobie.free.connection.pure(0)
+        }
+      } yield id).transact(xa)
+    }
 
   def deleteAssignment(appId: AppId, profileId: ProfileId) =
-    sql"DELETE FROM app_policy_assignments WHERE app_id=$appId AND profile_id=$profileId".update.run
-      .transact(xa)
-      .unit
+    clock.today.map(SettledUsage.weekFloor).flatMap { from =>
+      (for {
+        n <-
+          sql"DELETE FROM app_policy_assignments WHERE app_id=$appId AND profile_id=$profileId".update.run
+        _ <-
+          if (n > 0) SettledUsage.invalidate(List(profileId), SettledUsage.Kinds.All, from)
+          else doobie.free.connection.pure(0)
+      } yield ()).transact(xa)
+    }
 
   private type AR =
-    (AppPolicyAssignmentId, AppId, ProfileId, AppMode, Option[Int], Boolean, Boolean)
+    (AppPolicyAssignmentId, AppId, ProfileId, AppMode, Option[Int], Boolean, Boolean, Option[Int])
   private def toAssignment(r: AR) =
-    AppPolicyAssignment(r._1, r._2, r._3, r._4, r._5, r._6, r._7)
+    AppPolicyAssignment(r._1, r._2, r._3, r._4, r._5, r._6, r._7, weeklyMinutes = r._8)
 
   def listAssignmentsForApp(appId: AppId) =
     sql"""SELECT id,app_id,profile_id,mode,daily_minutes,exempt_from_daily,
-                 allowed_during_schedule_block
+                 allowed_during_schedule_block,weekly_minutes
           FROM app_policy_assignments WHERE app_id=$appId ORDER BY id"""
       .query[AR]
       .map(toAssignment)
@@ -4963,7 +5005,7 @@ class AppRepoLive(xa: Transactor[Task]) extends AppRepo {
   def listAssignmentsForProfile(profileId: ProfileId) =
     DbMetrics.timed("app.listAssignmentsForProfile")(
       sql"""SELECT id,app_id,profile_id,mode,daily_minutes,exempt_from_daily,
-                   allowed_during_schedule_block
+                   allowed_during_schedule_block,weekly_minutes
           FROM app_policy_assignments WHERE profile_id=$profileId ORDER BY id"""
         .query[AR]
         .map(toAssignment)
@@ -5202,7 +5244,9 @@ object Repos {
   val blockEventRepo        = ZLayer.fromFunction(BlockEventRepoLive(_))
   val connEventRepo         = ZLayer.fromFunction(ConnectionEventRepoLive(_))
   val alertRepo             = ZLayer.fromFunction(AlertRepoLive(_))
-  val appRepo               = ZLayer.fromFunction(AppRepoLive(_))
+  val appRepo               = ZLayer.fromFunction(AppRepoLive(_, _))
+  // #2934: household app groups + profile attachments (V92).
+  val appGroupRepo          = ZLayer.fromFunction(AppGroupRepoLive(_, _))
   val rollupRepo            = ZLayer.fromFunction(RollupRepoLive(_))
   val timeUsedRollupRepo    = ZLayer.fromFunction(TimeUsedRollupRepoLive(_))
   val appUsedRollupRepo     = ZLayer.fromFunction(AppUsedRollupRepoLive(_))
@@ -5223,5 +5267,5 @@ object Repos {
   // grants that widen the #2241 agent token's data scope (V84).
   val supportConsentRepo    = ZLayer.fromFunction(SupportConsentRepoLive(_))
   val all                   =
-    userRepo ++ householdRepo ++ userProfileRepo ++ profileRepo ++ namedScheduleRepo ++ householdSettingsRepo ++ timeLimitRepo ++ appTimeLimitRepo ++ deviceRepo ++ deviceAssignmentRepo ++ sharedDeviceRepo ++ blocklistRepo ++ timeUsageRepo ++ timeExtRepo ++ routerRepo ++ trafficReportRepo ++ blockEventRepo ++ connEventRepo ++ alertRepo ++ appRepo ++ rollupRepo ++ timeUsedRollupRepo ++ appUsedRollupRepo ++ partitionRepo ++ ambientHostsRepo ++ householdBillingRepo ++ betaRequestRepo ++ betaCohortRepo ++ entitlementsRepo ++ pressMessageRepo ++ passwordResetRepo ++ supportConsentRepo
+    userRepo ++ householdRepo ++ userProfileRepo ++ profileRepo ++ namedScheduleRepo ++ householdSettingsRepo ++ timeLimitRepo ++ appTimeLimitRepo ++ deviceRepo ++ deviceAssignmentRepo ++ sharedDeviceRepo ++ blocklistRepo ++ timeUsageRepo ++ timeExtRepo ++ routerRepo ++ trafficReportRepo ++ blockEventRepo ++ connEventRepo ++ alertRepo ++ appRepo ++ appGroupRepo ++ rollupRepo ++ timeUsedRollupRepo ++ appUsedRollupRepo ++ partitionRepo ++ ambientHostsRepo ++ householdBillingRepo ++ betaRequestRepo ++ betaCohortRepo ++ entitlementsRepo ++ pressMessageRepo ++ passwordResetRepo ++ supportConsentRepo
 }

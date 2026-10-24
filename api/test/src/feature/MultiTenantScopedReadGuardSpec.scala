@@ -313,6 +313,7 @@ object MultiTenantScopedReadGuardSpec extends ZIOSpecDefault {
     "UserId",
     "ProfileId",
     "NamedScheduleId",
+    "AppGroupId",
     "AlertId",
     "RouterId",
     "AppId",
@@ -548,6 +549,13 @@ object MultiTenantScopedReadGuardSpec extends ZIOSpecDefault {
     // POST /api/schedules from a row in a household the caller could not see (#2572/#2586). Test B7
     // reconstructs the pre-fix signature and asserts the guard catches it.
     "NamedScheduleRepo.findByName"                 -> Scoped,
+    // #2934: app groups. `find` / `deleteAttachment` take the caller's household and filter on it;
+    // `householdOf` is the choke-point probe behind requireAppGroupInHousehold.
+    "AppGroupRepo.find"                            -> Scoped,
+    "AppGroupRepo.deleteAttachment"                -> Scoped,
+    "AppGroupRepo.householdOf"                     -> SurrogateId(
+      "the choke-point probe; returns the household to compare",
+    ),
     "HouseholdSettingsRepo.enforcementDisabled"    -> Scoped,
     "HouseholdSettingsRepo.setEnforcementDisabled" -> Scoped,
     "TimeLimitRepo.findForProfile"                 -> SurrogateId(

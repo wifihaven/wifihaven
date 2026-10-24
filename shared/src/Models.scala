@@ -401,6 +401,49 @@ case class AppPolicyAssignment(
     // after a reload, and because the SPA re-seeds its editor from the read and PUTs the full
     // desired set with replace semantics, the next unrelated edit on the row deleted them.
     scheduleRules: List[AppScheduleRule] = Nil,
+    // #2934 (design weekly-limits-and-app-groups §5.2): weekly minutes beside `dailyMinutes`
+    // (`app_policy_assignments.weekly_minutes`, V92). `None` = no weekly limit. Additive.
+    weeklyMinutes: Option[Int] = None,
+    // #2934 (D14): set on the API read path when a group attached to this assignment's profile
+    // also covers the app (an overlap). Computed per read, never stored.
+    coveredBy: Option[AppGroupRef] = None,
+) derives JsonCodec
+
+// #2934: a group in a reference position — enough for the SPA's "Also in Games" overlap chip.
+case class AppGroupRef(groupId: AppGroupId, name: String) derives JsonCodec
+
+// #2934 (design §5.3): a household app group — a name and a member list, nothing else. It carries
+// no limits and no rules (it is not a policy tier, #1452); limits live on each profile's
+// attachment ([[ProfileAppGroup]]).
+case class AppGroup(id: AppGroupId, name: String, memberAppIds: List[AppId]) derives JsonCodec
+
+case class CreateAppGroupRequest(name: String, memberAppIds: List[AppId] = Nil) derives JsonCodec
+
+// Absent fields are left as they are (PATCH); `memberAppIds` present REPLACES the member list.
+case class UpdateAppGroupRequest(
+    name: Option[String] = None,
+    memberAppIds: Option[List[AppId]] = None,
+) derives JsonCodec
+
+/**
+ * A profile's attachment of a household group (`profile_app_groups`, V92): the profile's own limits
+ * on the group and its "counts toward daily limit" choice (inverted in the SPA label, as for apps —
+ * AGENTS.md#exempt-from-daily). At least one limit is required (D4).
+ */
+case class ProfileAppGroup(
+    profileId: ProfileId,
+    groupId: AppGroupId,
+    name: String,
+    memberAppIds: List[AppId],
+    dailyMinutes: Option[Int],
+    weeklyMinutes: Option[Int],
+    exemptFromDaily: Boolean,
+) derives JsonCodec
+
+case class UpsertProfileAppGroupRequest(
+    dailyMinutes: Option[Int] = None,
+    weeklyMinutes: Option[Int] = None,
+    exemptFromDaily: Option[Boolean] = None,
 ) derives JsonCodec
 
 // #1798: the app *definition* mutator endpoints (create / update name+icon /
@@ -457,6 +500,9 @@ case class UpsertAppAssignmentRequest(
     scheduleRules: List[AppScheduleRule] = Nil,
     // #1679: omitted by existing clients decodes as None → server defaults to true.
     allowedDuringScheduleBlock: Option[Boolean] = None,
+    // #2934: additive weekly limit (D11). Either limit implies `time_limited`; clearing both
+    // demotes to `allowed`. Omitted by existing clients → no weekly limit.
+    weeklyMinutes: Option[Int] = None,
 ) derives JsonCodec
 
 // #1983: one app host that is a member of one or more shipped category
@@ -1185,9 +1231,17 @@ case class HouseholdSettings(
     // out automatically (design docs/design/shared-devices.md §7.3, §15 Q3a). Column V90
     // (household_settings.shared_device_idle_minutes, CHECK 5–1440).
     sharedDeviceIdleMinutes: Int = HouseholdSettings.DefaultSharedDeviceIdleMinutes,
+    // #2934 (design weekly-limits-and-app-groups §5.1, D1): the household-local day a week starts
+    // on, ISO 1 = Monday .. 7 = Sunday. Column V92 (household_settings.week_start_day, CHECK 1–7).
+    weekStartDay: Int = HouseholdSettings.DefaultWeekStartDay,
 ) derives JsonCodec
 
 object HouseholdSettings {
+
+  /** #2934: Monday, mirroring V92's column default; the bounds mirror its CHECK. */
+  val DefaultWeekStartDay: Int = 1
+  val MinWeekStartDay: Int     = 1
+  val MaxWeekStartDay: Int     = 7
 
   /**
    * #2849: the idle auto-checkout threshold's default and bounds, mirroring V90's column default
@@ -1280,6 +1334,9 @@ case class UpdateHouseholdSettingsRequest(
     // rather than resetting it to the default (the asymmetry the blockEncryptedDns note above
     // describes).
     sharedDeviceIdleMinutes: Option[Int] = None,
+    // #2934: preserve-on-absence, like sharedDeviceIdleMinutes — an older client's full-replace PUT
+    // must not reset the household's week start to Monday.
+    weekStartDay: Option[Int] = None,
 ) derives JsonCodec
 
 /**

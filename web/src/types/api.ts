@@ -125,6 +125,9 @@ export interface HouseholdSettings {
   // #2849 — minutes without engaged presence (the screen-time definition) after which a
   // checked-in shared device is checked out automatically. 5–1440, default 15.
   sharedDeviceIdleMinutes: number
+  // #2934 — the household-local day a week starts on, ISO 1 (Monday) .. 7 (Sunday). Weekly app
+  // and group limits reset at `dailyResetTime` on this day.
+  weekStartDay: number
 }
 
 // #2382 — the server-level per-household "disable enforcement" escape hatch. When
@@ -1092,6 +1095,54 @@ export interface AppPolicyAssignment {
   // #1679 — when false, this app's extraAllowed carve-out is suppressed during
   // Schedule-reason blocks. Optional/back-compat: omitted by older APIs → treat as true.
   allowedDuringScheduleBlock?: boolean
+  // #2934 — weekly limit beside `dailyMinutes` (null/omitted = none). Either limit makes the
+  // assignment `time_limited`; the API promotes/demotes the mode accordingly.
+  weeklyMinutes?: number | null
+  // #2934 (D14) — set when a group attached to this profile also covers the app (an overlap).
+  coveredBy?: AppGroupRef | null
+}
+
+// #2934 — a group in a reference position ("Also in Games").
+export interface AppGroupRef {
+  groupId: number
+  name: string
+}
+
+// #2934 — a household app group: a name and a member list. Limits live on each profile's
+// attachment (ProfileAppGroup), so a group is not a policy tier.
+export interface AppGroup {
+  id: number
+  name: string
+  memberAppIds: number[]
+}
+
+export interface CreateAppGroupRequest {
+  name: string
+  memberAppIds?: number[]
+}
+
+// `memberAppIds` present REPLACES the member list; absent fields are left alone.
+export interface UpdateAppGroupRequest {
+  name?: string
+  memberAppIds?: number[]
+}
+
+// #2934 — a profile's attachment of a group. At least one limit is required. `exemptFromDaily`
+// is the inverse of the "Counts toward daily limit" checkbox, as for per-app limits.
+export interface ProfileAppGroup {
+  profileId: number
+  groupId: number
+  name: string
+  memberAppIds: number[]
+  dailyMinutes: number | null
+  weeklyMinutes: number | null
+  exemptFromDaily: boolean
+}
+
+export interface UpsertProfileAppGroupRequest {
+  dailyMinutes?: number | null
+  weeklyMinutes?: number | null
+  exemptFromDaily?: boolean
 }
 
 // #1983 — one app host that is a member of one or more shipped category
@@ -1124,6 +1175,8 @@ export interface UpsertAppAssignmentRequest {
   scheduleRules?: AppScheduleRule[]
   // #1679 — omit to keep current behavior (server defaults to true).
   allowedDuringScheduleBlock?: boolean
+  // #2934 — omit/null for no weekly limit. Either limit implies `time_limited` server-side.
+  weeklyMinutes?: number | null
 }
 
 // #958: BlocklistSummary as returned by GET /api/blocklists.

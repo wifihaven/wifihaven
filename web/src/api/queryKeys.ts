@@ -29,6 +29,9 @@ const unscopedKeys = {
   routers: () => ['routers'] as const,
   alerts: (includeAll: boolean) => ['alerts', includeAll] as const,
   schedules: () => ['schedules'] as const,
+  // #2934: household app groups, and one profile's attachments of them.
+  appGroups: () => ['app-groups'] as const,
+  profileAppGroups: (profileId: number) => ['app-groups', 'profile', profileId] as const,
   dashboardNow: () => ['dashboard', 'now'] as const,
   // #2062: an optional `mac` narrows the feed to one device; the ws patcher
   // (useWsRecentBlocked) MUST key on the same mac so its prepend lands on the
