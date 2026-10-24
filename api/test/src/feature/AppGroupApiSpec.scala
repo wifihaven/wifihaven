@@ -667,5 +667,96 @@ object AppGroupApiSpec
         afterDet == ((0, 1, 0, 0, 1)),
       )
     },
+    test("assignment writes and a membership edit drop settled usage per design §6.4") {
+      val recent                                             = LocalDate.of(2000, 1, 1)
+      val old                                                = LocalDate.of(1990, 1, 1)
+      def seed(xa: Transactor[Task], p: ProfileId, a: AppId) =
+        ZIO.foreachDiscard(List(recent, old)) { d =>
+          (sql"""INSERT INTO app_used_daily(profile_id, app_id, date, engaged_seconds, rolled_through)
+                   VALUES ($p, $a, $d, 60, NOW()) ON CONFLICT DO NOTHING""".update.run *>
+            sql"""INSERT INTO time_used_daily(profile_id, date, used_seconds, rolled_through)
+                   VALUES ($p, $d, 60, NOW()) ON CONFLICT DO NOTHING""".update.run).transact(xa)
+        }
+      def counts(xa: Transactor[Task], p: ProfileId)         =
+        (for {
+          ar <- sql"SELECT count(*) FROM app_used_daily WHERE profile_id=$p AND date=$recent"
+            .query[Int]
+            .unique
+          ao <- sql"SELECT count(*) FROM app_used_daily WHERE profile_id=$p AND date=$old"
+            .query[Int]
+            .unique
+          tr <- sql"SELECT count(*) FROM time_used_daily WHERE profile_id=$p AND date=$recent"
+            .query[Int]
+            .unique
+          to <- sql"SELECT count(*) FROM time_used_daily WHERE profile_id=$p AND date=$old"
+            .query[Int]
+            .unique
+        } yield (ar, ao, tr, to)).transact(xa)
+      for {
+        _                     <- cleanDb
+        two                   <- TestLayers.seedTwoHouseholds(macA, macB)
+        xa                    <- ZIO.service[Transactor[Task]]
+        profRepo              <- ZIO.service[ProfileRepo]
+        control               <- profRepo.create("A-Control", Nil)
+        r                     <- rig
+        auth                  <- makeAuth
+        tok                   <- login(auth, two.adminA, two.password)
+        (roblox, minecraf, _) <- newApps
+        p = two.profileA
+        // create
+        _  <- seed(xa, p, roblox)
+        c0 <- counts(xa, p)
+        _  <- putAssignment(r.apps, tok, roblox, p, """{"mode":"allowed"}""")
+        c1 <- counts(xa, p)
+        // mode change allowed -> time_limited (a limit appears)
+        _  <- seed(xa, p, roblox)
+        _  <- putAssignment(r.apps, tok, roblox, p, """{"mode":"allowed","dailyMinutes":30}""")
+        c2 <- counts(xa, p)
+        // limit-only edit: nothing dropped
+        _  <- seed(xa, p, roblox)
+        _  <- putAssignment(r.apps, tok, roblox, p, """{"mode":"time_limited","dailyMinutes":45}""")
+        c3 <- counts(xa, p)
+        // exempt flip: profile total only
+        _  <- putAssignment(
+          r.apps,
+          tok,
+          roblox,
+          p,
+          """{"mode":"time_limited","dailyMinutes":45,"exemptFromDaily":false}""",
+        )
+        c4 <- counts(xa, p)
+        // delete
+        _  <- seed(xa, p, roblox)
+        _  <- send(r.apps, Method.DELETE, s"/api/apps/${roblox.value}/policy/${p.value}", tok)
+        c5 <- counts(xa, p)
+        // membership edit drops every attached profile; an unattached profile is untouched.
+        g  <- createGroup(r.groups, tok, "Games", List(roblox)).flatMap(decodeGroup)
+        _  <- attach(r.groups, tok, p, g.id, """{"dailyMinutes":30}""")
+        other <- profRepo.create("A-Teens", Nil)
+        _     <- attach(r.groups, tok, other, g.id, """{"dailyMinutes":30}""")
+        _     <- ZIO.foreachDiscard(List(p, other, control))(seed(xa, _, roblox))
+        _     <- send(
+          r.groups,
+          Method.PATCH,
+          s"/api/app-groups/${g.id.value}",
+          tok,
+          s"""{"memberAppIds":[${minecraf.value}]}""",
+        )
+        cp    <- counts(xa, p)
+        co    <- counts(xa, other)
+        cc    <- counts(xa, control)
+      } yield assertTrue(
+        c0 == ((1, 1, 1, 1)),
+        c1 == ((0, 1, 0, 1)),
+        c2 == ((0, 1, 0, 1)),
+        c3 == ((1, 1, 1, 1)),
+        c4 == ((1, 1, 0, 1)),
+        c5 == ((0, 1, 0, 1)),
+        cp == ((0, 1, 0, 1)),
+        co == ((0, 1, 0, 1)),
+        // liveness anchor: the seeded unattached profile keeps all four rows
+        cc == ((1, 1, 1, 1)),
+      )
+    },
   ) @@ TestAspect.sequential
 }

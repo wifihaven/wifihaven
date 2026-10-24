@@ -37,12 +37,13 @@ object SettledUsage {
   }
 
   /**
-   * The oldest `date` a write drops. A week is at most seven household-local dates and a
-   * household-local date is within a day of the wall-clock UTC date (reset time + zone offset), so
-   * `today - 8` is a superset of the current week for every household. Dropping a day too many only
-   * costs one recompute (design §6.4: "at most six days per affected profile, once"), so the
-   * approximation errs toward correctness; the exact week start (`householdWeekStart`) is the
-   * budget primitive's, and this takes the date rather than recomputing it.
+   * The oldest `date` a write drops. A week is at most seven household-local dates, and the
+   * household-local date of "now" can sit a day or two away from the clock's date (the reset time
+   * moves the day boundary and the zone offset moves it again, and `Clock.today` is in the JVM's
+   * zone, not the household's). `today - 8` is seven days of week plus that slack. Dropping a day
+   * too many only costs one recompute (design §6.4: "at most six days per affected profile, once"),
+   * so the approximation errs toward correctness; the exact week start (`householdWeekStart`) is
+   * the budget primitive's, and this takes the date rather than recomputing it.
    */
   def weekFloor(today: LocalDate): LocalDate = today.minusDays(8)
 
