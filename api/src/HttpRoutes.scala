@@ -56,6 +56,7 @@ object HttpRoutes {
       blockEvRepo    <- ZIO.service[BlockEventRepo]
       alertRepo      <- ZIO.service[AlertRepo]
       appRepo        <- ZIO.service[AppRepo]
+      appGroupRepo   <- ZIO.service[AppGroupRepo]
       appRollupRepo  <- ZIO.service[wifihaven.api.db.AppUsedRollupRepo]
       // #2926: the bundled IEEE OUI table. Loaded once here so a build missing it fails boot.
       macVendors     <- wifihaven.api.identify.MacVendors.load
@@ -399,6 +400,7 @@ object HttpRoutes {
           upRepo,
           blRepo,
           templates,
+          appGroupRepo,
           connRepo,
           usageRepo,
           trafficRepo,
@@ -716,6 +718,7 @@ object HttpRoutes {
       upRepo: UserProfileRepo,
       blRepo: BlocklistRepo,
       templates: Map[wifihaven.shared.types.AppTemplateId, AppTemplate],
+      appGroupRepo: AppGroupRepo,
       connRepo: ConnectionEventRepo,
       usageRepo: TimeUsageRepo,
       trafficRepo: TrafficReportRepo,
@@ -756,7 +759,19 @@ object HttpRoutes {
         accessReqRateLimiter,
         blockPageHousehold,
       ) ++
-      AppRoutes.routes(auth, appRepo, profileRepo, upRepo, blRepo, templates) ++
+      // #2934: an assignment / group / attachment write changes the profile's dispositions, so each
+      // drops the computed snapshot (design §9).
+      AppRoutes.routes(
+        auth,
+        appRepo,
+        profileRepo,
+        upRepo,
+        blRepo,
+        appGroupRepo,
+        policy.invalidate,
+        templates,
+      ) ++
+      AppGroupRoutes.routes(auth, appGroupRepo, profileRepo, upRepo, policy.invalidate) ++
       AdminDebugRoutes.routes(auth, policy) ++
       DebugRoutes.routes(
         cfg.debugEnabled,

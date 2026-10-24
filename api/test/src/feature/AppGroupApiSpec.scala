@@ -1,7 +1,9 @@
 package wifihaven.api.feature
 
+import cats.syntax.all.*
 import doobie.*
 import doobie.implicits.*
+import doobie.postgres.implicits.*
 import io.zonky.test.db.postgres.embedded.EmbeddedPostgres
 import wifihaven.api.JwtConfig
 import wifihaven.api.auth.*
@@ -15,6 +17,7 @@ import wifihaven.testinfra.*
 import zio.{Clock as _, *}
 import zio.http.*
 import zio.json.*
+import zio.interop.catz.*
 import zio.test.*
 
 import java.time.LocalDate
@@ -90,8 +93,7 @@ object AppGroupApiSpec
       body: String = "",
   ) =
     rs.runZIO(
-      Request
-        .default(method, url(path), Body.fromString(body))
+      Request(method = method, url = url(path), body = Body.fromString(body))
         .addHeader(Header.Authorization.Bearer(tok))
         .addHeader(Header.ContentType(MediaType.application.json)),
     )
@@ -373,7 +375,8 @@ object AppGroupApiSpec
           """{"mode":"allowed","dailyMinutes":30}""",
         )
         a2             <- assignmentsOf(r.apps, tok, roblox)
-        cleared <- putAssignment(r.apps, tok, roblox, two.profileA, """{"mode":"time_limited"}""")
+        noLimit <- putAssignment(r.apps, tok, roblox, two.profileA, """{"mode":"time_limited"}""")
+        cleared <- putAssignment(r.apps, tok, roblox, two.profileA, """{"mode":"allowed"}""")
         a3      <- assignmentsOf(r.apps, tok, roblox)
         blocked <- putAssignment(
           r.apps,
@@ -400,6 +403,7 @@ object AppGroupApiSpec
         a2.head.dailyMinutes.contains(30),
         // a plain daily write replaces the row, so the weekly limit is gone (full replace).
         a2.head.weeklyMinutes.isEmpty,
+        noLimit.status == Status.BadRequest,
         cleared.status.isSuccess,
         a3.head.mode == AppMode.Allowed,
         a3.head.dailyMinutes.isEmpty && a3.head.weeklyMinutes.isEmpty,
@@ -663,5 +667,5 @@ object AppGroupApiSpec
         afterDet == ((0, 1, 0, 0, 1)),
       )
     },
-  )
+  ) @@ TestAspect.sequential
 }

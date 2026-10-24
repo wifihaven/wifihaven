@@ -187,8 +187,9 @@ object AdultEditBoundarySpec
       pr      <- ZIO.service[ProfileRepo]
       up      <- ZIO.service[UserProfileRepo]
       blRepo  <- ZIO.service[BlocklistRepo]
+      gr      <- ZIO.service[AppGroupRepo]
       auth    <- makeAuth
-    } yield AppRoutes.routes(auth, appRepo, pr, up, blRepo)
+    } yield AppRoutes.routes(auth, appRepo, pr, up, blRepo, gr)
 
   private def householdSettingsRoutes =
     for {

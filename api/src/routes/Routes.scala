@@ -2399,17 +2399,14 @@ object HouseholdSettingsRoutes {
               .mapError(ApiError.BadRequest(_))
             _      <- ZIO
               .foreachDiscard(upd.sharedDeviceIdleMinutes)(validateIdleMinutes)
-            // #2849: absent preserves the stored idle threshold (see the request type).
-            idle   <- upd.sharedDeviceIdleMinutes match {
-              case Some(m) => ZIO.succeed(m)
-              case None    =>
-                repo
-                  .getForHousehold(claims.hh)
-                  .map(_.sharedDeviceIdleMinutes)
-                  .mapError(ApiError.Db(_))
-            }
+            _      <- ZIO.foreachDiscard(upd.weekStartDay)(validateWeekStartDay)
+            // #2849 / #2934: absent preserves the stored idle threshold and week start (see the
+            // request type).
+            stored <- repo.getForHousehold(claims.hh).mapError(ApiError.Db(_))
+            idle      = upd.sharedDeviceIdleMinutes.getOrElse(stored.sharedDeviceIdleMinutes)
+            weekStart = upd.weekStartDay.getOrElse(stored.weekStartDay)
             // #2533: full replace of THIS household's row.
-            _      <- repo
+            _ <- repo
               .update(
                 claims.hh,
                 HouseholdSettings(
@@ -2427,10 +2424,11 @@ object HouseholdSettingsRoutes {
                   // PUT means "no recipient", not the empty string.
                   upd.notifyEmail.map(_.trim).filter(_.nonEmpty),
                   idle,
+                  weekStart,
                 ),
               )
               .mapError(ApiError.Db(_))
-            _      <- invalidateSnapshot(claims.hh)
+            _ <- invalidateSnapshot(claims.hh)
           } yield Response.ok
           handle.mapError(ErrorMapper.errorToResponse)
         },
@@ -2492,6 +2490,16 @@ object HouseholdSettingsRoutes {
               case FieldPatch.Set(m)  => validateIdleMinutes(m)
               case FieldPatch.Absent  => ZIO.unit
             }
+            // #2934: the household's week start day, 1 (Mon) .. 7 (Sun); never nullable.
+            wsPatch   <- ZIO
+              .fromEither(FieldPatch.from[Int](obj, "weekStartDay"))
+              .mapError(ApiError.BadRequest(_))
+            _         <- wsPatch match {
+              case FieldPatch.Cleared =>
+                ZIO.fail(ApiError.BadRequest("weekStartDay cannot be cleared"))
+              case FieldPatch.Set(d)  => validateWeekStartDay(d)
+              case FieldPatch.Absent  => ZIO.unit
+            }
             _         <- timePatch match {
               case FieldPatch.Cleared =>
                 ZIO.fail(ApiError.BadRequest("dailyResetTime cannot be cleared"))
@@ -2539,6 +2547,7 @@ object HouseholdSettingsRoutes {
                 case FieldPatch.Absent  => existing.notifyEmail
               },
               sharedDeviceIdleMinutes = idlePatch.applyTo(existing.sharedDeviceIdleMinutes),
+              weekStartDay = wsPatch.applyTo(existing.weekStartDay),
             )
             _            <- repo.update(claims.hh, merged).mapError(ApiError.Db(_))
             _            <- invalidateSnapshot(claims.hh)
@@ -2546,6 +2555,19 @@ object HouseholdSettingsRoutes {
           handle.mapError(ErrorMapper.errorToResponse)
         },
     )
+
+  // #2934: V92's `household_settings_week_start_day_check`, surfaced as a 400 before the write.
+  private def validateWeekStartDay(d: Int): IO[ApiError, Unit] =
+    ZIO
+      .unless(d >= HouseholdSettings.MinWeekStartDay && d <= HouseholdSettings.MaxWeekStartDay)(
+        ZIO.fail(
+          ApiError.BadRequest(
+            s"weekStartDay must be between ${HouseholdSettings.MinWeekStartDay} " +
+              s"(Monday) and ${HouseholdSettings.MaxWeekStartDay} (Sunday)",
+          ),
+        ),
+      )
+      .unit
 
   // #2849: V90's `household_settings_shared_device_idle_minutes_check`, surfaced as a 400 before
   // the write instead of a constraint violation.
@@ -2898,6 +2920,21 @@ def requireScheduleInHousehold(
   scheduleRepo.householdOf(scheduleId).mapError(ApiError.Db(_)).flatMap {
     case Some(hh) if hh == claims.hh => ZIO.succeed(())
     case _                           => ZIO.fail(ApiError.NotFound("Schedule not found"))
+  }
+
+/**
+ * #2934: the tenancy choke point for the per-id app-group routes. Rejects (404 — a foreign id must
+ * be indistinguishable from a nonexistent one) any group whose household ≠ the caller's
+ * `claims.hh`. Mirrors [[requireScheduleInHousehold]]; the list read is scoped at the repo.
+ */
+def requireAppGroupInHousehold(
+    claims: JwtClaims,
+    groupId: AppGroupId,
+    groupRepo: AppGroupRepo,
+): IO[ApiError, Unit] =
+  groupRepo.householdOf(groupId).mapError(ApiError.Db(_)).flatMap {
+    case Some(hh) if hh == claims.hh => ZIO.succeed(())
+    case _                           => ZIO.fail(ApiError.NotFound("Group not found"))
   }
 
 /**

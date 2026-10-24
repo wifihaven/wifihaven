@@ -209,10 +209,10 @@ object TestDatabase {
     TestDb & UserRepo & HouseholdRepo & UserProfileRepo & ProfileRepo & NamedScheduleRepo &
       HouseholdSettingsRepo & TimeLimitRepo & AppTimeLimitRepo & DeviceRepo & DeviceAssignmentRepo &
       SharedDeviceRepo & BlocklistRepo & TimeUsageRepo & TimeExtensionRepo & RouterRepo &
-      TrafficReportRepo & BlockEventRepo & ConnectionEventRepo & AlertRepo & AppRepo & RollupRepo &
-      TimeUsedRollupRepo & AppUsedRollupRepo & AmbientHostsRepo & HouseholdBillingRepo &
-      BetaRequestRepo & BetaCohortRepo & EntitlementsRepo & PressMessageRepo &
-      PasswordResetTokenRepo & SupportConsentRepo
+      TrafficReportRepo & BlockEventRepo & ConnectionEventRepo & AlertRepo & AppRepo &
+      AppGroupRepo & RollupRepo & TimeUsedRollupRepo & AppUsedRollupRepo & AmbientHostsRepo &
+      HouseholdBillingRepo & BetaRequestRepo & BetaCohortRepo & EntitlementsRepo &
+      PressMessageRepo & PasswordResetTokenRepo & SupportConsentRepo
 
   /**
    * The instant fixture device writes record in assignment history (#2843). #2844 attributes usage
