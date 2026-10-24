@@ -9,7 +9,7 @@ import { useQuery, useQueryClient, type UseQueryOptions } from '@tanstack/react-
 import { api } from '@/api/client'
 import { qk } from '@/api/queryKeys'
 import type {
-  Alert, BetaRequestStatus, BetaRequestSummary, BlocklistSummary, DashboardNow, Device, DeviceIdentity, HouseholdSettings, MeResponse, NamedSchedule, ProfileDetail,
+  Alert, AppGroup, ProfileAppGroup, BetaRequestStatus, BetaRequestSummary, BlocklistSummary, DashboardNow, Device, DeviceIdentity, HouseholdSettings, MeResponse, NamedSchedule, ProfileDetail,
   ProfileTimeStatus,
   ProfileAppWeeklyUsage,
   ProfileTimeStatusWeek, ProfileTimeSummary, ProfileTimeSummaryWeek, ProfileUsageByApp,
@@ -263,6 +263,26 @@ export function useNamedSchedules(opts?: QueryOpts<NamedSchedule[]>) {
   return useQuery({
     queryKey: qk.schedules(),
     queryFn: () => api.schedules.list(),
+    staleTime: 5 * MIN,
+    ...opts,
+  })
+}
+
+// #2934 — household app groups (GET /api/app-groups) and a profile's attachments of them.
+// Both sit under the `app-groups` key prefix, so one invalidation refreshes the pair.
+export function useAppGroups(opts?: QueryOpts<AppGroup[]>) {
+  return useQuery({
+    queryKey: qk.appGroups(),
+    queryFn: () => api.appGroups.list(),
+    staleTime: 5 * MIN,
+    ...opts,
+  })
+}
+
+export function useProfileAppGroups(profileId: number, opts?: QueryOpts<ProfileAppGroup[]>) {
+  return useQuery({
+    queryKey: qk.profileAppGroups(profileId),
+    queryFn: () => api.appGroups.forProfile(profileId),
     staleTime: 5 * MIN,
     ...opts,
   })
@@ -534,6 +554,13 @@ export function useInvalidators() {
     // refresh anything whose rendering derives from an active window.
     schedules: () => Promise.all([
       qc.invalidateQueries({ queryKey: qk.schedules() }),
+      qc.invalidateQueries({ queryKey: qk.profiles() }),
+      qc.invalidateQueries({ queryKey: qk.timeStatusAll() }),
+    ]),
+    // #2934 — a group or attachment write changes what the app rows show (`coveredBy`) and the
+    // time-status figures, so refresh those with the groups themselves.
+    appGroups: () => Promise.all([
+      qc.invalidateQueries({ queryKey: qk.appGroups() }),
       qc.invalidateQueries({ queryKey: qk.profiles() }),
       qc.invalidateQueries({ queryKey: qk.timeStatusAll() }),
     ]),

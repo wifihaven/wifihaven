@@ -54,6 +54,7 @@ beforeEach(() => {
     ambientLearningWindowDays: 14,
     notifyEmail: null,
     sharedDeviceIdleMinutes: 15,
+    weekStartDay: 1,
   }
   ;(api.household.get as unknown as ReturnType<typeof vi.fn>).mockImplementation(
     async () => ({

@@ -66,6 +66,7 @@ const household = (policy: 'allow' | 'block'): HouseholdSettings => ({
   ambientLearningWindowDays: 14,
   notifyEmail: null,
   sharedDeviceIdleMinutes: 15,
+  weekStartDay: 1,
 })
 
 beforeEach(() => {
