@@ -2315,11 +2315,11 @@ function AppRow({ app, profileId, onChanged, usedMins, usageStatus, blocklistNam
       data-testid={tid}
       className="bg-brand-card border border-brand-border rounded-xl"
     >
-      <div className="flex items-center gap-2.5 pl-2.5 pr-2 py-1.5 min-h-[40px]">
+      <div className="flex items-center gap-2.5 pl-2.5 pr-2 py-1.5 min-h-[40px] flex-wrap sm:flex-nowrap">
         <span className="w-5 shrink-0 inline-flex items-center justify-center">
           <AppIcon icon={app.app.icon} iconType={app.app.iconType} size="sm" />
         </span>
-        <div className="flex-1 min-w-0 flex items-baseline gap-2">
+        <div className="flex-1 min-w-[6rem] overflow-hidden flex items-baseline gap-2">
           <p className="text-[13px] text-brand-ink font-medium truncate">{app.app.name}</p>
           <AppBlocklistWarningBadge blocklisted={app.blocklisted} nameById={blocklistNameById} />
           <span className="text-[11px] text-brand-text-muted font-mono shrink-0">
@@ -2327,7 +2327,7 @@ function AppRow({ app, profileId, onChanged, usedMins, usageStatus, blocklistNam
           </span>
         </div>
 
-        <div className="flex items-center gap-1.5 shrink-0">
+        <div className="flex items-center gap-1.5 max-w-full sm:shrink-0 flex-wrap sm:flex-nowrap ml-auto">
           {/* #1433 / #2764 — today's time-used for an app with no cap of its
               own. Three states, never conflated: a pending query renders a
               skeleton (NOT `0m`), a failed one says so, and a loaded zero
