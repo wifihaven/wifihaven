@@ -26,6 +26,8 @@ opaque type TimeUsageId           = Long
 opaque type AlertId               = Long
 opaque type AppId                 = Long
 opaque type AppPolicyAssignmentId = Long
+// #2934: a household app group (`app_groups`, V92) — design weekly-limits-and-app-groups §5.3.
+opaque type AppGroupId            = Long
 opaque type NamedScheduleId       = Long
 opaque type AppScheduleRuleId     = Long
 // #2132 (multi-tenant P5-2, epic #622): the beta-access request queue row id
@@ -147,6 +149,13 @@ object AppPolicyAssignmentId {
   extension (a: AppPolicyAssignmentId) def value: Long = a
   given JsonCodec[AppPolicyAssignmentId]               = JsonCodec.long
   given Ordering[AppPolicyAssignmentId]                = Ordering.Long
+}
+
+object AppGroupId {
+  def apply(l: Long): AppGroupId            = l
+  extension (a: AppGroupId) def value: Long = a
+  given JsonCodec[AppGroupId]               = JsonCodec.long
+  given Ordering[AppGroupId]                = Ordering.Long
 }
 
 object NamedScheduleId {

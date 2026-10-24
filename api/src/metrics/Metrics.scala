@@ -583,6 +583,7 @@ object MetricGuard {
     // #1069 named-schedule CRUD — `op` ∈ {create, update, delete}, a fixed enum. Lets an operator
     // see schedule edits land (and rate-alert on a runaway delete loop) without grepping logs.
     "wifihaven_schedule_mutations_total"            -> Set("op"),
+    "wifihaven_app_group_mutations_total"           -> Set("op", "outcome"),
     // #578 — outbound admin-notification email funnel. `outcome` is a fixed 5-value enum, sourced
     // from EmailOutcome.label (sent / failed / skipped_disabled) + Notifier.OutcomeSkipped*
     // (skipped_no_recipient / skipped_no_household); never a per-recipient / per-household label.
@@ -1114,6 +1115,15 @@ object AppMetrics {
   // #1069 — a named-schedule create / update / delete landed. `op` is a fixed enum.
   def scheduleMutation(op: String): UIO[Unit] =
     MetricGuard.counter("wifihaven_schedule_mutations_total", Map("op" -> op))
+
+  // #2934 — an app-group or group-attachment write. `op` is one of create | update | delete |
+  // attach | detach; `outcome` is ok | rejected (any typed 4xx, so a spike in `rejected` is
+  // clients hitting validation: the D2 already-in-a-group rule, a missing limit, a foreign id).
+  def appGroupMutation(op: String, outcome: String): UIO[Unit] =
+    MetricGuard.counter(
+      "wifihaven_app_group_mutations_total",
+      Map("op" -> op, "outcome" -> outcome),
+    )
 
   // #578 — outbound admin-notification email attempts (the deferred email half of
   // the block-page kid→parent request flow). Emitted once per raised access-request

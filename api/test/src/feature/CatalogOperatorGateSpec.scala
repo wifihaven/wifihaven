@@ -143,8 +143,9 @@ object CatalogOperatorGateSpec
       pr      <- ZIO.service[ProfileRepo]
       up      <- ZIO.service[UserProfileRepo]
       blRepo  <- ZIO.service[BlocklistRepo]
+      gr      <- ZIO.service[AppGroupRepo]
       auth    <- makeAuth
-    } yield AppRoutes.routes(auth, appRepo, pr, up, blRepo, templates)
+    } yield AppRoutes.routes(auth, appRepo, pr, up, blRepo, gr, templates = templates)
 
   // ── the six mutators ─────────────────────────────────────────────────────
 

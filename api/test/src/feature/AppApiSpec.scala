@@ -43,8 +43,9 @@ object AppApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clo
       profileRepo <- ZIO.service[ProfileRepo]
       upRepo      <- ZIO.service[UserProfileRepo]
       blRepo      <- ZIO.service[BlocklistRepo]
+      groupRepo   <- ZIO.service[AppGroupRepo]
       auth        <- makeAuth
-    } yield AppRoutes.routes(auth, appRepo, profileRepo, upRepo, blRepo)
+    } yield AppRoutes.routes(auth, appRepo, profileRepo, upRepo, blRepo, groupRepo)
 
   private def adminToken =
     for {

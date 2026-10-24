@@ -45,6 +45,7 @@ object TypeMeta {
   given Meta[AlertId]               = Meta[Long].imap(AlertId(_))(_.value)
   given Meta[AppId]                 = Meta[Long].imap(AppId(_))(_.value)
   given Meta[AppPolicyAssignmentId] = Meta[Long].imap(AppPolicyAssignmentId(_))(_.value)
+  given Meta[AppGroupId]            = Meta[Long].imap(AppGroupId(_))(_.value)
   given Meta[NamedScheduleId]       = Meta[Long].imap(NamedScheduleId(_))(_.value)
   given Meta[AppScheduleRuleId]     = Meta[Long].imap(AppScheduleRuleId(_))(_.value)
   given Meta[BetaRequestId]         = Meta[Long].imap(BetaRequestId(_))(_.value)

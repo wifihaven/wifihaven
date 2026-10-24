@@ -35,23 +35,42 @@ import zio.json.*
  */
 object AppRoutes {
 
+  /**
+   * Validate the limits and settle the stored mode (design §5.2, D11). `Blocked` keeps its mode.
+   * Otherwise either limit implies `time_limited` (an `allowed` write that carries one is
+   * promoted); `time_limited` with neither is refused, and `allowed` with neither is the demoted
+   * state a client reaches by clearing both limits.
+   */
   private def validateAssignment(
       mode: AppMode,
       dailyMinutes: Option[Int],
-  ): Either[String, Unit] = mode match {
-    case AppMode.TimeLimited =>
-      dailyMinutes match {
-        case Some(m) if m > 0 => Right(())
-        case Some(_)          => Left("dailyMinutes must be > 0")
-        case None             => Left("time_limited mode requires dailyMinutes")
+      weeklyMinutes: Option[Int],
+  ): Either[String, AppMode] =
+    if (dailyMinutes.exists(_ <= 0)) Left("dailyMinutes must be > 0")
+    else if (weeklyMinutes.exists(_ <= 0)) Left("weeklyMinutes must be > 0")
+    else {
+      val limited = dailyMinutes.isDefined || weeklyMinutes.isDefined
+      mode match {
+        case AppMode.Blocked                 => Right(AppMode.Blocked)
+        case AppMode.TimeLimited if !limited =>
+          Left("time_limited mode requires dailyMinutes or weeklyMinutes")
+        case _ => Right(if (limited) AppMode.TimeLimited else AppMode.Allowed)
       }
-    case _                   =>
-      dailyMinutes match {
-        case Some(m) if m > 0 => Right(())
-        case Some(_)          => Left("dailyMinutes must be > 0")
-        case None             => Right(())
-      }
-  }
+    }
+
+  /**
+   * #2934 (D14): stamp each assignment with the group of its profile that also covers the app, if
+   * any. One query for the whole set (the list route returns every app's assignments), scoped to
+   * the caller's household.
+   */
+  private def withCoveredBy(
+      groupRepo: AppGroupRepo,
+      household: HouseholdId,
+      asgn: List[AppPolicyAssignment],
+  ): Task[List[AppPolicyAssignment]] =
+    groupRepo.coveredBy(household, asgn.map(_.profileId)).map { covered =>
+      asgn.map(a => a.copy(coveredBy = covered.get((a.profileId, a.appId))))
+    }
 
   /**
    * #2751: attach each assignment's #1379 per-app schedule rules. The rules are stored on
@@ -77,11 +96,18 @@ object AppRoutes {
   ): Task[List[AppPolicyAssignment]] =
     appRepo.scheduleRulesForAssignments(asgn.map(_.id)).map(attachScheduleRules(asgn, _))
 
-  private def detail(appRepo: AppRepo, blocklistRepo: BlocklistRepo, a: App): Task[AppDetail] =
+  private def detail(
+      appRepo: AppRepo,
+      blocklistRepo: BlocklistRepo,
+      groupRepo: AppGroupRepo,
+      household: HouseholdId,
+      a: App,
+  ): Task[AppDetail] =
     for {
       hosts       <- appRepo.getHosts(a.id)
       raw         <- appRepo.listAssignmentsForApp(a.id)
-      asgn        <- withScheduleRules(appRepo, raw)
+      ruled       <- withScheduleRules(appRepo, raw)
+      asgn        <- withCoveredBy(groupRepo, household, ruled)
       // #1983: per-host category-blocklist overlap so the SPA can warn.
       blocklisted <- AppBlocklistOverlap.forHosts(blocklistRepo, a.id, hosts)
     } yield AppDetail(a, hosts, asgn, blocklisted)
@@ -92,19 +118,23 @@ object AppRoutes {
       profileRepo: ProfileRepo,
       userProfileRepo: UserProfileRepo,
       blocklistRepo: BlocklistRepo,
+      groupRepo: AppGroupRepo,
+      // #2934: an assignment write changes the profile's dispositions, so production passes
+      // `policy.invalidate`; defaulted to a no-op for test call sites that do not read the snapshot.
+      invalidateSnapshot: HouseholdId => UIO[Unit] = _ => ZIO.unit,
       templates: Map[AppTemplateId, AppTemplate] = Map.empty,
   ): Routes[Any, Response] =
     Routes(
       Method.GET / "api" / "apps"                                                ->
         handler { (req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
-            _     <- requireAuth(req, auth)
-            apps  <- appRepo.listAll.mapError(ApiError.Db(_))
+            claims <- requireAuth(req, auth)
+            apps   <- appRepo.listAll.mapError(ApiError.Db(_))
             // Fetch hosts + assignments per app, then compute the blocklist
             // overlap for ALL apps in a single batched query (#1983) rather
             // than one categoriesForDomains round-trip per app.
             // Assignments as stored, before the #2751 schedule-rule attach below.
-            raw   <- ZIO
+            raw    <- ZIO
               .foreach(apps) { a =>
                 for {
                   hosts <- appRepo.getHosts(a.id)
@@ -114,10 +144,17 @@ object AppRoutes {
               .mapError(ApiError.Db(_))
             // #2751: one batched schedule-rule read across EVERY app's assignments, not one per
             // assignment — the list route would otherwise be an N+1 over apps x profiles.
-            rules <- appRepo
+            rules  <- appRepo
               .scheduleRulesForAssignments(raw.flatMap((_, _, asgn) => asgn.map(_.id)))
               .mapError(ApiError.Db(_))
-            base = raw.map((a, hosts, asgn) => (a, hosts, attachScheduleRules(asgn, rules)))
+            ruled = raw.map((a, hosts, asgn) => (a, hosts, attachScheduleRules(asgn, rules)))
+            // #2934: one group lookup for every app's assignments, not one per app.
+            covered <- groupRepo
+              .coveredBy(claims.hh, ruled.flatMap((_, _, asgn) => asgn.map(_.profileId)))
+              .mapError(ApiError.Db(_))
+            base = ruled.map((a, hosts, asgn) =>
+              (a, hosts, asgn.map(x => x.copy(coveredBy = covered.get((x.profileId, x.appId))))),
+            )
             overlap <- AppBlocklistOverlap
               .forApps(blocklistRepo, base.map((a, hosts, _) => a.id -> hosts).toMap)
               .mapError(ApiError.Db(_))
@@ -131,12 +168,12 @@ object AppRoutes {
         handler { (id: Long, req: Request) =>
           val aid                                  = AppId(id)
           val handle: ZIO[Any, ApiError, Response] = for {
-            _ <- requireAuth(req, auth)
-            a <- appRepo
+            claims <- requireAuth(req, auth)
+            a      <- appRepo
               .findById(aid)
               .mapError(ApiError.Db(_))
               .flatMap(ZIO.fromOption(_).orElseFail(ApiError.NotFound("App not found")))
-            d <- detail(appRepo, blocklistRepo, a).mapError(ApiError.Db(_))
+            d <- detail(appRepo, blocklistRepo, groupRepo, claims.hh, a).mapError(ApiError.Db(_))
           } yield Response.json(d.toJson)
           handle.mapError(ErrorMapper.errorToResponse)
         },
@@ -166,8 +203,8 @@ object AppRoutes {
             ar       <- ZIO
               .fromEither(body.fromJson[UpsertAppAssignmentRequest])
               .mapError(ApiError.DecodeFailure(_))
-            _        <- ZIO
-              .fromEither(validateAssignment(ar.mode, ar.dailyMinutes))
+            mode     <- ZIO
+              .fromEither(validateAssignment(ar.mode, ar.dailyMinutes, ar.weeklyMinutes))
               .mapError(ApiError.BadRequest(_))
             _        <- appRepo
               .findById(aid)
@@ -181,11 +218,12 @@ object AppRoutes {
               .upsertAssignment(
                 aid,
                 pid,
-                ar.mode,
+                mode,
                 ar.dailyMinutes,
                 ar.exemptFromDaily.getOrElse(true),
                 // #1679: omitted by existing clients → defaults to true (preserve current behavior).
                 ar.allowedDuringScheduleBlock.getOrElse(true),
+                ar.weeklyMinutes,
               )
               .mapError(ApiError.Db(_))
             // #1379: replace this assignment's per-app schedule rules with the
@@ -193,6 +231,7 @@ object AppRoutes {
             _        <- appRepo
               .setScheduleRules(assignId, ar.scheduleRules.map(r => (r.scheduleId, r.mode)))
               .mapError(ApiError.Db(_))
+            _        <- invalidateSnapshot(claims.hh)
           } yield Response.ok
           handle.mapError(ErrorMapper.errorToResponse)
         },
@@ -248,12 +287,12 @@ object AppRoutes {
         handler { (id: Long, req: Request) =>
           val aid                                  = AppId(id)
           val handle: ZIO[Any, ApiError, Response] = for {
-            _    <- requireOperator(req, auth)
-            app  <- appRepo
+            claims <- requireOperator(req, auth)
+            app    <- appRepo
               .findById(aid)
               .mapError(ApiError.Db(_))
               .flatMap(ZIO.fromOption(_).orElseFail(ApiError.NotFound("App not found")))
-            tid  <- ZIO
+            tid    <- ZIO
               .fromOption(app.templateId)
               .orElseFail(
                 ApiError.Wrapped(
@@ -262,7 +301,7 @@ object AppRoutes {
                     .status(Status.BadRequest),
                 ),
               )
-            tmpl <- ZIO
+            tmpl   <- ZIO
               .fromOption(templates.get(tid))
               .orElseFail(
                 ApiError.Wrapped(
@@ -271,8 +310,8 @@ object AppRoutes {
                     .status(Status.NotFound),
                 ),
               )
-            _    <- appRepo.setHosts(aid, tmpl.hosts).mapError(ApiError.Db(_))
-            d    <- detail(appRepo, blocklistRepo, app).mapError(ApiError.Db(_))
+            _      <- appRepo.setHosts(aid, tmpl.hosts).mapError(ApiError.Db(_))
+            d <- detail(appRepo, blocklistRepo, groupRepo, claims.hh, app).mapError(ApiError.Db(_))
           } yield Response.json(d.toJson)
           handle.mapError(ErrorMapper.errorToResponse)
         },
@@ -286,6 +325,7 @@ object AppRoutes {
             _      <- appRepo
               .deleteAssignment(aid, pid)
               .mapError(ApiError.Db(_))
+            _      <- invalidateSnapshot(claims.hh)
           } yield Response.ok
           handle.mapError(ErrorMapper.errorToResponse)
         },
