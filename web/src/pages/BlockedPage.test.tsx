@@ -66,6 +66,16 @@ describe('BlockedPage — API-driven reason copy (#1615)', () => {
     await waitFor(() => expect(screen.getByText(/out of time on this app/i)).toBeInTheDocument())
   })
 
+  // #2935 (D8): a granted extension raises only the profile daily total, so offering it for a
+  // per-app or per-group budget block is a dead control.
+  it('offers no "Ask for more time" for an app_time_limit block', async () => {
+    mockBlockedInfo({ blocked: true, reasonClass: 'app_time_limit', profileName: 'Kids' })
+    renderBlocked({ mac: 'aa:bb:cc:11:22:33', host: 'youtube.com' })
+    await waitFor(() => expect(screen.getByText(/out of time on this app/i)).toBeInTheDocument())
+    expect(screen.queryByTestId('ask-parent-extension')).not.toBeInTheDocument()
+    expect(screen.getByTestId('ask-parent-exemption')).toBeInTheDocument()
+  })
+
   it('renders extra-blocked copy when API returns reasonClass=extra_blocked', async () => {
     mockBlockedInfo({ blocked: true, reasonClass: 'extra_blocked' })
     renderBlocked({ mac: 'aa:bb:cc:11:22:33', host: 'example.com' })

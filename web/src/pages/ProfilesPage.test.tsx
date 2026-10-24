@@ -55,6 +55,15 @@ vi.mock('@/api/client', () => ({
     usage: {
       series: vi.fn(),
     },
+    // #2935 — household app groups and a profile's attachments of them.
+    appGroups: {
+      list: vi.fn(),
+      create: vi.fn(),
+      update: vi.fn(),
+      forProfile: vi.fn(),
+      attach: vi.fn(),
+      detach: vi.fn(),
+    },
   },
 }))
 
@@ -194,6 +203,12 @@ beforeEach(() => {
   ;(api.apps.setPolicy as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(undefined)
   ;(api.apps.deletePolicy as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(undefined)
   ;(api.schedules.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([])
+  ;(api.appGroups.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([])
+  ;(api.appGroups.forProfile as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([])
+  ;(api.appGroups.create as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({ id: 9, name: 'New group', memberAppIds: [] })
+  ;(api.appGroups.update as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(undefined)
+  ;(api.appGroups.attach as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(undefined)
+  ;(api.appGroups.detach as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(undefined)
   ;(api.schedules.create as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(undefined)
   ;(api.profiles.usageByApp as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
     profileId: 1, profileName: 'Kids', from: '2026-05-26', to: '2026-05-26', apps: [],
@@ -2863,5 +2878,139 @@ describe('ProfilesPage — category coverage on the collapsed summary (#2824)', 
     const chip = await screen.findByTestId('profile-coverage-2')
     expect(chip).toHaveAttribute('data-coverage', 'default-deny')
     expect(chip).not.toHaveTextContent(/blocks nothing/i)
+  })
+})
+
+// #2935 — weekly limits and app groups in the #2764 compact layout.
+describe('ProfilesPage — weekly limits and app groups (#2935)', () => {
+  const fn = (f: unknown) => f as ReturnType<typeof vi.fn>
+
+  function app(id: number, name: string, assignment: Record<string, unknown> | null) {
+    return {
+      app: { id, name, slug: name.toLowerCase(), templateId: null, icon: '🎮', createdAt: '2026-01-01' },
+      hosts: [`${name.toLowerCase()}.com`],
+      assignments: assignment == null ? [] : [{
+        id: id + 1000, appId: id, profileId: 1, mode: 'allowed', dailyMinutes: null,
+        exemptFromDaily: true, allowedDuringScheduleBlock: true, ...assignment,
+      }],
+    }
+  }
+  const games = { id: 7, name: 'Games', memberAppIds: [60, 61] }
+  const attachment = (over: Record<string, unknown> = {}) => ({
+    profileId: 1, groupId: 7, name: 'Games', memberAppIds: [60, 61],
+    dailyMinutes: 60, weeklyMinutes: 300, exemptFromDaily: true, ...over,
+  })
+
+  async function openApps(user: ReturnType<typeof userEvent.setup>) {
+    renderPage()
+    await screen.findByTestId('profile-card-1')
+    await expand(1, user)
+    await user.click(screen.getByTestId('profile-apps-toggle-1'))
+  }
+
+  it('lists covered apps inside their group row, never as their own rows', async () => {
+    fn(api.apps.list).mockResolvedValue([app(60, 'Roblox', null), app(61, 'Minecraft', null), app(50, 'YouTube', { mode: 'allowed' })])
+    fn(api.appGroups.list).mockResolvedValue([games])
+    fn(api.appGroups.forProfile).mockResolvedValue([attachment()])
+    const user = userEvent.setup()
+    await openApps(user)
+    const row = await screen.findByTestId('group-row-7')
+    expect(within(row).getByText('Games')).toBeInTheDocument()
+    expect(screen.getByTestId('app-row-50')).toBeInTheDocument()
+    expect(screen.queryByTestId('app-row-60')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('app-row-61')).not.toBeInTheDocument()
+  })
+
+  it('shows the Also-in chip only on an assignment with coveredBy, and remove deletes the assignment', async () => {
+    fn(api.apps.list).mockResolvedValue([
+      app(60, 'Roblox', { mode: 'time_limited', dailyMinutes: 30, coveredBy: { groupId: 7, name: 'Games' } }),
+      app(50, 'YouTube', { mode: 'allowed' }),
+    ])
+    fn(api.appGroups.list).mockResolvedValue([games])
+    fn(api.appGroups.forProfile).mockResolvedValue([attachment()])
+    const user = userEvent.setup()
+    await openApps(user)
+    const chip = await screen.findByTestId('app-row-60-overlap-chip')
+    expect(chip).toHaveTextContent('Also in Games')
+    expect(screen.queryByTestId('app-row-50-overlap-chip')).not.toBeInTheDocument()
+    await user.click(chip)
+    await user.click(await screen.findByTestId('app-row-60-overlap-remove'))
+    await waitFor(() => expect(api.apps.deletePolicy).toHaveBeenCalledWith(60, 1))
+    expect(api.appGroups.detach).not.toHaveBeenCalled()
+  })
+
+  it('shows the D16 hint only while Counts toward daily limit is unchecked', async () => {
+    fn(api.apps.list).mockResolvedValue([app(50, 'YouTube', { mode: 'allowed' })])
+    fn(api.appGroups.list).mockResolvedValue([games])
+    fn(api.appGroups.forProfile).mockResolvedValue([attachment({ exemptFromDaily: true })])
+    const user = userEvent.setup()
+    await openApps(user)
+    await user.click(await screen.findByTestId('group-row-7-toggle'))
+    const box = await screen.findByTestId('group-row-7-counts-toward-daily')
+    expect(box).not.toBeChecked()
+    expect(screen.getByTestId('group-row-7-exempt-hint')).toHaveTextContent(
+      'Not counted: while under its limits, this group stays reachable during bedtime and a soft pause.',
+    )
+    await user.click(box)
+    await waitFor(() =>
+      expect(api.appGroups.attach).toHaveBeenCalledWith(1, 7, expect.objectContaining({ exemptFromDaily: false })))
+  })
+
+  it('hides the D16 hint when the attachment counts toward the daily limit', async () => {
+    fn(api.apps.list).mockResolvedValue([app(50, 'YouTube', { mode: 'allowed' })])
+    fn(api.appGroups.list).mockResolvedValue([games])
+    fn(api.appGroups.forProfile).mockResolvedValue([attachment({ exemptFromDaily: false })])
+    const user = userEvent.setup()
+    await openApps(user)
+    await user.click(await screen.findByTestId('group-row-7-toggle'))
+    expect(await screen.findByTestId('group-row-7-counts-toward-daily')).toBeChecked()
+    expect(screen.queryByTestId('group-row-7-exempt-hint')).not.toBeInTheDocument()
+  })
+
+  it('autosaves a weekly limit typed beside min/day in the app drawer', async () => {
+    fn(api.apps.list).mockResolvedValue([app(52, 'Minecraft', { mode: 'time_limited', dailyMinutes: 60 })])
+    const user = userEvent.setup()
+    await openApps(user)
+    await user.click(await screen.findByTestId('app-row-52-limit-toggle'))
+    const input = await screen.findByTestId('app-row-52-weekly-minutes')
+    await user.type(input, '300')
+    await user.tab()
+    await waitFor(() =>
+      expect(api.apps.setPolicy).toHaveBeenCalledWith(52, 1, expect.objectContaining({
+        mode: 'time_limited', dailyMinutes: 60, weeklyMinutes: 300,
+      })))
+  })
+
+  it('adds an existing household group, and a new one, from + Add group', async () => {
+    fn(api.apps.list).mockResolvedValue([app(50, 'YouTube', { mode: 'allowed' })])
+    fn(api.appGroups.list).mockResolvedValue([games])
+    const user = userEvent.setup()
+    await openApps(user)
+    await user.click(await screen.findByTestId('profile-1-apps-section-add-group'))
+    expect(screen.getByTestId('profile-1-apps-section-add-group-new')).toBeInTheDocument()
+    await user.click(screen.getByTestId('profile-1-apps-section-add-group-option-7'))
+    await waitFor(() =>
+      expect(api.appGroups.attach).toHaveBeenCalledWith(1, 7, expect.objectContaining({ dailyMinutes: expect.any(Number) })))
+  })
+
+  it('says which other profiles use a group when editing its members', async () => {
+    fn(api.apps.list).mockResolvedValue([app(50, 'YouTube', { mode: 'allowed' })])
+    fn(api.appGroups.list).mockResolvedValue([games])
+    fn(api.appGroups.forProfile).mockImplementation((pid: number) =>
+      Promise.resolve([attachment({ profileId: pid })]))
+    const user = userEvent.setup()
+    await openApps(user)
+    await user.click(await screen.findByTestId('group-row-7-toggle'))
+    expect(await screen.findByTestId('group-row-7-also-used-by')).toHaveTextContent('Adults')
+  })
+
+  it('marks covered apps "In Games" in the picker', async () => {
+    fn(api.apps.list).mockResolvedValue([app(60, 'Roblox', null), app(50, 'YouTube', { mode: 'allowed' })])
+    fn(api.appGroups.list).mockResolvedValue([games])
+    fn(api.appGroups.forProfile).mockResolvedValue([attachment()])
+    const user = userEvent.setup()
+    await openApps(user)
+    await user.click(await screen.findByTestId('profile-1-apps-section-add-allowed'))
+    expect(await screen.findByTestId('profile-1-apps-section-picker-covered-60')).toHaveTextContent('In Games')
   })
 })

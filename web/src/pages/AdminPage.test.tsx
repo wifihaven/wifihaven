@@ -131,6 +131,16 @@ describe('AdminPage — daily reset autosave (#1002)', () => {
     )
   })
 
+  it('changing "Week starts on" fires PATCH {weekStartDay}', async () => {
+    const user = userEvent.setup()
+    render(<AdminPage />)
+    const select = await screen.findByTestId('household-week-start-select')
+    await user.selectOptions(select, '7')
+    await waitFor(() =>
+      expect(api.household.patch).toHaveBeenCalledWith({ weekStartDay: 7 }),
+    )
+  })
+
   it('changing the timezone fires PATCH {dailyResetTz}', async () => {
     const user = userEvent.setup()
     render(<AdminPage />)
