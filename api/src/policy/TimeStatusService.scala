@@ -27,6 +27,40 @@ final case class ProfileDayState(
     blocked: Boolean,
     blockReason: Option[MacBlockReason],
     perApp: List[AppDayState],
+    // #2932 (design §6.5): one entry per attached group. Counted, not enforced (#2933 enforces).
+    perGroup: List[BudgetState] = Nil,
+    // #2932: the exact seconds behind `usedMinutes`, so a week can be floored once (design §6.3).
+    usedSeconds: Long = 0L,
+    // #2932: the profile's exempt-filtered week-to-date total (the weekly views' total, §6.5).
+    week: Option[WeekUsage] = None,
+)
+
+/**
+ * #2932 (design §6.3-§6.5): week-to-date usage of one budget (or of the profile total) for the
+ * household week containing the state's date: `start` is the household-local date the week began,
+ * `resetsAt` the instant the next one begins, and `usedMinutes` is `floor(Σ day seconds / 60)` over
+ * the week's days up to and including the state's date.
+ */
+final case class WeekUsage(start: LocalDate, resetsAt: Instant, usedMinutes: Int)
+
+/**
+ * #2932 (design §6.1, §6.5): a group budget's state on a profile-day. The group counterpart of
+ * [[AppDayState]]: `usedMinutes` counts the members' distinctive hosts once (design §6.2).
+ */
+final case class BudgetState(
+    groupId: AppGroupId,
+    label: String,
+    name: String,
+    memberAppIds: List[AppId],
+    dailyLimitMinutes: Option[Int],
+    weeklyLimitMinutes: Option[Int],
+    usedMinutes: Int,
+    usedSeconds: Long,
+    exemptFromDaily: Boolean,
+    // Every member's full host-set (allow side) and the counted distinctive set (block side, #1899).
+    hosts: List[String],
+    distinctiveHosts: List[String],
+    week: Option[WeekUsage] = None,
 )
 
 /**
@@ -62,6 +96,14 @@ final case class AppDayState(
     // `domainPattern` stay as display text; `appId` is the canonical identity that joins to
     // `app_used_daily.app_id` directly — no slug round-trip.
     appId: AppId = AppId(0L),
+    // #2932: the exact seconds behind `usedMinutes`, so a week can be floored once (design §6.3).
+    usedSeconds: Long = 0L,
+    // #2932 (design §5.2): the app's own weekly limit; `None` = no weekly limit.
+    weeklyLimitMinutes: Option[Int] = None,
+    // #2932 (design §6.5): week-to-date usage. `None` only on a state no week was read for.
+    week: Option[WeekUsage] = None,
+    // #2932: the attached group covering this app, if any (design §6.1).
+    groupId: Option[AppGroupId] = None,
 )
 
 trait TimeStatusService {
@@ -151,6 +193,14 @@ trait TimeStatusService {
       mac: MacAddress,
       since: Instant,
   ): Task[Option[Instant]]
+
+  /**
+   * #2932 (design §6.4): settle every settleable, unsettled past day of `household`'s current week:
+   * compute it live through the same per-day path the day states use and write it back with
+   * `rolled_through` at the day's end. The rollup tick calls this, so in the steady state a week
+   * read finds every past day settled. Returns the number of days written.
+   */
+  def settleWeek(household: HouseholdId, now: Instant, settings: HouseholdSettings): Task[Int]
 }
 
 class TimeStatusServiceLive(
@@ -177,7 +227,13 @@ class TimeStatusServiceLive(
     // gate. Defaults to the noop (gate Off) so existing direct constructions and
     // tests that don't exercise the gate keep their arity and semantics.
     ambientRepo: AmbientHostsRepo = NoopAmbientHostsRepo,
+    // #2932: settled past days for week-to-date figures. The noop finds nothing settled, so every
+    // past day is computed live: the same numbers, uncached.
+    settledRepo: SettledUsageRepo = NoopSettledUsageRepo,
 ) extends TimeStatusService {
+
+  def settleWeek(household: HouseholdId, now: Instant, settings: HouseholdSettings): Task[Int] =
+    ZIO.succeed(settledRepo).as(0) // scaffold: the settle pass lands with the implementation
 
   // #2077: the AmbientGate for a request — Off (no DB touch) unless the master
   // switch is on. The learned window is always evaluated as of the household-local
@@ -520,7 +576,7 @@ object TimeStatusService {
   val layer: ZLayer[
     ProfileRepo & TimeLimitRepo & AppTimeLimitRepo & DeviceRepo & TrafficReportRepo &
       TimeExtensionRepo & TimeUsedRollupRepo & NamedScheduleRepo & AppUsedRollupService &
-      AmbientHostsRepo,
+      AmbientHostsRepo & SettledUsageRepo,
     Nothing,
     TimeStatusService,
   ] = ZLayer.fromFunction {
@@ -535,7 +591,8 @@ object TimeStatusService {
         nsr: NamedScheduleRepo,
         aur: AppUsedRollupService,
         ahr: AmbientHostsRepo,
-    ) => new TimeStatusServiceLive(pr, tlr, atlr, dr, trr, er, ru, nsr, aur, ahr)
+        sur: SettledUsageRepo,
+    ) => new TimeStatusServiceLive(pr, tlr, atlr, dr, trr, er, ru, nsr, aur, ahr, sur)
   }
 
   /**

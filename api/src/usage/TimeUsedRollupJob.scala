@@ -68,6 +68,15 @@ object TimeUsedRollupJob {
    */
   val Interval: Duration = Duration.ofMinutes(15)
 
+  /** #2932: `TimeStatusService.settleWeek`'s shape: settle a household's settleable past days. */
+  type SettleWeek = (HouseholdId, Instant, wifihaven.shared.HouseholdSettings) => Task[Int]
+
+  object SettleWeek {
+
+    /** For tick tests that do not exercise settling. */
+    val none: SettleWeek = (_, _, _) => ZIO.succeed(0)
+  }
+
   /**
    * Fiber loop entry point. Errors are caught and recorded in `rollup_runs`; the fiber never dies.
    */
@@ -81,7 +90,10 @@ object TimeUsedRollupJob {
       trafficRepo: TrafficReportRepo,
       hs: HouseholdSettingsRepo,
       clock: Clock,
-      ambientRepo: AmbientHostsRepo = NoopAmbientHostsRepo,
+      ambientRepo: AmbientHostsRepo,
+      // #2932 (design §6.4): the settle pass, `TimeStatusService.settleWeek`. Required here so the
+      // production loop cannot be wired without it.
+      settleWeek: SettleWeek,
   ): UIO[Unit] =
     runOnce(
       runs,
@@ -97,6 +109,7 @@ object TimeUsedRollupJob {
           hs,
           now,
           ambientRepo,
+          settleWeek,
         ),
     )
       .repeat(Schedule.fixed(Interval))
@@ -117,6 +130,7 @@ object TimeUsedRollupJob {
       hs: HouseholdSettingsRepo,
       now: Instant,
       ambientRepo: AmbientHostsRepo = NoopAmbientHostsRepo,
+      settleWeek: SettleWeek = SettleWeek.none,
   ): Task[Int] =
     doTick(
       rollup,
@@ -128,6 +142,7 @@ object TimeUsedRollupJob {
       hs,
       now,
       ambientRepo,
+      settleWeek,
     )
 
   // ── internals ──────────────────────────────────────────────────────────────
@@ -184,6 +199,7 @@ object TimeUsedRollupJob {
       hs: HouseholdSettingsRepo,
       now: Instant,
       ambientRepo: AmbientHostsRepo,
+      settleWeek: SettleWeek,
   ): Task[Int] = for {
     // #2257: all-tenant rollup batch — enumerate households explicitly and union each one's scoped
     // read (no cross-tenant `listAll` a request path could also reach).
@@ -210,6 +226,7 @@ object TimeUsedRollupJob {
         now,
         ambientRepo,
         hh,
+        settleWeek,
       ),
     )
     totals = perHh.foldLeft((0, 0, 0)) { case ((accN, accDropped, accAmb), (n, dropped, amb)) =>
@@ -248,6 +265,7 @@ object TimeUsedRollupJob {
       now: Instant,
       ambientRepo: AmbientHostsRepo,
       hh: HouseholdId,
+      settleWeek: SettleWeek,
   ): Task[(Int, Int, Int)] =
     HouseholdTickIsolation
       .isolate(
@@ -290,6 +308,9 @@ object TimeUsedRollupJob {
               )
               n <- rollup.upsertBatch(today, rolls._1)
               _ <- appRollup.upsertBatch(today, rolls._2)
+              // #2932 (design §6.4): settle this household's settleable past days of the week (in
+              // practice yesterday, on the first tick after `SettledUsage.SettleDelay`).
+              _ <- settleWeek(hh, now, settings)
             } yield (n, rolls._3, rolls._4)
           }
       }

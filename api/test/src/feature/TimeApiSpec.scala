@@ -1734,7 +1734,8 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           assertTrue(adults.dailyLimitMins.isEmpty) &&
           assertTrue(adults.remainingMins.isEmpty)
       },
-      test("weekly summary returns totals over the trailing 7 days") {
+      // #2932 (design §6.5, D10): the week is the household's calendar week, Monday-start by default.
+      test("weekly summary returns totals over the calendar week") {
         for {
           _           <- cleanDb
           profileRepo <- ZIO.service[ProfileRepo]
@@ -1786,10 +1787,11 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           list <- ZIO.fromEither(body.fromJson[List[ProfileTimeSummaryWeek]])
           kids = list.find(_.profileId == kidsId).get
         } yield assertTrue(resp.status == Status.Ok) &&
-          assertTrue(kids.totalMins == 55) &&
+          // Today is Monday: Saturday's 30 minutes are the previous week.
+          assertTrue(kids.totalMins == 25) &&
           assertTrue(kids.dailyLimitMins.contains(120)) &&
-          assertTrue(kids.from == today.minusDays(6).toString) &&
-          assertTrue(kids.to == today.toString)
+          assertTrue(kids.from == today.toString) &&
+          assertTrue(kids.to == today.plusDays(6).toString)
       },
     ) @@ TestAspect.sequential,
 
@@ -1811,11 +1813,12 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           _           <- TestLayers.seedDevice(deviceRepo, testMac, "iPad", kidsId)
           routerId    <- seedRouter
           today = TestClock.schoolDayAfternoon.toLocalDate
-          // Seed distinct minute counts on three days within the week; the other
-          // four days are intentionally empty (must surface as 0m bars).
-          _               <- seedTraffic(routerId, testMac, "minecraft.net", today.minusDays(6), 20)
-          _               <- seedTraffic(routerId, testMac, "youtube.com", today.minusDays(3), 35)
-          _               <- seedTraffic(routerId, testMac, "khan-academy.org", today, 15)
+          // Seed distinct minute counts on three days of LAST week (today is Monday, so the
+          // calendar week ending yesterday is complete); the other four days are intentionally
+          // empty (must surface as 0m bars).
+          _ <- seedTraffic(routerId, testMac, "minecraft.net", today.minusDays(7), 20)
+          _ <- seedTraffic(routerId, testMac, "youtube.com", today.minusDays(4), 35)
+          _ <- seedTraffic(routerId, testMac, "khan-academy.org", today.minusDays(1), 15)
           userProfileRepo <- ZIO.service[UserProfileRepo]
           hsRepo          <- ZIO.service[HouseholdSettingsRepo]
           clock           <- ZIO.service[Clock]
@@ -1841,7 +1844,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             clock,
           )
           req    = Request
-            .get(URL.decode("/api/time/status/week").toOption.get)
+            .get(URL.decode(s"/api/time/status/week?to=${today.minusDays(1)}").toOption.get)
             .addHeader(Header.Authorization.Bearer(token))
           resp <- routes.runZIO(req)
           body <- resp.body.asString
@@ -1856,12 +1859,12 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             .mapValues(_.map(_.usedMins).sum)
             .toMap
         } yield assertTrue(resp.status == Status.Ok) &&
-          assertTrue(kids.from == today.minusDays(6).toString) &&
-          assertTrue(kids.to == today.toString) &&
-          assertTrue(byDay.getOrElse(today.minusDays(6), 0) == 20) &&
-          assertTrue(byDay.getOrElse(today.minusDays(3), 0) == 35) &&
-          assertTrue(byDay.getOrElse(today, 0) == 15) &&
-          assertTrue(byDay.getOrElse(today.minusDays(5), 0) == 0) && // empty days omitted
+          assertTrue(kids.from == today.minusDays(7).toString) &&
+          assertTrue(kids.to == today.minusDays(1).toString) &&
+          assertTrue(byDay.getOrElse(today.minusDays(7), 0) == 20) &&
+          assertTrue(byDay.getOrElse(today.minusDays(4), 0) == 35) &&
+          assertTrue(byDay.getOrElse(today.minusDays(1), 0) == 15) &&
+          assertTrue(byDay.getOrElse(today.minusDays(6), 0) == 0) && // empty days omitted
           assertTrue(kids.totalMins == 70) &&                        // 20+35+15
           assertTrue(kids.devices.head.usedMins == 70) &&
           assertTrue(kids.dailyLimitMins.contains(120))
@@ -1955,12 +1958,13 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           _        <- TestLayers.seedDevice(deviceRepo, mac2, "iPhone", kidsId)
           routerId <- seedRouter
           today = TestClock.schoolDayAfternoon.toLocalDate
-          // mac1: youtube 20m today + 15m yesterday → 35m total on youtube
-          _               <- seedTraffic(routerId, mac1, "youtube.com", today, 20)
-          _               <- seedTraffic(routerId, mac1, "youtube.com", today.minusDays(1), 15)
-          // mac2: youtube 10m today + 5m two days ago → 15m total on youtube
-          _               <- seedTraffic(routerId, mac2, "youtube.com", today, 10)
-          _               <- seedTraffic(routerId, mac2, "youtube.com", today.minusDays(2), 5)
+          // Last week's Friday to Sunday (today is Monday), read with ?to= yesterday.
+          // mac1: youtube 20m Sunday + 15m Saturday → 35m total on youtube
+          _               <- seedTraffic(routerId, mac1, "youtube.com", today.minusDays(1), 20)
+          _               <- seedTraffic(routerId, mac1, "youtube.com", today.minusDays(2), 15)
+          // mac2: youtube 10m Sunday + 5m Friday → 15m total on youtube
+          _               <- seedTraffic(routerId, mac2, "youtube.com", today.minusDays(1), 10)
+          _               <- seedTraffic(routerId, mac2, "youtube.com", today.minusDays(3), 5)
           userProfileRepo <- ZIO.service[UserProfileRepo]
           hsRepo          <- ZIO.service[HouseholdSettingsRepo]
           clock           <- ZIO.service[Clock]
@@ -1986,7 +1990,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             clock,
           )
           req    = Request
-            .get(URL.decode("/api/time/status/week").toOption.get)
+            .get(URL.decode(s"/api/time/status/week?to=${today.minusDays(1)}").toOption.get)
             .addHeader(Header.Authorization.Bearer(token))
           resp <- routes.runZIO(req)
           body <- resp.body.asString
@@ -2002,7 +2006,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             kids.devices.find(_.deviceMac == MacAddress.unsafe(mac2)).get.usedMins == 15,
           )
       },
-      test("?to= anchors a trailing 7-day window") {
+      test("?to= selects the calendar week containing it") {
         for {
           _           <- cleanDb
           profileRepo <- ZIO.service[ProfileRepo]
@@ -2017,7 +2021,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           _           <- TestLayers.seedDevice(deviceRepo, testMac, "iPad", kidsId)
           routerId    <- seedRouter
           today  = TestClock.schoolDayAfternoon.toLocalDate
-          anchor = today.minusDays(10) // outside the default trailing-week window
+          anchor = today.minusDays(10) // Friday two weeks back: outside the current week
           _               <- seedTraffic(routerId, testMac, "minecraft.net", anchor, 25)
           userProfileRepo <- ZIO.service[UserProfileRepo]
           hsRepo          <- ZIO.service[HouseholdSettingsRepo]
@@ -2063,8 +2067,9 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           shiftedKids = shiftedList.find(_.profileId == kidsId).get
         } yield assertTrue(dfltKids.totalMins == 0) &&
           assertTrue(shiftedKids.totalMins == 25) &&
-          assertTrue(shiftedKids.to == anchor.toString) &&
-          assertTrue(shiftedKids.from == anchor.minusDays(6).toString)
+          // Friday's week: Monday four days before it to Sunday two days after.
+          assertTrue(shiftedKids.to == anchor.plusDays(2).toString) &&
+          assertTrue(shiftedKids.from == anchor.minusDays(4).toString)
       },
       test("bucketOffsetMin shifts the hourly grid alignment (#794)") {
         // Default alignment (offset=0) puts a 05:30Z period_start into the 05:00Z hourly slot.

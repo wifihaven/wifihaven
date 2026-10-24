@@ -1776,6 +1776,22 @@ object PolicyService {
    * This is the canonical "what date does this Instant belong to" function — used both to write
    * `time_usage.date` and to read today's cap/usage on the policy snapshot path.
    */
+  /**
+   * #2932 (design `docs/design/weekly-limits-and-app-groups.md` §5.1): THE definition of a
+   * household week. The week containing `instant` starts on the household-local date of `instant`
+   * moved back to the most recent `weekStartDay` (ISO 1 = Monday ... 7 = Sunday). Its instant
+   * window is `AttributionScope.rangeWindow(start, start + 6)`: seven household days, each
+   * DST-correct, so a week across a DST change is 167 or 169 hours long.
+   */
+  def householdWeekStart(instant: Instant, settings: HouseholdSettings): LocalDate =
+    weekStartOf(householdLocalDate(instant, settings), settings)
+
+  /** #2932: the start of the household week containing household-local `date` (see above). */
+  def weekStartOf(date: LocalDate, settings: HouseholdSettings): LocalDate = {
+    val back = Math.floorMod(date.getDayOfWeek.getValue - settings.weekStartDay, 7)
+    date.minusDays(back.toLong)
+  }
+
   def householdLocalDate(instant: Instant, settings: HouseholdSettings): LocalDate = {
     val zdt = instant.atZone(settings.dailyResetTz)
     if (zdt.toLocalTime.isBefore(settings.dailyResetTime)) zdt.toLocalDate.minusDays(1)
