@@ -1,7 +1,7 @@
 # Design for weekly limits and app groups
 
 Tracking: [#2930](https://github.com/wifihaven/wifihaven/issues/2930).
-Status: **Approved** (operator, 2026-10-23). Product decisions are in §15.
+Product decisions: confirmed by the operator on 2026-10-23 and 2026-10-24, recorded in §15.
 
 ## 1. Goal
 
@@ -47,13 +47,23 @@ Checked against `origin/main` @ `4747e41b`.
    stitches as **one stream** per device. That primitive already takes a list of
    `(label, hosts)` groups. A group of apps is the same structure with a host-set
    that is the union of several apps' sets.
-2. **Every "under its own cap" allow-carve would defeat a group or weekly block.**
-   The router lets `extraAllowed` beat `extraBlocked` (#421). Today three
-   producers put an app's hosts in `extraAllowed` based on **that app's own
-   daily cap only**:
-   - `exemptUnderCapHosts` (`PolicyService.scala:1669`): exempt and under its own cap;
-   - `timeLimitedUnderCapHosts` (`:1701`, #1980): TimeLimited and under its own cap, profile not blocked;
-   - the `AllowedDuring` branch of `ProfileAppDispositions.enforcement` (`ProfileAppDispositions.scala:147-149`).
+2. **Every allow-carve would defeat a group or weekly block.**
+   The router lets `extraAllowed` beat `extraBlocked` (#421). Today four
+   producers put an app's hosts in `extraAllowed`, and none of them knows about
+   any budget beyond the app's own daily cap:
+   - `exemptUnderCapHosts` (`PolicyService.scala:1669`): exempt and under its
+     own daily cap. It beats every whole-MAC block except a hard pause, so an
+     exempt app stays reachable through Paused (soft), Schedule and TimeLimit
+     (`:1544-1565`; #1418 empties it only under a hard pause).
+   - `timeLimitedUnderCapHosts` (`:1701`, #1980): TimeLimited, under its own
+     daily cap, profile not blocked.
+   - the `AllowedDuring` branch of `ProfileAppDispositions.enforcement`
+     (`ProfileAppDispositions.scala:147-149`). Its gate reads the **profile's**
+     daily cap (`capExhausted = dailyCapExhausted(state)`,
+     `PolicyService.scala:784-786`), not the app's own cap. So today an active
+     window keeps an app reachable past its own daily cap.
+   - the plain `AppMode.Allowed` branch of the same fold (`:154-155`), which
+     carves unconditionally.
 
    If a group budget is exhausted but the member's own daily cap is not, the
    member's hosts would land in **both** lanes, allow would win, and the group
@@ -182,22 +192,25 @@ CREATE TABLE app_group_members (
 CREATE TABLE profile_app_groups (
   id                BIGSERIAL PRIMARY KEY,
   household_id      BIGINT NOT NULL,
-  profile_id        BIGINT NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
+  profile_id        BIGINT NOT NULL,
   group_id          BIGINT NOT NULL,
   daily_minutes     INT CHECK (daily_minutes  IS NULL OR daily_minutes  > 0),
   weekly_minutes    INT CHECK (weekly_minutes IS NULL OR weekly_minutes > 0),
   exempt_from_daily BOOLEAN NOT NULL DEFAULT TRUE,   -- D5: same default as per-app
   created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  FOREIGN KEY (group_id, household_id) REFERENCES app_groups(id, household_id) ON DELETE CASCADE,
+  FOREIGN KEY (profile_id, household_id) REFERENCES profiles(id, household_id) ON DELETE CASCADE,
+  FOREIGN KEY (group_id, household_id)   REFERENCES app_groups(id, household_id) ON DELETE CASCADE,
   CHECK (daily_minutes IS NOT NULL OR weekly_minutes IS NOT NULL),   -- D4
   UNIQUE (profile_id, group_id)
 );
 CREATE INDEX idx_profile_app_groups_group ON profile_app_groups(group_id);
 ```
 
-The composite FKs make a cross-household member or attachment
-unrepresentable. A profile's own household is checked by the write primitive
-and pinned by a test, the same way `app_policy_assignments` is today.
+The composite FKs make a cross-household member, attachment or usage row
+unrepresentable: each row's household must be both its group's and its
+profile's. The profile half needs a new `UNIQUE (id, household_id)` on
+`profiles`. Nothing updates `profiles.household_id`, so that FK never blocks an
+existing write.
 
 **Coverage comes from the attachment, not from assignment rows (D6).** A
 covered app needs no `app_policy_assignments` row on the profile. Attaching a
@@ -220,14 +233,16 @@ its own usage of a household group:
 
 ```sql
 CREATE TABLE app_group_used_daily (
-  household_id    BIGINT      NOT NULL REFERENCES households(id) ON DELETE CASCADE,
-  profile_id      BIGINT      NOT NULL REFERENCES profiles(id)   ON DELETE CASCADE,
-  group_id        BIGINT      NOT NULL REFERENCES app_groups(id) ON DELETE CASCADE,
+  household_id    BIGINT      NOT NULL,
+  profile_id      BIGINT      NOT NULL,
+  group_id        BIGINT      NOT NULL,
   date            DATE        NOT NULL,
   engaged_seconds BIGINT      NOT NULL,
   rolled_through  TIMESTAMPTZ NOT NULL,
   rolled_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  PRIMARY KEY (profile_id, group_id, date)
+  PRIMARY KEY (profile_id, group_id, date),
+  FOREIGN KEY (profile_id, household_id) REFERENCES profiles(id, household_id)   ON DELETE CASCADE,
+  FOREIGN KEY (group_id, household_id)   REFERENCES app_groups(id, household_id) ON DELETE CASCADE
 );
 CREATE INDEX idx_app_group_used_daily_household_date ON app_group_used_daily(household_id, date DESC);
 ```
@@ -343,29 +358,47 @@ budget for the current week:
 
 - `todaySeconds` is the existing rolled-plus-tail read
   (`AppUsedRollupService.aggregate`), extended to group labels.
-- `settledSeconds(budget, d)` reads `app_used_daily` / `app_group_used_daily`.
-  When the row is missing or unsettled, it computes day `d` live through the
-  same per-day function and upserts the row with `rolled_through = end(d)`.
-  This is write-through, single-flighted per (household, date) in the same way
-  as `TimeStatusCache` (#2012), so a cold week costs one live read per missing
-  day, once.
-- **The rollup job settles yesterday.** On its first tick after the daily reset,
-  `TimeUsedRollupJob` rolls yesterday one last time to its end instant. In the
-  steady state the read path therefore always hits settled rows, and a week
-  costs one indexed range read per household per snapshot.
-- **Invalidation.** Settings save already deletes every date's rollup rows
-  (`Repos.scala:2078-2082`); `app_group_used_daily` joins that DELETE. A
-  membership edit deletes that group's rows for every profile in the same
-  transaction, so the next read recomputes the whole week under the new
-  membership (D7, retroactive). Limit and exempt-flag edits change no usage, so
-  they invalidate nothing. An app's own weekly limit needs no invalidation:
-  `app_used_daily` is per app and does not depend on the limit.
+- A day `d` is **settleable** once `now >= end(d) + SettleDelay`. Before that,
+  `d` (in practice, yesterday during the first part of today) is read the way
+  today is: its rolled row plus a live tail past `rolled_through`. Nothing
+  marks it settled early, so a report that arrives during the delay is
+  counted.
+- `settledSeconds(budget, d)` for a settleable day reads `app_used_daily` /
+  `app_group_used_daily`. When the row is missing or unsettled, it computes day
+  `d` live through the same per-day function and upserts the row with
+  `rolled_through = end(d)`. This is write-through, single-flighted per
+  (household, date) in the same way as `TimeStatusCache` (#2012), so a cold
+  week costs one live read per missing day, once.
+- **The rollup job settles.** On each tick it settles every settleable day of
+  the current week that is not yet settled. That covers `time_used_daily`,
+  `app_used_daily` and `app_group_used_daily`; the first needs no schema change
+  because it already carries `rolled_through`. In the steady state the read path
+  hits settled rows, and a week costs one indexed range read per household per
+  snapshot.
+- `SettleDelay` is a named constant, initially two rollup intervals (30 min,
+  from `TimeUsedRollupJob.Interval`, `:69`). It does not estimate the true
+  report lag, which is unverified (below). The late-row metric (§11) tells us
+  whether to raise it.
+- **Invalidation.** A settled row is only valid for the dispositions it was
+  computed under. Every write that changes a profile's dispositions also changes
+  the attribution set (finding 8), and so can change any app's or group's
+  minutes on that profile. **Any write that changes a
+  profile's dispositions deletes that profile's settled `app_used_daily` /
+  `app_group_used_daily` / `time_used_daily` rows for the current week**, in
+  the same transaction. Those writes are an assignment create, delete or mode
+  change; an attachment create or delete; and a membership edit, which applies
+  to every profile the group is attached to. An app-template sync that changes
+  an app's hosts counts too, for every profile that uses the app. Settings save
+  keeps its existing all-dates DELETE (`Repos.scala:2078-2082`), and
+  `app_group_used_daily` joins it. Limit and exempt-flag edits change no usage
+  minutes, so they invalidate nothing. The next read recomputes at most six
+  days per affected profile, once, under the new definition (D7,
+  retroactive).
 - **Late reports.** A report that arrives after its day was settled is not
   counted toward the weekly budget. How late a report can arrive is
   **unverified** (it depends on agent buffering while the API is unreachable).
-  The settle tick runs at least one rollup interval (15 min) after the reset.
-  That gap is a tunable, and a metric (§11) counts presence rows ingested for
-  already-settled days, so the loss is measured rather than assumed.
+  A metric (§11) counts presence rows ingested for already-settled days, so
+  the loss is measured rather than assumed.
 
 ### 6.5 Display reads the same primitive
 
@@ -378,9 +411,17 @@ budget for the current week:
 - The existing weekly views (`/api/time/status/week`,
   `/api/time/status/summary/week`) move to the **calendar week** (D10). Their
   window becomes the week containing `?to=` (default today), and their total
-  becomes `Σ_d usedSecondsForProfile(d)`, exempt-filtered per day. They stop
-  running their own unfiltered aggregation. Days after today in the current
-  week are absent from the response, and the SPA renders them as "not yet",
+  becomes `Σ_d usedSecondsForProfile(d)`, exempt-filtered per day. Past days
+  come from settled `time_used_daily` rows (§6.4), and today comes from the
+  existing rolled-plus-tail read, so the total costs one small range read. The
+  hourly bars, per-device summary and top hosts still need presence rows. They
+  keep today's single 7-day range read, which is behind `TimeStatusCache`, so
+  the view costs what it costs now plus that one query. That read passes the
+  profile's exempt patterns to the `Presence` calls, which already take an
+  exclusion list (`Routes.scala:1722-1735` passes `Nil` today), so the bars add
+  up to the total. The total stops running its own unfiltered aggregation. Days
+  after today in the current week are absent from the response, and the SPA
+  renders them as "not yet",
   never as `0m` (AGENTS.md#loading-states). Profiles with exempt apps will see
   lower weekly totals than before, because the old totals counted exempt apps.
   The PR says so.
@@ -405,9 +446,10 @@ Every reader that currently asks "is this app over its own cap" asks
 | Today | Becomes |
 |---|---|
 | `appCapExhaustedHosts` (`:1650`) | distinctive hosts of every app in `appsOverBudget` |
-| `exemptUnderCapHosts` (`:1669`) | effective-exempt apps **not** in `appsOverBudget` |
+| `exemptUnderCapHosts` (`:1669`) | effective-exempt apps **not** in `appsOverBudget`. Its reach is unchanged: it still beats soft Pause, Schedule and TimeLimit (D16) |
 | `timeLimitedUnderCapHosts` (`:1701`) | TimeLimited apps **not** in `appsOverBudget` |
-| `enforcement`'s AllowedDuring carve (`ProfileAppDispositions.scala:147-149`) | also withheld when the app is in `appsOverBudget` |
+| `enforcement`'s AllowedDuring carve (`ProfileAppDispositions.scala:147-149`) | keeps its existing gate (profile daily cap not exhausted unless exempt, and the #1679 schedule toggle) **and** is also withheld when the app is in `appsOverBudget`. This changes today's behaviour: a window no longer keeps an app reachable past its own daily cap (D17) |
+| `enforcement`'s plain Allowed carve (`:154-155`) | unchanged for an app in no budget. A covered app's Allowed row gets no carve (§6.1) |
 | `timeLimitBlockFromState` (`:1236`) | first exhausted budget containing the host; `resetAt` is the end of the exhausted window |
 
 `appsOverBudget` lives in one place and is shared by the snapshot and
@@ -442,7 +484,12 @@ Schedule / TimeLimit (profile daily) / Manual. "Over" means the app is in
 | 6 | TimeLimit | under / under | under / under | yes | `extraAllowed` (exempt carve) | Reachable: exempt app outlives the daily total |
 | 7 | TimeLimit | under / under | under / **over** | yes | `extraBlocked` | **Blocked**: exempt carve withheld because the group is over |
 | 8 | TimeLimit | under / under | under / under | no | — | Blocked by the whole-MAC drop (today's behaviour) |
-| 9 | Schedule | any | any | any | — / `extraAllowed` only if `allowed_during` active, app not over, and #1679 permits | Per-app-schedules §5 rows 1/9a-c with "cap exhausted" read as "app over **any** budget" |
+| 9a | Schedule | under / under | under / under | yes | `extraAllowed` (exempt carve) | **Reachable at bedtime**: an exempt member under every budget outlives Schedule, as an exempt app does today (D16) |
+| 9b | Schedule | under / under | under / under | no | — unless an `allowed_during` window carves | Blocked, unless per-app-schedules §5 row 1 applies |
+| 9c | Schedule | any | any **over** (any budget) | any | — | **Blocked**: no carve for an app over any budget, exempt or windowed (D16, D17) |
+| 9d | Schedule, `allowed_during` active | under / under | under / under | no | `extraAllowed` if the existing gate passes: profile daily cap not exhausted unless exempt, and the #1679 schedule toggle | Rows 1 and 9a–9c of per-app-schedules §5, unchanged; this design only **adds** the over-budget condition of row 9c above |
+| 9e | Paused (soft) | under / under | under / under | yes | `extraAllowed` (exempt carve) | Reachable, as today (D16) |
+| 9f | Paused (soft) | any | any **over** | any | — | Blocked |
 | 10 | Paused (hard) | any | any | any | — | Blocked (#1418 empties per-profile carves) |
 | 11 | none | Allowed-mode app (no limits, not in a group) | — | any | `extraAllowed` | Reachable (unchanged) |
 | 12 | default-deny profile | under / under | under / under | any | `extraAllowed` | Reachable within budget; blocked by the baseline once over |
@@ -451,7 +498,7 @@ Schedule / TimeLimit (profile daily) / Manual. "Over" means the app is in
 | 15 | none | overlap: own row daily **over** | under / under | any | `extraBlocked` | **Blocked** by its own limit |
 
 Notes:
-- Rows 3, 7 and 14 are the cases finding 2 exists for. Each gets a feature test
+- Rows 3, 7, 9c and 14 are the cases finding 2 exists for. Each gets a feature test
   that fails if the carves still read only the app's own cap.
 - During an overlap (D14), the stricter setting wins. An individually Blocked
   covered app stays blocked. One with its own limit is blocked when either its
@@ -484,6 +531,11 @@ the same cadence as per-app daily exhaustion. Nothing new is needed.
 - The block page names the budget and the window, with no reset time (D12).
   Examples: "Games has used up its weekly time." and "Roblox has used up its
   daily time."
+- The block page stops offering "Ask for more time" for an `app_time_limit`
+  block (`BlockedPage.tsx:184` offers it today). A granted extension raises
+  only the profile daily total (D8), so it can never lift an app or group
+  budget, and the button is a dead control for today's per-app daily cap too.
+  "Ask to unblock this site" stays.
 
 ## 9. API
 
@@ -529,7 +581,11 @@ grows taller when collapsed.
 - Groups on a profile: a compact "Groups" sub-list at the top of the allowed
   list. Each attached group is one collapsed row: name, member icons, remaining
   time. Its expander holds the profile's daily and weekly inputs and the
-  "Counts toward daily limit" checkbox. The label is inverted from the field, as
+  "Counts toward daily limit" checkbox, with a hint under it while unchecked:
+  "Not counted: while under its limits, this group stays reachable during
+  bedtime and a soft pause." That is D16, and because unchecked is the default
+  (D5), the hint is what keeps it from being a surprise. The label is inverted
+  from the field, as
   today (AGENTS.md#exempt-from-daily). "+ Add group" lists the household's
   groups and a "New group…" entry.
 - Editing members happens in the group's expander. Because the group is
@@ -552,8 +608,11 @@ grows taller when collapsed.
 All metrics go through `AppMetrics` / `MetricGuard` with bounded labels and no
 per-profile, per-app or per-group label.
 
-- `app_budget_exhausted{kind="app"|"group", window="day"|"week"}`: gauge set at
-  snapshot build, the count of exhausted budgets.
+- `app_budget_exhausted{kind="app"|"group", window="day"|"week"}`: gauge of
+  the count of exhausted budgets across all households. It is set once per
+  reevaluate tick from that tick's per-household snapshot results, summed. A
+  per-household snapshot build never writes it directly, because builds run
+  per household and each one would overwrite the others' value.
 - `budget_usage_settle_total{outcome="hit"|"refill"|"error"}`: counter on
   `settledSeconds`. A sustained `refill` rate means the settle tick is not
   keeping up.
@@ -592,6 +651,10 @@ Budget semantics:
 8. Effective exempt: an attachment with "counts" on excludes nothing from the
    daily total even if a member's own flag was exempt, and the reverse.
 9. An extension raises the profile total only and does not lift a budget.
+9a. §7.3 table rows 9a–9f: an exempt member under budget is reachable during Schedule
+    and a soft pause (D16), and blocked once over any budget. An `allowed_during`
+    window no longer carves an app past its own daily cap (D17). Today's
+    per-app-schedules rows 9a–9c still pass unchanged.
 10. One household group attached to two profiles with different limits: each
     profile is blocked at its own limit on its own usage.
 
@@ -615,6 +678,11 @@ Settling:
 17. A cold week with no rows refills via write-through once. A second read is
     all hits (metric asserted).
 18. A settings save deletes, then refills with identical totals.
+18a. A report for yesterday that arrives inside `SettleDelay` is counted. One
+     that arrives after settling increments the late-row counter.
+18b. An assignment mode change and an attachment create or delete each delete
+     the profile's current-week settled rows, and the week recomputes to the
+     same value a cold read gives.
 19. A membership edit recomputes the week under the new membership for every
     attached profile.
 
@@ -622,7 +690,9 @@ Settling:
 
 Each step is one PR and one sub-issue under the epic.
 
-1. **Schema only.** V92: `household_settings.week_start_day`,
+1. **Schema only.** The next free Flyway version (V92 at the time of writing,
+   after V91 from #2928 merged; check `origin/main` for a newer one before
+   opening the PR): `household_settings.week_start_day`,
    `app_policy_assignments.weekly_minutes`, `app_groups`, `app_group_members`,
    `profile_app_groups`, `app_group_used_daily`. SQL and docs only. It waits
    for the operator to merge.
@@ -709,6 +779,14 @@ Slices 2 and 3 are separate so the counting can be checked on prod, by reading
   offers a one-click remove of the assignment.
 - **D15 New overlaps are allowed with a warning.** The app picker marks covered
   apps, and picking one lands with the same warning.
+- **D16 Exempt keeps its reach (2026-10-24).** A "not counted" group or app
+  that is under every budget stays reachable through bedtime (Schedule), a soft
+  pause and the daily total, which is the exempt meaning per-app limits already
+  have. Only a hard pause stops it. The SPA says so beside the checkbox (§10).
+- **D17 Budgets bite inside windows (2026-10-24).** An active `allowed_during`
+  window decides when an app may be used. Its budgets decide how much: once any
+  of them runs out, the app is blocked, window or not. This changes today's
+  behaviour, where a window keeps an app past its own daily cap.
 
 ## 16. Still open
 
