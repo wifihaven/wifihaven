@@ -133,7 +133,7 @@ final case class ProfileAppDispositions(
    * #1897 (shared-hosts S2): the (label → DISTINCTIVE hosts) pairs for the per-app engaged-minutes
    * stitch. Same shape and order as [[capGroupLabelHosts]] but with each app's `shared` hosts
    * dropped. This is THE single definition of "an app's distinctive host-set for presence" — both
-   * engaged-minutes consumers ([[wifihaven.api.policy.TimeStatusService.appDayStates]] /
+   * engaged-minutes consumers ([[wifihaven.api.policy.TimeStatusService.budgetDayStates]] /
    * [[wifihaven.api.policy.TimeStatusService.appSecondsByAppWithDropCount]]) and S3's shared-host
    * co-presence overlap test read through it, so the distinctive-span computation lives in exactly
    * one place (AGENTS.md §single-source-of-truth). A shared host overlapping a distinctive span is

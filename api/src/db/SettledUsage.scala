@@ -67,9 +67,11 @@ object SettledUsage {
 
   /**
    * Delete the settled (and today's rolling) rows of `profiles` for the household week containing
-   * `now`, as `what` says. Each profile's week comes from its own household's settings, read in the
-   * same transaction. Today's rows go too, so the next read of today is all-live until the rollup
-   * tick refills it under the new definition. Returns the number of rows deleted.
+   * `now`, from its first day through today, as `what` says. Each profile's week comes from its own
+   * household's settings, read in the same transaction. Today's rows go too, so the next read of
+   * today is all-live until the rollup tick refills it under the new definition. Rows of earlier
+   * weeks are kept: no budget reads them, and the per-app history views do. Returns the number of
+   * rows deleted.
    */
   def invalidateCurrentWeek(
       profiles: List[ProfileId],
@@ -89,15 +91,16 @@ object SettledUsage {
             val settings =
               HouseholdSettings(reset, tz, HeartbeatFilter.Off, weekStartDay = weekStartDay)
             val from     = PolicyService.householdWeekStart(now, settings)
-            val total    =
-              sql"DELETE FROM time_used_daily WHERE profile_id = $pid AND date >= $from".update.run
+            val today    = PolicyService.householdLocalDate(now, settings)
+            val week     = fr"profile_id = $pid AND date BETWEEN $from AND $today"
+            val total    = (fr"DELETE FROM time_used_daily WHERE" ++ week).update.run
             what match {
               case Kinds.ProfileTotalOnly => total
               case Kinds.All              =>
                 (
                   total,
-                  sql"DELETE FROM app_used_daily WHERE profile_id = $pid AND date >= $from".update.run,
-                  sql"DELETE FROM app_group_used_daily WHERE profile_id = $pid AND date >= $from".update.run,
+                  (fr"DELETE FROM app_used_daily WHERE" ++ week).update.run,
+                  (fr"DELETE FROM app_group_used_daily WHERE" ++ week).update.run,
                 ).mapN(_ + _ + _)
             }
           })
@@ -141,6 +144,10 @@ final case class DayUsage(
     apps: Map[AppId, Long],
     groups: Map[AppGroupId, Long],
 )
+
+object DayUsage {
+  val zero: DayUsage = DayUsage(0L, Map.empty, Map.empty)
+}
 
 /** #2932: the rolled rows of one profile-day across the three tables, as read. */
 final case class RolledProfileDay(

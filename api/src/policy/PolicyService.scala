@@ -1682,8 +1682,8 @@ object PolicyService {
   /**
    * #1980: the full host-set (main + shared) of every TimeLimited app still UNDER its own per-app
    * cap — the allow-side complement of [[appCapExhaustedHosts]] across the same `state.perApp` (the
-   * TimeLimited-only subset; see [[TimeStatusService.appDayStates]]). Carved into `extraAllowed` so
-   * a within-budget app host beats category-blocklist membership (`bl_`) at the router (#421,
+   * TimeLimited-only subset; see [[TimeStatusService.budgetDayStates]]). Carved into `extraAllowed`
+   * so a within-budget app host beats category-blocklist membership (`bl_`) at the router (#421,
    * `feedback_extraallowed_beats_blocked`), which is the #1980 fix: a TimeLimited app contributes
    * nothing to `extraAllowed` on its own, so without this an app host that is also a blocklist
    * member (e.g. `gimkit.com` in the `games` list) is dropped during the app's allowed window.

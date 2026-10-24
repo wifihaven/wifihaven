@@ -426,7 +426,7 @@ object Presence {
    *
    * #1506: ATTRIBUTION BEATS SUPPRESSION — since #2815, when claimed at least as SPECIFICALLY.
    * `appHostPatterns` is the union of the host-sets of the apps active for the profile/MAC being
-   * counted (from #1505 [[TimeStatusService.groupAppLimits]]). A row whose host matches one of
+   * counted (from #1505 [[ProfileAppDispositions.capGroups]]). A row whose host matches one of
    * those patterns is attributed to a real app and must count toward it, which is the runtime guard
    * for the boundary [[InfraHosts]] documents (device-level infra only; per-app asset hosts must
    * attribute and count) and closes the #1499 over-suppression seam.
@@ -722,7 +722,7 @@ object Presence {
   /**
    * #1514: per-app session spans, **gap-bridged across the app's whole host-set**, combined across
    * the profile's devices per `overlap`. A *group* is `(key, patterns)` — an app's `app:<slug>`
-   * label and its full host-set ([[TimeStatusService.groupAppLimits]]).
+   * label and its full host-set ([[ProfileAppDispositions.capGroups]]).
    *
    * This is the span/union analogue of [[patternSecondsForProfile]] lifted from one pattern to an
    * app's whole host-set, and the canonical per-app presence primitive every per-app consumer reads
@@ -776,6 +776,23 @@ object Presence {
       filter: HeartbeatFilter = HeartbeatFilter.Off,
       continuationSeconds: Int = DefaultContinuationSeconds,
   ): (Map[String, List[Span]], Int) = {
+    val (spans, drops) =
+      appSpansForProfileWithDropCounts(rows, groups, overlap, filter, continuationSeconds)
+    (spans, drops.valuesIterator.sum)
+  }
+
+  /**
+   * #2932: [[appSpansForProfileWithDropCount]] with the dropped-session count kept per group key,
+   * so a caller that passes group budgets alongside apps (design §6.2) can count the #1666 drops of
+   * its app keys only. The canonical body; the summed form above projects it.
+   */
+  def appSpansForProfileWithDropCounts(
+      rows: List[PresenceRow],
+      groups: List[(String, List[String])],
+      overlap: CrossDeviceOverlapMode = CrossDeviceOverlapMode.Sum,
+      filter: HeartbeatFilter = HeartbeatFilter.Off,
+      continuationSeconds: Int = DefaultContinuationSeconds,
+  ): (Map[String, List[Span]], Map[String, Int]) = {
     // #1506: the active apps ARE these groups, so their union host-set is the app-attribution set.
     // A host on an app's host-set that also matches a background pattern (an off-domain asset / CDN
     // host, #1505) attributes to the app and counts here instead of being suppressed as infra —
@@ -786,8 +803,8 @@ object Presence {
     val gap             = effectiveGap(active, continuationSeconds)
     def matchesGroup(r: PresenceRow, pats: List[String]): Boolean =
       HostMatch.matchesAny(r.host, pats)
-    var droppedTotal                                              = 0
-    val out = groups.iterator.flatMap { case (key, pats) =>
+    val dropped = scala.collection.mutable.Map.empty[String, Int]
+    val out     = groups.iterator.flatMap { case (key, pats) =>
       val matching  = active.filter(r => matchesGroup(r, pats))
       // Per device, stitch the union of the app's hosts as ONE stream so a gap < N
       // between different hosts of the same app bridges (vs sessionSpans' per-(mac,host) split).
@@ -813,7 +830,8 @@ object Presence {
                   }
                 }
               }
-              droppedTotal += (sessions.size - kept.size)
+              val n    = sessions.size - kept.size
+              if n > 0 then dropped.update(key, dropped.getOrElse(key, 0) + n)
               kept
             }
           }
@@ -824,7 +842,7 @@ object Presence {
       }
       if spans.nonEmpty then Some(key -> spans) else None
     }.toMap
-    (out, droppedTotal)
+    (out, dropped.toMap)
   }
 
   /**
@@ -856,8 +874,21 @@ object Presence {
       filter: HeartbeatFilter = HeartbeatFilter.Off,
       continuationSeconds: Int = DefaultContinuationSeconds,
   ): (Map[String, Long], Int) = {
+    val (secs, dropped) =
+      appSecondsForProfileWithDropCounts(rows, groups, overlap, filter, continuationSeconds)
+    (secs, dropped.valuesIterator.sum)
+  }
+
+  /** #2932: [[appSecondsForProfileWithDropCount]] with the drop count kept per group key. */
+  def appSecondsForProfileWithDropCounts(
+      rows: List[PresenceRow],
+      groups: List[(String, List[String])],
+      overlap: CrossDeviceOverlapMode = CrossDeviceOverlapMode.Sum,
+      filter: HeartbeatFilter = HeartbeatFilter.Off,
+      continuationSeconds: Int = DefaultContinuationSeconds,
+  ): (Map[String, Long], Map[String, Int]) = {
     val (spans, dropped) =
-      appSpansForProfileWithDropCount(rows, groups, overlap, filter, continuationSeconds)
+      appSpansForProfileWithDropCounts(rows, groups, overlap, filter, continuationSeconds)
     val secs             = spans.view
       .mapValues(_.iterator.map(_.seconds).sum)
       .filter(_._2 > 0L)

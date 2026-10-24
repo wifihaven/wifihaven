@@ -21,7 +21,7 @@ import zio.test.*
 import zio.http.*
 import zio.json.*
 
-import java.time.{Duration, Instant, LocalDate, LocalDateTime, LocalTime, ZoneId, ZoneOffset}
+import java.time.{Instant, LocalDate, LocalDateTime, LocalTime, ZoneId, ZoneOffset}
 
 /**
  * #2932 (epic #2930, design `docs/design/weekly-limits-and-app-groups.md` §6, §12): week-to-date
@@ -115,14 +115,23 @@ object WeeklyBudgetSpec
 
   private def app1(host: String): ZIO[AppRepo, Throwable, AppId] = app(host, host -> false)
 
+  // The AppRepo the layer provides dates its settled-usage invalidation by the fixture clock
+  // (`TestDatabase.FixtureAssignmentTime`, year 2000); writes that must invalidate THIS week go
+  // through one dated at `nowThu`.
+  private def appRepoAt(now: Instant): RIO[Transactor[Task], AppRepo] =
+    for {
+      xa <- ZIO.service[Transactor[Task]]
+      c  <- Clock.TestClock.makeWithControl(LocalDateTime.ofInstant(now, ZoneOffset.UTC))
+    } yield new AppRepoLive(xa, c._1)
+
   private def assign(
       a: AppId,
       p: ProfileId,
       mode: AppMode = AppMode.TimeLimited,
       daily: Option[Int] = None,
       exempt: Boolean = false,
-  ): ZIO[AppRepo, Throwable, Unit] =
-    ZIO.serviceWithZIO[AppRepo](_.upsertAssignment(a, p, mode, daily, exempt).unit)
+  ): RIO[Transactor[Task], Unit] =
+    appRepoAt(nowThu).flatMap(_.upsertAssignment(a, p, mode, daily, exempt).unit)
 
   private def setWeekly(a: AppId, p: ProfileId, weekly: Int): RIO[Transactor[Task], Unit] =
     ZIO.serviceWithZIO[Transactor[Task]](xa =>
@@ -365,10 +374,12 @@ object WeeklyBudgetSpec
               // Monday 00:30 of the next week: not in this week.
               _  <- traffic(r, macA, "youtube.com", local(weekMon.plusDays(7), 0, 30), 20)
               (from, to) = AttributionScope.rangeWindow(weekMon, sun, r.settings)
+              // Outside `assertTrue`: its macro cannot render a Java static call.
+              weekHours  = java.time.temporal.ChronoUnit.HOURS.between(from, to)
               s  <- states(r, local(sun, 20))
               nx <- states(r, local(weekMon.plusDays(7), 12))
             } yield assertTrue(
-              Duration.between(from, to).toHours == hours,
+              weekHours == hours,
               s(a).week.map(_.start).contains(weekMon),
               s(a).week.map(_.resetsAt).contains(to),
               appWeek(s(a), y).contains(180),

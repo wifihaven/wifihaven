@@ -1,7 +1,7 @@
 package wifihaven.api.usage
 
 import wifihaven.api.db.*
-import wifihaven.api.policy.{PolicyService, TimeStatusService}
+import wifihaven.api.policy.{BudgetKey, PolicyService, TimeStatusService}
 import wifihaven.shared.HouseholdSettings
 import wifihaven.shared.types.{AppId, HouseholdId, ProfileId}
 import zio.*
@@ -27,7 +27,7 @@ import java.time.{Instant, LocalDate}
  * so for a profile + date:
  *
  *   - '''rollup ⇄ cap''' (EXACT): this accessor's per-app minutes equal the per-app cap aggregate
- *     ([[wifihaven.api.policy.TimeStatusService.appDayStates]] /
+ *     ([[wifihaven.api.policy.TimeStatusService.budgetDayStates]] /
  *     `Presence.patternGroupMinutesForProfile`) — same primitive, same floor-of-sum.
  *   - '''rolled+tail ⇄ live''' (EXACT): rolled + tail equals the all-live computation in seconds,
  *     because presence buckets are per-report-period granular (the agent's `usage_report_interval`,
@@ -61,11 +61,11 @@ trait AppUsedRollupService {
   /**
    * #1515 + #1564: the same per-app engaged minutes as [[appEngagedMinutes]], surfaced for the cap
    * read path. Keyed by the typed `apps.id` FK — the same key `app_used_daily` stores, the same key
-   * the cap-group ([[wifihaven.api.policy.TimeStatusService.groupAppLimits]]) emits, and the same
-   * key [[wifihaven.api.policy.TimeStatusService.appDayStatesFromMinutes]] joins on. The snapshot's
-   * / `/decision`'s per-app cap reads through `perApp` on the rollup read path so a profile that
-   * has rolled (the prod steady state) still caps on the real per-app aggregate instead of zero.
-   * Same rolled + live-tail figure, so the rollup read and the all-live read agree by construction
+   * the cap-group ([[wifihaven.api.policy.ProfileAppDispositions.capGroups]]) emits, and the same
+   * key [[wifihaven.api.policy.TimeStatusService.budgetDayStates]] joins on. The snapshot's /
+   * `/decision`'s per-app cap reads through `perApp` on the rollup read path so a profile that has
+   * rolled (the prod steady state) still caps on the real per-app aggregate instead of zero. Same
+   * rolled + live-tail figure, so the rollup read and the all-live read agree by construction
    * (#1532).
    */
   def appCapMinutesByAppId(
@@ -75,6 +75,19 @@ trait AppUsedRollupService {
       settings: HouseholdSettings,
       profileId: ProfileId,
   ): Task[Map[AppId, Int]]
+
+  /**
+   * #2932 (design §6.4): the same rolled + live-tail figure in SECONDS, for every budget: each
+   * per-app key above and each attached group (`app_group_used_daily` + tail). The day-state rollup
+   * path reads this, so a week can floor its sum once.
+   */
+  def budgetSeconds(
+      household: HouseholdId,
+      now: Instant,
+      date: LocalDate,
+      settings: HouseholdSettings,
+      profileId: ProfileId,
+  ): Task[Map[BudgetKey, Long]]
 }
 
 /**
@@ -98,6 +111,13 @@ object NoopAppUsedRollupService extends AppUsedRollupService {
       settings: HouseholdSettings,
       profileId: ProfileId,
   ): Task[Map[AppId, Int]] = ZIO.succeed(Map.empty)
+  def budgetSeconds(
+      household: HouseholdId,
+      now: Instant,
+      date: LocalDate,
+      settings: HouseholdSettings,
+      profileId: ProfileId,
+  ): Task[Map[BudgetKey, Long]] = ZIO.succeed(Map.empty)
 }
 
 class AppUsedRollupServiceLive(
@@ -117,7 +137,7 @@ class AppUsedRollupServiceLive(
       settings: HouseholdSettings,
       profileId: ProfileId,
   ): Task[Map[AppId, Int]] =
-    aggregate(household, now, date, settings, profileId)
+    aggregate(household, now, date, settings, profileId).map(appMinutes)
 
   def appCapMinutesByAppId(
       household: HouseholdId,
@@ -126,6 +146,15 @@ class AppUsedRollupServiceLive(
       settings: HouseholdSettings,
       profileId: ProfileId,
   ): Task[Map[AppId, Int]] =
+    aggregate(household, now, date, settings, profileId).map(appMinutes)
+
+  def budgetSeconds(
+      household: HouseholdId,
+      now: Instant,
+      date: LocalDate,
+      settings: HouseholdSettings,
+      profileId: ProfileId,
+  ): Task[Map[BudgetKey, Long]] =
     aggregate(household, now, date, settings, profileId)
 
   // Single read path keyed on apps.id end-to-end (#1564). When the per-app rollup is non-empty,
@@ -142,14 +171,23 @@ class AppUsedRollupServiceLive(
       date: LocalDate,
       settings: HouseholdSettings,
       profileId: ProfileId,
-  ): Task[Map[AppId, Int]] = {
-    val today   = PolicyService.householdLocalDate(now, settings)
-    val rolledZ =
-      if (date == today) rollupRepo.getDayForProfile(profileId, date)
-      else ZIO.succeed(Map.empty[AppId, RolledAppDay])
+  ): Task[Map[BudgetKey, Long]] = {
+    val today = PolicyService.householdLocalDate(now, settings)
+    // #2932: a day not yet settleable (today, and yesterday for `SettleDelay`) has rolled rows to
+    // add a tail to — the same predicate `TimeStatusServiceLive` reads the profile total under. A
+    // settleable past day is aggregated live. App and group rows share each tick's watermark.
+    val rolledZ: Task[Map[BudgetKey, RolledAppDay]] =
+      if (!SettledUsage.settleable(date, now, settings))
+        rollupRepo
+          .getDayForProfile(profileId, date)
+          .zipWith(rollupRepo.getGroupDayForProfile(profileId, date)) { (apps, groups) =>
+            apps.map((a, r) => (BudgetKey.App(a): BudgetKey) -> r) ++
+              groups.map((g, r) => (BudgetKey.Group(g): BudgetKey) -> r)
+          }
+      else ZIO.succeed(Map.empty)
     rolledZ.flatMap { rolled =>
       profileRepo.findById(profileId).flatMap {
-        case None    => ZIO.succeed(Map.empty[AppId, Int])
+        case None    => ZIO.succeed(Map.empty[BudgetKey, Long])
         case Some(p) =>
           appTimeLimitRepo.listForProfile(profileId).flatMap {
             // #2652: a profile with NO app assignments has no per-app minutes to compute — the live
@@ -166,7 +204,7 @@ class AppUsedRollupServiceLive(
             // `rolled` can still be non-empty here (an assignment removed after the last rollup
             // tick), so it is projected exactly as the full path would — this is a skipped READ, not
             // a skipped result.
-            case Nil  => ZIO.succeed(minutesFrom(rolled, Map.empty))
+            case Nil  => ZIO.succeed(secondsFrom(rolled, Map.empty))
             case atls =>
               for {
                 // #2844: only the rows of the devices this profile held, while it held them.
@@ -188,8 +226,8 @@ class AppUsedRollupServiceLive(
                 // this hot read path — re-emitting on every status read would
                 // inflate the series with read frequency instead of reflecting
                 // data state, defeating rate-alerting.
-                val liveSecs = TimeStatusService.appSecondsByApp(p, atls, presence, settings)
-                minutesFrom(rolled, liveSecs)
+                val liveSecs = TimeStatusService.budgetSeconds(p, atls, presence, settings)
+                secondsFrom(rolled, liveSecs)
               }
           }
       }
@@ -197,18 +235,26 @@ class AppUsedRollupServiceLive(
   }
 
   /**
-   * #2652: the single `rolled + live ⇒ whole minutes` projection, so the skip-the-read branch above
-   * and the full path cannot shape their result differently. Floor-to-minutes happens once, on the
-   * sum, exactly as before; a zero-minute app is omitted.
+   * #2652: the single `rolled + live` composition, so the skip-the-read branch above and the full
+   * path cannot shape their result differently. #2932: kept in seconds; a zero budget is omitted.
    */
-  private def minutesFrom(
-      rolled: Map[AppId, RolledAppDay],
-      liveSecs: Map[AppId, Long],
-  ): Map[AppId, Int] =
-    (rolled.keySet ++ liveSecs.keySet).iterator.flatMap { id =>
-      val secs = rolled.get(id).map(_.engagedSeconds).getOrElse(0L) + liveSecs.getOrElse(id, 0L)
-      val mins = (secs / 60L).toInt
-      if mins != 0 then Some(id -> mins) else None
+  private def secondsFrom(
+      rolled: Map[BudgetKey, RolledAppDay],
+      liveSecs: Map[BudgetKey, Long],
+  ): Map[BudgetKey, Long] =
+    (rolled.keySet ++ liveSecs.keySet).iterator.flatMap { k =>
+      val secs = rolled.get(k).map(_.engagedSeconds).getOrElse(0L) + liveSecs.getOrElse(k, 0L)
+      if secs != 0L then Some(k -> secs) else None
+    }.toMap
+
+  /**
+   * The per-app minute view the two minute accessors serve: floor-to-minutes happens once, on the
+   * rolled + live sum, exactly as before; a zero-minute app is omitted.
+   */
+  private def appMinutes(secs: Map[BudgetKey, Long]): Map[AppId, Int] =
+    secs.iterator.flatMap {
+      case (BudgetKey.App(id), s) if s / 60L != 0L => Some(id -> (s / 60L).toInt)
+      case _                                       => None
     }.toMap
 }
 

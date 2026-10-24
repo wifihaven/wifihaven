@@ -2216,6 +2216,10 @@ class AppTimeLimitRepoLive(xa: Transactor[Task]) extends AppTimeLimitRepo {
   // #1897: `ah.shared` is carried through as the 10th column so `ProfileAppDispositions` can
   // partition each app's host-set into distinctive (`shared = false`) vs shared hosts. The
   // engaged-minutes stitch reads the distinctive subset only.
+  // #2932 (design §6.1): every row also carries the assignment's `weekly_minutes`, the group
+  // attached to this profile that covers the app (`g` / `pag`, NULL when none), and whether the row
+  // is a COVERED-ONLY row: one for a member of an attached group that has no assignment on the
+  // profile (D6). Coverage rides the same read so no consumer of these rows can miss it.
   private type R =
     (
         ProfileId,
@@ -2227,6 +2231,13 @@ class AppTimeLimitRepoLive(xa: Transactor[Task]) extends AppTimeLimitRepo {
         AppPolicyAssignmentId,
         String,
         Boolean,
+        Boolean,
+        Option[Int],
+        Option[AppGroupId],
+        Option[String],
+        Option[Int],
+        Option[Int],
+        Option[Boolean],
         Boolean,
     )
   private def toS(r: R) =
@@ -2242,18 +2253,54 @@ class AppTimeLimitRepoLive(xa: Transactor[Task]) extends AppTimeLimitRepo {
       r._7,
       r._9,
       r._10,
+      weeklyMinutes = r._11,
+      coverage = (r._12, r._13, r._16).mapN((g, name, exempt) =>
+        GroupCoverage(g, name, r._14, r._15, exempt),
+      ),
+      coveredOnly = r._17,
     )
+
+  // The assignment rows, each with the attachment that covers its app on its profile. The covering
+  // join is parenthesized so it only matches a group attached to THIS profile: `apps` is global,
+  // so `app_group_members` can hold the same app for several households. Within one household an
+  // app is in at most one group (D2), so an assignment row gets at most one coverage.
+  private def assignedRows(where: Fragment): Fragment =
+    fr"""SELECT apa.profile_id, ah.host, apa.daily_minutes, a.slug,
+                apa.exempt_from_daily, a.id, apa.id, apa.mode::text,
+                apa.allowed_during_schedule_block, ah.shared, apa.weekly_minutes,
+                g.id, g.name, pag.daily_minutes, pag.weekly_minutes, pag.exempt_from_daily,
+                FALSE
+           FROM app_policy_assignments apa
+           JOIN apps a       ON a.id = apa.app_id
+           JOIN app_hosts ah ON ah.app_id = apa.app_id
+           LEFT JOIN (app_group_members m
+                      JOIN profile_app_groups pag ON pag.group_id = m.group_id
+                      JOIN app_groups g           ON g.id = pag.group_id)
+                  ON m.app_id = apa.app_id AND pag.profile_id = apa.profile_id
+          WHERE """ ++ where
+
+  // #2932 (D6): the covered-only rows, members of a group attached to the profile with no
+  // assignment there. No assignment id (0), mode or limits of their own; `ProfileAppDispositions`
+  // makes them synthesized TimeLimited dispositions.
+  private def coveredOnlyRows(where: Fragment): Fragment =
+    fr"""SELECT pag.profile_id, ah.host, NULL::int, a.slug,
+                pag.exempt_from_daily, a.id, 0::bigint, 'time_limited',
+                TRUE, ah.shared, NULL::int,
+                g.id, g.name, pag.daily_minutes, pag.weekly_minutes, pag.exempt_from_daily,
+                TRUE
+           FROM profile_app_groups pag
+           JOIN app_groups g        ON g.id = pag.group_id
+           JOIN app_group_members m ON m.group_id = pag.group_id
+           JOIN apps a              ON a.id = m.app_id
+           JOIN app_hosts ah        ON ah.app_id = m.app_id
+          WHERE NOT EXISTS (SELECT 1 FROM app_policy_assignments x
+                             WHERE x.profile_id = pag.profile_id AND x.app_id = m.app_id)
+            AND """ ++ where
 
   def listForProfile(pid: ProfileId) =
     DbMetrics.timed("appTimeLimit.listForProfile")(
-      sql"""SELECT apa.profile_id, ah.host, apa.daily_minutes, a.slug,
-                   apa.exempt_from_daily, a.id, apa.id, apa.mode::text,
-                   apa.allowed_during_schedule_block, ah.shared
-            FROM app_policy_assignments apa
-            JOIN apps a       ON a.id = apa.app_id
-            JOIN app_hosts ah ON ah.app_id = apa.app_id
-           WHERE apa.profile_id = $pid
-           ORDER BY apa.id, ah.host"""
+      (assignedRows(fr"apa.profile_id = $pid") ++ fr"UNION ALL" ++
+        coveredOnlyRows(fr"pag.profile_id = $pid") ++ fr"ORDER BY 7, 6, 2")
         .query[R]
         .map(toS)
         .to[List]
@@ -2261,17 +2308,15 @@ class AppTimeLimitRepoLive(xa: Transactor[Task]) extends AppTimeLimitRepo {
     )
 
   // #2108: AND-scoped through app_policy_assignments.profile_id → the household-scoped profiles
-  // row. #2568 removed the unscoped `listAll` this was once the scoped twin of.
+  // row. #2568 removed the unscoped `listAll` this was once the scoped twin of. #2932: the
+  // covered-only branch is scoped by the attachment's own `household_id`.
   def listAllForHousehold(household: HouseholdId) =
-    (fr"""SELECT apa.profile_id, ah.host, apa.daily_minutes, a.slug,
-                 apa.exempt_from_daily, a.id, apa.id, apa.mode::text,
-                 apa.allowed_during_schedule_block, ah.shared
-            FROM app_policy_assignments apa
-            JOIN apps a       ON a.id = apa.app_id
-            JOIN app_hosts ah ON ah.app_id = apa.app_id
-            JOIN profiles p   ON p.id = apa.profile_id
-           WHERE""" ++ SqlFragments.householdEq(household, "p.household_id") ++
-      fr"ORDER BY apa.id, ah.host")
+    (assignedRows(
+      fr"apa.profile_id IN (SELECT id FROM profiles p WHERE" ++
+        SqlFragments.householdEq(household, "p.household_id") ++ fr")",
+    ) ++ fr"UNION ALL" ++
+      coveredOnlyRows(SqlFragments.householdEq(household, "pag.household_id")) ++
+      fr"ORDER BY 7, 6, 2")
       .query[R]
       .map(toS)
       .to[List]

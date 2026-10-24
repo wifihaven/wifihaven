@@ -17,9 +17,9 @@ import wifihaven.api.db.{
 }
 import wifihaven.api.presence.AmbientGate
 import wifihaven.api.metrics.AppMetrics
-import wifihaven.api.policy.{PolicyService, TimeStatusService}
+import wifihaven.api.policy.{BudgetKey, PolicyService, TimeStatusService}
 import wifihaven.shared.Clock
-import wifihaven.shared.types.{AppId, HouseholdId, ProfileId}
+import wifihaven.shared.types.{AppGroupId, AppId, HouseholdId, ProfileId}
 import zio.*
 
 import java.time.{Duration, Instant}
@@ -308,6 +308,7 @@ object TimeUsedRollupJob {
               )
               n <- rollup.upsertBatch(today, rolls._1)
               _ <- appRollup.upsertBatch(today, rolls._2)
+              _ <- appRollup.upsertGroupBatch(hh, today, rolls._5)
               // #2932 (design §6.4): settle this household's settleable past days of the week (in
               // practice yesterday, on the first tick after `SettledUsage.SettleDelay`).
               _ <- settleWeek(hh, now, settings)
@@ -331,7 +332,13 @@ object TimeUsedRollupJob {
       settings: wifihaven.shared.HouseholdSettings,
       now: Instant,
       ambient: AmbientGate = AmbientGate.Off,
-  ): (Map[ProfileId, RolledDay], Map[(ProfileId, AppId), RolledAppDay], Int, Int) = {
+  ): (
+      Map[ProfileId, RolledDay],
+      Map[(ProfileId, AppId), RolledAppDay],
+      Int,
+      Int,
+      Map[(ProfileId, AppGroupId), RolledAppDay],
+  ) = {
     // #2077: gate each profile's slice ONCE per tick (the write side of the rollup is the
     // canonical active-minute definition), accumulating the dropped-span watchdog count.
     // Precomputed per profile so the two consumers below (per-profile total, per-app roll)
@@ -350,7 +357,7 @@ object TimeUsedRollupJob {
       gatedByProfile.valuesIterator.map(_._2).sum
     def presFor(pid: ProfileId): List[wifihaven.api.presence.PresenceRow]               =
       gatedByProfile.get(pid).map(_._1).getOrElse(Nil)
-    val perProfile    = profiles.iterator.map { p =>
+    val perProfile       = profiles.iterator.map { p =>
       val secs = TimeStatusService.usedSecondsForProfile(
         p,
         scope.devicesFor(p.id, devices),
@@ -363,20 +370,27 @@ object TimeUsedRollupJob {
     // #1676: each profile's per-app fold also yields a dropped-session count
     // from the #1666 anchor-row guard. The metric is unlabelled, so we sum
     // across profiles and the caller emits the total.
-    val perAppEntries = profiles.iterator.map { p =>
-      val (secsByApp, dropped) = TimeStatusService.appSecondsByAppWithDropCount(
+    // #2932: the same single call also yields each attached group's seconds (design §6.2), rolled
+    // into `app_group_used_daily` under the same watermark.
+    val perBudgetEntries = profiles.iterator.map { p =>
+      val (secsByKey, dropped) = TimeStatusService.budgetSecondsWithDropCount(
         p,
         atlMap.getOrElse(p.id, Nil),
         presFor(p.id),
         settings,
       )
-      val rows                 = secsByApp.iterator.map { case (appId, secs) =>
+      val apps                 = secsByKey.iterator.collect { case (BudgetKey.App(appId), secs) =>
         (p.id, appId) -> RolledAppDay(secs, now)
       }.toMap
-      (rows, dropped)
+      val groups               = secsByKey.iterator.collect { case (BudgetKey.Group(g), secs) =>
+        (p.id, g) -> RolledAppDay(secs, now)
+      }.toMap
+      (apps, groups, dropped)
     }.toList
-    val perApp = perAppEntries.foldLeft(Map.empty[(ProfileId, AppId), RolledAppDay])(_ ++ _._1)
-    val droppedTotal = perAppEntries.foldLeft(0)(_ + _._2)
-    (perProfile, perApp, droppedTotal, ambientDropped)
+    val perApp   = perBudgetEntries.foldLeft(Map.empty[(ProfileId, AppId), RolledAppDay])(_ ++ _._1)
+    val perGroup =
+      perBudgetEntries.foldLeft(Map.empty[(ProfileId, AppGroupId), RolledAppDay])(_ ++ _._2)
+    val droppedTotal = perBudgetEntries.foldLeft(0)(_ + _._3)
+    (perProfile, perApp, droppedTotal, ambientDropped, perGroup)
   }
 }
