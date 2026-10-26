@@ -259,6 +259,7 @@ router (#421), so whether the app survives the daily time limit is decided
 carveIntoExtraAllowed(assignment) =
   effectiveDisposition == AllowedDuring
   AND NOT (dailyCapExhausted(state) AND NOT assignment.exemptFromDaily)
+  AND NOT overBudget(assignment.app)   // #2933, D17: any budget containing the app is exhausted
 
 dailyCapExhausted(state) =
   state.dailyLimitMinutes.exists(lim => state.usedMinutes >= lim + state.extensionMinutes)
@@ -319,7 +320,15 @@ block" = `blocked=true` (one of Paused / profile-Schedule / TimeLimit / Manual
 enforces after #421 allow-beats-block.
 
 "Exempt?" is the assignment's `exemptFromDaily` flag. The `AllowedDuring`
-carve gate (§4.1) is `windowActive AND NOT (dailyCapExhausted AND NOT exempt)`.
+carve gate (§4.1) is `windowActive AND NOT (dailyCapExhausted AND NOT exempt) AND NOT overBudget`.
+
+**#2933 (D17), read first:** `overBudget` means the app's own daily limit, its own
+weekly limit, or an attached group's daily or weekly limit is exhausted
+(`PolicyService.appsOverBudget`). Every row below whose outcome is **Reachable**
+because of an `allowed_during` carve is reachable only while the app is under every
+budget that contains it; once any is exhausted the carve is withheld and the app is
+blocked, window or not. See `docs/design/weekly-limits-and-app-groups.md` §7.3
+rows 9c and 9d.
 
 | # | Profile whole-MAC block? | App base mode | App window @ now | Exempt? | App host bucket | **Router outcome for the app** |
 |---|---|---|---|---|---|---|

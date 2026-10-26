@@ -316,6 +316,8 @@ case class AppTimeLimit(
     // assignment of its own on the profile. Such a row carries no assignment id, mode or limits;
     // `ProfileAppDispositions.from` turns it into a synthesized TimeLimited disposition.
     coveredOnly: Boolean = false,
+    // #2933 (design §8): the app's display name (`apps.name`), so a block can name its budget.
+    appName: String = "",
 ) derives JsonCodec
 
 /**
@@ -2309,7 +2311,16 @@ case class BlockedInfoResponse(
     dailyLimitMinutes: Option[Int] = None,
     extensionMinutes: Option[Int] = None,
     remainingMinutes: Option[Int] = None,
+    // #2933 (design §8): which budget an `app_time_limit` block came from. Additive.
+    budget: Option[BudgetBlockInfo] = None,
 ) derives JsonCodec
+
+/**
+ * #2933 (design §8): the budget behind an `app_time_limit` block on `GET /api/blocked`. `kind` is
+ * "app" or "group", `name` the app's or group's display name, `window` "day" or "week". No reset
+ * time (D12).
+ */
+case class BudgetBlockInfo(kind: String, name: String, window: String) derives JsonCodec
 
 // ── Policy snapshot (target shape per docs/architecture.md §0.2, #354) ────
 //

@@ -234,6 +234,9 @@ object MetricGuard {
     // weekly budgets. `outcome` ∈ {hit, refill, error}, per (household, day) read; a sustained
     // `refill` rate means the rollup tick's settle pass is not keeping up.
     "budget_usage_settle_total"                   -> Set("outcome"),
+    // #2933 (design §11): count of exhausted budgets, set once per reevaluate tick, summed across
+    // households. `kind` ∈ {app, group}, `window` ∈ {day, week}: both code-bounded enums.
+    "app_budget_exhausted"                        -> Set("kind", "window"),
     // #2932: presence rows ingested for a household-day that was already settled, so not counted
     // toward weekly budgets (design §6.4). Unlabelled: the rate is the measurement.
     "budget_late_presence_rows_total"             -> Set.empty[String],
@@ -1629,6 +1632,25 @@ object AppMetrics {
   // ── Weekly budgets (#2932) ───────────────────────────────────────────────────────────────────
   // design docs/design/weekly-limits-and-app-groups.md §11. No household / profile / app / group
   // label: the cardinality firewall forbids them, and the rates are what an operator alerts on.
+
+  /**
+   * #2933 (design §11): the `app_budget_exhausted{kind, window}` gauge: how many budgets are
+   * exhausted right now across all households. Set once per reevaluate tick from that tick's
+   * per-household results, summed (a per-household build writing it would overwrite the others').
+   * Every (kind, window) is set every tick, including zero, so a cleared budget reads 0 rather than
+   * its last non-zero value.
+   */
+  def setBudgetsExhausted(counts: Map[(String, String), Int]): UIO[Unit] =
+    ZIO.foreachDiscard(for {
+      k <- List("app", "group")
+      w <- List("day", "week")
+    } yield (k, w)) { case (k, w) =>
+      MetricGuard.gauge(
+        "app_budget_exhausted",
+        Map("kind" -> k, "window" -> w),
+        counts.getOrElse((k, w), 0).toDouble,
+      )
+    }
 
   /** One settled past-day read: `hit`, `refill` (computed live and written back) or `error`. */
   def recordBudgetSettle(outcome: String): UIO[Unit] =

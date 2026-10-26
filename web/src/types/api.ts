@@ -1215,6 +1215,8 @@ export interface BlockedInfoResponse {
   dailyLimitMinutes?: number | null
   extensionMinutes?: number | null
   remainingMinutes?: number | null
+  // #2933: the budget behind an app_time_limit block. kind: "app" | "group", window: "day" | "week".
+  budget?: { kind: string; name: string; window: string } | null
 }
 
 // #1740 — usage retention horizons (days). Carried on `UsageConfig.horizons`

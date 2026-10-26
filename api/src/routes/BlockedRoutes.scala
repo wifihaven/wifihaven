@@ -168,6 +168,9 @@ object BlockedRoutes {
       dailyLimitMinutes = dayStateOpt.flatMap(_.dailyLimitMinutes),
       extensionMinutes = dayStateOpt.map(_.extensionMinutes),
       remainingMinutes = dayStateOpt.flatMap(_.remainingMinutes),
+      // #2933 (design §8): the same budget `decideDetailed` blocked on, window included. Only set
+      // for an `app_time_limit` block.
+      budget = decided.budget.map(b => BudgetBlockInfo(b.kind.wire, b.name, b.window.wire)),
     )
 
   /**
