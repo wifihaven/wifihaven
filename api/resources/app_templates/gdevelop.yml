@@ -1,0 +1,42 @@
+slug: gdevelop
+name: GDevelop
+icon: "https://icons.duckduckgo.com/ip3/gdevelop.io.ico"
+icon_type: url
+# Added from prod evidence (#2943, evidence/classification-2943.md): 30d
+# kid-profile orphanHosts showed ~34 proportional minutes spread across three
+# related hosts, one kid profile only:
+#   gdevelop.io                       main editor/marketing site (title
+#                                      confirms "GDevelop: Free, Fast, Easy
+#                                      Game Engine - No-code, AI-assisted...")
+#   public-game-resources.gdevelop.io game-asset CDN for games built in the
+#                                      editor
+#   resources.gdevelop-app.com        second game-asset CDN, same product
+# GDevelop is a no-code game-creation engine — the same functional category
+# as the already-templated `scratch`/`tinkercad` (a kid builds something,
+# not an "unblocked games" filter-bypass portal), so it gets a per-app
+# time-limit surface rather than a blocklist entry.
+#
+# `gdevelop-app.com` is confirmed first-party, not just inferred from the
+# name: gdevelop.io's own homepage embeds a "games-showcase" section whose
+# images are served directly from `gdevelop-app.com/games-showcase/images/…`
+# — a direct link from the main site, the #2753 whois-trap lesson applied
+# (don't rest a same-vendor claim on name-similarity or shared infra alone).
+# All three observed hosts also sit on Cloudflare's shared 104.26.x/172.67.x
+# anycast edge (ordinary accepted Class 2 per the `youtube.yml` precedent —
+# multi-tenant, but not demonstrated to collide with an unrelated site in
+# this household's own traffic); that shared-edge fact is collateral
+# context, not the evidence for the gdevelop-app.com/gdevelop.io link.
+# Listed as two separate parent hosts (`gdevelop.io`, `gdevelop-app.com`)
+# rather than the brand's full set of possible subdomains, since suffix
+# matching already covers `public-game-resources.gdevelop.io` and
+# `resources.gdevelop-app.com` under their respective apexes and nothing
+# else was observed under either.
+#
+# Volume is thin (comparable to the `freckle`/#2596 and `serato`/#2331
+# precedents for a below-typical-byte-count app): what makes it a genuine
+# app rather than a beacon is the SHAPE — three distinct hosts across two
+# apexes (editor site + two separate asset CDNs), not a single tracking
+# pixel.
+hosts:
+  - gdevelop.io
+  - gdevelop-app.com

@@ -104,3 +104,7 @@ slugs:
   - savvas-realize
   - matlab
   - classlink
+  # #2943: orphan-driven catalog pass (see evidence/classification-2943.md) —
+  # GDevelop, a no-code game-creation engine (same category as scratch/
+  # tinkercad), scoped to the editor site + its two asset CDNs.
+  - gdevelop
