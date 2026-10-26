@@ -13,7 +13,7 @@ describe('tighterLeft (#2935, D12)', () => {
   it('picks the window with less time left', () => {
     expect(tighterLeft({ dailyLimit: 60, dailyUsed: 40, weeklyLimit: 300, weekUsed: 100 }))
       .toEqual({ text: '20m left today', exhausted: false })
-    expect(tighterLeft({ dailyLimit: 60, dailyUsed: 10, weeklyLimit: 300, weekUsed: 230 }))
+    expect(tighterLeft({ dailyLimit: 120, dailyUsed: 10, weeklyLimit: 300, weekUsed: 230 }))
       .toEqual({ text: '1h 10m left this week', exhausted: false })
   })
   it('uses the only limit that is set', () => {

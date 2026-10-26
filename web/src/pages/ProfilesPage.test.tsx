@@ -3040,12 +3040,17 @@ describe('ProfilesPage — weekly limits and app groups (#2935)', () => {
   })
 
   it('shows the tighter remaining figure on a chip: weekly when it is the smaller', async () => {
-    fn(api.apps.list).mockResolvedValue([limited(52, 'Minecraft', { dailyMinutes: 60, weeklyMinutes: 300 })])
-    fn(api.time.statusAll).mockResolvedValue([usage()])
+    fn(api.apps.list).mockResolvedValue([limited(52, 'Minecraft', { dailyMinutes: 120, weeklyMinutes: 300 })])
+    fn(api.time.statusAll).mockResolvedValue([usage({
+      appUsage: [{
+        label: 'app:minecraft', domainPattern: 'minecraft.com', limitMins: 120, usedMins: 20, remainingMins: 100,
+        weeklyLimitMins: 300, weekUsedMins: 230, weekStart: '2026-10-19', weekResetsAt: '2026-10-26T06:00:00Z',
+      }],
+    })])
     const user = userEvent.setup()
     await openApps(user)
     const chip = await screen.findByTestId('app-row-52-limit-toggle')
-    await waitFor(() => expect(chip).toHaveTextContent('30m left this week'))
+    await waitFor(() => expect(chip).toHaveTextContent('1h 10m left this week'))
   })
 
   it('shows the tighter remaining figure on a chip: daily when it is the smaller', async () => {

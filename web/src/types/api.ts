@@ -483,6 +483,27 @@ export interface AppUsage {
   limitMins: number | null
   usedMins: number
   remainingMins: number | null
+  // #2932 (D12) — week-to-date, additive: omitted by an API that predates weekly limits.
+  // `weekUsedMins` is absent when the window is not tracked for this row.
+  weeklyLimitMins?: number | null
+  weekUsedMins?: number | null
+  weekStart?: string | null
+  weekResetsAt?: string | null
+}
+
+// #2932 — one attached group's usage on a profile, the group counterpart of AppUsage.
+export interface GroupUsage {
+  groupId: number
+  name: string
+  memberAppIds: number[]
+  limitMins: number | null
+  usedMins: number
+  remainingMins: number | null
+  weeklyLimitMins: number | null
+  weekUsedMins: number | null
+  weekStart: string | null
+  weekResetsAt: string | null
+  exemptFromDaily: boolean
 }
 
 export interface DeviceTimeStatus {
@@ -554,6 +575,8 @@ export interface ProfileTimeStatus {
   appUsage: AppUsage[]
   devices: DeviceUsageSummary[]
   hostUsage: HostUsage[]
+  // #2932 — additive; omitted or empty when the profile has no group attached.
+  groupUsage?: GroupUsage[]
 }
 
 // #1061 — per-app time-used breakdown for one profile over a date window.

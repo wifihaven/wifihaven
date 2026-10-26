@@ -41,6 +41,10 @@ export function localBucketOffsetMin(now: Date = new Date()): 0 | 15 | 30 | 45 {
   return (snapped as 0 | 15 | 30 | 45)
 }
 
+function localDateString(d: Date): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
 /**
  * #794: group hourly UTC buckets into local-day buckets ending at `toDate` (inclusive). Each
  * bucket lives fully within one local-tz day if the caller fetched with the right
@@ -51,7 +55,10 @@ export function localBucketOffsetMin(now: Date = new Date()): 0 | 15 | 30 | 45 {
 export function groupBucketsByLocalDay(
   perBucket: ProfileTimeBucket[],
   toDate: string,
-): { date: string; label: string; usedMins: number }[] {
+  // #2935 (D10): the calendar week can run past today. `today` is the local date; later days have
+  // not happened, so they come back `null` (an empty slot), never a `0` that reads as real usage.
+  today: string = localDateString(new Date()),
+): { date: string; label: string; usedMins: number | null }[] {
   const byLocalDate = new Map<string, number>()
   for (const b of perBucket) {
     const dt = new Date(b.bucketStart) // parsed as UTC, rendered in local
@@ -63,7 +70,7 @@ export function groupBucketsByLocalDay(
   }
   // Build seven contiguous local days ending on toDate.
   const end = new Date(`${toDate}T00:00:00`)
-  const out: { date: string; label: string; usedMins: number }[] = []
+  const out: { date: string; label: string; usedMins: number | null }[] = []
   for (let i = 6; i >= 0; i--) {
     const day = new Date(end)
     day.setDate(end.getDate() - i)
@@ -74,7 +81,7 @@ export function groupBucketsByLocalDay(
     out.push({
       date: localDate,
       label: WEEKDAY[day.getDay()],
-      usedMins: byLocalDate.get(localDate) ?? 0,
+      usedMins: localDate > today ? null : byLocalDate.get(localDate) ?? 0,
     })
   }
   return out

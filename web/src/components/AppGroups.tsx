@@ -5,8 +5,34 @@ import { api } from '@/api/client'
 import { useGroupAttachmentsOf, useInvalidators, useProfiles } from '@/api/queries'
 import { AppIcon } from '@/components/AppIcon'
 import { Skeleton } from '@/components/Skeleton'
+import { tighterLeft } from '@/lib/budget'
 import { formatMins } from '@/lib/timeFormat'
-import type { AppDetail, AppGroup, ProfileAppGroup, UpsertProfileAppGroupRequest } from '@/types/api'
+import type { AppDetail, AppGroup, AppUsage, GroupUsage, ProfileAppGroup, UpsertProfileAppGroupRequest } from '@/types/api'
+
+// #2935 — the query state behind the week-to-date figures, threaded down like #2764's UsageStatus so
+// a row can tell "not loaded yet" from a genuine zero (AGENTS.md#loading-states).
+export type BudgetStatus = 'pending' | 'error' | 'success'
+export interface BudgetUsage {
+  status: BudgetStatus
+  appBySlug: Map<string, AppUsage>
+  groupById: Map<number, GroupUsage>
+}
+
+function UsageBar({ testId, used, limit, label }: { testId: string; used: number; limit: number; label: string }) {
+  return (
+    <div data-testid={testId} className="flex items-center gap-2">
+      <span className="w-12 text-[10.5px] uppercase tracking-wider text-brand-text-muted shrink-0">{label}</span>
+      <div className="flex-1 h-1 bg-brand-alt rounded-full overflow-hidden">
+        <div
+          className={`h-full rounded-full ${used >= limit ? 'bg-red-500' : 'bg-brand-accent'}`}
+          style={{ width: `${Math.min(100, Math.round((used / limit) * 100))}%` }}
+        />
+      </div>
+      <span className="text-xs font-mono text-brand-text shrink-0">{formatMins(used)} / {formatMins(limit)}</span>
+    </div>
+  )
+}
+export { UsageBar }
 
 // The D16 hint. Unchecked is the default (D5), so this is what keeps it from surprising a parent.
 export const EXEMPT_HINT =
@@ -121,13 +147,14 @@ export function AddGroupMenu({ profileId, testIdPrefix, groups, attached, onChan
   )
 }
 
-export function GroupsSubList({ profileId, testIdPrefix, status, attached, groups, apps, onChanged }: {
+export function GroupsSubList({ profileId, testIdPrefix, status, attached, groups, apps, budget, onChanged }: {
   profileId: number
   testIdPrefix: string
   status: 'pending' | 'error' | 'success'
   attached: ProfileAppGroup[]
   groups: AppGroup[]
   apps: AppDetail[]
+  budget: BudgetUsage
   onChanged: () => void | Promise<void>
 }) {
   if (status === 'success' && attached.length === 0) return null
@@ -149,6 +176,7 @@ export function GroupsSubList({ profileId, testIdPrefix, status, attached, group
           group={groups.find(g => g.id === a.groupId)}
           apps={apps}
           groups={groups}
+          budget={budget}
           onChanged={onChanged}
         />
       ))}
@@ -156,12 +184,13 @@ export function GroupsSubList({ profileId, testIdPrefix, status, attached, group
   )
 }
 
-function GroupRow({ profileId, attachment, group, apps, groups, onChanged }: {
+function GroupRow({ profileId, attachment, group, apps, groups, budget, onChanged }: {
   profileId: number
   attachment: ProfileAppGroup
   group: AppGroup | undefined
   apps: AppDetail[]
   groups: AppGroup[]
+  budget: BudgetUsage
   onChanged: () => void | Promise<void>
 }) {
   const tid = `group-row-${attachment.groupId}`
@@ -236,6 +265,15 @@ function GroupRow({ profileId, attachment, group, apps, groups, onChanged }: {
     attachment.dailyMinutes != null ? `${formatMins(attachment.dailyMinutes)}/day` : null,
     attachment.weeklyMinutes != null ? `${formatMins(attachment.weeklyMinutes)}/week` : null,
   ].filter(Boolean).join(' · ')
+  // The collapsed chip: the tighter remaining figure once usage is in, the limits until then (a
+  // limit is real data; a remaining figure is not, so it waits behind a skeleton instead).
+  const gu = budget.groupById.get(attachment.groupId)
+  const left = budget.status === 'success'
+    ? tighterLeft({
+        dailyLimit: attachment.dailyMinutes, dailyUsed: gu?.usedMins ?? 0,
+        weeklyLimit: attachment.weeklyMinutes, weekUsed: gu?.weekUsedMins ?? 0,
+      })
+    : null
 
   return (
     <div data-testid={tid} className="bg-brand-card border border-brand-border rounded-xl">
@@ -262,7 +300,15 @@ function GroupRow({ profileId, attachment, group, apps, groups, onChanged }: {
             onClick={() => setOpen(v => !v)}
             className={`${chipBase} bg-amber-500/15 border-amber-500/40 text-amber-800`}
           >
-            <span className="font-mono">{summary}</span>
+            {budget.status === 'pending' ? (
+              <span
+                data-testid={`${tid}-budget-loading`}
+                aria-label="Loading usage"
+                className="inline-block w-16 h-2 rounded-full bg-amber-500/30 animate-pulse"
+              />
+            ) : (
+              <span className="font-mono">{left?.text ?? summary}</span>
+            )}
             <span className="text-[8px] opacity-60">{open ? '▲' : '▼'}</span>
           </button>
           <button
@@ -301,6 +347,19 @@ function GroupRow({ profileId, attachment, group, apps, groups, onChanged }: {
               ),
             )}
           </div>
+          {budget.status === 'pending' && (
+            <div className="h-1 rounded-full bg-brand-alt animate-pulse" data-testid={`${tid}-usage-loading`} />
+          )}
+          {budget.status === 'success' && (
+            <div className="space-y-1">
+              {attachment.dailyMinutes != null && (
+                <UsageBar testId={`${tid}-usage-day`} label="Today" used={gu?.usedMins ?? 0} limit={attachment.dailyMinutes} />
+              )}
+              {attachment.weeklyMinutes != null && (
+                <UsageBar testId={`${tid}-usage-week`} label="Week" used={gu?.weekUsedMins ?? 0} limit={attachment.weeklyMinutes} />
+              )}
+            </div>
+          )}
           {dGtW && (
             <p data-testid={`${tid}-daily-over-weekly`} className="text-[11px] text-amber-800">
               The daily limit is higher than the weekly one, so the weekly limit runs out first.

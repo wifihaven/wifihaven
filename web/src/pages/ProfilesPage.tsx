@@ -3,7 +3,7 @@ import { useMutation } from '@tanstack/react-query'
 import { Link, useSearchParams } from 'react-router-dom'
 import { api } from '@/api/client'
 import { newProfileDefaults } from '@/api/profileDefaults'
-import { useBlocklists, useGlobalProfile, useProfiles, useDevices, useInvalidators, useNamedSchedules, useProfileUsageByApp, useAppGroups, useProfileAppGroups, useTimeStatusSummary } from '@/api/queries'
+import { useBlocklists, useGlobalProfile, useProfiles, useDevices, useInvalidators, useNamedSchedules, useProfileUsageByApp, useAppGroups, useProfileAppGroups, useTimeStatusProfileToday, useTimeStatusSummary } from '@/api/queries'
 import { isManaged, isUnmanaged } from '@/lib/devices'
 import { useAuth } from '@/hooks/useAuth'
 import { useWsTimeStatus, useWsTopicLive } from '@/hooks/useWs'
@@ -17,7 +17,8 @@ import type {
   UpsertAppAssignmentRequest, UpsertProfileRequest, User,
 } from '@/types/api'
 import { AppIcon } from '@/components/AppIcon'
-import { AddGroupMenu, GroupsSubList } from '@/components/AppGroups'
+import { AddGroupMenu, GroupsSubList, UsageBar, type BudgetUsage } from '@/components/AppGroups'
+import { tighterLeft } from '@/lib/budget'
 import { AppBlocklistWarningBadge } from '@/components/AppBlocklistWarning'
 import { ProfileTimelineChart } from '@/components/usage/ProfileTimelineChart'
 import { ProfileUsageBreakdown } from '@/components/usage/ProfileUsageBreakdown'
@@ -1664,6 +1665,13 @@ function AppsRulesSubsection({
   // #2764 — AGENTS.md#loading-states: a row must be able to tell "not loaded
   // yet" from a genuine zero, so the query's state rides down with its data.
   const usageStatus: UsageStatus = usageQ.isPending ? 'pending' : usageQ.isError ? 'error' : 'success'
+  // #2935 (D12) — week-to-date usage per app and group, from the same status body the policy reads.
+  const statusQ = useTimeStatusProfileToday(pd.profile.id, { enabled: open })
+  const budget: BudgetUsage = useMemo(() => ({
+    status: statusQ.isPending ? 'pending' : statusQ.isError ? 'error' : 'success',
+    appBySlug: new Map((statusQ.data?.appUsage ?? []).map(a => [a.label, a])),
+    groupById: new Map((statusQ.data?.groupUsage ?? []).map(g => [g.groupId, g])),
+  }), [statusQ.isPending, statusQ.isError, statusQ.data])
   const usedMinsByAppId = useMemo(() => {
     const m = new Map<number, number>()
     for (const a of usageQ.data?.apps ?? []) {
@@ -1701,6 +1709,7 @@ function AppsRulesSubsection({
             testIdPrefix={`profile-${pd.profile.id}-apps-section`}
             usedMinsByAppId={usedMinsByAppId}
             usageStatus={usageStatus}
+            budget={budget}
           />
         </div>
       )}
@@ -1726,7 +1735,7 @@ function listOf(mode: AppMode): 'allowed' | 'blocked' {
   return mode === 'blocked' ? 'blocked' : 'allowed'
 }
 
-function AppsSection({ profileId, isNew, apps, onChanged, testIdPrefix = 'apps-section', usedMinsByAppId, usageStatus }: {
+function AppsSection({ profileId, isNew, apps, onChanged, testIdPrefix = 'apps-section', usedMinsByAppId, usageStatus, budget }: {
   profileId: number | null
   isNew: boolean
   apps: AppDetail[]
@@ -1738,6 +1747,8 @@ function AppsSection({ profileId, isNew, apps, onChanged, testIdPrefix = 'apps-s
   // #2764 — the state of the query behind `usedMinsByAppId`. Required, so a new
   // call site cannot silently claim 'success' and render a loading zero.
   usageStatus: UsageStatus
+  // #2935 — week-to-date usage and its query state; required for the same reason.
+  budget: BudgetUsage
 }) {
   // #1007: only show apps that already have an assignment for this profile.
   // Unassigned apps stay manageable via the add-app picker below.
@@ -1866,6 +1877,7 @@ function AppsSection({ profileId, isNew, apps, onChanged, testIdPrefix = 'apps-s
               onChanged={onChanged}
               usedMins={usedMinsByAppId?.get(a.app.id)}
               usageStatus={usageStatus}
+              budget={budget}
               blocklistNameById={blocklistNameById}
             />
           ))}
@@ -1935,6 +1947,7 @@ function AppsSection({ profileId, isNew, apps, onChanged, testIdPrefix = 'apps-s
             attached={attached}
             groups={groupsQ.data ?? []}
             apps={apps}
+            budget={budget}
             onChanged={onChanged}
           />
           {assigned.length > 0 && renderList('allowed', allowedApps)}
@@ -2011,7 +2024,7 @@ function AppsSection({ profileId, isNew, apps, onChanged, testIdPrefix = 'apps-s
 //   • the move button (Block on an allowed row, Allow on a blocked one) —
 //     list membership IS the mode, so there is no Block/Allow pair any more
 //   • remove-from-profile
-function AppRow({ app, profileId, onChanged, usedMins, usageStatus, blocklistNameById }: {
+function AppRow({ app, profileId, onChanged, usedMins, usageStatus, budget, blocklistNameById }: {
   app: AppDetail
   profileId: number
   onChanged: () => void | Promise<void>
@@ -2021,6 +2034,8 @@ function AppRow({ app, profileId, onChanged, usedMins, usageStatus, blocklistNam
   // 'pending' is simply not loaded yet.
   usedMins?: number
   usageStatus: UsageStatus
+  // #2935 — week-to-date usage (and its state) for rows that carry a weekly limit.
+  budget: BudgetUsage
   // #1983 — blocklist id → display name for the overlap-warning badge.
   blocklistNameById?: Map<string, string>
 }) {
@@ -2184,6 +2199,15 @@ function AppRow({ app, profileId, onChanged, usedMins, usageStatus, blocklistNam
   // Under 'success' an absent entry is a genuine zero — the endpoint only
   // returns apps that accrued time. Under 'pending'/'error' it is unknown.
   const loadedMins = usageStatus === 'success' ? usedMins ?? 0 : null
+  // #2935 — the tighter remaining figure for a row with a weekly limit. Both windows come from the
+  // one status body, so they cannot disagree; absent under 'success' is a genuine zero.
+  const au = budget.appBySlug.get(`app:${app.app.slug}`)
+  const budgetLeft = budget.status === 'success' && currentWeekly != null
+    ? tighterLeft({
+        dailyLimit: currentMinutes, dailyUsed: au?.usedMins ?? 0,
+        weeklyLimit: currentWeekly, weekUsed: au?.weekUsedMins ?? 0,
+      })
+    : null
 
   // #1007 / #2747 — the ONE writer of exemptFromDaily on this row. Every
   // surface that governs the flag calls it: the "Counts toward daily limit"
@@ -2406,13 +2430,23 @@ function AppRow({ app, profileId, onChanged, usedMins, usageStatus, blocklistNam
                 disabled={busy}
                 onClick={() => setLimitOpen(v => !v)}
                 className={`${chipBase} ${
-                  currentMinutes != null && loadedMins != null && loadedMins >= currentMinutes
+                  (budgetLeft?.exhausted || (currentMinutes != null && loadedMins != null && loadedMins >= currentMinutes))
                     ? 'bg-red-500/15 border-red-500/40 text-red-700'
                     : 'bg-amber-500/15 border-amber-500/40 text-amber-800'
                 }`}
               >
-                {currentMinutes == null && currentWeekly != null ? (
-                  <span className="font-mono">{formatMins(currentWeekly)}/week</span>
+                {currentWeekly != null ? (
+                  budget.status === 'pending' ? (
+                    <span
+                      data-testid={`${tid}-budget-loading`}
+                      aria-label="Loading usage"
+                      className="inline-block w-16 h-2 rounded-full bg-amber-500/30 animate-pulse"
+                    />
+                  ) : budget.status === 'error' ? (
+                    <span data-testid={`${tid}-budget-error`}>—</span>
+                  ) : (
+                    <span className="font-mono">{budgetLeft?.text}</span>
+                  )
                 ) : (<>
                 {usageStatus === 'pending' ? (
                   <span
@@ -2577,6 +2611,24 @@ function AppRow({ app, profileId, onChanged, usedMins, usageStatus, blocklistNam
               <span className="text-xs font-mono text-brand-text shrink-0">
                 {formatMins(loadedMins)} / {formatMins(currentMinutes)}
               </span>
+            </div>
+          )}
+
+          {/* #2935 — the weekly limit's own usage bar, with the same three states as the daily one. */}
+          {isTimeLimited && currentWeekly != null && budget.status === 'pending' && (
+            <div
+              data-testid={`${tid}-usage-week-loading`}
+              className="flex-1 h-1 mt-2 rounded-full bg-brand-alt animate-pulse"
+            />
+          )}
+          {isTimeLimited && currentWeekly != null && budget.status === 'success' && (
+            <div className="mt-2">
+              <UsageBar
+                testId={`${tid}-usage-week`}
+                label="Week"
+                used={au?.weekUsedMins ?? 0}
+                limit={currentWeekly}
+              />
             </div>
           )}
 

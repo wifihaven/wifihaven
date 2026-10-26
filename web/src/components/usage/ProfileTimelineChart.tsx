@@ -288,7 +288,7 @@ export function ProfileTimelineChart({ profileId }: { profileId: number }) {
                       fontSize: 12,
                     }}
                     labelFormatter={(_, payload) => String(payload?.[0]?.payload?.date ?? '')}
-                    formatter={(v) => [formatMins(Number(v)), 'Used']} />
+                    formatter={(v) => [v == null ? 'Not yet' : formatMins(Number(v)), 'Used']} />
                   <Bar dataKey="usedMins" fill={HOST_COLORS[0]} />
                 </BarChart>
             </ChartFrame>
