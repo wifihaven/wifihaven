@@ -636,6 +636,12 @@ object MultiTenantScopedReadGuardSpec extends ZIOSpecDefault {
     "TimeUsedRollupRepo.getDayForProfile"       -> SurrogateId(
       "profiles.id names one profile across every tenant; the date only narrows the row",
     ),
+    // #2932: the late-presence meter's probe; leads with a required household and filters on the
+    // profiles' `household_id`.
+    "SettledUsageRepo.anySettled"               -> Scoped,
+    // #2932: the refill's guarded write; its Boolean says whether the household's fingerprint still
+    // matched under the household lock. Leads with a required household.
+    "SettledUsageRepo.writeSettled"             -> Scoped,
 
     // ── support ────────────────────────────────────────────────────────────────────────────────
     "SupportConsentRepo.isGranted"       -> Scoped,

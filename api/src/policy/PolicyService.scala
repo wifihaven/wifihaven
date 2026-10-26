@@ -1675,15 +1675,20 @@ object PolicyService {
       // still under cap)" — same family as `appCapExhaustedHosts` above so the
       // two cannot disagree on what "exhausted" means (AGENTS.md §single-
       // source-of-truth).
-      case sd if sd.exemptFromDaily && sd.dailyLimitMinutes.forall(sd.usedMinutes < _) =>
+      // #2932: an app a group covers is carved by neither under-cap carve until group budgets are
+      // enforced: the carve would keep it reachable past its group's limits, which nothing checks
+      // yet. TODO(#2933): carve it when it is under every budget that contains it (`appsOverBudget`).
+      case sd
+          if sd.groupId.isEmpty && sd.exemptFromDaily &&
+            sd.dailyLimitMinutes.forall(sd.usedMinutes < _) =>
         sd.hosts.map(Hostname.unsafe)
     }.flatten
 
   /**
    * #1980: the full host-set (main + shared) of every TimeLimited app still UNDER its own per-app
    * cap — the allow-side complement of [[appCapExhaustedHosts]] across the same `state.perApp` (the
-   * TimeLimited-only subset; see [[TimeStatusService.appDayStates]]). Carved into `extraAllowed` so
-   * a within-budget app host beats category-blocklist membership (`bl_`) at the router (#421,
+   * TimeLimited-only subset; see [[TimeStatusService.budgetDayStates]]). Carved into `extraAllowed`
+   * so a within-budget app host beats category-blocklist membership (`bl_`) at the router (#421,
    * `feedback_extraallowed_beats_blocked`), which is the #1980 fix: a TimeLimited app contributes
    * nothing to `extraAllowed` on its own, so without this an app host that is also a blocklist
    * member (e.g. `gimkit.com` in the `games` list) is dropped during the app's allowed window.
@@ -1700,7 +1705,8 @@ object PolicyService {
    */
   private[policy] def timeLimitedUnderCapHosts(state: ProfileDayState): List[Hostname] =
     state.perApp.collect {
-      case sd if sd.dailyLimitMinutes.forall(lim => sd.usedMinutes < lim) =>
+      // #2932: no carve for a group-covered app yet; see `exemptUnderCapHosts`. TODO(#2933).
+      case sd if sd.groupId.isEmpty && sd.dailyLimitMinutes.forall(lim => sd.usedMinutes < lim) =>
         sd.hosts.map(Hostname.unsafe)
     }.flatten
 
@@ -1776,6 +1782,22 @@ object PolicyService {
    * This is the canonical "what date does this Instant belong to" function — used both to write
    * `time_usage.date` and to read today's cap/usage on the policy snapshot path.
    */
+  /**
+   * #2932 (design `docs/design/weekly-limits-and-app-groups.md` §5.1): THE definition of a
+   * household week. The week containing `instant` starts on the household-local date of `instant`
+   * moved back to the most recent `weekStartDay` (ISO 1 = Monday ... 7 = Sunday). Its instant
+   * window is `AttributionScope.rangeWindow(start, start + 6)`: seven household days, each
+   * DST-correct, so a week across a DST change is 167 or 169 hours long.
+   */
+  def householdWeekStart(instant: Instant, settings: HouseholdSettings): LocalDate =
+    weekStartOf(householdLocalDate(instant, settings), settings)
+
+  /** #2932: the start of the household week containing household-local `date` (see above). */
+  def weekStartOf(date: LocalDate, settings: HouseholdSettings): LocalDate = {
+    val back = Math.floorMod(date.getDayOfWeek.getValue - settings.weekStartDay, 7)
+    date.minusDays(back.toLong)
+  }
+
   def householdLocalDate(instant: Instant, settings: HouseholdSettings): LocalDate = {
     val zdt = instant.atZone(settings.dailyResetTz)
     if (zdt.toLocalTime.isBefore(settings.dailyResetTime)) zdt.toLocalDate.minusDays(1)

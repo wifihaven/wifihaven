@@ -304,6 +304,32 @@ case class AppTimeLimit(
     // (already counted inside any overlapping distinctive span — see docs/design/shared-host-
     // allocation.md). Default false keeps every legacy hand-built construction distinctive.
     shared: Boolean = false,
+    // #2932 (design docs/design/weekly-limits-and-app-groups.md §5.2): the assignment's weekly
+    // limit, V92 `app_policy_assignments.weekly_minutes`. `None` means no weekly limit, as `None`
+    // `dailyMinutes` means no daily limit (#1627).
+    weeklyMinutes: Option[Int] = None,
+    // #2932 (design §6.1): the group attached to this profile that covers this app, if any. Uniform
+    // across an app's rows. Carried on the same read as the assignment so every consumer of
+    // `AppTimeLimitRepo.listForProfile` sees group coverage; none can forget to load it.
+    coverage: Option[GroupCoverage] = None,
+    // #2932 (design §6.1, D6): true for a row the repo emits for a COVERED app that has no
+    // assignment of its own on the profile. Such a row carries no assignment id, mode or limits;
+    // `ProfileAppDispositions.from` turns it into a synthesized TimeLimited disposition.
+    coveredOnly: Boolean = false,
+) derives JsonCodec
+
+/**
+ * #2932 (design `docs/design/weekly-limits-and-app-groups.md` §5.3): a profile's attachment of the
+ * household group `groupId` (`profile_app_groups`, V92), as seen from one covered app. The limits
+ * and the "counts toward daily" flag are the PROFILE's, not the group's: the household group is
+ * only a name and a member list.
+ */
+case class GroupCoverage(
+    groupId: AppGroupId,
+    name: String,
+    dailyMinutes: Option[Int],
+    weeklyMinutes: Option[Int],
+    exemptFromDaily: Boolean,
 ) derives JsonCodec
 
 // #761: app concept. An App is a household-scoped named bundle of host
@@ -1531,6 +1557,32 @@ case class AppUsage(
     limitMins: Option[Int],
     usedMins: Int,
     remainingMins: Option[Int],
+    // #2932 (design §6.5): the app's weekly limit and its week-to-date minutes, from the same
+    // `ProfileDayState` the policy snapshot reads. `weekStart` is the household-local date the week
+    // began; `weekResetsAt` is the instant the next week begins. Additive: `None` on an old body.
+    weeklyLimitMins: Option[Int] = None,
+    weekUsedMins: Option[Int] = None,
+    weekStart: Option[String] = None,
+    weekResetsAt: Option[String] = None,
+) derives JsonCodec
+
+/**
+ * #2932 (design §6.5): one attached group's usage on a profile, the group counterpart of
+ * [[AppUsage]]. Minutes are counted once across the members' distinctive hosts (design §6.2).
+ */
+case class GroupUsage(
+    groupId: AppGroupId,
+    name: String,
+    memberAppIds: List[AppId],
+    limitMins: Option[Int],
+    usedMins: Int,
+    remainingMins: Option[Int],
+    weeklyLimitMins: Option[Int],
+    // Same meaning and presence as on [[AppUsage]].
+    weekUsedMins: Option[Int],
+    weekStart: Option[String],
+    weekResetsAt: Option[String],
+    exemptFromDaily: Boolean,
 ) derives JsonCodec
 
 case class DeviceTimeStatus(
@@ -1606,6 +1658,8 @@ case class ProfileTimeStatus(
     appUsage: List[AppUsage],
     devices: List[DeviceUsageSummary],
     hostUsage: List[HostUsage],
+    // #2932: additive; empty when the profile has no group attached.
+    groupUsage: List[GroupUsage] = Nil,
 ) derives JsonCodec
 
 /**

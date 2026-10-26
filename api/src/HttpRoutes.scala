@@ -33,47 +33,48 @@ object HttpRoutes {
       ready: UIO[Boolean],
   ) =
     for {
-      auth           <- ZIO.service[AuthService]
-      userRepo       <- ZIO.service[UserRepo]
-      entitlements   <- ZIO.service[EntitlementsRepo]
-      upRepo         <- ZIO.service[UserProfileRepo]
-      profileRepo    <- ZIO.service[ProfileRepo]
-      namedSchedRepo <- ZIO.service[NamedScheduleRepo]
-      hsRepo         <- ZIO.service[HouseholdSettingsRepo]
-      tlRepo         <- ZIO.service[TimeLimitRepo]
-      atlRepo        <- ZIO.service[AppTimeLimitRepo]
-      deviceRepo     <- ZIO.service[DeviceRepo]
-      sharedDevRepo  <- ZIO.service[SharedDeviceRepo]
-      blRepo         <- ZIO.service[BlocklistRepo]
-      blCache        <- ZIO.service[BlocklistCache]
-      blFetcher2     <- ZIO.service[BlocklistFetcher]
-      usageRepo      <- ZIO.service[TimeUsageRepo]
-      extRepo        <- ZIO.service[TimeExtensionRepo]
-      routerRepo     <- ZIO.service[RouterRepo]
-      trafficRepo    <- ZIO.service[TrafficReportRepo]
-      rollupRepo2    <- ZIO.service[RollupRepo]
-      connRepo       <- ZIO.service[ConnectionEventRepo]
-      blockEvRepo    <- ZIO.service[BlockEventRepo]
-      alertRepo      <- ZIO.service[AlertRepo]
-      appRepo        <- ZIO.service[AppRepo]
-      appGroupRepo   <- ZIO.service[AppGroupRepo]
-      appRollupRepo  <- ZIO.service[wifihaven.api.db.AppUsedRollupRepo]
+      auth             <- ZIO.service[AuthService]
+      userRepo         <- ZIO.service[UserRepo]
+      entitlements     <- ZIO.service[EntitlementsRepo]
+      upRepo           <- ZIO.service[UserProfileRepo]
+      profileRepo      <- ZIO.service[ProfileRepo]
+      namedSchedRepo   <- ZIO.service[NamedScheduleRepo]
+      hsRepo           <- ZIO.service[HouseholdSettingsRepo]
+      tlRepo           <- ZIO.service[TimeLimitRepo]
+      atlRepo          <- ZIO.service[AppTimeLimitRepo]
+      deviceRepo       <- ZIO.service[DeviceRepo]
+      sharedDevRepo    <- ZIO.service[SharedDeviceRepo]
+      blRepo           <- ZIO.service[BlocklistRepo]
+      blCache          <- ZIO.service[BlocklistCache]
+      blFetcher2       <- ZIO.service[BlocklistFetcher]
+      usageRepo        <- ZIO.service[TimeUsageRepo]
+      extRepo          <- ZIO.service[TimeExtensionRepo]
+      routerRepo       <- ZIO.service[RouterRepo]
+      trafficRepo      <- ZIO.service[TrafficReportRepo]
+      rollupRepo2      <- ZIO.service[RollupRepo]
+      connRepo         <- ZIO.service[ConnectionEventRepo]
+      blockEvRepo      <- ZIO.service[BlockEventRepo]
+      alertRepo        <- ZIO.service[AlertRepo]
+      appRepo          <- ZIO.service[AppRepo]
+      appGroupRepo     <- ZIO.service[AppGroupRepo]
+      appRollupRepo    <- ZIO.service[wifihaven.api.db.AppUsedRollupRepo]
+      settledUsageRepo <- ZIO.service[wifihaven.api.db.SettledUsageRepo]
       // #2926: the bundled IEEE OUI table. Loaded once here so a build missing it fails boot.
-      macVendors     <- wifihaven.api.identify.MacVendors.load
+      macVendors       <- wifihaven.api.identify.MacVendors.load
       // #2132 (multi-tenant P5-2): the beta request → provisioning → invite-accept pipeline repos.
-      householdRepo  <- ZIO.service[HouseholdRepo]
-      betaRepo       <- ZIO.service[BetaRequestRepo]
+      householdRepo    <- ZIO.service[HouseholdRepo]
+      betaRepo         <- ZIO.service[BetaRequestRepo]
       // #2308: single-use, short-TTL password-reset tokens (V77) for the forgot-password flow.
-      resetTokenRepo <- ZIO.service[PasswordResetTokenRepo]
-      ambientRepoR   <- ZIO.service[wifihaven.api.db.AmbientHostsRepo]
-      notifier       <- ZIO.service[Notifier]
-      policy         <- ZIO.service[PolicyService]
-      timeStatus     <- ZIO.service[wifihaven.api.policy.TimeStatusService]
-      cfg            <- ZIO.service[AppConfig]
-      clock          <- ZIO.service[Clock]
-      timeCache      <- ZIO.service[TimeStatusCache]
-      xa             <- ZIO.service[Transactor[Task]]
-      promPublisher  <- ZIO.service[PrometheusPublisher]
+      resetTokenRepo   <- ZIO.service[PasswordResetTokenRepo]
+      ambientRepoR     <- ZIO.service[wifihaven.api.db.AmbientHostsRepo]
+      notifier         <- ZIO.service[Notifier]
+      policy           <- ZIO.service[PolicyService]
+      timeStatus       <- ZIO.service[wifihaven.api.policy.TimeStatusService]
+      cfg              <- ZIO.service[AppConfig]
+      clock            <- ZIO.service[Clock]
+      timeCache        <- ZIO.service[TimeStatusCache]
+      xa               <- ZIO.service[Transactor[Task]]
+      promPublisher    <- ZIO.service[PrometheusPublisher]
       routerAuth         = new RouterAuthLive(routerRepo)
       // #2566/#2569/#2322: the block page's household derivation, shared by GET /api/blocked and
       // POST /api/access-requests (they are two halves of one page and must agree). Signed with the
@@ -267,6 +268,8 @@ object HttpRoutes {
         alertRepo,
         hsRepo,
         spaEventBus,
+        // #2932: meters presence rows that arrive for an already-settled day.
+        LatePresenceMeter(settledUsageRepo, clock),
       )
       // #2619: the registry's delivery sink stamps `routers.last_etag` with the etag a `policy`
       // frame actually delivered — the same column the REST poll writes at serve time. ws is the

@@ -1,6 +1,7 @@
 package wifihaven.api.policy
 
 import wifihaven.api.db.*
+import wifihaven.api.metrics.AppMetrics
 import wifihaven.api.presence.{AmbientGate, Presence, PresenceRow}
 import wifihaven.api.usage.{AppUsedRollupService, NoopAppUsedRollupService}
 import wifihaven.shared.{Schedule as DbSchedule, *}
@@ -27,6 +28,40 @@ final case class ProfileDayState(
     blocked: Boolean,
     blockReason: Option[MacBlockReason],
     perApp: List[AppDayState],
+    // #2932 (design §6.5): one entry per attached group. Counted, not enforced (#2933 enforces).
+    perGroup: List[BudgetState] = Nil,
+    // #2932: the exact seconds behind `usedMinutes`, so a week can be floored once (design §6.3).
+    usedSeconds: Long = 0L,
+    // #2932: the profile's exempt-filtered week-to-date total (the weekly views' total, §6.5).
+    week: Option[WeekUsage] = None,
+)
+
+/**
+ * #2932 (design §6.3-§6.5): week-to-date usage of one budget (or of the profile total) for the
+ * household week containing the state's date: `start` is the household-local date the week began,
+ * `resetsAt` the instant the next one begins, and `usedMinutes` is `floor(Σ day seconds / 60)` over
+ * the week's days up to and including the state's date.
+ */
+final case class WeekUsage(start: LocalDate, resetsAt: Instant, usedMinutes: Int)
+
+/**
+ * #2932 (design §6.1, §6.5): a group budget's state on a profile-day. The group counterpart of
+ * [[AppDayState]]: `usedMinutes` counts the members' distinctive hosts once (design §6.2).
+ */
+final case class BudgetState(
+    groupId: AppGroupId,
+    label: String,
+    name: String,
+    memberAppIds: List[AppId],
+    dailyLimitMinutes: Option[Int],
+    weeklyLimitMinutes: Option[Int],
+    usedMinutes: Int,
+    usedSeconds: Long,
+    exemptFromDaily: Boolean,
+    // Every member's full host-set (allow side) and the counted distinctive set (block side, #1899).
+    hosts: List[String],
+    distinctiveHosts: List[String],
+    week: Option[WeekUsage] = None,
 )
 
 /**
@@ -62,6 +97,14 @@ final case class AppDayState(
     // `domainPattern` stay as display text; `appId` is the canonical identity that joins to
     // `app_used_daily.app_id` directly — no slug round-trip.
     appId: AppId = AppId(0L),
+    // #2932: the exact seconds behind `usedMinutes`, so a week can be floored once (design §6.3).
+    usedSeconds: Long = 0L,
+    // #2932 (design §5.2): the app's own weekly limit; `None` = no weekly limit.
+    weeklyLimitMinutes: Option[Int] = None,
+    // #2932 (design §6.5): week-to-date usage. `None` only on a state no week was read for.
+    week: Option[WeekUsage] = None,
+    // #2932: the attached group covering this app, if any (design §6.1).
+    groupId: Option[AppGroupId] = None,
 )
 
 trait TimeStatusService {
@@ -151,6 +194,14 @@ trait TimeStatusService {
       mac: MacAddress,
       since: Instant,
   ): Task[Option[Instant]]
+
+  /**
+   * #2932 (design §6.4): settle every settleable, unsettled past day of `household`'s current week:
+   * compute it live through the same per-day path the day states use and write it back with
+   * `rolled_through` at the day's end. The rollup tick calls this, so in the steady state a week
+   * read finds every past day settled. Returns the number of days written.
+   */
+  def settleWeek(household: HouseholdId, now: Instant, settings: HouseholdSettings): Task[Int]
 }
 
 class TimeStatusServiceLive(
@@ -177,7 +228,154 @@ class TimeStatusServiceLive(
     // gate. Defaults to the noop (gate Off) so existing direct constructions and
     // tests that don't exercise the gate keep their arity and semantics.
     ambientRepo: AmbientHostsRepo = NoopAmbientHostsRepo,
+    // #2932: settled past days for week-to-date figures. The noop finds nothing settled, so every
+    // past day is computed live: the same numbers, uncached.
+    settledRepo: SettledUsageRepo = NoopSettledUsageRepo,
 ) extends TimeStatusService {
+
+  // ── #2932: week-to-date (design §6.3-§6.4) ────────────────────────────────────────────────
+  //
+  // Every public day-state read below is a RAW one-day read (the existing rolled-plus-tail or
+  // live path, unchanged) followed by [[withWeek]], which adds week-to-date figures to each budget
+  // and to the profile total: the state's own day plus the week's earlier days, each day counted
+  // exactly as its own day state counts it. Settleable earlier days come from settled rows; the
+  // one earlier day that may not be settleable yet (yesterday, for `SettleDelay`) is read as a raw
+  // day state, which reads it rolled plus tail.
+
+  // Single-flight per (household, date) for the write-through refill (#2012's shape): concurrent
+  // reads of a cold day share one live computation and one write.
+  private val refills: Ref.Synchronized[
+    Map[(HouseholdId, LocalDate), Promise[Throwable, Map[ProfileId, DayUsage]]],
+  ] =
+    Unsafe.unsafe(implicit u => Ref.Synchronized.unsafe.make(Map.empty))
+
+  def settleWeek(household: HouseholdId, now: Instant, settings: HouseholdSettings): Task[Int] = {
+    val today = PolicyService.householdLocalDate(now, settings)
+    rawDayStateAll(household, now, today, settings).flatMap(states =>
+      // A household with no profiles (a new one before onboarding) has nothing to settle.
+      if states.isEmpty then ZIO.succeed(0)
+      else priorDays(household, now, settings, states).map(_._2),
+    )
+  }
+
+  private def withWeek(
+      household: HouseholdId,
+      now: Instant,
+      settings: HouseholdSettings,
+      states: Map[ProfileId, ProfileDayState],
+  ): Task[Map[ProfileId, ProfileDayState]] =
+    states.headOption match {
+      case None         => ZIO.succeed(states)
+      case Some((_, s)) =>
+        val start    = PolicyService.weekStartOf(s.date, settings)
+        val resetsAt = AttributionScope.rangeWindow(start, start.plusDays(6), settings)._2
+        priorDays(household, now, settings, states).timed.flatMap { case (took, (prior, _)) =>
+          AppMetrics
+            .recordBudgetWeekRead(took.toNanos / 1e9)
+            .as(states.map { case (pid, st) =>
+              pid -> TimeStatusService.withWeek(st, prior.getOrElse(pid, Nil), start, resetsAt)
+            })
+        }
+    }
+
+  private def withWeekOne(
+      household: HouseholdId,
+      now: Instant,
+      settings: HouseholdSettings,
+      state: Option[ProfileDayState],
+  ): Task[Option[ProfileDayState]] =
+    ZIO.foreach(state)(st =>
+      withWeek(household, now, settings, Map(st.profileId -> st)).map(_(st.profileId)),
+    )
+
+  // The usage of each day of the week before the states' date, per profile, plus the number of
+  // days refilled. `states` are the profiles' states for that date: their budgets are the keys a
+  // settled day must hold. `states` must be non-empty; both callers check.
+  private def priorDays(
+      household: HouseholdId,
+      now: Instant,
+      settings: HouseholdSettings,
+      states: Map[ProfileId, ProfileDayState],
+  ): Task[(Map[ProfileId, List[DayUsage]], Int)] = {
+    val date  = states.head._2.date
+    val start = PolicyService.weekStartOf(date, settings)
+    val days  = Iterator.iterate(start)(_.plusDays(1)).takeWhile(_.isBefore(date)).toList
+    val (settled, unsettled) = days.partition(SettledUsage.settleable(_, now, settings))
+    val profiles             = states.keys.toList
+    for {
+      rolled   <-
+        if settled.isEmpty then ZIO.succeed(Map.empty[(ProfileId, LocalDate), RolledProfileDay])
+        else settledRepo.readRange(household, profiles, settled.min, settled.max)
+      fromRows <- ZIO.foreach(settled) { d =>
+        val end  = SettledUsage.dayEnd(d, settings)
+        val rows = states.map { case (pid, st) =>
+          pid -> TimeStatusService.settledUsage(
+            rolled.getOrElse((pid, d), RolledProfileDay.empty),
+            st,
+            end,
+          )
+        }
+        if rows.values.forall(_.isDefined) then
+          AppMetrics.recordBudgetSettle("hit").as((rows.map((p, u) => p -> u.get), 0))
+        else
+          refill(household, now, d, settings)
+            .tapBoth(
+              _ => AppMetrics.recordBudgetSettle("error"),
+              _ => AppMetrics.recordBudgetSettle("refill"),
+            )
+            .map(all => (profiles.map(p => p -> all.getOrElse(p, DayUsage.zero)).toMap, 1))
+      }
+      fromLive <- ZIO.foreach(unsettled)(d =>
+        rawDayStateAll(household, now, d, settings).map(ss =>
+          profiles.map(p => p -> ss.get(p).fold(DayUsage.zero)(TimeStatusService.dayUsage)).toMap,
+        ),
+      )
+    } yield {
+      val perDay = fromRows.map(_._1) ++ fromLive
+      (
+        profiles.map(p => p -> perDay.map(_.getOrElse(p, DayUsage.zero))).toMap,
+        fromRows.map(_._2).sum,
+      )
+    }
+  }
+
+  // Compute household-day `date` live through the same per-day path every day state uses and write
+  // it back as settled, once per (household, date) however many reads ask at the same time.
+  private def refill(
+      household: HouseholdId,
+      now: Instant,
+      date: LocalDate,
+      settings: HouseholdSettings,
+  ): Task[Map[ProfileId, DayUsage]] =
+    Promise.make[Throwable, Map[ProfileId, DayUsage]].flatMap { mine =>
+      refills
+        .modify { inFlight =>
+          inFlight.get((household, date)) match {
+            case Some(p) => (Left(p), inFlight)
+            case None    => (Right(mine), inFlight.updated((household, date), mine))
+          }
+        }
+        .flatMap {
+          case Left(theirs) => theirs.await
+          case Right(p)     =>
+            // An invalidating write (an assignment, group or settings edit) that commits while this
+            // computes would have its delete land before our write, leaving rows computed under the
+            // old definition marked settled. So the write is conditional: it runs under the
+            // household lock every invalidation takes, and only if the household's dispositions
+            // fingerprint still equals the one read before the compute.
+            (for {
+              before  <- settledRepo.fingerprint(household)
+              rows    <- rawDayStateAllLive(household, now, date, settings)
+                .map(_.map((pid, st) => pid -> TimeStatusService.dayUsage(st)))
+              written <- settledRepo
+                .writeSettled(household, date, rows, SettledUsage.dayEnd(date, settings), before)
+              _       <- ZIO.unless(written || rows.isEmpty)(
+                ZIO.logInfo(s"settled usage: not settling $date, its definition changed meanwhile"),
+              )
+            } yield rows).exit
+              .flatMap(ex => p.done(ex) *> refills.update(_ - ((household, date))) *> ZIO.done(ex))
+        }
+    }
 
   // #2077: the AmbientGate for a request — Off (no DB touch) unless the master
   // switch is on. The learned window is always evaluated as of the household-local
@@ -226,18 +424,58 @@ class TimeStatusServiceLive(
       date: LocalDate,
       settings: HouseholdSettings,
       profileId: ProfileId,
-  ): Task[Option[ProfileDayState]] = {
-    val today = PolicyService.householdLocalDate(now, settings)
-    if (date == today)
+  ): Task[Option[ProfileDayState]] =
+    rawDayState(household, now, date, settings, profileId)
+      .flatMap(withWeekOne(household, now, settings, _))
+
+  def dayStateLive(
+      household: HouseholdId,
+      now: Instant,
+      date: LocalDate,
+      settings: HouseholdSettings,
+      profileId: ProfileId,
+  ): Task[Option[ProfileDayState]] =
+    rawDayStateLive(household, now, date, settings, profileId)
+      .flatMap(withWeekOne(household, now, settings, _))
+
+  def dayStateAll(
+      household: HouseholdId,
+      now: Instant,
+      date: LocalDate,
+      settings: HouseholdSettings,
+  ): Task[Map[ProfileId, ProfileDayState]] =
+    rawDayStateAll(household, now, date, settings).flatMap(withWeek(household, now, settings, _))
+
+  def dayStateAllLive(
+      household: HouseholdId,
+      now: Instant,
+      date: LocalDate,
+      settings: HouseholdSettings,
+  ): Task[Map[ProfileId, ProfileDayState]] =
+    rawDayStateAllLive(household, now, date, settings)
+      .flatMap(withWeek(household, now, settings, _))
+
+  // ── raw one-day reads ─────────────────────────────────────────────────────────────────────
+
+  // #2932: a day that is not yet settleable (today, and yesterday for `SettleDelay`) is read from
+  // its rolled row plus a live tail; a settleable past day is read live. The same predicate gates
+  // the per-app/group rollup read in `AppUsedRollupService`, so both halves of a day state agree.
+  private def rawDayState(
+      household: HouseholdId,
+      now: Instant,
+      date: LocalDate,
+      settings: HouseholdSettings,
+      profileId: ProfileId,
+  ): Task[Option[ProfileDayState]] =
+    if (!SettledUsage.settleable(date, now, settings))
       rollupRepo.getDayForProfile(profileId, date).flatMap {
         case Some(rolled) =>
           dayStateFromRollupAndTail(household, now, date, settings, profileId, rolled)
-        case None         => dayStateLive(household, now, date, settings, profileId)
+        case None         => rawDayStateLive(household, now, date, settings, profileId)
       }
-    else dayStateLive(household, now, date, settings, profileId)
-  }
+    else rawDayStateLive(household, now, date, settings, profileId)
 
-  def dayStateLive(
+  private def rawDayStateLive(
       household: HouseholdId,
       now: Instant,
       date: LocalDate,
@@ -273,18 +511,17 @@ class TimeStatusServiceLive(
         )
     }
 
-  def dayStateAll(
+  private def rawDayStateAll(
       household: HouseholdId,
       now: Instant,
       date: LocalDate,
       settings: HouseholdSettings,
-  ): Task[Map[ProfileId, ProfileDayState]] = {
-    val today = PolicyService.householdLocalDate(now, settings)
-    if (date == today) dayStateAllFromRollup(household, now, date, settings)
-    else dayStateAllLive(household, now, date, settings)
-  }
+  ): Task[Map[ProfileId, ProfileDayState]] =
+    if (!SettledUsage.settleable(date, now, settings))
+      dayStateAllFromRollup(household, now, date, settings)
+    else rawDayStateAllLive(household, now, date, settings)
 
-  def dayStateAllLive(
+  private def rawDayStateAllLive(
       household: HouseholdId,
       now: Instant,
       date: LocalDate,
@@ -377,9 +614,9 @@ class TimeStatusServiceLive(
           ambient    <- ambientGateFor(now, settings)
           extMins    <- extRepo.getProfileTotalExtension(profileId, date)
           // #1515: per-app cap usage from the #1510 per-app rollup + live tail, so the per-app cap
-          // enforces on the rollup path identically to the all-live path.
-          perAppMins <- appUsedRollupService
-            .appCapMinutesByAppId(household, now, date, settings, profileId)
+          // enforces on the rollup path identically to the all-live path. #2932: group budgets too.
+          budgetSecs <- appUsedRollupService
+            .budgetSeconds(household, now, date, settings, profileId)
         } yield {
           // #2077: the rolled part was gated at rollup-write time; gate the live tail the same
           // way. Gating only the tail slice can transiently drop an ambient-only tail of a real
@@ -389,18 +626,17 @@ class TimeStatusServiceLive(
           val gatedTail   = TimeStatusService.gatedPresence(atls, tail, settings, ambient)
           val tailSeconds =
             TimeStatusService.usedSecondsForProfile(p, devices, atls, gatedTail, settings)
-          val totalUsed   = ((rolled.usedSeconds + tailSeconds) / 60L).toInt
           Some(
             TimeStatusService.assemble(
               profile = p,
               schedules = schedules,
               dailyLimit = tl.map(_.dailyMinutes),
               appLimits = atls,
-              usedMinutes = totalUsed,
+              usedSeconds = rolled.usedSeconds + tailSeconds,
               extensionMinutes = extMins,
               date = date,
               now = now,
-              perAppOverride = Some(TimeStatusService.appDayStatesFromMinutes(atls, perAppMins)),
+              budgetSeconds = budgetSecs,
             ),
           )
         }
@@ -424,7 +660,7 @@ class TimeStatusServiceLive(
         // profile set is household-scoped (a freshly-provisioned household legitimately has none).
         if profiles.isEmpty then ZIO.succeed(Map.empty[ProfileId, ProfileDayState])
         else if profiles.exists(p => !rolled.contains(p.id)) then
-          dayStateAllLive(household, now, date, settings)
+          rawDayStateAllLive(household, now, date, settings)
         else dayStateAllFromRollupHits(household, now, date, settings, profiles, rolled)
     } yield result
 
@@ -457,12 +693,12 @@ class TimeStatusServiceLive(
       tail       <- trafficRepo.listPresenceRowsSince(scope.allProfiles, date, watermark)
       ambient    <- ambientGateFor(now, settings)
       exts       <- extRepo.snapshotByProfileForHousehold(household, date)
-      // #1515: per-app cap usage per profile from the #1510 per-app rollup + live tail. Keyed by the
-      // `app:<slug>` cap-group label so it joins to each profile's per-app cap groups below.
-      perAppMins <- ZIO
+      // #1515: per-app cap usage per profile from the #1510 per-app rollup + live tail. #2932: and
+      // each attached group's, keyed by budget so it joins to each profile's budgets below.
+      budgetSecs <- ZIO
         .foreach(profiles)(p =>
           appUsedRollupService
-            .appCapMinutesByAppId(household, now, date, settings, p.id)
+            .budgetSeconds(household, now, date, settings, p.id)
             .map(p.id -> _),
         )
         .map(_.toMap)
@@ -493,22 +729,16 @@ class TimeStatusServiceLive(
             pTail,
             settings,
           )
-        val totalUsed   = ((pRolled.usedSeconds + tailSeconds) / 60L).toInt
         p.id -> TimeStatusService.assemble(
           profile = p,
           schedules = schedMap.getOrElse(p.id, Nil),
           dailyLimit = tlMap.getOrElse(p.id, None).map(_.dailyMinutes),
           appLimits = atlMap.getOrElse(p.id, Nil),
-          usedMinutes = totalUsed,
+          usedSeconds = pRolled.usedSeconds + tailSeconds,
           extensionMinutes = exts.getOrElse(p.id, 0),
           date = date,
           now = now,
-          perAppOverride = Some(
-            TimeStatusService.appDayStatesFromMinutes(
-              atlMap.getOrElse(p.id, Nil),
-              perAppMins.getOrElse(p.id, Map.empty),
-            ),
-          ),
+          budgetSeconds = budgetSecs.getOrElse(p.id, Map.empty),
         )
       }.toMap
     }
@@ -520,7 +750,7 @@ object TimeStatusService {
   val layer: ZLayer[
     ProfileRepo & TimeLimitRepo & AppTimeLimitRepo & DeviceRepo & TrafficReportRepo &
       TimeExtensionRepo & TimeUsedRollupRepo & NamedScheduleRepo & AppUsedRollupService &
-      AmbientHostsRepo,
+      AmbientHostsRepo & SettledUsageRepo,
     Nothing,
     TimeStatusService,
   ] = ZLayer.fromFunction {
@@ -535,92 +765,113 @@ object TimeStatusService {
         nsr: NamedScheduleRepo,
         aur: AppUsedRollupService,
         ahr: AmbientHostsRepo,
-    ) => new TimeStatusServiceLive(pr, tlr, atlr, dr, trr, er, ru, nsr, aur, ahr)
+        sur: SettledUsageRepo,
+    ) => new TimeStatusServiceLive(pr, tlr, atlr, dr, trr, er, ru, nsr, aur, ahr, sur)
   }
 
   /**
-   * #1505 + #1564 + #1630: the per-app cap groups for this profile — one entry per
-   * `mode=TimeLimited` assignment, in the tuple shape downstream consumers still expect: `(appId,
-   * label, dailyMinutes, exemptFromDaily, hosts, representativeHost)`.
-   *
-   * Post-#1630 this is a thin adapter over the single fold [[ProfileAppDispositions.from]]: the
-   * case-on-mode that filters this list down to TimeLimited assignments lives in
-   * `ProfileAppDispositions.capGroups`. Keeping the tuple wrapper avoids churning every downstream
-   * callsite while removing the duplicated per-app collapse that — in its previous standalone form
-   * — drifted from `PolicyService.expandAppDispositions` (the defect behind #1630). Stable order by
-   * `label`.
+   * #2932 (design §6.1, §6.5): THE zip of a profile's budgets with their used seconds, for every
+   * day-state path (live, rolled + tail, zero usage), so the per-app and per-group states cannot be
+   * shaped differently across them (#1532). One [[AppDayState]] per
+   * [[ProfileAppDispositions.capGroups]] entry (every TimeLimited assignment, and every covered app
+   * with no assignment) and one [[BudgetState]] per attached group. A key absent from `seconds`
+   * counts zero.
    */
-  private[policy] def groupAppLimits(
+  private[policy] def budgetDayStates(
       appLimits: List[AppTimeLimit],
-  ): List[(AppId, String, Option[Int], Boolean, List[String], String, List[String])] =
-    ProfileAppDispositions.from(appLimits).capGroups.map { d =>
-      val rep = d.hosts.minByOption(_.length).getOrElse(d.label)
-      // #1899: carry the distinctive subset alongside the full host-set so the per-app cap's BLOCK
-      // side (`PolicyService.appCapExhaustedHosts`) can omit shared hosts from extraBlocked.
-      (d.appId, d.label, d.dailyMinutes, d.exemptFromDaily, d.hosts, rep, d.distinctiveHosts)
-    }
-
-  /**
-   * #1505 + #1504: per-app [[AppDayState]] list — one entry per app, with `usedMinutes` aggregated
-   * across the app's whole host-set and counted via the #1464 session-stitch primitive
-   * ([[Presence.patternGroupMinutesForProfile]]), combined across the profile's devices per
-   * `overlap`. `presence` must already be scoped to the profile's devices.
-   */
-  private[policy] def appDayStates(
-      appLimits: List[AppTimeLimit],
-      presence: List[PresenceRow],
-      overlap: CrossDeviceOverlapMode,
-      filter: HeartbeatFilter,
-      continuationSeconds: Int,
-  ): List[AppDayState] = {
-    // #1564: feed Presence the cap-group label as its String key so the underlying span/union math
-    // is unchanged, then re-key the result by appId via the (label -> appId) map the same fold
-    // emits. One canonical conversion, no slug parsing.
-    // #1897: the stitch reads each app's DISTINCTIVE host-set only (`capGroupLabelDistinctiveHosts`)
-    // — a shared host overlapping a distinctive span is already counted there, so excluding it is a
-    // no-op that also guarantees it can never inflate or extend the app's engaged minutes. Both the
-    // label→appId map and the distinctive host-set come off ONE `ProfileAppDispositions.from` fold.
-    val dispositions = ProfileAppDispositions.from(appLimits)
-    val labelToAppId = dispositions.capGroups.map(d => d.label -> d.appId).toMap
-    val perLabel     = Presence.patternGroupMinutesForProfile(
-      presence,
-      dispositions.capGroupLabelDistinctiveHosts,
-      overlap,
-      filter,
-      continuationSeconds,
-    )
-    val perAppId     = perLabel.iterator.flatMap { case (label, m) =>
-      labelToAppId.get(label).map(_ -> m)
-    }.toMap
-    appDayStatesFromMinutes(appLimits, perAppId)
-  }
-
-  /**
-   * #1515: build the per-app [[AppDayState]] list from a `label -> usedMinutes` map, where each key
-   * is the `app:<slug>` cap-group label [[groupAppLimits]] emits. The single place the per-app cap
-   * groups (label / host-set / limit / exempt) are zipped with their used-minutes, regardless of
-   * where the minutes come from: the live presence aggregation ([[appDayStates]]), the rollup +
-   * live-tail read path ([[TimeStatusServiceLive]], via
-   * [[wifihaven.api.usage.AppUsedRollupService.appCapMinutesByAppId]]), or the zero-usage default
-   * in [[assemble]]. Keeping one zip means the cap groups can't be shaped differently across those
-   * paths (#1532). A label absent from the map contributes zero minutes.
-   */
-  private[policy] def appDayStatesFromMinutes(
-      appLimits: List[AppTimeLimit],
-      minutesByAppId: Map[AppId, Int],
-  ): List[AppDayState] =
-    groupAppLimits(appLimits).map { case (appId, label, daily, exempt, hosts, rep, distinctive) =>
+      seconds: Map[BudgetKey, Long],
+  ): (List[AppDayState], List[BudgetState]) = {
+    val d      = ProfileAppDispositions.from(appLimits)
+    val apps   = d.capGroups.map { a =>
+      val secs = seconds.getOrElse(BudgetKey.App(a.appId), 0L)
       AppDayState(
-        label = label,
-        domainPattern = rep,
-        dailyLimitMinutes = daily,
-        usedMinutes = minutesByAppId.getOrElse(appId, 0),
-        exemptFromDaily = exempt,
-        hosts = hosts,
-        distinctiveHosts = distinctive,
-        appId = appId,
+        label = a.label,
+        domainPattern = a.hosts.minByOption(_.length).getOrElse(a.label),
+        dailyLimitMinutes = a.dailyMinutes,
+        usedMinutes = (secs / 60L).toInt,
+        exemptFromDaily = a.exemptFromDaily,
+        hosts = a.hosts,
+        // #1899: the BLOCK side of the per-app cap (`PolicyService.appCapExhaustedHosts`) omits
+        // shared hosts from extraBlocked.
+        distinctiveHosts = a.distinctiveHosts,
+        appId = a.appId,
+        usedSeconds = secs,
+        weeklyLimitMinutes = a.weeklyMinutes,
+        groupId = a.coverage.map(_.groupId),
       )
     }
+    val groups = d.groupBudgets.collect {
+      case b @ CapBudget(BudgetKey.Group(gid), _, _, _, _, _, _, _) =>
+        val secs = seconds.getOrElse(b.key, 0L)
+        BudgetState(
+          groupId = gid,
+          label = b.label,
+          name = b.name,
+          memberAppIds = b.members.map(_.appId),
+          dailyLimitMinutes = b.dailyLimit,
+          weeklyLimitMinutes = b.weeklyLimit,
+          usedMinutes = (secs / 60L).toInt,
+          usedSeconds = secs,
+          exemptFromDaily = b.exemptFromDaily,
+          hosts = b.members.flatMap(_.hosts).distinct,
+          distinctiveHosts = b.countHosts,
+        )
+    }
+    (apps, groups)
+  }
+
+  /** #2932: one profile-day's usage in seconds, as a state carries it (the settle pass's row). */
+  def dayUsage(st: ProfileDayState): DayUsage =
+    DayUsage(
+      st.usedSeconds,
+      st.perApp.map(a => a.appId -> a.usedSeconds).toMap,
+      st.perGroup.map(g => g.groupId -> g.usedSeconds).toMap,
+    )
+
+  /**
+   * #2932 (design §6.4): a settled day's usage for the budgets `current` has, or `None` when the
+   * day is not settled for them: the total and every budget must have a row whose `rolled_through`
+   * reaches the day's end. A budget with no row means the row set predates it, so the day is
+   * recomputed rather than read as zero.
+   */
+  def settledUsage(
+      rolled: RolledProfileDay,
+      current: ProfileDayState,
+      dayEnd: Instant,
+  ): Option[DayUsage] = {
+    def settledRow[K](rows: Map[K, RolledAppDay], k: K): Option[(K, Long)] =
+      rows.get(k).filter(r => !r.rolledThrough.isBefore(dayEnd)).map(k -> _.engagedSeconds)
+    val apps   = current.perApp.flatMap(a => settledRow(rolled.apps, a.appId))
+    val groups = current.perGroup.flatMap(g => settledRow(rolled.groups, g.groupId))
+    rolled.total
+      .filter(r => !r.rolledThrough.isBefore(dayEnd))
+      .filter(_ => apps.size == current.perApp.size && groups.size == current.perGroup.size)
+      .map(t => DayUsage(t.usedSeconds, apps.toMap, groups.toMap))
+  }
+
+  /**
+   * #2932 (design §6.3): `st` with its week-to-date figures: each budget's and the total's seconds
+   * over the week's earlier days (`prior`) plus the state's own day, floored to minutes once.
+   */
+  def withWeek(
+      st: ProfileDayState,
+      prior: List[DayUsage],
+      start: LocalDate,
+      resetsAt: Instant,
+  ): ProfileDayState = {
+    def week(secs: Long) = Some(WeekUsage(start, resetsAt, (secs / 60L).toInt))
+    st.copy(
+      perApp = st.perApp.map(a =>
+        a.copy(week = week(a.usedSeconds + prior.iterator.map(_.apps.getOrElse(a.appId, 0L)).sum)),
+      ),
+      perGroup = st.perGroup.map(g =>
+        g.copy(week =
+          week(g.usedSeconds + prior.iterator.map(_.groups.getOrElse(g.groupId, 0L)).sum),
+        ),
+      ),
+      week = week(st.usedSeconds + prior.iterator.map(_.totalSeconds).sum),
+    )
+  }
 
   /**
    * Pure folder: collapse the per-profile inputs into the canonical day state. Same math the
@@ -642,31 +893,20 @@ object TimeStatusService {
       now: Instant,
       settings: HouseholdSettings,
   ): ProfileDayState = {
-    val totalSecondsUsed = usedSecondsForProfile(profile, devices, appLimits, presence, settings)
-    val totalMinutesUsed = (totalSecondsUsed / 60L).toInt
-
     // #1505 + #1504: one limit per app (label), aggregated across the app's full host-set, counted
     // with the #1464 session-stitch primitive (not bucket-max) and combined across the profile's
-    // devices per its overlap mode. `appDayStates` groups the per-(assignment × host) rows into
-    // one (label, host-set) per app and counts engaged wall-clock time once across the whole set.
-    val perApp = appDayStates(
-      appLimits,
-      presence,
-      profile.crossDeviceOverlapMode,
-      settings.heartbeatFilter,
-      settings.presenceContinuationSeconds,
-    )
-
+    // devices per its overlap mode. #2932: each attached group is counted the same way over the
+    // union of its members' distinctive hosts, in the same call (design §6.2).
     assemble(
       profile = profile,
       schedules = schedules,
       dailyLimit = dailyLimit,
       appLimits = appLimits,
-      usedMinutes = totalMinutesUsed,
+      usedSeconds = usedSecondsForProfile(profile, devices, appLimits, presence, settings),
       extensionMinutes = extensionMinutes,
       date = date,
       now = now,
-      perAppOverride = Some(perApp),
+      budgetSeconds = budgetSeconds(profile, appLimits, presence, settings),
     )
   }
 
@@ -692,15 +932,15 @@ object TimeStatusService {
   /**
    * #1516 + #1564: per-app engaged seconds for a profile, keyed by `apps.id`, derived from the
    * SINGLE per-app presence primitive [[Presence.appSecondsForProfile]] (#1514/#1532) — the same
-   * gap-bridged, cross-host union the per-app cap ([[appDayStates]] /
-   * [[Presence.patternGroupMinutesForProfile]]) ticks on. The cap-group label ([[groupAppLimits]])
-   * is used as Presence's group key; the (label -> appId) map emitted by the same call re-keys the
-   * result back to the typed FK — no slug parsing, no slugToAppId lookup table. This is the value
-   * the `app_used_daily` rollup persists and the per-app series reads, so the rollup ⇄ cap ⇄ series
-   * identities hold by construction (there is exactly one per-app time computation). `presence`
-   * must already be scoped to the profile's devices. Seconds (not minutes) so the rolled + tail
-   * decomposition stays exact across the watermark boundary; floor-to-minutes happens once at read
-   * time.
+   * gap-bridged, cross-host union the per-app cap ([[budgetDayStates]] /
+   * [[Presence.patternGroupMinutesForProfile]]) ticks on. The cap-group label
+   * ([[ProfileAppDispositions.capGroups]]) is used as Presence's group key; the (label -> appId)
+   * map emitted by the same call re-keys the result back to the typed FK — no slug parsing, no
+   * slugToAppId lookup table. This is the value the `app_used_daily` rollup persists and the
+   * per-app series reads, so the rollup ⇄ cap ⇄ series identities hold by construction (there is
+   * exactly one per-app time computation). `presence` must already be scoped to the profile's
+   * devices. Seconds (not minutes) so the rolled + tail decomposition stays exact across the
+   * watermark boundary; floor-to-minutes happens once at read time.
    */
   def appSecondsByApp(
       profile: Profile,
@@ -722,21 +962,54 @@ object TimeStatusService {
       presence: List[PresenceRow],
       settings: HouseholdSettings,
   ): (Map[AppId, Long], Int) = {
-    // #1897: distinctive host-set only — see `appDayStates` / `capGroupLabelDistinctiveHosts`. Both
-    // the label→appId map and the distinctive host-set come off ONE `ProfileAppDispositions.from`.
+    val (secs, dropped) = budgetSecondsWithDropCount(profile, appLimits, presence, settings)
+    (secs.collect { case (BudgetKey.App(id), s) => id -> s }, dropped)
+  }
+
+  /**
+   * #2932 (design §6.2): engaged seconds per budget: every [[ProfileAppDispositions.capGroups]] app
+   * and every attached group, from ONE [[Presence.appSecondsForProfile]] call over
+   * [[ProfileAppDispositions.budgetLabelHosts]]. A group entry's hosts are all in its members' app
+   * entries, so the call's attribution set, and with it every app's seconds, is what it would be
+   * without the group (finding 8). The per-app seconds are the ones the #1516 rollup persists.
+   */
+  def budgetSeconds(
+      profile: Profile,
+      appLimits: List[AppTimeLimit],
+      presence: List[PresenceRow],
+      settings: HouseholdSettings,
+  ): Map[BudgetKey, Long] =
+    budgetSecondsWithDropCount(profile, appLimits, presence, settings)._1
+
+  /**
+   * [[budgetSeconds]] plus the #1666 dropped-session count of its APP keys only. A group
+   * re-stitches hosts its members' entries already stitched, so counting its drops too would count
+   * one dropped session twice in `presence_app_sessions_dropped_total`, which is per (mac, app).
+   */
+  def budgetSecondsWithDropCount(
+      profile: Profile,
+      appLimits: List[AppTimeLimit],
+      presence: List[PresenceRow],
+      settings: HouseholdSettings,
+  ): (Map[BudgetKey, Long], Int) = {
+    // #1897: distinctive host-set only — see `capGroupLabelDistinctiveHosts`. The label→key map and
+    // the host-sets come off ONE `ProfileAppDispositions.from`.
     val dispositions           = ProfileAppDispositions.from(appLimits)
-    val labelToAppId           = dispositions.capGroups.map(d => d.label -> d.appId).toMap
-    val (secsByLabel, dropped) = Presence.appSecondsForProfileWithDropCount(
+    val keyOf                  = dispositions.labelToBudgetKey
+    val (secsByLabel, dropped) = Presence.appSecondsForProfileWithDropCounts(
       presence,
-      dispositions.capGroupLabelDistinctiveHosts,
+      dispositions.budgetLabelHosts,
       profile.crossDeviceOverlapMode,
       settings.heartbeatFilter,
       settings.presenceContinuationSeconds,
     )
-    val byAppId                = secsByLabel.iterator.flatMap { case (label, secs) =>
-      labelToAppId.get(label).map(_ -> secs)
+    val byKey                  = secsByLabel.iterator.flatMap { case (label, secs) =>
+      keyOf.get(label).map(_ -> secs)
     }.toMap
-    (byAppId, dropped)
+    val appDrops               = dropped.iterator.collect {
+      case (label, n) if keyOf.get(label).exists(_.isInstanceOf[BudgetKey.App]) => n
+    }.sum
+    (byKey, appDrops)
   }
 
   /**
@@ -787,8 +1060,8 @@ object TimeStatusService {
    * SPECIFICITY: it holds when the app's pattern is at least as specific as the background entry
    * that also matched, so an app naming its infra dependency exactly still wins, while a brand apex
    * no longer rescues a background lane [[InfraHosts]] enumerates by exact host. Derived from the
-   * same per-app collapse (`groupAppLimits`) the per-app bars and `exemptPatterns` use, so the
-   * daily total and the per-app surfaces agree on what counts as an "active app host". Includes
+   * same per-app collapse (`ProfileAppDispositions`) the per-app bars and `exemptPatterns` use, so
+   * the daily total and the per-app surfaces agree on what counts as an "active app host". Includes
    * exempt apps' hosts too: exclusion from the daily total is handled separately by
    * [[exemptPatterns]] in [[Presence.countedRows]] (attribution only prevents suppression, not
    * exemption), so an exempt app's host is still excluded — it is simply no longer mis-classified
@@ -932,13 +1205,35 @@ object TimeStatusService {
     // so they share one exempt-pattern + overlap definition with `state.usedMinutes` and cannot drift
     // from it.
     val perMacSeconds   = usedSecondsByMac(profile, devices, appLimits, presence, settings)
-    val appUsage        = state.perApp.map { s =>
+    // #2932: a covered app with no assignment of its own is shown only through its group (D6).
+    val ownApps         = ProfileAppDispositions.from(appLimits).perApp.filterNot(_.coveredOnly)
+    val ownAppIds       = ownApps.map(_.appId).toSet
+    val appUsage        = state.perApp.filter(a => ownAppIds.contains(a.appId)).map { s =>
       AppUsage(
         s.label,
         s.domainPattern,
         s.dailyLimitMinutes,
         s.usedMinutes,
         s.dailyLimitMinutes.map(lim => (lim - s.usedMinutes).max(0)),
+        weeklyLimitMins = s.weeklyLimitMinutes,
+        weekUsedMins = s.week.map(_.usedMinutes),
+        weekStart = s.week.map(_.start.toString),
+        weekResetsAt = s.week.map(_.resetsAt.toString),
+      )
+    }
+    val groupUsage      = state.perGroup.map { g =>
+      GroupUsage(
+        groupId = g.groupId,
+        name = g.name,
+        memberAppIds = g.memberAppIds,
+        limitMins = g.dailyLimitMinutes,
+        usedMins = g.usedMinutes,
+        remainingMins = g.dailyLimitMinutes.map(lim => (lim - g.usedMinutes).max(0)),
+        weeklyLimitMins = g.weeklyLimitMinutes,
+        weekUsedMins = g.week.map(_.usedMinutes),
+        weekStart = g.week.map(_.start.toString),
+        weekResetsAt = g.week.map(_.resetsAt.toString),
+        exemptFromDaily = g.exemptFromDaily,
       )
     }
     val deviceSummaries = devices.map { d =>
@@ -974,6 +1269,7 @@ object TimeStatusService {
       appUsage,
       deviceSummaries,
       hostUsage,
+      groupUsage,
     )
   }
 
@@ -1020,24 +1316,24 @@ object TimeStatusService {
 
   /**
    * Shared assembly used by both [[fold]] (live presence aggregation) and the rollup+tail read
-   * path, once `usedMinutes` is known. Computes `blocked` / `blockReason` / `remaining` so the
+   * path, once the used seconds are known. Computes `blocked` / `blockReason` / `remaining` so the
    * cached-read path produces the same precedence Paused > Schedule > TimeLimit as the live path —
-   * the source-of-truth invariant is enforced here by construction.
-   *
-   * `perAppOverride = None` means the caller did not load per-site presence; per-site usage is
-   * emitted as zero against the configured site limits (the v1 rollup is profile-total only).
+   * the source-of-truth invariant is enforced here by construction. `budgetSeconds` is the per-app
+   * / per-group seconds from either path ([[budgetSeconds]] live, or
+   * `AppUsedRollupService.budgetSeconds` rolled + tail); a budget absent from it counts zero.
    */
   def assemble(
       profile: Profile,
       schedules: List[DbSchedule],
       dailyLimit: Option[Int],
       appLimits: List[AppTimeLimit],
-      usedMinutes: Int,
+      usedSeconds: Long,
       extensionMinutes: Int,
       date: LocalDate,
       now: Instant,
-      perAppOverride: Option[List[AppDayState]] = None,
+      budgetSeconds: Map[BudgetKey, Long],
   ): ProfileDayState = {
+    val usedMinutes       = (usedSeconds / 60L).toInt
     val (blocked, reason) =
       if profile.paused then (true, Some(MacBlockReason.Paused: MacBlockReason))
       else if schedules.exists(s => PolicyService.scheduleActiveAt(s, now)) then
@@ -1052,14 +1348,8 @@ object TimeStatusService {
 
     val remaining = dailyLimit.map(l => (l + extensionMinutes - usedMinutes).max(0))
 
-    val perApp = perAppOverride.getOrElse(
-      // #1505/#1515: same per-app grouping as the live path, but with zero usage. Reached only when
-      // a caller does NOT supply per-app usage; the rollup read paths now pass `perAppOverride`
-      // built from the #1510 per-app rollup (so the per-app cap enforces on the rollup path too),
-      // and the live `fold` passes the presence-derived one. A bare `assemble` with no override
-      // degrades to "no per-app usage yet".
-      appDayStatesFromMinutes(appLimits, Map.empty),
-    )
+    // #1505/#1515/#2932: the per-app and per-group states, from whichever path counted the seconds.
+    val (perApp, perGroup) = budgetDayStates(appLimits, budgetSeconds)
 
     ProfileDayState(
       profileId = profile.id,
@@ -1071,6 +1361,9 @@ object TimeStatusService {
       blocked = blocked,
       blockReason = reason,
       perApp = perApp,
+      perGroup = perGroup,
+      usedSeconds = usedSeconds,
     )
   }
+
 }

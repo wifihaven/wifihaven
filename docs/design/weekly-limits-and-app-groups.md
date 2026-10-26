@@ -173,7 +173,7 @@ daily" flag (§15 D3, D5).
 ```sql
 CREATE TABLE app_groups (
   id           BIGSERIAL PRIMARY KEY,
-  household_id BIGINT NOT NULL REFERENCES households(id) ON DELETE CASCADE,
+  household_id BIGINT NOT NULL REFERENCES households(id),   -- no cascade from households (V65, V90)
   name         TEXT   NOT NULL,
   created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   UNIQUE (household_id, name),
@@ -349,8 +349,12 @@ stitch. Consequences:
 
 ### 6.4 Settled past days
 
-`BudgetUsageService.weekToDate(household, profile, now)` returns seconds per
-budget for the current week:
+The week-to-date read returns seconds per budget for the current week. (As
+built in #2932 it is not a separate `BudgetUsageService`: every
+`TimeStatusService` day-state read adds the week to the states it returns, so
+the snapshot and `/api/time/status` get it from the same call. Settled rows are
+read and written through `SettledUsageRepo`, and the invalidation is
+`SettledUsage` in `api/src/db/SettledUsage.scala`.)
 
 ```
 Σ_{d in week, d < today} settledSeconds(budget, d)  +  todaySeconds(budget)

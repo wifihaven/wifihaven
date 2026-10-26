@@ -299,6 +299,22 @@ object SpaWsS6aSpec
   ): ZIO[BootstrapEnv, Throwable, A] =
     withHarnessWrapped(identity)(body)
 
+  // #2932: settle the household's current week as the rollup tick's settle pass does. Returns the
+  // number of days written.
+  private val settleWeekOnce =
+    for {
+      sur <- ZIO.service[SettledUsageRepo]
+      pr  <- ZIO.service[ProfileRepo]
+      tlr <- ZIO.service[TimeLimitRepo]
+      atl <- ZIO.service[AppTimeLimitRepo]
+      dr  <- ZIO.service[DeviceRepo]
+      trr <- ZIO.service[TrafficReportRepo]
+      er  <- ZIO.service[TimeExtensionRepo]
+      hs  <- ZIO.serviceWithZIO[HouseholdSettingsRepo](_.getForHousehold(HouseholdId.Default))
+      n   <- new TimeStatusServiceLive(pr, tlr, atl, dr, trr, er, settledRepo = sur)
+        .settleWeek(HouseholdId.Default, testClockAt.toInstant(java.time.ZoneOffset.UTC), hs)
+    } yield n
+
   private def withHarnessWrapped[A](
       wrapTraffic: TrafficReportRepo => TrafficReportRepo,
   )(
@@ -332,6 +348,7 @@ object SpaWsS6aSpec
       router      <- seedRouter
       reg         <- SpaWsRegistry.make
       bus         <- SpaEventBus.make
+      settledRepo <- ZIO.service[SettledUsageRepo]
       timeStatus = new TimeStatusServiceLive(
         profileRepo,
         tlRepo,
@@ -339,6 +356,9 @@ object SpaWsS6aSpec
         deviceRepo,
         trafficRepo,
         extRepo,
+        // #2932: the real settled-usage repo, so a week read after the week has settled reads
+        // stored rows the way prod does.
+        settledRepo = settledRepo,
       )
       ingest     = new RouterIngestService(
         routerRepo,
@@ -545,23 +565,28 @@ object SpaWsS6aSpec
         result  <- withHarnessWrapped(r => new CountingTrafficRepo(r, counter)) {
           (port, ingest, router, bus) =>
             for {
-              _      <- ZIO.serviceWithZIO[ProfileRepo](_.create("Teens", Nil))
-              _      <- ZIO.serviceWithZIO[ProfileRepo](_.create("Guests", Nil))
-              tok    <- ZIO.serviceWithZIO[Clock](makeAuth).flatMap(adminToken)
+              _       <- ZIO.serviceWithZIO[ProfileRepo](_.create("Teens", Nil))
+              _       <- ZIO.serviceWithZIO[ProfileRepo](_.create("Guests", Nil))
+              tok     <- ZIO.serviceWithZIO[Clock](makeAuth).flatMap(adminToken)
+              // #2932: settle the week's earlier days first, as the rollup tick does on prod, so the
+              // counted cycle is the steady state: its week-to-date read is stored rows, and only
+              // the day's own loads remain. (A cold week reads each earlier day once, then never.)
+              settled <- settleWeekOnce
+              _       <- ZIO.when(settled < 1)(ZIO.fail(new RuntimeException("nothing settled")))
               // NO usage ingest here, deliberately: an ingest publishes its own event batch with no
               // subscriber yet, and the consumer fiber drains it asynchronously — a leftover push
               // cycle could race its loads into the counted window (the scan COUNT is what's
               // pinned; it doesn't depend on any rows existing). The only event the consumer ever
               // sees is the single post-ack trigger below, so the counted window holds exactly one
               // push cycle with no wall-clock settle needed.
-              frames <- collect(
+              frames  <- collect(
                 port,
                 tok,
                 List(subTimeStatus),
                 trigger = counter.set(0) *> bus.publish(SpaEvent.TimeStatusChanged),
                 wait = 4.seconds,
               )
-              n      <- counter.get
+              n       <- counter.get
               tFrames = framesOf(frames, "timeStatus")
             } yield assertTrue(tFrames.nonEmpty) && assertTrue(n <= 2)
         }

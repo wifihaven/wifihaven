@@ -2159,7 +2159,8 @@ class HouseholdSettingsRepoLive(xa: Transactor[Task]) extends HouseholdSettingsR
           ),
         )
       case n => doobie.free.connection.pure(n)
-    } *> invalidate *> invalidateApp *> invalidateGroup).transact(xa).unit
+    } *> SettledUsage.lockHousehold(household) *> invalidate *> invalidateApp *>
+      invalidateGroup).transact(xa).unit
   }
 
   def ensureDefault(defaultZone: ZoneId): Task[Unit] =
@@ -2216,6 +2217,10 @@ class AppTimeLimitRepoLive(xa: Transactor[Task]) extends AppTimeLimitRepo {
   // #1897: `ah.shared` is carried through as the 10th column so `ProfileAppDispositions` can
   // partition each app's host-set into distinctive (`shared = false`) vs shared hosts. The
   // engaged-minutes stitch reads the distinctive subset only.
+  // #2932 (design §6.1): every row also carries the assignment's `weekly_minutes`, the group
+  // attached to this profile that covers the app (`g` / `pag`, NULL when none), and whether the row
+  // is a COVERED-ONLY row: one for a member of an attached group that has no assignment on the
+  // profile (D6). Coverage rides the same read so no consumer of these rows can miss it.
   private type R =
     (
         ProfileId,
@@ -2227,6 +2232,13 @@ class AppTimeLimitRepoLive(xa: Transactor[Task]) extends AppTimeLimitRepo {
         AppPolicyAssignmentId,
         String,
         Boolean,
+        Boolean,
+        Option[Int],
+        Option[AppGroupId],
+        Option[String],
+        Option[Int],
+        Option[Int],
+        Option[Boolean],
         Boolean,
     )
   private def toS(r: R) =
@@ -2242,18 +2254,54 @@ class AppTimeLimitRepoLive(xa: Transactor[Task]) extends AppTimeLimitRepo {
       r._7,
       r._9,
       r._10,
+      weeklyMinutes = r._11,
+      coverage = (r._12, r._13, r._16).mapN((g, name, exempt) =>
+        GroupCoverage(g, name, r._14, r._15, exempt),
+      ),
+      coveredOnly = r._17,
     )
+
+  // The assignment rows, each with the attachment that covers its app on its profile. The covering
+  // join is parenthesized so it only matches a group attached to THIS profile: `apps` is global,
+  // so `app_group_members` can hold the same app for several households. Within one household an
+  // app is in at most one group (D2), so an assignment row gets at most one coverage.
+  private def assignedRows(where: Fragment): Fragment =
+    fr"""SELECT apa.profile_id, ah.host, apa.daily_minutes, a.slug,
+                apa.exempt_from_daily, a.id, apa.id, apa.mode::text,
+                apa.allowed_during_schedule_block, ah.shared, apa.weekly_minutes,
+                g.id, g.name, pag.daily_minutes, pag.weekly_minutes, pag.exempt_from_daily,
+                FALSE
+           FROM app_policy_assignments apa
+           JOIN apps a       ON a.id = apa.app_id
+           JOIN app_hosts ah ON ah.app_id = apa.app_id
+           LEFT JOIN (app_group_members m
+                      JOIN profile_app_groups pag ON pag.group_id = m.group_id
+                      JOIN app_groups g           ON g.id = pag.group_id)
+                  ON m.app_id = apa.app_id AND pag.profile_id = apa.profile_id
+          WHERE """ ++ where
+
+  // #2932 (D6): the covered-only rows, members of a group attached to the profile with no
+  // assignment there. No assignment id (0), mode or limits of their own; `ProfileAppDispositions`
+  // makes them synthesized TimeLimited dispositions.
+  private def coveredOnlyRows(where: Fragment): Fragment =
+    fr"""SELECT pag.profile_id, ah.host, NULL::int, a.slug,
+                pag.exempt_from_daily, a.id, 0::bigint, 'time_limited',
+                TRUE, ah.shared, NULL::int,
+                g.id, g.name, pag.daily_minutes, pag.weekly_minutes, pag.exempt_from_daily,
+                TRUE
+           FROM profile_app_groups pag
+           JOIN app_groups g        ON g.id = pag.group_id
+           JOIN app_group_members m ON m.group_id = pag.group_id
+           JOIN apps a              ON a.id = m.app_id
+           JOIN app_hosts ah        ON ah.app_id = m.app_id
+          WHERE NOT EXISTS (SELECT 1 FROM app_policy_assignments x
+                             WHERE x.profile_id = pag.profile_id AND x.app_id = m.app_id)
+            AND """ ++ where
 
   def listForProfile(pid: ProfileId) =
     DbMetrics.timed("appTimeLimit.listForProfile")(
-      sql"""SELECT apa.profile_id, ah.host, apa.daily_minutes, a.slug,
-                   apa.exempt_from_daily, a.id, apa.id, apa.mode::text,
-                   apa.allowed_during_schedule_block, ah.shared
-            FROM app_policy_assignments apa
-            JOIN apps a       ON a.id = apa.app_id
-            JOIN app_hosts ah ON ah.app_id = apa.app_id
-           WHERE apa.profile_id = $pid
-           ORDER BY apa.id, ah.host"""
+      (assignedRows(fr"apa.profile_id = $pid") ++ fr"UNION ALL" ++
+        coveredOnlyRows(fr"pag.profile_id = $pid") ++ fr"ORDER BY 7, 6, 2")
         .query[R]
         .map(toS)
         .to[List]
@@ -2261,17 +2309,15 @@ class AppTimeLimitRepoLive(xa: Transactor[Task]) extends AppTimeLimitRepo {
     )
 
   // #2108: AND-scoped through app_policy_assignments.profile_id → the household-scoped profiles
-  // row. #2568 removed the unscoped `listAll` this was once the scoped twin of.
+  // row. #2568 removed the unscoped `listAll` this was once the scoped twin of. #2932: the
+  // covered-only branch is scoped by the attachment's own `household_id`.
   def listAllForHousehold(household: HouseholdId) =
-    (fr"""SELECT apa.profile_id, ah.host, apa.daily_minutes, a.slug,
-                 apa.exempt_from_daily, a.id, apa.id, apa.mode::text,
-                 apa.allowed_during_schedule_block, ah.shared
-            FROM app_policy_assignments apa
-            JOIN apps a       ON a.id = apa.app_id
-            JOIN app_hosts ah ON ah.app_id = apa.app_id
-            JOIN profiles p   ON p.id = apa.profile_id
-           WHERE""" ++ SqlFragments.householdEq(household, "p.household_id") ++
-      fr"ORDER BY apa.id, ah.host")
+    (assignedRows(
+      fr"apa.profile_id IN (SELECT id FROM profiles p WHERE" ++
+        SqlFragments.householdEq(household, "p.household_id") ++ fr")",
+    ) ++ fr"UNION ALL" ++
+      coveredOnlyRows(SqlFragments.householdEq(household, "pag.household_id")) ++
+      fr"ORDER BY 7, 6, 2")
       .query[R]
       .map(toS)
       .to[List]
@@ -4809,8 +4855,18 @@ class AppRepoLive(xa: Transactor[Task], clock: wifihaven.shared.Clock) extends A
   private val bumpHostsVersion =
     sql"UPDATE app_hosts_version SET version = version + 1".update.run
 
+  // #2932 (design §6.4): a write that changes a profile's dispositions makes that profile's
+  // current-week settled usage stale. Every such write below calls `SettledUsage` in its own
+  // transaction, dated by this clock.
+  private def invalidating[A](write: Instant => ConnectionIO[A]): Task[A] =
+    clock.instant.flatMap(now => write(now).transact(xa))
+
   def delete(id: AppId) =
-    (sql"DELETE FROM apps WHERE id=$id".update.run *> bumpHostsVersion).transact(xa).unit
+    // The profiles are resolved before the cascade removes their assignments.
+    invalidating(now =>
+      SettledUsage.invalidateForApp(id, now) *>
+        sql"DELETE FROM apps WHERE id=$id".update.run *> bumpHostsVersion,
+    ).unit
 
   def mergeAppInto(from: AppId, to: AppId) = {
     // Steps run inside ONE transaction so a mid-merge crash never strands FK rows referencing a
@@ -4881,17 +4937,51 @@ class AppRepoLive(xa: Transactor[Task], clock: wifihaven.shared.Clock) extends A
               AND template_id IS NULL
               AND (SELECT template_id FROM apps WHERE id = $from) IS NOT NULL""".update.run
 
+    // #2932: re-point group membership too. `app_group_members.app_id` cascades on delete, so
+    // without this a merge would silently drop the app from its group. An app is in at most one
+    // group per household (D2): where `to` is already in a group in that household, `to`'s
+    // membership wins and `from`'s is dropped, named in the log (the #2820 assignment rule).
+    val droppedMemberships =
+      sql"""SELECT m.group_id, m.household_id FROM app_group_members m
+            WHERE m.app_id = $from
+              AND EXISTS (SELECT 1 FROM app_group_members k
+                           WHERE k.app_id = $to AND k.household_id = m.household_id)"""
+        .query[(AppGroupId, HouseholdId)]
+        .to[List]
+    val reattachMembership =
+      sql"""UPDATE app_group_members SET app_id = $to
+            WHERE app_id = $from
+              AND household_id NOT IN (SELECT household_id FROM app_group_members WHERE app_id = $to)""".update.run
+
     // Final cascade DELETE drops any FK rows from `from` that we didn't actively reattach.
     val deleteFrom = sql"DELETE FROM apps WHERE id = $from".update.run
 
-    (unionHosts *>
-      reattachAssignments *>
-      dropConflictingHourly *> reattachHourly *>
-      dropConflictingDaily *> reattachDaily *>
-      mergeUsedDaily *>
-      transferTemplateId *>
-      deleteFrom *>
-      bumpHostsVersion).transact(xa).unit
+    invalidating(now =>
+      // #2932: both apps' profiles change dispositions (hosts union, assignments and membership
+      // move), resolved before anything is re-pointed.
+      SettledUsage.invalidateForApp(from, now) *> SettledUsage.invalidateForApp(to, now) *>
+        unionHosts *>
+        reattachAssignments *>
+        droppedMemberships.flatMap(dropped => reattachMembership.as(dropped)).flatTap { _ =>
+          dropConflictingHourly *> reattachHourly *>
+            dropConflictingDaily *> reattachDaily *>
+            mergeUsedDaily *>
+            transferTemplateId *>
+            deleteFrom *>
+            bumpHostsVersion
+        },
+    ).flatMap { dropped =>
+      ZIO
+        .logWarning(
+          s"apps: merging app id=${from.value} into id=${to.value} drops its membership of " +
+            dropped
+              .map((g, h) => s"group=${g.value} household=${h.value}")
+              .mkString("[", ",", "]") +
+            " where the survivor is already in a group",
+        )
+        .when(dropped.nonEmpty)
+        .unit
+    }
   }
 
   // setHosts is the all-distinctive special case of setHostEntries (#1896): every host shared=false.
@@ -4899,12 +4989,23 @@ class AppRepoLive(xa: Transactor[Task], clock: wifihaven.shared.Clock) extends A
     setHostEntries(appId, hosts.map(AppHostEntry(_, shared = false)))
 
   def setHostEntries(appId: AppId, entries: List[AppHostEntry]) = {
-    val del = sql"DELETE FROM app_hosts WHERE app_id=$appId".update.run
-    val ins = entries.distinctBy(_.host).map { e =>
+    val next = entries.distinctBy(_.host)
+    val old  = sql"SELECT host, shared FROM app_hosts WHERE app_id=$appId"
+      .query[(Hostname, Boolean)]
+      .to[List]
+    val del  = sql"DELETE FROM app_hosts WHERE app_id=$appId".update.run
+    val ins  = next.map { e =>
       sql"""INSERT INTO app_hosts(app_id,host,shared) VALUES($appId,${e.host},${e.shared})
             ON CONFLICT DO NOTHING""".update.run
     }
-    (del *> ins.foldLeft(FC.unit)(_ *> _.void) *> bumpHostsVersion).transact(xa).unit
+    invalidating(now =>
+      old.flatMap { before =>
+        // #2932: only a real change to the host-set (or a host's shared flag) moves usage; a
+        // template sync that rewrites the same set keeps the week's settled rows.
+        val changed = before.toSet != next.map(e => e.host -> e.shared).toSet
+        SettledUsage.invalidateForApp(appId, now).whenA(changed)
+      } *> del *> ins.foldLeft(FC.unit)(_ *> _.void) *> bumpHostsVersion,
+    ).unit
   }
 
   def getHosts(appId: AppId) =
@@ -4943,7 +5044,7 @@ class AppRepoLive(xa: Transactor[Task], clock: wifihaven.shared.Clock) extends A
       allowedDuringScheduleBlock: Boolean = true,
       weeklyMinutes: Option[Int] = None,
   ) =
-    clock.today.map(SettledUsage.weekFloor).flatMap { from =>
+    clock.instant.flatMap { now =>
       (for {
         prior <- sql"""SELECT mode, exempt_from_daily FROM app_policy_assignments
                         WHERE app_id=$appId AND profile_id=$profileId"""
@@ -4967,23 +5068,28 @@ class AppRepoLive(xa: Transactor[Task], clock: wifihaven.shared.Clock) extends A
         // profile daily total only; a limit edit changes no usage.
         _     <- prior match {
           case None                                 =>
-            SettledUsage.invalidate(List(profileId), SettledUsage.Kinds.All, from)
+            SettledUsage.invalidateCurrentWeek(List(profileId), SettledUsage.Kinds.All, now)
           case Some((m, _)) if m != mode            =>
-            SettledUsage.invalidate(List(profileId), SettledUsage.Kinds.All, from)
+            SettledUsage.invalidateCurrentWeek(List(profileId), SettledUsage.Kinds.All, now)
           case Some((_, e)) if e != exemptFromDaily =>
-            SettledUsage.invalidate(List(profileId), SettledUsage.Kinds.ProfileTotalOnly, from)
+            SettledUsage.invalidateCurrentWeek(
+              List(profileId),
+              SettledUsage.Kinds.ProfileTotalOnly,
+              now,
+            )
           case Some(_)                              => doobie.free.connection.pure(0)
         }
       } yield id).transact(xa)
     }
 
   def deleteAssignment(appId: AppId, profileId: ProfileId) =
-    clock.today.map(SettledUsage.weekFloor).flatMap { from =>
+    clock.instant.flatMap { now =>
       (for {
         n <-
           sql"DELETE FROM app_policy_assignments WHERE app_id=$appId AND profile_id=$profileId".update.run
         _ <-
-          if (n > 0) SettledUsage.invalidate(List(profileId), SettledUsage.Kinds.All, from)
+          if (n > 0)
+            SettledUsage.invalidateCurrentWeek(List(profileId), SettledUsage.Kinds.All, now)
           else doobie.free.connection.pure(0)
       } yield ()).transact(xa)
     }
@@ -5250,6 +5356,8 @@ object Repos {
   val rollupRepo            = ZLayer.fromFunction(RollupRepoLive(_))
   val timeUsedRollupRepo    = ZLayer.fromFunction(TimeUsedRollupRepoLive(_))
   val appUsedRollupRepo     = ZLayer.fromFunction(AppUsedRollupRepoLive(_))
+  // #2932: settled past days for weekly usage (design §6.4).
+  val settledUsageRepo      = ZLayer.fromFunction(SettledUsageRepoLive(_))
   val partitionRepo         = ZLayer.fromFunction(PartitionRepoLive(_))
   val ambientHostsRepo      = ZLayer.fromFunction(AmbientHostsRepoLive(_))
   // #2132 (multi-tenant P5-2): beta-request pipeline repos (householdRepo is declared above, #2140).
@@ -5267,5 +5375,5 @@ object Repos {
   // grants that widen the #2241 agent token's data scope (V84).
   val supportConsentRepo    = ZLayer.fromFunction(SupportConsentRepoLive(_))
   val all                   =
-    userRepo ++ householdRepo ++ userProfileRepo ++ profileRepo ++ namedScheduleRepo ++ householdSettingsRepo ++ timeLimitRepo ++ appTimeLimitRepo ++ deviceRepo ++ deviceAssignmentRepo ++ sharedDeviceRepo ++ blocklistRepo ++ timeUsageRepo ++ timeExtRepo ++ routerRepo ++ trafficReportRepo ++ blockEventRepo ++ connEventRepo ++ alertRepo ++ appRepo ++ appGroupRepo ++ rollupRepo ++ timeUsedRollupRepo ++ appUsedRollupRepo ++ partitionRepo ++ ambientHostsRepo ++ householdBillingRepo ++ betaRequestRepo ++ betaCohortRepo ++ entitlementsRepo ++ pressMessageRepo ++ passwordResetRepo ++ supportConsentRepo
+    userRepo ++ householdRepo ++ userProfileRepo ++ profileRepo ++ namedScheduleRepo ++ householdSettingsRepo ++ timeLimitRepo ++ appTimeLimitRepo ++ deviceRepo ++ deviceAssignmentRepo ++ sharedDeviceRepo ++ blocklistRepo ++ timeUsageRepo ++ timeExtRepo ++ routerRepo ++ trafficReportRepo ++ blockEventRepo ++ connEventRepo ++ alertRepo ++ appRepo ++ appGroupRepo ++ rollupRepo ++ timeUsedRollupRepo ++ appUsedRollupRepo ++ settledUsageRepo ++ partitionRepo ++ ambientHostsRepo ++ householdBillingRepo ++ betaRequestRepo ++ betaCohortRepo ++ entitlementsRepo ++ pressMessageRepo ++ passwordResetRepo ++ supportConsentRepo
 }
