@@ -693,30 +693,64 @@ object WeeklyBudgetSpec
           groupWeek(s(b), g).contains(55),
         )
       },
-      test("8: the attachment's counts-toward-daily flag overrides the members' own") {
+      // Design test 8 (the attachment's flag overriding the members' own for the daily total) lands
+      // with group-limit enforcement in #2933 (operator, 2026-10-26), so members are never neither
+      // capped nor counted. Until then the daily total reads each app's own flag.
+      test("until #2933 the daily total uses each app's own flag; a covered-only app counts") {
         for {
           r  <- rig()
           pr <- ZIO.service[ProfileRepo]
           a  <- pr.create("A", Nil)
           b  <- pr.create("B", Nil)
+          c  <- pr.create("C", Nil)
           rb <- app1("roblox.com")
           y  <- app1("youtube.com")
-          // A's own row says exempt; its attachment says counts. B's the reverse.
+          // A's own row says exempt, its attachment counts; B's the reverse; C has no own row.
           _  <- assign(rb, a, exempt = true)
           _  <- assign(rb, b, exempt = false)
-          _  <- assign(y, a)
-          _  <- assign(y, b)
+          _  <- ZIO.foreachDiscard(List(a, b, c))(assign(y, _))
           ga <- group("Games", rb)
           _  <- attach(a, ga, exempt = false)
           _  <- attach(b, ga, exempt = true)
+          _  <- attach(c, ga, exempt = true)
           _  <- device(macA, a)
           _  <- device(macB, b)
-          _  <- ZIO.foreachDiscard(List(macA, macB)) { m =>
+          _  <- device(macC, c)
+          _  <- ZIO.foreachDiscard(List(macA, macB, macC)) { m =>
             traffic(r, m, "roblox.com", at(thu, 9), 20) *>
               traffic(r, m, "youtube.com", at(thu, 11), 15)
           }
           s  <- states(r, nowThu)
-        } yield assertTrue(s(a).usedMinutes == 35, s(b).usedMinutes == 15)
+        } yield assertTrue(
+          s(a).usedMinutes == 15,
+          s(b).usedMinutes == 35,
+          s(c).usedMinutes == 35,
+          // The group's own state still carries the attachment's flag, for display.
+          s(c).perGroup.find(_.groupId == ga).map(_.exemptFromDaily).contains(true),
+        )
+      },
+      test("until #2933 a default attachment leaves the daily total and its block unchanged") {
+        for {
+          r      <- rig()
+          pr     <- ZIO.service[ProfileRepo]
+          tlr    <- ZIO.service[TimeLimitRepo]
+          a      <- pr.create("A", Nil)
+          _      <- tlr.upsert(a, 30)
+          rb     <- app1("roblox.com")
+          _      <- device(macA, a)
+          _      <- traffic(r, macA, "roblox.com", at(thu, 9), 35)
+          before <- states(r, nowThu)
+          g      <- group("Games", rb)
+          // V92's default attachment flag: not counted.
+          _      <- attach(a, g, daily = None, weekly = Some(600), exempt = true)
+          after  <- states(r, nowThu)
+        } yield assertTrue(
+          before(a).usedMinutes == 35,
+          before(a).blockReason.contains(MacBlockReason.TimeLimit),
+          after(a).usedMinutes == 35,
+          after(a).blockReason.contains(MacBlockReason.TimeLimit),
+          groupWeek(after(a), g).contains(35),
+        )
       },
       test("10: one group on two profiles counts each profile's own usage at its own limits") {
         for {
