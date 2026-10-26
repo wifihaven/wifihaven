@@ -3066,6 +3066,18 @@ describe('ProfilesPage — weekly limits and app groups (#2935)', () => {
     await waitFor(() => expect(screen.getByTestId('app-row-52-limit-toggle')).toHaveTextContent('40m left today'))
   })
 
+  it('shows the limit, not a remaining time, when the API sends no week usage', async () => {
+    fn(api.apps.list).mockResolvedValue([limited(52, 'Minecraft', { weeklyMinutes: 300 })])
+    fn(api.time.statusAll).mockResolvedValue([usage({
+      appUsage: [{ label: 'app:minecraft', domainPattern: 'minecraft.com', limitMins: null, usedMins: 0, remainingMins: null }],
+    })])
+    const user = userEvent.setup()
+    await openApps(user)
+    const chip = await screen.findByTestId('app-row-52-limit-toggle')
+    await waitFor(() => expect(chip).toHaveTextContent('5:00/week'))
+    expect(chip).not.toHaveTextContent('left')
+  })
+
   it('draws one usage bar per limit in the drawer once usage has loaded', async () => {
     fn(api.apps.list).mockResolvedValue([limited(52, 'Minecraft', { dailyMinutes: 60, weeklyMinutes: 300 })])
     fn(api.time.statusAll).mockResolvedValue([usage()])

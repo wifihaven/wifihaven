@@ -268,10 +268,10 @@ function GroupRow({ profileId, attachment, group, apps, groups, budget, onChange
   // The collapsed chip: the tighter remaining figure once usage is in, the limits until then (a
   // limit is real data; a remaining figure is not, so it waits behind a skeleton instead).
   const gu = budget.groupById.get(attachment.groupId)
-  const left = budget.status === 'success'
+  const left = budget.status === 'success' && gu != null && gu.weekUsedMins != null
     ? tighterLeft({
-        dailyLimit: attachment.dailyMinutes, dailyUsed: gu?.usedMins ?? 0,
-        weeklyLimit: attachment.weeklyMinutes, weekUsed: gu?.weekUsedMins ?? 0,
+        dailyLimit: attachment.dailyMinutes, dailyUsed: gu.usedMins,
+        weeklyLimit: attachment.weeklyMinutes, weekUsed: gu.weekUsedMins,
       })
     : null
 
@@ -350,13 +350,13 @@ function GroupRow({ profileId, attachment, group, apps, groups, budget, onChange
           {budget.status === 'pending' && (
             <div className="h-1 rounded-full bg-brand-alt animate-pulse" data-testid={`${tid}-usage-loading`} />
           )}
-          {budget.status === 'success' && (
+          {budget.status === 'success' && gu != null && gu.weekUsedMins != null && (
             <div className="space-y-1">
               {attachment.dailyMinutes != null && (
-                <UsageBar testId={`${tid}-usage-day`} label="Today" used={gu?.usedMins ?? 0} limit={attachment.dailyMinutes} />
+                <UsageBar testId={`${tid}-usage-day`} label="Today" used={gu.usedMins} limit={attachment.dailyMinutes} />
               )}
               {attachment.weeklyMinutes != null && (
-                <UsageBar testId={`${tid}-usage-week`} label="Week" used={gu?.weekUsedMins ?? 0} limit={attachment.weeklyMinutes} />
+                <UsageBar testId={`${tid}-usage-week`} label="Week" used={gu.weekUsedMins} limit={attachment.weeklyMinutes} />
               )}
             </div>
           )}

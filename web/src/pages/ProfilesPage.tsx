@@ -2200,12 +2200,14 @@ function AppRow({ app, profileId, onChanged, usedMins, usageStatus, budget, bloc
   // returns apps that accrued time. Under 'pending'/'error' it is unknown.
   const loadedMins = usageStatus === 'success' ? usedMins ?? 0 : null
   // #2935 — the tighter remaining figure for a row with a weekly limit. Both windows come from the
-  // one status body, so they cannot disagree; absent under 'success' is a genuine zero.
+  // one status body, so they cannot disagree. A row missing from a loaded body, or one without the
+  // week figure (an API that predates #2932), is unknown rather than zero: the chip then shows the
+  // limit, not a remaining time it cannot know.
   const au = budget.appBySlug.get(`app:${app.app.slug}`)
-  const budgetLeft = budget.status === 'success' && currentWeekly != null
+  const budgetLeft = budget.status === 'success' && currentWeekly != null && au?.weekUsedMins != null
     ? tighterLeft({
-        dailyLimit: currentMinutes, dailyUsed: au?.usedMins ?? 0,
-        weeklyLimit: currentWeekly, weekUsed: au?.weekUsedMins ?? 0,
+        dailyLimit: currentMinutes, dailyUsed: au.usedMins,
+        weeklyLimit: currentWeekly, weekUsed: au.weekUsedMins,
       })
     : null
 
@@ -2445,7 +2447,7 @@ function AppRow({ app, profileId, onChanged, usedMins, usageStatus, budget, bloc
                   ) : budget.status === 'error' ? (
                     <span data-testid={`${tid}-budget-error`}>—</span>
                   ) : (
-                    <span className="font-mono">{budgetLeft?.text}</span>
+                    <span className="font-mono">{budgetLeft?.text ?? `${formatMins(currentWeekly)}/week`}</span>
                   )
                 ) : (<>
                 {usageStatus === 'pending' ? (
@@ -2621,7 +2623,7 @@ function AppRow({ app, profileId, onChanged, usedMins, usageStatus, budget, bloc
               className="flex-1 h-1 mt-2 rounded-full bg-brand-alt animate-pulse"
             />
           )}
-          {isTimeLimited && currentWeekly != null && budget.status === 'success' && (
+          {isTimeLimited && currentWeekly != null && budget.status === 'success' && au?.weekUsedMins != null && (
             <div className="mt-2">
               <UsageBar
                 testId={`${tid}-usage-week`}
