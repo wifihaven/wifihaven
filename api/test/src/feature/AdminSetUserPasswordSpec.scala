@@ -134,15 +134,19 @@ object AdminSetUserPasswordSpec
       targetId: Long,
       token: String,
       newPassword: String = NewPassword,
-  ): Task[Response] =
+      // #2947: `None` OMITS the field — the shape every pre-#2947 client sends.
+      mustChangePassword: Option[Boolean] = None,
+  ): Task[Response] = {
+    val toggle = mustChangePassword.fold("")(b => s""","mustChangePassword":$b""")
     routes.runZIO(
       Request(
         method = Method.POST,
         url = URL.decode(s"/api/users/$targetId/password").toOption.get,
-        body = Body.fromString(s"""{"newPassword":${newPassword.toJson}}"""),
+        body = Body.fromString(s"""{"newPassword":${newPassword.toJson}$toggle}"""),
       ).addHeader(Header.Authorization.Bearer(token))
         .addHeader(Header.ContentType(MediaType.application.json)),
     )
+  }
 
   /** The stored row's password hash + forced-change flag + token version, read straight from PG. */
   private def rowOf(xa: Transactor[Task], id: UserId): Task[(String, Boolean, Int)] =
@@ -367,6 +371,107 @@ object AdminSetUserPasswordSpec
             .addHeader(Header.ContentType(MediaType.application.json)),
         )
       } yield assertTrue(res.status == Status.BadRequest)
+    },
+    // ── #2947: the admin chooses whether the set is a handoff or the member's real password ──
+    test("#2947 toggle ON: forced change at next login, sessions revoked (today's behaviour)") {
+      for {
+        _      <- cleanDb
+        xa     <- ZIO.service[Transactor[Task]]
+        routes <- authRoutes
+        auth   <- makeAuth
+        h      <- makeHouse("house-t1", "House T1")
+        before <- rowOf(xa, h.childId)
+        res    <- setPassword(routes, h.childId.value, h.adminTok, mustChangePassword = Some(true))
+        body   <- res.body.asString
+        after  <- rowOf(xa, h.childId)
+        oldTok <- auth.verify(h.childTok).either
+        login  <- auth.login(s"${h.slug}/kiddo", NewPassword)
+        gate   <- auth.requirePasswordChanged(login.token.value).either
+      } yield assertTrue(
+        res.status == Status.Ok,
+        body.fromJson[SetUserPasswordResponse] == Right(SetUserPasswordResponse(true)),
+        verifies(after._1, NewPassword),
+        after._2,
+        login.mustChangePassword,
+        gate == Left(AuthError.Forbidden),
+        after._3 > before._3,
+        oldTok == Left(AuthError.TokenRevoked),
+      )
+    },
+    test("#2947 toggle OFF: the admin's password is theirs — no redirect, sessions still revoked") {
+      for {
+        _      <- cleanDb
+        xa     <- ZIO.service[Transactor[Task]]
+        routes <- authRoutes
+        auth   <- makeAuth
+        h      <- makeHouse("house-t2", "House T2")
+        before <- rowOf(xa, h.childId)
+        res    <- setPassword(routes, h.childId.value, h.adminTok, mustChangePassword = Some(false))
+        body   <- res.body.asString
+        after  <- rowOf(xa, h.childId)
+        oldTok <- auth.verify(h.childTok).either
+        login  <- auth.login(s"${h.slug}/kiddo", NewPassword)
+        // The #586/#2492 gate that bounces a flagged user to /account lets this one through.
+        gate   <- auth.requirePasswordChanged(login.token.value).either
+      } yield assertTrue(
+        res.status == Status.Ok,
+        body.fromJson[SetUserPasswordResponse] == Right(SetUserPasswordResponse(false)),
+        verifies(after._1, NewPassword),
+        !verifies(after._1, OldPassword),
+        !after._2,
+        !login.mustChangePassword,
+        gate.isRight,
+        // Revocation is not part of the toggle: the reset signs the member out either way.
+        after._3 > before._3,
+        oldTok == Left(AuthError.TokenRevoked),
+      )
+    },
+    test("#2947 toggle OFF CLEARS an already-armed must-change flag") {
+      for {
+        _      <- cleanDb
+        xa     <- ZIO.service[Transactor[Task]]
+        routes <- authRoutes
+        auth   <- makeAuth
+        h      <- makeHouse("house-t3", "House T3")
+        // Arm the flag the way a prior handoff would, and prove it took — otherwise "cleared"
+        // below could pass on a flag that was never set.
+        _      <- setPassword(routes, h.adultId.value, h.adminTok, mustChangePassword = Some(true))
+        armed  <- rowOf(xa, h.adultId)
+        res    <- setPassword(routes, h.adultId.value, h.adminTok, mustChangePassword = Some(false))
+        after  <- rowOf(xa, h.adultId)
+        login  <- auth.login(s"${h.slug}/parent2", NewPassword)
+      } yield assertTrue(
+        armed._2,
+        res.status == Status.Ok,
+        !after._2,
+        !login.mustChangePassword,
+        after._3 > armed._3,
+      )
+    },
+    test("#2947 a request that OMITS the toggle is a forced-change handoff, as before") {
+      for {
+        _      <- cleanDb
+        xa     <- ZIO.service[Transactor[Task]]
+        routes <- authRoutes
+        h      <- makeHouse("house-t4", "House T4")
+        res    <- setPassword(routes, h.childId.value, h.adminTok, mustChangePassword = None)
+        body   <- res.body.asString
+        after  <- rowOf(xa, h.childId)
+      } yield assertTrue(
+        res.status == Status.Ok,
+        body.fromJson[SetUserPasswordResponse] == Right(SetUserPasswordResponse(true)),
+        after._2,
+      )
+    },
+    test("#2947 an ADULT is still refused with the toggle OFF (#2522)") {
+      for {
+        _      <- cleanDb
+        xa     <- ZIO.service[Transactor[Task]]
+        routes <- authRoutes
+        h      <- makeHouse("house-t5", "House T5")
+        res    <- setPassword(routes, h.childId.value, h.adultTok, mustChangePassword = Some(false))
+        after  <- rowOf(xa, h.childId)
+      } yield assertTrue(res.status == Status.Forbidden, verifies(after._1, OldPassword))
     },
   ) @@ TestAspect.sequential @@ TestAspect.withLiveClock
 }

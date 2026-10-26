@@ -34,10 +34,11 @@ beforeEach(() => {
   vi.resetAllMocks()
   mocked(api.users.list).mockResolvedValue([adminUser, adultUser, childUser])
   mocked(api.profiles.list).mockResolvedValue(noProfiles)
-  // Shaped like SetUserPasswordResponse for realism only — no assertion below reads it. The
-  // confirmation copy is unconditional, because a 2xx is only reachable via the server's
-  // handoff-only write path; it is not derived from this field.
-  mocked(api.users.setPassword).mockResolvedValue({ mustChangePassword: true })
+  // #2947: the server echoes the toggle it applied, and the confirmation copy is derived from that
+  // echo — so the mock answers with what it was asked for, like the real route.
+  mocked(api.users.setPassword).mockImplementation(
+    async (_id: number, _pw: string, mustChangePassword: boolean) => ({ mustChangePassword }),
+  )
 })
 
 /**
@@ -64,7 +65,7 @@ describe('UsersPage — admin sets a member password (#2576)', () => {
     render(<UsersPage />)
     await screen.findByText('alice')
 
-    await user.click(screen.getByTestId('set-password-12'))
+    await user.click(screen.getByTestId('set-password-11'))
     const input = await screen.findByTestId('set-password-input')
     await user.type(input, 'handoff-password-456')
 
@@ -74,7 +75,7 @@ describe('UsersPage — admin sets a member password (#2576)', () => {
     await user.click(screen.getByTestId('set-password-submit'))
 
     await waitFor(() =>
-      expect(api.users.setPassword).toHaveBeenCalledWith(12, 'handoff-password-456'),
+      expect(api.users.setPassword).toHaveBeenCalledWith(11, 'handoff-password-456', true),
     )
     // The admin is told the credential is a handoff, not a permanent shared secret.
     expect(await screen.findByTestId('set-password-done')).toHaveTextContent(
@@ -110,5 +111,79 @@ describe('UsersPage — admin sets a member password (#2576)', () => {
     await user.click(screen.getByTestId('set-password-submit'))
 
     expect(await screen.findByText(/User not found/)).toBeInTheDocument()
+  })
+})
+
+/**
+ * #2947 — the admin chooses whether the password they type is a one-time handoff or the member's
+ * real password. Defaults differ by role (operator call): a parent usually manages a CHILD's
+ * password, so a child's set keeps it by default; an ADULT's set still forces a change.
+ */
+describe('UsersPage — require-change toggle (#2947)', () => {
+  async function openFor(id: number) {
+    const user = userEvent.setup()
+    render(<UsersPage />)
+    await screen.findByText('alice')
+    await user.click(screen.getByTestId(`set-password-${id}`))
+    await user.type(await screen.findByTestId('set-password-input'), 'handoff-password-456')
+    return user
+  }
+
+  it('defaults ON for an adult and sends mustChangePassword=true', async () => {
+    const user = await openFor(11)
+    expect(screen.getByTestId('set-password-require-change')).toBeChecked()
+
+    await user.click(screen.getByTestId('set-password-submit'))
+    await waitFor(() =>
+      expect(api.users.setPassword).toHaveBeenCalledWith(11, 'handoff-password-456', true),
+    )
+    expect(await screen.findByTestId('set-password-done')).toHaveTextContent(
+      /change it at the next login/i,
+    )
+  })
+
+  it('defaults OFF for a child, sends mustChangePassword=false, and says the password stays', async () => {
+    const user = await openFor(12)
+    const toggle = screen.getByTestId('set-password-require-change')
+    expect(toggle).not.toBeChecked()
+    // The off state spells out the consequence before the admin submits.
+    expect(screen.getByTestId('set-password-require-change-hint')).toHaveTextContent(
+      /stays their password/i,
+    )
+
+    await user.click(screen.getByTestId('set-password-submit'))
+    await waitFor(() =>
+      expect(api.users.setPassword).toHaveBeenCalledWith(12, 'handoff-password-456', false),
+    )
+    const done = await screen.findByTestId('set-password-done')
+    expect(done).toHaveTextContent(/stays their password/i)
+    expect(done).not.toHaveTextContent(/change it at the next login/i)
+  })
+
+  it('lets the admin turn it ON for a child', async () => {
+    const user = await openFor(12)
+    await user.click(screen.getByTestId('set-password-require-change'))
+    expect(screen.getByTestId('set-password-require-change')).toBeChecked()
+
+    await user.click(screen.getByTestId('set-password-submit'))
+    await waitFor(() =>
+      expect(api.users.setPassword).toHaveBeenCalledWith(12, 'handoff-password-456', true),
+    )
+    expect(await screen.findByTestId('set-password-done')).toHaveTextContent(
+      /change it at the next login/i,
+    )
+  })
+
+  it('lets the admin turn it OFF for an adult', async () => {
+    const user = await openFor(11)
+    await user.click(screen.getByTestId('set-password-require-change'))
+
+    await user.click(screen.getByTestId('set-password-submit'))
+    await waitFor(() =>
+      expect(api.users.setPassword).toHaveBeenCalledWith(11, 'handoff-password-456', false),
+    )
+    expect(await screen.findByTestId('set-password-done')).toHaveTextContent(
+      /stays their password/i,
+    )
   })
 })
