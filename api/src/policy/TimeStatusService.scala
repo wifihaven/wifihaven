@@ -360,19 +360,17 @@ class TimeStatusServiceLive(
           case Right(p)     =>
             // An invalidating write (an assignment, group or settings edit) that commits while this
             // computes would have its delete land before our write, leaving rows computed under the
-            // old definition marked settled. So compare the household's dispositions fingerprint
-            // before the compute and after the write, and undo the write when it moved. A write that
-            // commits after ours deletes our rows itself.
+            // old definition marked settled. So the write is conditional: it runs under the
+            // household lock every invalidation takes, and only if the household's dispositions
+            // fingerprint still equals the one read before the compute.
             (for {
-              before <- settledRepo.fingerprint(household)
-              rows   <- rawDayStateAllLive(household, now, date, settings)
+              before  <- settledRepo.fingerprint(household)
+              rows    <- rawDayStateAllLive(household, now, date, settings)
                 .map(_.map((pid, st) => pid -> TimeStatusService.dayUsage(st)))
-              _      <- settledRepo
-                .writeSettled(household, date, rows, SettledUsage.dayEnd(date, settings))
-              after  <- settledRepo.fingerprint(household)
-              _      <- ZIO.when(after != before)(
-                settledRepo.discard(household, date, rows.keys.toList) *>
-                  ZIO.logInfo(s"settled usage: discarded a raced refill of $date"),
+              written <- settledRepo
+                .writeSettled(household, date, rows, SettledUsage.dayEnd(date, settings), before)
+              _       <- ZIO.unless(written || rows.isEmpty)(
+                ZIO.logInfo(s"settled usage: not settling $date, its definition changed meanwhile"),
               )
             } yield rows).exit
               .flatMap(ex => p.done(ex) *> refills.update(_ - ((household, date))) *> ZIO.done(ex))

@@ -81,13 +81,14 @@ object SettledUsage {
     NonEmptyList.fromList(profiles.distinct) match {
       case None      => 0.pure[ConnectionIO]
       case Some(nel) =>
-        (fr"""SELECT p.id, hs.daily_reset_time, hs.daily_reset_tz, hs.week_start_day
+        (fr"""SELECT p.id, p.household_id, hs.daily_reset_time, hs.daily_reset_tz, hs.week_start_day
                 FROM profiles p
                 JOIN household_settings hs ON hs.household_id = p.household_id
                WHERE""" ++ Fragments.in(fr"p.id", nel))
-          .query[(ProfileId, LocalTime, ZoneId, Int)]
+          .query[(ProfileId, HouseholdId, LocalTime, ZoneId, Int)]
           .to[List]
-          .flatMap(_.traverse { case (pid, reset, tz, weekStartDay) =>
+          .flatTap(rows => rows.map(_._2).distinct.sortBy(_.value).traverse_(lockHousehold))
+          .flatMap(_.traverse { case (pid, _, reset, tz, weekStartDay) =>
             val settings =
               HouseholdSettings(reset, tz, HeartbeatFilter.Off, weekStartDay = weekStartDay)
             val from     = PolicyService.householdWeekStart(now, settings)
@@ -106,6 +107,18 @@ object SettledUsage {
           })
           .map(_.sum)
     }
+
+  /**
+   * The per-household lock that orders an invalidation against a refill's write (held to the end of
+   * the caller's transaction). Every invalidation takes it before deleting, and
+   * [[SettledUsageRepo.writeSettled]] takes it before checking its fingerprint, so a refill either
+   * writes before an invalidating write commits (whose delete then removes its rows) or sees that
+   * write's changes and does not write. Households are locked in id order.
+   */
+  def lockHousehold(household: HouseholdId): ConnectionIO[Unit] = {
+    val key = (0x2932L << 32) | household.value
+    sql"SELECT pg_advisory_xact_lock($key)".query[Unit].unique
+  }
 
   /**
    * [[invalidateCurrentWeek]] for every profile whose dispositions include `app`: the profiles that
@@ -177,14 +190,17 @@ trait SettledUsageRepo {
 
   /**
    * Upsert `date` as settled for each profile in `rows`: its total and every budget, each with
-   * `rolled_through = settledThrough` (the day's end). One transaction.
+   * `rolled_through = settledThrough` (the day's end). One transaction, under
+   * [[SettledUsage.lockHousehold]], and only when the household's [[fingerprint]] still equals
+   * `computedUnder`, the value read before the rows were computed. Returns whether it wrote.
    */
   def writeSettled(
       household: HouseholdId,
       date: LocalDate,
       rows: Map[ProfileId, DayUsage],
       settledThrough: Instant,
-  ): Task[Unit]
+      computedUnder: String,
+  ): Task[Boolean]
 
   /**
    * Whether `date` is settled for any of `household`'s profiles (a `time_used_daily` row with
@@ -196,12 +212,9 @@ trait SettledUsageRepo {
    * A value that changes whenever anything the settled rows depend on changes for `household`: its
    * settings row, its assignments, attachments and memberships (each row's `xmin`, so an update,
    * insert or delete all show), and the global host-set version. The refill reads it before its
-   * live compute and after its write; a difference means an invalidating write raced it.
+   * live compute and again inside its write; a difference means a write changed them meanwhile.
    */
   def fingerprint(household: HouseholdId): Task[String]
-
-  /** Delete `profiles`' settled rows of `date` in all three tables: undo a raced refill write. */
-  def discard(household: HouseholdId, date: LocalDate, profiles: List[ProfileId]): Task[Int]
 }
 
 /**
@@ -220,13 +233,11 @@ object NoopSettledUsageRepo extends SettledUsageRepo {
       date: LocalDate,
       rows: Map[ProfileId, DayUsage],
       settledThrough: Instant,
-  ): Task[Unit] = ZIO.unit
-  def anySettled(household: HouseholdId, date: LocalDate, dayEnd: Instant): Task[Boolean]    =
+      computedUnder: String,
+  ): Task[Boolean] = ZIO.succeed(false)
+  def anySettled(household: HouseholdId, date: LocalDate, dayEnd: Instant): Task[Boolean] =
     ZIO.succeed(false)
-  def fingerprint(household: HouseholdId): Task[String]                                      =
-    ZIO.succeed("")
-  def discard(household: HouseholdId, date: LocalDate, profiles: List[ProfileId]): Task[Int] =
-    ZIO.succeed(0)
+  def fingerprint(household: HouseholdId): Task[String] = ZIO.succeed("")
 }
 
 class SettledUsageRepoLive(xa: Transactor[Task]) extends SettledUsageRepo {
@@ -284,17 +295,18 @@ class SettledUsageRepoLive(xa: Transactor[Task]) extends SettledUsageRepo {
       date: LocalDate,
       rows: Map[ProfileId, DayUsage],
       settledThrough: Instant,
-  ): Task[Unit] =
-    if rows.isEmpty then ZIO.unit
+      computedUnder: String,
+  ): Task[Boolean] =
+    if rows.isEmpty then ZIO.succeed(false)
     else {
-      val totals = rows.toList.map { case (p, u) => (p, date, u.totalSeconds, settledThrough) }
-      val apps   = rows.toList.flatMap { case (p, u) =>
+      val totals  = rows.toList.map { case (p, u) => (p, date, u.totalSeconds, settledThrough) }
+      val apps    = rows.toList.flatMap { case (p, u) =>
         u.apps.toList.map { case (a, s) => (p, a, date, s, settledThrough) }
       }
-      val groups = rows.toList.flatMap { case (p, u) =>
+      val groups  = rows.toList.flatMap { case (p, u) =>
         u.groups.toList.map { case (g, s) => (household, p, g, date, s, settledThrough) }
       }
-      val prog   = for {
+      val prog    = for {
         _ <- Update[(ProfileId, LocalDate, Long, Instant)](
           """INSERT INTO time_used_daily (profile_id, date, used_seconds, rolled_through, rolled_at)
              VALUES (?, ?, ?, ?, NOW())
@@ -321,7 +333,13 @@ class SettledUsageRepoLive(xa: Transactor[Task]) extends SettledUsageRepo {
                    rolled_at = EXCLUDED.rolled_at""",
         ).updateMany(groups)
       } yield ()
-      DbMetrics.timed("settledUsage.writeSettled")(prog.transact(xa))
+      val guarded = for {
+        _       <- SettledUsage.lockHousehold(household)
+        current <- fingerprintQ(household)
+        ok = current == computedUnder
+        _ <- prog.whenA(ok)
+      } yield ok
+      DbMetrics.timed("settledUsage.writeSettled")(guarded.transact(xa))
     }
 
   def anySettled(household: HouseholdId, date: LocalDate, dayEnd: Instant): Task[Boolean] =
@@ -338,8 +356,10 @@ class SettledUsageRepoLive(xa: Transactor[Task]) extends SettledUsageRepo {
     )
 
   def fingerprint(household: HouseholdId): Task[String] =
-    DbMetrics.timed("settledUsage.fingerprint")(
-      sql"""SELECT md5(concat_ws('|',
+    DbMetrics.timed("settledUsage.fingerprint")(fingerprintQ(household).transact(xa))
+
+  private def fingerprintQ(household: HouseholdId): ConnectionIO[String] =
+    sql"""SELECT md5(concat_ws('|',
                 (SELECT xmin::text FROM household_settings WHERE household_id = $household),
                 (SELECT string_agg(apa.id::text || ':' || apa.xmin::text, ',' ORDER BY apa.id)
                    FROM app_policy_assignments apa
@@ -351,23 +371,6 @@ class SettledUsageRepoLive(xa: Transactor[Task]) extends SettledUsageRepo {
                                    ',' ORDER BY m.group_id, m.app_id)
                    FROM app_group_members m WHERE m.household_id = $household),
                 (SELECT version::text FROM app_hosts_version)))"""
-        .query[String]
-        .unique
-        .transact(xa),
-    )
-
-  def discard(household: HouseholdId, date: LocalDate, profiles: List[ProfileId]): Task[Int] =
-    NonEmptyList.fromList(profiles.distinct) match {
-      case None      => ZIO.succeed(0)
-      case Some(nel) =>
-        val own = fr"AND profile_id IN (SELECT id FROM profiles WHERE household_id = $household)"
-        def del(table: String) =
-          (fr"DELETE FROM" ++ Fragment.const(table) ++ fr"WHERE date = $date AND" ++
-            Fragments.in(fr"profile_id", nel) ++ own).update.run
-        DbMetrics.timed("settledUsage.discard")(
-          (del("time_used_daily"), del("app_used_daily"), del("app_group_used_daily"))
-            .mapN(_ + _ + _)
-            .transact(xa),
-        )
-    }
+      .query[String]
+      .unique
 }

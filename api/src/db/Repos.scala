@@ -2159,7 +2159,8 @@ class HouseholdSettingsRepoLive(xa: Transactor[Task]) extends HouseholdSettingsR
           ),
         )
       case n => doobie.free.connection.pure(n)
-    } *> invalidate *> invalidateApp *> invalidateGroup).transact(xa).unit
+    } *> SettledUsage.lockHousehold(household) *> invalidate *> invalidateApp *>
+      invalidateGroup).transact(xa).unit
   }
 
   def ensureDefault(defaultZone: ZoneId): Task[Unit] =
