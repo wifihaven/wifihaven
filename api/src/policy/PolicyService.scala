@@ -583,7 +583,9 @@ class PolicyServiceLive(
       // rather than every `snapshotCacheRefreshInterval`.
       publisher.get.targetHouseholds
         .map(_ + HouseholdId.Default)
-        .flatMap(hs => ZIO.foreachDiscard(hs)(reevaluateHousehold) *> publishBudgetsExhausted(hs), )
+        .flatMap { hs =>
+          ZIO.foreachDiscard(hs)(reevaluateHousehold) *> publishBudgetsExhausted(hs)
+        }
 
   // #2635: the single-household unit of work — rebuild ONE household's snapshot and push it iff
   // that household's ETag moved. Both callers are in this class ([[reevaluate]]'s sweep and the
