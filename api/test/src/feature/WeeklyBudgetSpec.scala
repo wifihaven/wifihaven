@@ -693,10 +693,9 @@ object WeeklyBudgetSpec
           groupWeek(s(b), g).contains(55),
         )
       },
-      // Design test 8 (the attachment's flag overriding the members' own for the daily total) lands
-      // with group-limit enforcement in #2933 (operator, 2026-10-26), so members are never neither
-      // capped nor counted. Until then the daily total reads each app's own flag.
-      test("until #2933 the daily total uses each app's own flag; a covered-only app counts") {
+      // Design test 8 (#2933, D5): the attachment's flag replaces the members' own flags in the
+      // daily total, so a group is never half counted and half exempt.
+      test("8: the attachment's flag replaces the members' own flags in the daily total") {
         for {
           r  <- rig()
           pr <- ZIO.service[ProfileRepo]
@@ -722,14 +721,18 @@ object WeeklyBudgetSpec
           }
           s  <- states(r, nowThu)
         } yield assertTrue(
-          s(a).usedMinutes == 15,
-          s(b).usedMinutes == 35,
-          s(c).usedMinutes == 35,
+          // A: own row exempt, attachment counts: roblox counts. B: own row counts, attachment
+          // exempt: roblox is excluded. C: no own row, attachment exempt: excluded.
+          s(a).usedMinutes == 35,
+          s(b).usedMinutes == 15,
+          s(c).usedMinutes == 15,
           // The group's own state still carries the attachment's flag, for display.
           s(c).perGroup.find(_.groupId == ga).map(_.exemptFromDaily).contains(true),
         )
       },
-      test("until #2933 a default attachment leaves the daily total and its block unchanged") {
+      test(
+        "8: a default (exempt) attachment takes its members out of the daily total and its block",
+      ) {
         for {
           r      <- rig()
           pr     <- ZIO.service[ProfileRepo]
@@ -747,8 +750,8 @@ object WeeklyBudgetSpec
         } yield assertTrue(
           before(a).usedMinutes == 35,
           before(a).blockReason.contains(MacBlockReason.TimeLimit),
-          after(a).usedMinutes == 35,
-          after(a).blockReason.contains(MacBlockReason.TimeLimit),
+          after(a).usedMinutes == 0,
+          after(a).blockReason.isEmpty,
           groupWeek(after(a), g).contains(35),
         )
       },
@@ -801,8 +804,8 @@ object WeeklyBudgetSpec
         )
       },
     ),
-    suite("no enforcement change before #2933")(
-      test("an app a group covers gets no extraAllowed carve, exempt or not") {
+    suite("carves read every budget that contains the app (#2933)")(
+      test("an app a group covers is carved while it is under every budget, exempt or not") {
         for {
           r    <- rig()
           pr   <- ZIO.service[ProfileRepo]
@@ -828,10 +831,10 @@ object WeeklyBudgetSpec
           allowedB = snapB.profiles(b).rules.extraAllowed.map(_.value).toSet
         } yield assertTrue(
           allowed.contains("youtube.com"),
-          !allowed.contains("roblox.com"),
-          !allowed.contains("minecraft.net"),
-          !allowedB.contains("roblox.com"),
-          !allowedB.contains("minecraft.net"),
+          allowed.contains("roblox.com"),
+          allowed.contains("minecraft.net"),
+          allowedB.contains("roblox.com"),
+          allowedB.contains("minecraft.net"),
         )
       },
     ),

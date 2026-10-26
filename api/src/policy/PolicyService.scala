@@ -40,6 +40,32 @@ final case class PolicyDecision(
     response: RouterDecisionResponse,
     profile: Option[Profile],
     dayState: Option[ProfileDayState],
+    // #2933 (design §8): the budget behind an `app_time_limit` verdict, for the block page.
+    budget: Option[ExhaustedBudget] = None,
+)
+
+/** #2933 (design §7.1): which kind of budget is exhausted. */
+enum BudgetKind(val wire: String) {
+  case App   extends BudgetKind("app")
+  case Group extends BudgetKind("group")
+}
+
+/** #2933: which window of a budget is exhausted. */
+enum BudgetWindow(val wire: String) {
+  case Day  extends BudgetWindow("day")
+  case Week extends BudgetWindow("week")
+}
+
+/**
+ * #2933 (design §7.1): one exhausted budget. `label` is the block-reason label (`app:<slug>` or
+ * `group:<id>`), `weekResetsAt` the end of the exhausted week (set for the Week window).
+ */
+final case class ExhaustedBudget(
+    kind: BudgetKind,
+    label: String,
+    name: String,
+    window: BudgetWindow,
+    weekResetsAt: Option[java.time.Instant],
 )
 
 trait PolicyService {

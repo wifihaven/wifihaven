@@ -105,6 +105,8 @@ final case class AppDayState(
     week: Option[WeekUsage] = None,
     // #2932: the attached group covering this app, if any (design §6.1).
     groupId: Option[AppGroupId] = None,
+    // #2933: the app's display name, for the block page's budget wording.
+    appName: String = "",
 )
 
 trait TimeStatusService {

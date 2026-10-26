@@ -262,6 +262,8 @@ final case class AppDisposition(
     // #2932: a disposition synthesized for a covered app with no assignment (D6). It has no
     // assignment id of its own and no app budget.
     coveredOnly: Boolean = false,
+    // #2933: the app's display name, for the block page's budget wording.
+    appName: String = "",
 )
 
 /** #2932 (design §6.1): which budget a figure belongs to. */
