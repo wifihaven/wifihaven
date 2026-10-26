@@ -338,18 +338,21 @@ object ProfileAppDispositions {
         )
         first.coverage match {
           case None    => base
-          // #2932 (design §6.1): a covered app. Its effective "counts toward daily" flag is the
-          // attachment's (D5). A covered app with no assignment is a synthesized TimeLimited
-          // disposition with no limits of its own. One with an assignment stays Blocked if its row
-          // is Blocked (stricter wins, D14) and is otherwise TimeLimited, so an Allowed row adds no
-          // unconditional carve (finding 2); only a TimeLimited row keeps its own limits.
+          // #2932 (design §6.1): a covered app. A covered app with no assignment is a synthesized
+          // TimeLimited disposition with no limits of its own. One with an assignment stays Blocked
+          // if its row is Blocked (stricter wins, D14) and is otherwise TimeLimited, so an Allowed
+          // row adds no unconditional carve (finding 2); only a TimeLimited row keeps its own
+          // limits. Its "counts toward daily" flag stays its own row's (a covered-only app counts)
+          // until group limits are enforced, so attaching a group never leaves its members neither
+          // capped nor counted (operator, 2026-10-26). TODO(#2933): take the attachment's flag
+          // (D5, design test 8) when group limits are enforced.
           case Some(c) =>
             val ownLimits = !first.coveredOnly && first.mode == AppMode.TimeLimited
             base.copy(
               mode =
                 if first.mode == AppMode.Blocked && !first.coveredOnly then AppMode.Blocked
                 else AppMode.TimeLimited,
-              exemptFromDaily = c.exemptFromDaily,
+              exemptFromDaily = !first.coveredOnly && first.exemptFromDaily,
               dailyMinutes = if ownLimits then first.dailyMinutes else None,
               weeklyMinutes = if ownLimits then first.weeklyMinutes else None,
               allowedDuringScheduleBlock =
