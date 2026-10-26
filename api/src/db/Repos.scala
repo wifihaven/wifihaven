@@ -2240,6 +2240,7 @@ class AppTimeLimitRepoLive(xa: Transactor[Task]) extends AppTimeLimitRepo {
         Option[Int],
         Option[Boolean],
         Boolean,
+        String,
     )
   private def toS(r: R) =
     AppTimeLimit(
@@ -2259,6 +2260,7 @@ class AppTimeLimitRepoLive(xa: Transactor[Task]) extends AppTimeLimitRepo {
         GroupCoverage(g, name, r._14, r._15, exempt),
       ),
       coveredOnly = r._17,
+      appName = r._18,
     )
 
   // The assignment rows, each with the attachment that covers its app on its profile. The covering
@@ -2270,7 +2272,7 @@ class AppTimeLimitRepoLive(xa: Transactor[Task]) extends AppTimeLimitRepo {
                 apa.exempt_from_daily, a.id, apa.id, apa.mode::text,
                 apa.allowed_during_schedule_block, ah.shared, apa.weekly_minutes,
                 g.id, g.name, pag.daily_minutes, pag.weekly_minutes, pag.exempt_from_daily,
-                FALSE
+                FALSE, a.name
            FROM app_policy_assignments apa
            JOIN apps a       ON a.id = apa.app_id
            JOIN app_hosts ah ON ah.app_id = apa.app_id
@@ -2288,7 +2290,7 @@ class AppTimeLimitRepoLive(xa: Transactor[Task]) extends AppTimeLimitRepo {
                 pag.exempt_from_daily, a.id, 0::bigint, 'time_limited',
                 TRUE, ah.shared, NULL::int,
                 g.id, g.name, pag.daily_minutes, pag.weekly_minutes, pag.exempt_from_daily,
-                TRUE
+                TRUE, a.name
            FROM profile_app_groups pag
            JOIN app_groups g        ON g.id = pag.group_id
            JOIN app_group_members m ON m.group_id = pag.group_id

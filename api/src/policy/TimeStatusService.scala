@@ -28,7 +28,7 @@ final case class ProfileDayState(
     blocked: Boolean,
     blockReason: Option[MacBlockReason],
     perApp: List[AppDayState],
-    // #2932 (design §6.5): one entry per attached group. Counted, not enforced (#2933 enforces).
+    // #2932 (design §6.5): one entry per attached group. Enforced through `PolicyService.appsOverBudget` (#2933).
     perGroup: List[BudgetState] = Nil,
     // #2932: the exact seconds behind `usedMinutes`, so a week can be floored once (design §6.3).
     usedSeconds: Long = 0L,
@@ -800,6 +800,7 @@ object TimeStatusService {
         usedSeconds = secs,
         weeklyLimitMinutes = a.weeklyMinutes,
         groupId = a.coverage.map(_.groupId),
+        appName = a.appName,
       )
     }
     val groups = d.groupBudgets.collect {

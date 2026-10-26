@@ -183,12 +183,22 @@ final case class ProfileAppDispositions(
    * `allowedDuringScheduleBlock = false`. Only passes true when the profile's whole-MAC block
    * reason is `Schedule`; Paused/TimeLimit/Manual leave this false so the toggle has no effect on
    * those paths. Default `false` keeps existing call sites (unit tests, legacy paths) correct.
+   *
+   * #2933 (D17): the AllowedDuring carve is also withheld for an app in `overBudget`, so a window
+   * no longer keeps an app reachable past its own daily cap, its weekly limit or its group's. The
+   * plain `AppMode.Allowed` carve is unchanged: an Allowed row has no budget, and a covered app's
+   * Allowed row was already turned into a TimeLimited disposition by
+   * [[ProfileAppDispositions.from]].
    */
   def enforcement(
       schedWindows: Map[AppPolicyAssignmentId, List[(AppScheduleMode, ScheduleWindow)]],
       capExhausted: Boolean,
       now: Instant,
       isScheduleBlock: Boolean = false,
+      // #2933 (D17): the apps over ANY budget that contains them (`PolicyService.appsOverBudget`).
+      // An active `allowed_during` window decides WHEN an app may be used and its budgets decide
+      // HOW MUCH, so the window's carve is also withheld for these.
+      overBudget: Set[AppId] = Set.empty,
   ): (List[Hostname], List[Hostname]) = {
     val allowed = scala.collection.mutable.ListBuffer.empty[Hostname]
     val blocked = scala.collection.mutable.ListBuffer.empty[Hostname]
@@ -212,7 +222,10 @@ final case class ProfileAppDispositions(
       // assignment opts out of the "allowed during bedtime" behaviour.
       val suppressedByScheduleToggle = isScheduleBlock && !d.allowedDuringScheduleBlock
       if (allowedActive) {
-        if (!(capExhausted && !d.exemptFromDaily) && !suppressedByScheduleToggle)
+        if (
+          !(capExhausted && !d.exemptFromDaily) && !suppressedByScheduleToggle &&
+          !overBudget.contains(d.appId)
+        )
           allowed ++= hosts
       } else if (blockedActive) {
         blocked ++= distinctive
@@ -337,6 +350,7 @@ object ProfileAppDispositions {
           distinctiveHosts = distinctive,
           allowedDuringScheduleBlock = first.allowedDuringScheduleBlock,
           weeklyMinutes = first.weeklyMinutes,
+          appName = first.appName,
         )
         first.coverage match {
           case None    => base
@@ -344,17 +358,16 @@ object ProfileAppDispositions {
           // TimeLimited disposition with no limits of its own. One with an assignment stays Blocked
           // if its row is Blocked (stricter wins, D14) and is otherwise TimeLimited, so an Allowed
           // row adds no unconditional carve (finding 2); only a TimeLimited row keeps its own
-          // limits. Its "counts toward daily" flag stays its own row's (a covered-only app counts)
-          // until group limits are enforced, so attaching a group never leaves its members neither
-          // capped nor counted (operator, 2026-10-26). TODO(#2933): take the attachment's flag
-          // (D5, design test 8) when group limits are enforced.
+          // limits. Its "counts toward daily" flag is the ATTACHMENT's, replacing the member's own
+          // (D5, design test 8): `exemptPatterns` and every carve read it, so a group is never half
+          // counted and half exempt.
           case Some(c) =>
             val ownLimits = !first.coveredOnly && first.mode == AppMode.TimeLimited
             base.copy(
               mode =
                 if first.mode == AppMode.Blocked && !first.coveredOnly then AppMode.Blocked
                 else AppMode.TimeLimited,
-              exemptFromDaily = !first.coveredOnly && first.exemptFromDaily,
+              exemptFromDaily = c.exemptFromDaily,
               dailyMinutes = if ownLimits then first.dailyMinutes else None,
               weeklyMinutes = if ownLimits then first.weeklyMinutes else None,
               allowedDuringScheduleBlock =
