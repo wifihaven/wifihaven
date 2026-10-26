@@ -1046,14 +1046,21 @@ case class ChangePasswordRequest(currentPassword: String, newPassword: String) d
  * in the body would be a client-supplied tenancy key, which is the #2533/#2386 defect class and, on
  * a credential write, a cross-household account-takeover primitive. `newPassword` is subject to the
  * same #2084 policy as every other password path.
+ *
+ * #2947: `mustChangePassword` is the admin's choice of what the set IS. `true` (the default, and
+ * what every pre-#2947 client gets by omitting the field) is a HANDOFF: the target is forced to
+ * replace it at next login. `false` makes the admin-typed password the member's real password. The
+ * route maps it onto one of `AuthService`'s two NAMED rotations; the boolean never reaches the
+ * credential write.
  */
-case class SetUserPasswordRequest(newPassword: String) derives JsonCodec
+case class SetUserPasswordRequest(newPassword: String, mustChangePassword: Boolean = true)
+    derives JsonCodec
 
 /**
- * Response to a successful admin-initiated set. `mustChangePassword` is always `true` and says what
- * the admin needs to hear: the credential they just chose is a HANDOFF — the target is forced to
- * replace it at next login (#2492/#586), so it does not persist as a secret the admin knows. The
- * plaintext is never echoed back, here or anywhere else.
+ * Response to a successful admin-initiated set. `mustChangePassword` echoes the rotation the route
+ * applied (#2947): `true` means the credential is a HANDOFF the target must replace at next login
+ * (#2492/#586); `false` means it stays their password. The plaintext is never echoed back, here or
+ * anywhere else.
  */
 case class SetUserPasswordResponse(mustChangePassword: Boolean = true) derives JsonCodec
 

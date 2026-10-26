@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { api } from '@/api/client'
-import type { CreateUserRequest, ProfileDetail, User, UserRole } from '@/types/api'
+import type { CreateUserRequest, ProfileDetail, SetUserPasswordResponse, User, UserRole } from '@/types/api'
 import { PageLoader } from './DashboardPage'
 import { useEscapeClose } from '@/hooks/useEscapeClose'
 import { useDebouncedSave, mergeSaveStatus } from '@/hooks/useDebouncedSave'
@@ -259,15 +259,19 @@ export function UsersPage() {
  * it would fire a real password change on every typing pause, each one revoking the member's
  * sessions (#2080) and leaving whatever half-typed prefix was in the box as their password.
  *
- * The success copy is the honest description of what happened: the password the admin just chose is
- * a handoff, not a shared secret — the server re-armed `must_change_password`, so the member is
- * bounced to /account at next login and picks their own.
+ * #2947: the admin chooses whether the password is a handoff (the server re-arms
+ * `must_change_password`, so the member is bounced to /account at next login) or the member's real
+ * password. The default differs by role: a parent usually manages a child's password, so a child's
+ * set keeps it; an adult's set still forces a change. The success copy is derived from the server's
+ * echo of what it applied, not from the checkbox.
  */
 function SetPasswordModal({ user, onClose }: { user: User; onClose: () => void }) {
   const [password, setPassword] = useState('')
+  const [requireChange, setRequireChange] = useState(user.role !== 'child')
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [done, setDone] = useState(false)
+  // `null` until the server answers; then the rotation it actually applied.
+  const [done, setDone] = useState<SetUserPasswordResponse | null>(null)
 
   async function submit() {
     if (password.length < MIN_PASSWORD_LENGTH) {
@@ -277,17 +281,11 @@ function SetPasswordModal({ user, onClose }: { user: User; onClose: () => void }
     setSaving(true)
     setError(null)
     try {
-      await api.users.setPassword(user.id, password)
+      const res = await api.users.setPassword(user.id, password, requireChange)
       // Clear the plaintext from component state the moment the server has it — there is no reason
       // for it to sit in the React tree behind the confirmation.
       setPassword('')
-      // The confirmation states the handoff unconditionally, and that is not an assumption: the
-      // route can only reach a 2xx via `setPasswordAsHandoff`, a distinct named method that cannot
-      // produce anything but `must_change_password = true`. The invariant is type-enforced at that
-      // seam, which is stronger than reading it back — echoing the constant over the wire and
-      // branching on it would look like a derived fact while being the same assumption one hop
-      // further out, and would leave a UI branch the server can never trigger.
-      setDone(true)
+      setDone(res)
     } catch (e) {
       // Surface the server's refusal verbatim rather than claiming success (#1191 discipline).
       setError(e instanceof Error ? e.message : 'Failed to set password')
@@ -302,8 +300,9 @@ function SetPasswordModal({ user, onClose }: { user: User; onClose: () => void }
         <>
           <p data-testid="set-password-done" className="text-sm text-brand-text">
             Password set for <span className="font-medium text-brand-ink">{user.username}</span>.
-            Give it to them now — they'll be asked to change it at the next login, and this one
-            stops working then.
+            {done.mustChangePassword
+              ? " Give it to them now — they'll be asked to change it at the next login, and this one stops working then."
+              : ' Give it to them now — it stays their password until someone changes it.'}
           </p>
           <div className="flex pt-2">
             <button
@@ -323,8 +322,7 @@ function SetPasswordModal({ user, onClose }: { user: User; onClose: () => void }
             </div>
           )}
           <p className="text-sm text-brand-text-muted">
-            For a member who is locked out and has no email address to receive a reset link. They
-            will have to choose their own password the next time they sign in.
+            For a member who is locked out and has no email address to receive a reset link.
           </p>
           <div>
             <label className="block text-xs font-semibold text-brand-text-muted uppercase tracking-wider mb-2">New password</label>
@@ -343,6 +341,23 @@ function SetPasswordModal({ user, onClose }: { user: User; onClose: () => void }
             />
             <p className="text-xs text-brand-text-muted mt-2">
               At least {MIN_PASSWORD_LENGTH} characters.
+            </p>
+          </div>
+          <div>
+            <label className="flex items-center gap-2 text-sm text-brand-ink cursor-pointer">
+              <input
+                type="checkbox"
+                data-testid="set-password-require-change"
+                checked={requireChange}
+                onChange={e => setRequireChange(e.target.checked)}
+                className="w-4 h-4 accent-brand-accent"
+              />
+              Make them choose a new password at next sign-in
+            </label>
+            <p data-testid="set-password-require-change-hint" className="text-xs text-brand-text-muted mt-1 ml-6">
+              {requireChange
+                ? 'The password you type here only works until they sign in and pick their own.'
+                : 'The password you type here stays their password until someone changes it.'}
             </p>
           </div>
           <div className="flex gap-3 pt-2">
