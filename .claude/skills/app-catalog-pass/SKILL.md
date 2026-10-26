@@ -252,6 +252,38 @@ above is now wrong, fix the step too — don't just log around it.
 
 ## Learnings log (newest first)
 
+- **2026-10-26 (#2943)** — **A thin cluster can be a real app rather than a
+  beacon when it spans two independently-owned apexes that are obviously
+  the same product's front door plus its asset backends — don't require all
+  three hosts to be siblings under one apex before trusting the shape.**
+  GDevelop (a no-code game-creation engine, same category as
+  `scratch`/`tinkercad`) showed only 34 combined proportional minutes across
+  `gdevelop.io` (the editor, title-confirmed), `public-game-resources.
+  gdevelop.io` and `resources.gdevelop-app.com` — two *different* apexes
+  (`gdevelop.io` vs `gdevelop-app.com`) for what is clearly one vendor's
+  editor + CDN split. The `freckle`/#2596 and `serato`/#2331 "diversity over
+  volume" precedent already covered multi-subdomain-one-apex cases; this is
+  the first candidate where the diversity crossed an apex boundary, and it
+  didn't change the call.
+- **2026-10-26 (#2943)** — **An `api.`/infra-looking single host for an
+  otherwise-legitimate school platform is still a skip without a
+  content-facing sibling, even when the main brand is well known and
+  clearly real.** `scalinghub.codehs.com` (CodeHS, a genuine K-12 CS
+  platform) answered 403 on plain AWS IPs with no page body — no
+  `codehs.com`/`www.codehs.com`/editor host anywhere in the same window.
+  Don't let "I recognize this brand and it's clearly legitimate" substitute
+  for the #1922 content-host check; a brand being real doesn't mean the
+  *specific observed host* is where a kid's browser actually goes.
+- **2026-10-26 (#2943)** — **A single-host, single-session school SSO/
+  portal candidate (`ic.svvsd.org` → Infinite Campus, a different vendor
+  from the already-templated `classlink.yml`) stays a watch-item below
+  `classlink`'s own bar (76 min / 12 subdomains) rather than getting its own
+  template at 15 min / 1 host / 1 presence session.** The #2908
+  "different vendors, not interchangeable" precedent licenses a SEPARATE
+  template for a different SSO vendor — it doesn't lower the volume bar for
+  shipping one. Keep the two questions (same-function-different-vendor →
+  separate template; is there enough volume to template at all → the
+  ordinary bar) independent.
 - **2026-10-19 (#2915)** — **A brand's digital-experience footprint can
   migrate to a whole new apex family over time, and the gap hides from a
   simple `_index.yml` diff because the OLD app slug still looks covered.**
