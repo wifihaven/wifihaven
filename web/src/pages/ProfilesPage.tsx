@@ -2206,8 +2206,8 @@ function AppRow({ app, profileId, onChanged, usedMins, usageStatus, budget, bloc
   const au = budget.appBySlug.get(`app:${app.app.slug}`)
   const budgetLeft = budget.status === 'success' && currentWeekly != null && au?.weekUsedMins != null
     ? tighterLeft({
-        dailyLimit: currentMinutes, dailyUsed: au.usedMins,
-        weeklyLimit: currentWeekly, weekUsed: au.weekUsedMins,
+        dailyLimit: au.limitMins, dailyUsed: au.usedMins,
+        weeklyLimit: au.weeklyLimitMins, weekUsed: au.weekUsedMins,
       })
     : null
 
@@ -2405,11 +2405,10 @@ function AppRow({ app, profileId, onChanged, usedMins, usageStatus, budget, bloc
             >ignores downtime<span className="opacity-60">×</span></button>
           )}
 
-          {/* Limit expander — allowed list only. A blocked app drops all
-              traffic, so it accrues nothing to cap and nothing to exempt. */}
           {/* #2935 (D14) — an assignment a group also covers. The chip takes the limit
-              chip's slot width-wise (it is short), so the collapsed row stays one line. */}
-          {isAllowedList && coveredBy != null && (
+              chip's slot width-wise (it is short), so the collapsed row stays one line. Shown on
+              Blocked rows too: D14 warns on every covered assignment. */}
+          {coveredBy != null && (
             <button
               type="button"
               data-testid={`${tid}-overlap-chip`}
@@ -2423,6 +2422,8 @@ function AppRow({ app, profileId, onChanged, usedMins, usageStatus, budget, bloc
               <span className="text-[8px] opacity-60">{overlapOpen ? '▲' : '▼'}</span>
             </button>
           )}
+          {/* Limit expander — allowed list only. A blocked app drops all
+              traffic, so it accrues nothing to cap and nothing to exempt. */}
           {isAllowedList && (
             isTimeLimited && (currentMinutes != null || currentWeekly != null) ? (
               <button

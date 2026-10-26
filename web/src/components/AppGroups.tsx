@@ -1,6 +1,6 @@
 // #2935 — household app groups on a profile (design §10). A group is one shared time budget over
 // several apps; this profile's attachment of it carries the limits. Everything here autosaves.
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { api } from '@/api/client'
 import { useGroupAttachmentsOf, useInvalidators, useProfiles } from '@/api/queries'
 import { AppIcon } from '@/components/AppIcon'
@@ -75,29 +75,42 @@ export function AddGroupMenu({ profileId, testIdPrefix, groups, attached, onChan
   const [open, setOpen] = useState(false)
   const [naming, setNaming] = useState(false)
   const [name, setName] = useState('')
+  // The group picked (or just created) that is waiting for its first daily limit. An attachment
+  // needs a limit, and none is invented: nothing is written until the parent has typed one.
+  const [chosen, setChosen] = useState<{ id: number; name: string } | null>(null)
+  const [minutes, setMinutes] = useState('')
   const [error, setError] = useState<string | null>(null)
+  const working = useRef(false)
   const w = useGroupWrites(profileId, onChanged)
   const options = groups.filter(g => !attached.some(a => a.groupId === g.id))
 
-  // A new attachment needs a limit; 60 min/day is a starting point the row's inputs then edit.
-  const starter: UpsertProfileAppGroupRequest = { dailyMinutes: 60, exemptFromDaily: true }
-
-  async function pick(groupId: number) {
-    setError(null)
-    try {
-      await w.attach(groupId, starter)
-      setOpen(false)
-    } catch (e) { setError(errMsg(e, 'Failed to add group')) }
+  function reset() {
+    setOpen(false); setNaming(false); setName(''); setChosen(null); setMinutes('')
   }
+
   async function createNew() {
     const trimmed = name.trim()
-    if (!trimmed) return
+    if (!trimmed || working.current) return
+    working.current = true
     setError(null)
     try {
       const g = await api.appGroups.create({ name: trimmed })
-      await w.attach(g.id, starter)
-      setName(''); setNaming(false); setOpen(false)
-    } catch (e) { setError(errMsg(e, 'Failed to create group')) }
+      setNaming(false); setName('')
+      setChosen({ id: g.id, name: g.name })
+    } catch (e) { setError(errMsg(e, 'Failed to create group')) } finally { working.current = false }
+  }
+
+  async function attachChosen() {
+    if (!chosen || working.current) return
+    const n = Number(minutes.trim())
+    if (minutes.trim() === '') { setChosen(null); return }
+    if (!Number.isFinite(n) || n <= 0) { setError('Enter minutes > 0'); return }
+    working.current = true
+    setError(null)
+    try {
+      await w.attach(chosen.id, { dailyMinutes: Math.round(n), exemptFromDaily: true })
+      reset()
+    } catch (e) { setError(errMsg(e, 'Failed to add group')) } finally { working.current = false }
   }
 
   return (
@@ -110,36 +123,54 @@ export function AddGroupMenu({ profileId, testIdPrefix, groups, attached, onChan
       >{open ? 'Close' : '+ Add group'}</button>
       {open && (
         <div className="absolute right-0 z-10 mt-1 w-56 bg-white border border-brand-border-strong rounded-xl shadow-lg p-1.5 space-y-1">
-          {options.map(g => (
-            <button
-              key={g.id}
-              type="button"
-              data-testid={`${testIdPrefix}-add-group-option-${g.id}`}
-              onClick={() => pick(g.id)}
-              className="w-full text-left text-xs px-2 py-1.5 rounded-lg hover:bg-brand-alt text-brand-ink truncate"
-            >{g.name}</button>
-          ))}
-          {naming ? (
-            <input
-              type="text"
-              autoFocus
-              value={name}
-              onChange={e => setName(e.target.value)}
-              onBlur={createNew}
-              onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); void createNew() } }}
-              placeholder="Group name"
-              aria-label="New group name"
-              data-testid={`${testIdPrefix}-add-group-name`}
-              className="w-full bg-white border border-brand-border-strong rounded-lg px-2 py-1 text-xs text-brand-ink"
-            />
-          ) : (
-            <button
-              type="button"
-              data-testid={`${testIdPrefix}-add-group-new`}
-              onClick={() => setNaming(true)}
-              className="w-full text-left text-xs px-2 py-1.5 rounded-lg hover:bg-brand-alt text-brand-accent"
-            >New group…</button>
-          )}
+          {chosen ? (
+            <label className="block text-[11px] text-brand-text-muted px-1">
+              Minutes per day for {chosen.name}
+              <input
+                type="number"
+                min={1}
+                autoFocus
+                value={minutes}
+                onChange={e => setMinutes(e.target.value)}
+                onBlur={attachChosen}
+                onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); void attachChosen() } }}
+                placeholder="min"
+                data-testid={`${testIdPrefix}-add-group-minutes`}
+                className="mt-1 w-full bg-white border border-brand-border-strong rounded-lg px-2 py-1 text-xs text-brand-ink"
+              />
+            </label>
+          ) : (<>
+            {options.map(g => (
+              <button
+                key={g.id}
+                type="button"
+                data-testid={`${testIdPrefix}-add-group-option-${g.id}`}
+                onClick={() => setChosen({ id: g.id, name: g.name })}
+                className="w-full text-left text-xs px-2 py-1.5 rounded-lg hover:bg-brand-alt text-brand-ink truncate"
+              >{g.name}</button>
+            ))}
+            {naming ? (
+              <input
+                type="text"
+                autoFocus
+                value={name}
+                onChange={e => setName(e.target.value)}
+                onBlur={createNew}
+                onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); void createNew() } }}
+                placeholder="Group name"
+                aria-label="New group name"
+                data-testid={`${testIdPrefix}-add-group-name`}
+                className="w-full bg-white border border-brand-border-strong rounded-lg px-2 py-1 text-xs text-brand-ink"
+              />
+            ) : (
+              <button
+                type="button"
+                data-testid={`${testIdPrefix}-add-group-new`}
+                onClick={() => setNaming(true)}
+                className="w-full text-left text-xs px-2 py-1.5 rounded-lg hover:bg-brand-alt text-brand-accent"
+              >New group…</button>
+            )}
+          </>)}
           {error && <p className="text-xs text-red-700 px-1">{error}</p>}
         </div>
       )}
@@ -200,6 +231,11 @@ function GroupRow({ profileId, attachment, group, apps, groups, budget, onChange
   const [error, setError] = useState<string | null>(null)
   const [daily, setDaily] = useState(attachment.dailyMinutes != null ? String(attachment.dailyMinutes) : '')
   const [weekly, setWeekly] = useState(attachment.weeklyMinutes != null ? String(attachment.weeklyMinutes) : '')
+  // Re-seed the inputs when the saved attachment changes (a failed save leaves the old values).
+  useEffect(() => {
+    setDaily(attachment.dailyMinutes != null ? String(attachment.dailyMinutes) : '')
+    setWeekly(attachment.weeklyMinutes != null ? String(attachment.weeklyMinutes) : '')
+  }, [attachment.dailyMinutes, attachment.weeklyMinutes])
   const memberIds = group?.memberAppIds ?? attachment.memberAppIds
   const members = memberIds
     .map(id => apps.find(a => a.app.id === id))
@@ -269,9 +305,10 @@ function GroupRow({ profileId, attachment, group, apps, groups, budget, onChange
   // limit is real data; a remaining figure is not, so it waits behind a skeleton instead).
   const gu = budget.groupById.get(attachment.groupId)
   const left = budget.status === 'success' && gu != null && gu.weekUsedMins != null
+    // Limits and usage both come from the one status body, so the figure cannot mix two reads.
     ? tighterLeft({
-        dailyLimit: attachment.dailyMinutes, dailyUsed: gu.usedMins,
-        weeklyLimit: attachment.weeklyMinutes, weekUsed: gu.weekUsedMins,
+        dailyLimit: gu.limitMins, dailyUsed: gu.usedMins,
+        weeklyLimit: gu.weeklyLimitMins, weekUsed: gu.weekUsedMins,
       })
     : null
 
@@ -306,6 +343,8 @@ function GroupRow({ profileId, attachment, group, apps, groups, budget, onChange
                 aria-label="Loading usage"
                 className="inline-block w-16 h-2 rounded-full bg-amber-500/30 animate-pulse"
               />
+            ) : budget.status === 'error' ? (
+              <span data-testid={`${tid}-budget-error`} title="Usage unavailable" className="font-mono">{summary} · —</span>
             ) : (
               <span className="font-mono">{left?.text ?? summary}</span>
             )}

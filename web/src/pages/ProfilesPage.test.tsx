@@ -3153,7 +3153,8 @@ describe('ProfilesPage — weekly limits and app groups (#2935)', () => {
     await user.clear(await screen.findByTestId('app-row-52-weekly-minutes'))
     await user.tab()
     await waitFor(() => expect(api.apps.setPolicy).toHaveBeenCalled())
-    const body = fn(api.apps.setPolicy).mock.calls.at(-1)![2]
+    const calls = fn(api.apps.setPolicy).mock.calls
+    const body = calls[calls.length - 1][2]
     expect(body).toMatchObject({ mode: 'time_limited', dailyMinutes: 60 })
     expect(body).not.toHaveProperty('weeklyMinutes')
   })
@@ -3164,7 +3165,8 @@ describe('ProfilesPage — weekly limits and app groups (#2935)', () => {
     await openApps(user)
     await user.click(await screen.findByTestId('app-row-52-move'))
     await waitFor(() => expect(api.apps.setPolicy).toHaveBeenCalled())
-    const body = fn(api.apps.setPolicy).mock.calls.at(-1)![2]
+    const calls = fn(api.apps.setPolicy).mock.calls
+    const body = calls[calls.length - 1][2]
     expect(body).toMatchObject({ mode: 'blocked', dailyMinutes: null })
     expect(body).not.toHaveProperty('weeklyMinutes')
   })
