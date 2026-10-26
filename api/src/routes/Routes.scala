@@ -368,12 +368,16 @@ object AuthRoutes {
                 s"password must be at least ${AuthService.MinPasswordLength} characters",
               ),
             ).when(!AuthService.isPasswordStrongEnough(spr.newPassword))
-            // #2308 SSOT: hash + store + token_version bump + the must_change_password arm, all in
-            // the one rotation `setPassword` also uses, differing only in that flag — so the admin's
-            // choice is a one-time handoff (#586/#2492), not a lasting shared secret.
-            _      <- auth
-              .setPasswordAsHandoff(uid, spr.newPassword)
-              .mapError(ApiError.Db(_))
+            // #2308 SSOT: hash + store + token_version bump all happen in the one private rotation
+            // behind both named methods, so sessions are revoked (#2080) whichever is chosen.
+            // #2947: the admin picks which. Toggle on (also what an older client gets by omitting
+            // the field) is a one-time handoff (#586/#2492), with the flag armed in the same
+            // statement. Toggle off is the flag-clearing rotation: the admin-typed password stays
+            // the member's. The choice is resolved HERE into a named call, never passed down.
+            _      <- (
+              if spr.mustChangePassword then auth.setPasswordAsHandoff(uid, spr.newPassword)
+              else auth.setPassword(uid, spr.newPassword)
+            ).mapError(ApiError.Db(_))
               .tapError(_ => AppMetrics.adminPasswordSet(Outcome.Error))
             // The audit record the target deserves: their credential was changed by someone else.
             // Actor, target and role only — the plaintext is never logged, here or anywhere.
@@ -381,10 +385,11 @@ object AuthRoutes {
               LogContext.annotate(LogContext.User, claims.sub) {
                 ZIO.logInfo(
                   s"admin password set: actor=${claims.sub} target=${target.username} " +
-                    s"targetRole=${UserRole.asString(target.role)} targetId=${uid.value}",
+                    s"targetRole=${UserRole.asString(target.role)} targetId=${uid.value} " +
+                    s"mustChangePassword=${spr.mustChangePassword}",
                 )
               }
-          } yield Response.json(SetUserPasswordResponse().toJson)
+          } yield Response.json(SetUserPasswordResponse(spr.mustChangePassword).toJson)
           handle.mapError(ErrorMapper.errorToResponse)
         },
       // #997: field-scoped partial update. Body is a subset of the User read

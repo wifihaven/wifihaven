@@ -97,16 +97,19 @@ trait AuthService {
    * Apply a new password to an existing user (by id): hash it, store it, clear
    * must_change_password, and bump token_version (#2080, revoking every previously-issued JWT). The
    * SINGLE SOURCE OF TRUTH for the password-rotation side effects — [[changePassword]] (after
-   * verifying the current password) and the #2308 reset-password path (after validating the reset
-   * token) both call this, so the rotation invariant (in particular the token_version bump) can't
-   * drift between the two. Fails only on a DB error; the caller maps it to its own error channel.
+   * verifying the current password), the #2308 reset-password path (after validating the reset
+   * token), and the admin set with its require-change toggle OFF (#2947: the admin has chosen to
+   * make the password the member's own, so there is nothing to hand off) all call this, so the
+   * rotation invariant (in particular the token_version bump) can't drift between them. Fails only
+   * on a DB error; the caller maps it to its own error channel.
    */
   def setPassword(userId: UserId, newPlaintext: String): Task[Unit]
 
   /**
    * #2576: [[setPassword]] plus re-arming `must_change_password`, for a password chosen by SOMEONE
    * ELSE — today only the household admin setting a locked-out adult's or child's credential (`POST
-   * /api/users/{id}/password`).
+   * /api/users/{id}/password`) with the require-change toggle on (#2947; the route calls
+   * [[setPassword]] when the admin turns it off).
    *
    * This and [[setPassword]] are the same private rotation with one bit flipped, so hashing,
    * storage and the token_version bump stay single-sourced (#2308) — there is no second credential
@@ -382,7 +385,8 @@ class AuthServiceLive(
   private def rotate(userId: UserId, newPlaintext: String, mustChange: Boolean): Task[Unit] =
     hashPassword(newPlaintext).flatMap(userRepo.applyPasswordRotation(userId, _, mustChange))
 
-  // Clears must_change_password (#586): the chooser is the owner, so there is nothing to hand off.
+  // Clears must_change_password (#586): the chooser is the owner — or the admin explicitly made it
+  // the owner's password (#2947) — so there is nothing to hand off.
   def setPassword(userId: UserId, newPlaintext: String): Task[Unit] =
     rotate(userId, newPlaintext, mustChange = false)
 
