@@ -103,3 +103,21 @@ describe('formatMins (#791)', () => {
     expect(formatMins(Infinity)).toBe('0m')
   })
 })
+
+// #2935 (D10): the weekly view is the calendar week, which includes days that have not happened yet.
+describe('groupBucketsByLocalDay — days after today (#2935)', () => {
+  it('leaves later days empty (null), never 0, and keeps real zeros for past days', () => {
+    const out = groupBucketsByLocalDay(
+      [{ bucketStart: '2026-05-19T08:00:00Z', usedMins: 25 }],
+      '2026-05-24', // week Mon 18 .. Sun 24
+      '2026-05-20', // today is Wed
+    )
+    expect(out.map(r => r.date)).toEqual([
+      '2026-05-18', '2026-05-19', '2026-05-20', '2026-05-21', '2026-05-22', '2026-05-23', '2026-05-24',
+    ])
+    expect(out.find(r => r.date === '2026-05-19')!.usedMins).toBe(25)
+    expect(out.find(r => r.date === '2026-05-18')!.usedMins).toBe(0)
+    expect(out.find(r => r.date === '2026-05-20')!.usedMins).toBe(0)
+    expect(out.filter(r => r.date > '2026-05-20').map(r => r.usedMins)).toEqual([null, null, null, null])
+  })
+})

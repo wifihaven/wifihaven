@@ -51,6 +51,7 @@ vi.mock('@/api/client', () => ({
       summaryAll: vi.fn(),
       grantExtension: vi.fn(),
       statusAllWeek: vi.fn(),
+      statusAll: vi.fn(),
     },
     usage: {
       series: vi.fn(),
@@ -216,6 +217,7 @@ beforeEach(() => {
   ;(api.time.summaryAll as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([kidsSummary, adultsSummary])
   ;(api.time.grantExtension as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({ id: 1, grantedMinutes: 30 })
   ;(api.time.statusAllWeek as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([])
+  ;(api.time.statusAll as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([])
   // #1036 — ProfileTimelineChart fires /api/usage/series whenever a card is
   // expanded (Today is the default tab). Default to an empty payload; specific
   // tests can override to populate top hosts/devices.
@@ -3012,5 +3014,86 @@ describe('ProfilesPage — weekly limits and app groups (#2935)', () => {
     await openApps(user)
     await user.click(await screen.findByTestId('profile-1-apps-section-add-allowed'))
     expect(await screen.findByTestId('profile-1-apps-section-picker-covered-60')).toHaveTextContent('In Games')
+  })
+
+  // Week-to-date usage (#2932 fields on GET /api/time/status), shown as the tighter remaining figure.
+  const usage = (over: Record<string, unknown> = {}) => ({
+    profileId: 1, profileName: 'Kids', date: '2026-10-21', dailyLimitMins: 120, usedMins: 0,
+    extensionMins: 0, remainingMins: 120, devices: [], hostUsage: [], groupUsage: [],
+    appUsage: [{
+      label: 'app:minecraft', domainPattern: 'minecraft.com', limitMins: 60, usedMins: 20, remainingMins: 40,
+      weeklyLimitMins: 300, weekUsedMins: 230, weekStart: '2026-10-19', weekResetsAt: '2026-10-26T06:00:00Z',
+    }],
+    ...over,
+  })
+  const limited = (id: number, name: string, extra: Record<string, unknown>) =>
+    app(id, name, { mode: 'time_limited', ...extra })
+
+  it('shows a skeleton, never 0m, on a weekly-limited chip while week usage is pending', async () => {
+    fn(api.apps.list).mockResolvedValue([limited(52, 'Minecraft', { dailyMinutes: 60, weeklyMinutes: 300 })])
+    fn(api.time.statusAll).mockReturnValue(new Promise(() => {}))
+    const user = userEvent.setup()
+    await openApps(user)
+    const chip = await screen.findByTestId('app-row-52-limit-toggle')
+    expect(chip.textContent).not.toMatch(/0m/)
+    expect(screen.getByTestId('app-row-52-budget-loading')).toBeInTheDocument()
+  })
+
+  it('shows the tighter remaining figure on a chip: weekly when it is the smaller', async () => {
+    fn(api.apps.list).mockResolvedValue([limited(52, 'Minecraft', { dailyMinutes: 60, weeklyMinutes: 300 })])
+    fn(api.time.statusAll).mockResolvedValue([usage()])
+    const user = userEvent.setup()
+    await openApps(user)
+    const chip = await screen.findByTestId('app-row-52-limit-toggle')
+    await waitFor(() => expect(chip).toHaveTextContent('30m left this week'))
+  })
+
+  it('shows the tighter remaining figure on a chip: daily when it is the smaller', async () => {
+    fn(api.apps.list).mockResolvedValue([limited(52, 'Minecraft', { dailyMinutes: 60, weeklyMinutes: 300 })])
+    fn(api.time.statusAll).mockResolvedValue([usage({
+      appUsage: [{
+        label: 'app:minecraft', domainPattern: 'minecraft.com', limitMins: 60, usedMins: 20, remainingMins: 40,
+        weeklyLimitMins: 300, weekUsedMins: 100, weekStart: '2026-10-19', weekResetsAt: '2026-10-26T06:00:00Z',
+      }],
+    })])
+    const user = userEvent.setup()
+    await openApps(user)
+    await waitFor(() => expect(screen.getByTestId('app-row-52-limit-toggle')).toHaveTextContent('40m left today'))
+  })
+
+  it('draws one usage bar per limit in the drawer once usage has loaded', async () => {
+    fn(api.apps.list).mockResolvedValue([limited(52, 'Minecraft', { dailyMinutes: 60, weeklyMinutes: 300 })])
+    fn(api.time.statusAll).mockResolvedValue([usage()])
+    const user = userEvent.setup()
+    await openApps(user)
+    await user.click(await screen.findByTestId('app-row-52-limit-toggle'))
+    expect(await screen.findByTestId('app-row-52-usage-week')).toHaveTextContent('3:50 / 5:00')
+  })
+
+  it('shows a group chip with the remaining time, and a skeleton while pending', async () => {
+    fn(api.apps.list).mockResolvedValue([app(50, 'YouTube', { mode: 'allowed' })])
+    fn(api.appGroups.list).mockResolvedValue([games])
+    fn(api.appGroups.forProfile).mockResolvedValue([attachment()])
+    fn(api.time.statusAll).mockReturnValue(new Promise(() => {}))
+    const user = userEvent.setup()
+    await openApps(user)
+    expect(await screen.findByTestId('group-row-7-budget-loading')).toBeInTheDocument()
+    expect(screen.getByTestId('group-row-7-toggle').textContent).not.toMatch(/0m/)
+  })
+
+  it('shows the group remaining time once usage has loaded', async () => {
+    fn(api.apps.list).mockResolvedValue([app(50, 'YouTube', { mode: 'allowed' })])
+    fn(api.appGroups.list).mockResolvedValue([games])
+    fn(api.appGroups.forProfile).mockResolvedValue([attachment()])
+    fn(api.time.statusAll).mockResolvedValue([usage({
+      groupUsage: [{
+        groupId: 7, name: 'Games', memberAppIds: [60, 61], limitMins: 60, usedMins: 50, remainingMins: 10,
+        weeklyLimitMins: 300, weekUsedMins: 100, weekStart: '2026-10-19', weekResetsAt: '2026-10-26T06:00:00Z',
+        exemptFromDaily: true,
+      }],
+    })])
+    const user = userEvent.setup()
+    await openApps(user)
+    await waitFor(() => expect(screen.getByTestId('group-row-7-toggle')).toHaveTextContent('10m left today'))
   })
 })
