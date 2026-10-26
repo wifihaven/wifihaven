@@ -103,7 +103,7 @@ export function AddGroupMenu({ profileId, testIdPrefix, groups, attached, onChan
   async function attachChosen() {
     if (!chosen || working.current) return
     const n = Number(minutes.trim())
-    if (minutes.trim() === '') { setChosen(null); return }
+    if (minutes.trim() === '') { setError(`Enter a daily limit to add ${chosen.name}`); return }
     if (!Number.isFinite(n) || n <= 0) { setError('Enter minutes > 0'); return }
     working.current = true
     setError(null)

@@ -3179,7 +3179,14 @@ describe('ProfilesPage — weekly limits and app groups (#2935)', () => {
     fn(api.appGroups.forProfile).mockResolvedValue([attachment()])
     const user = userEvent.setup()
     await openApps(user)
-    expect(await screen.findByTestId('app-row-60-overlap-chip')).toHaveTextContent('Also in Games')
+    const chip = await screen.findByTestId('app-row-60-overlap-chip')
+    expect(chip).toHaveTextContent('Also in Games')
+    // A Blocked row has no budget of its own to run out: the copy says what removing it does.
+    await user.click(chip)
+    const drawer = await screen.findByTestId('app-row-60-overlap-drawer')
+    expect(drawer).toHaveTextContent('blocked on this profile')
+    expect(drawer).toHaveTextContent("lifts that block")
+    expect(drawer).not.toHaveTextContent('Both budgets apply')
   })
 
   it('takes the remaining figure from the status body, limits and usage together', async () => {

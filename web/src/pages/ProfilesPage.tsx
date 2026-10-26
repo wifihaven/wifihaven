@@ -2415,7 +2415,9 @@ function AppRow({ app, profileId, onChanged, usedMins, usageStatus, budget, bloc
               aria-expanded={overlapOpen}
               disabled={busy}
               onClick={() => setOverlapOpen(v => !v)}
-              title={`${app.app.name} is also covered by the ${coveredBy.name} group. Both apply.`}
+              title={isAllowedList
+                ? `${app.app.name} is also covered by the ${coveredBy.name} group. Both apply.`
+                : `${app.app.name} is blocked on this profile and also in the ${coveredBy.name} group.`}
               className={`${chipBase} max-w-[9rem] bg-amber-500/15 border-amber-500/40 text-amber-800`}
             >
               <span className="truncate">Also in <em className="not-italic font-semibold">{coveredBy.name}</em></span>
@@ -2732,8 +2734,9 @@ function AppRow({ app, profileId, onChanged, usedMins, usageStatus, budget, bloc
       {overlapOpen && coveredBy != null && (
         <div data-testid={`${tid}-overlap-drawer`} className="border-t border-brand-border px-3 py-2.5 bg-brand-surface rounded-b-xl">
           <p className="text-[11px] leading-relaxed text-amber-800">
-            {app.app.name} is also in the {coveredBy.name} group on this profile. Both budgets
-            apply, and whichever runs out first blocks it.
+            {isAllowedList
+              ? `${app.app.name} is also in the ${coveredBy.name} group on this profile. Both budgets apply, and whichever runs out first blocks it.`
+              : `${app.app.name} is blocked on this profile and also in the ${coveredBy.name} group. Removing it from this profile lifts that block. ${app.app.name} then follows the ${coveredBy.name} group's limits.`}
           </p>
           <button
             type="button"
