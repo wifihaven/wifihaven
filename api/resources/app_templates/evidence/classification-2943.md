@@ -56,10 +56,21 @@ $ dig +short resources.gdevelop-app.com
 104.26.8.65 / 104.26.9.65 / 172.67.74.45     # different distribution, same Cloudflare /24 class
 ```
 
-All three hosts are on Cloudflare's shared 104.26.x/172.67.x anycast edge —
-ordinary accepted Class 2 (multi-tenant CDN, no demonstrated collision with
-an unrelated site in this household's own traffic; same standing as
-`youtube.yml`'s Cloudflare-fronted hosts).
+`gdevelop-app.com` is confirmed first-party by a direct link, not just
+name-similarity plus shared infra (the #2753 whois-trap lesson): gdevelop.io's
+own homepage embeds a "games-showcase" section whose images are served
+directly from `gdevelop-app.com/games-showcase/images/…`.
+
+```
+$ curl -sSL https://gdevelop.io | grep -o 'gdevelop-app\.com/games-showcase/images/[^"]*' | head -1
+gdevelop-app.com/games-showcase/images/10d3mBn4E5e8y2Z3JYd8mmIpQMFfTRvYz
+```
+
+All three hosts are also on Cloudflare's shared 104.26.x/172.67.x anycast
+edge — ordinary accepted Class 2 (multi-tenant CDN, no demonstrated
+collision with an unrelated site in this household's own traffic; same
+standing as `youtube.yml`'s Cloudflare-fronted hosts) — but that shared-edge
+fact is collateral context, not the evidence for the brand link above.
 
 GDevelop is a no-code, browser-based game-creation engine — functionally
 the same category as the already-templated `scratch`/`tinkercad` (a kid

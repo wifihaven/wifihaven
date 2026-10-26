@@ -253,18 +253,24 @@ above is now wrong, fix the step too — don't just log around it.
 ## Learnings log (newest first)
 
 - **2026-10-26 (#2943)** — **A thin cluster can be a real app rather than a
-  beacon when it spans two independently-owned apexes that are obviously
-  the same product's front door plus its asset backends — don't require all
-  three hosts to be siblings under one apex before trusting the shape.**
-  GDevelop (a no-code game-creation engine, same category as
-  `scratch`/`tinkercad`) showed only 34 combined proportional minutes across
-  `gdevelop.io` (the editor, title-confirmed), `public-game-resources.
-  gdevelop.io` and `resources.gdevelop-app.com` — two *different* apexes
-  (`gdevelop.io` vs `gdevelop-app.com`) for what is clearly one vendor's
-  editor + CDN split. The `freckle`/#2596 and `serato`/#2331 "diversity over
-  volume" precedent already covered multi-subdomain-one-apex cases; this is
-  the first candidate where the diversity crossed an apex boundary, and it
-  didn't change the call.
+  beacon when it spans two DIFFERENT apexes of one vendor — don't require
+  all hosts to share one apex before trusting the shape, but don't rest the
+  same-vendor claim on name-similarity alone either.** GDevelop (a no-code
+  game-creation engine, same category as `scratch`/`tinkercad`) showed only
+  34 combined proportional minutes across `gdevelop.io` (the editor,
+  title-confirmed), `public-game-resources.gdevelop.io` and
+  `resources.gdevelop-app.com` — two different apexes (`gdevelop.io` vs
+  `gdevelop-app.com`) for one vendor's editor + CDN split. What actually
+  established the two apexes are one vendor's (not just the #2753 whois-trap
+  shared-Cloudflare-edge coincidence) was a direct link: gdevelop.io's own
+  homepage embeds a "games-showcase" section whose images are served from
+  `gdevelop-app.com/games-showcase/images/…`. The `freckle`/#2596 and
+  `serato`/#2331 "diversity over volume" precedent already covered
+  multi-subdomain-one-apex cases; `plex.yml` (#1705) already covers a
+  two-apex case too (`plex.tv` control plane + `plex.direct` media bytes) —
+  this is not the first candidate to cross an apex boundary, just the first
+  one that needed an explicit ownership check (gdevelop.io's) rather than
+  the operator's own prior knowledge (Plex) to make the pairing legitimate.
 - **2026-10-26 (#2943)** — **An `api.`/infra-looking single host for an
   otherwise-legitimate school platform is still a skip without a
   content-facing sibling, even when the main brand is well known and
