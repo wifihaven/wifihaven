@@ -45,3 +45,14 @@ hosts:
   # traffic-driven additions (#2792): 30-day prod recent-apexes sweep (28
   # devices, 2026-09-15).
   - stake.us # Stake's US sweepstakes-casino variant (Gold Coins / Stake Cash dual currency)
+  #
+  # traffic-driven pass (#2952): 30-day prod recent-apexes sweep across all
+  # 30 devices, 2026-10-27. No additions this pass.
+  #   betgenius.com   confirmed Genius Sports' B2B sports-betting data/
+  #                   technology brand — sells odds feeds and risk-
+  #                   management software TO licensed sportsbooks, it is
+  #                   not itself a consumer-facing betting site. Blocking
+  #                   it wouldn't stop consumer gambling (the sportsbook
+  #                   itself is a separate apex) and risks collateral on
+  #                   unrelated sports apps/scores that embed the same data
+  #                   feed. Held out as out-of-scope B2B infra, only 2 hits.

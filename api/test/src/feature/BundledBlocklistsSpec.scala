@@ -187,6 +187,8 @@ object BundledBlocklistsSpec
         assertTrue(ads.contains(Hostname.unsafe("adnami.io"))) &&
         // traffic-driven addition pinned for presence (#2911)
         assertTrue(ads.contains(Hostname.unsafe("bttrack.com"))) &&
+        // traffic-driven addition pinned for presence (#2952)
+        assertTrue(ads.contains(Hostname.unsafe("stickyadstv.com"))) &&
         assertTrue(meta.isDefined) &&
         assertTrue(meta.exists(m => m.bundled && m.name == "Ads & Trackers"))
     },
@@ -547,6 +549,43 @@ object BundledBlocklistsSpec
         "ncaudienceexchange.com",
         "mmganalytics.com",
         "binsiad.com",
+      ).map(Hostname.unsafe)
+      for {
+        inlineLists <- loadInlineOnly
+        offenders = inlineLists.flatMap { bl =>
+          val hosts = bl.content match {
+            case BundledBlocklistContent.Inline(hs) => hs
+            case _                                  => Nil
+          }
+          hosts
+            .filter { x =>
+              val xv = x.value.toLowerCase
+              heldOut.exists { h =>
+                val hv = h.value.toLowerCase
+                xv == hv || xv.endsWith("." + hv)
+              }
+            }
+            .map(x => s"${bl.id.value}:${x.value}")
+        }
+      } yield
+      // liveness anchor: the ads list loaded, so the absence check is not vacuous
+      assertTrue(inlineHostsOf(inlineLists, "ads").contains(Hostname.unsafe("mgid.com"))) &&
+        assertTrue(offenders.isEmpty)
+    },
+    test("#2952: CDN-fronted blocklist-pass candidates stay out of every inline list") {
+      // Each of these read as genuine ad-tech (or, for gd.games/suno.ai, as a
+      // genuine games/ai product) but the host that actually appears in
+      // traffic is CDN-fronted (Cloudflare, Akamai EdgeSuite, or CloudFront)
+      // on at least one observed host, so none can be an IP-layer enforcement
+      // target without taking unrelated tenants with it. See ads.yml's #2952
+      // comment and evidence/multi-category-classification-2952.md for
+      // per-host resolution detail.
+      val heldOut = List(
+        "adinplay.com",
+        "loopme.me",
+        "dxtech.ai",
+        "gd.games",
+        "suno.ai",
       ).map(Hostname.unsafe)
       for {
         inlineLists <- loadInlineOnly

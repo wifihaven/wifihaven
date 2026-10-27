@@ -378,3 +378,32 @@ hosts:
   #   flux.ai         PCB-design CAD, NOT the Flux image model — standing
   #                   exclusion, re-confirmed by this household's own
   #                   easyeda.com / jlcpcb.com / pcb-hero.com traffic.
+  #
+  # traffic-driven pass (#2952): 30-day prod recent-apexes sweep across all
+  # 30 devices, 2026-10-27. No additions this pass.
+  #   suno.ai         confirmed genuine consumer AI music generator (text-
+  #                   to-song), but its only observed host, cdn2.suno.ai,
+  #                   CNAMEs onto a dedicated CloudFront distribution
+  #                   (99.84.118.x) — an unconditional #2823 shared-CDN
+  #                   skip despite the strong, unambiguous identity. Filed
+  #                   in ads.yml's held-out notes (#2952) for cross-reference.
+  #   ivy.ai, sierra.ai   both confirmed B2B conversational-AI customer-
+  #                   service/chatbot platforms for institutions (higher-ed/
+  #                   healthcare/gov for Ivy; enterprise CX for Sierra,
+  #                   Bret Taylor's startup) — out of this category's
+  #                   consumer-product scope, same class as dxtech.ai/
+  #                   castify.ai (#2792).
+  #   wandb.ai        Weights & Biases, an MLOps/experiment-tracking tool for
+  #                   ML engineers — developer tooling, out of scope (the
+  #                   opencode.ai precedent, #2729).
+  #   modernintelligence.ai   a defense-sector AI company (maritime
+  #                   surveillance) — not a consumer product at all.
+  #   learnings.ai    139MB/4402 hits, the highest-traffic unidentified
+  #                   apex this pass — observed hosts (api., hermes-api.,
+  #                   api-abtest-cdn.) suggest a mobile app backend, but no
+  #                   search or site fetch confirmed a specific product or
+  #                   company. Held out unverified; worth a fresh look next
+  #                   pass rather than guessing from the name.
+  #   nrich.ai        ambiguous B2B marketing/ABM personalization platform
+  #                   (sources disagree on exact product) — not a consumer
+  #                   AI product either way.

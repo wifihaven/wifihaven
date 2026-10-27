@@ -906,3 +906,62 @@ hosts:
   # would not clear the #2823 rule without a different observed host.
   # coderpad.io: false positive (developer technical-interview platform, no
   # ad-tech signal at all).
+  #
+  # traffic-driven additions (#2952): 30-day prod recent-apexes sweep across
+  # all 30 devices plus a serial /api/logs keyword sweep, 2026-10-27.
+  # Observed hosts resolved same day.
+  #
+  # stickyadstv.com is Comcast FreeWheel's StickyADS.tv (AdExchanger/
+  # streamtvinsider coverage of the 2016 acquisition), a video SSP for
+  # premium publishers. Its only observed host, ads.stickyadstv.com, answers
+  # on a dedicated Cogent Communications block (38.134.110.235-236), not a
+  # shared CDN — clears the #2823 rule.
+  # fout.jp is FreakOut Holdings, Inc. (confirmed via whois netname
+  # "FOUT-NET"), a Japanese DSP/ad-exchange operator; a websearch alone
+  # misleadingly suggested an unrelated "Fout Co., Ltd." IT-services reading,
+  # but the IP-level whois settles it. Observed hosts: sync.fout.jp, on
+  # FreakOut's own dedicated block (202.232.238.x, same FOUT-NET whois); and
+  # sync.rfp.fout.jp, on a GCP customer load-balancer address (34.49.109.x) —
+  # a normal single-tenant GCP deployment, not Google's own shared-GFE
+  # product frontend (the nexverse.ai precedent, #2836).
+  # appier.net is Appier, a confirmed AI-driven marketing/advertising company
+  # (Netify: cross-site tracking cookies on publisher + advertiser sites).
+  # Its observed hosts (a.c.appier.net, td-pixel.c.appier.net,
+  # usrtb.c.appier.net, vst.c.appier.net) resolve via Akamai's GTM/DNS
+  # traffic-steering product (`*.akadns.net`) onto Appier's own dedicated
+  # backends across GCP/Linode/OVH — GTM returns the customer's own IPs, it
+  # is not Akamai's shared edge-cache product (`edgesuite.net`/`akamai.net`,
+  # the loopme.me case below), so it does not arm a shared pool.
+  # All three are corroborated by subdomain presence in the ads-extended
+  # (StevenBlack) feed.
+  #
+  # Held out this pass (recorded so a later pass does not re-guess):
+  # adinplay.com (confirmed: Venatus-owned HTML5/browser-game ad network) —
+  # its only observed host, api.adinplay.com, is Cloudflare-fronted
+  # (104.26.x/172.67.x), an unconditional #2823 skip.
+  # loopme.me (confirmed: LoopMe, a London AdTech company that acquired the
+  # already-curated Chartboost in Dec 2024) — one observed host,
+  # csync.loopme.me, is on dedicated GCP infra, but a second, i.loopme.me,
+  # CNAMEs onto Akamai's shared EdgeSuite CDN (`edgesuite.net`/
+  # `akamai.net`) — per the skmads.com rule (#2918), any CDN-fronted
+  # observed host disqualifies the whole apex regardless of the others.
+  # dxtech.ai (previously held out of ai.yml as B2B IT-consulting, #2792) —
+  # its observed host here, sync.dxtech.ai, is a distinct cookie-sync
+  # pattern, but it is Cloudflare-fronted (104.21.x/172.67.x), an
+  # unconditional #2823 skip independent of the identity question.
+  # gd.games (confirmed: GameDistribution, Azerion's HTML5 game-syndication
+  # network — a games.yml-shaped candidate, not ads) is Cloudflare-fronted
+  # (104.26.x/172.67.x) on its only observed host; held out of games.yml too.
+  # suno.ai (confirmed: a well-known consumer AI music generator — an
+  # ai.yml-shaped candidate) is CloudFront-fronted on its only observed host,
+  # cdn2.suno.ai (CNAME to a dedicated cloudfront.net distribution,
+  # 99.84.118.x); held out of ai.yml despite a strong, unambiguous identity.
+  # smilewanted.com, rmbl.ws, cognitivlabs.com, samplicio.us, adncdn.net: no
+  # confirmed identity (a Rumble/Cognitiv-adjacent name is not the same
+  # domain per whois/registrar checks; samplicio.us reads as Dynata-style
+  # survey-sample routing, a market-research dual-use case more than a
+  # confirmed ad apex). ad-score.com, syncingbridge.com, adgrx.com,
+  # adtech.ink: standing low-signal holds, re-confirmed, no new evidence.
+  - stickyadstv.com
+  - fout.jp
+  - appier.net

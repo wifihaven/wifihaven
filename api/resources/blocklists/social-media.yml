@@ -84,3 +84,13 @@ hosts:
   # wasn't added; it appeared this run (450KB / 26 hits), so adding it now
   # per that pass's own guidance. See evidence/multi-category-classification-2759.md.
   - whatsapp.com # WhatsApp's bare apex, sibling of the already-curated whatsapp.net
+  #
+  # traffic-driven pass (#2952): 30-day prod recent-apexes sweep across all
+  # 30 devices, 2026-10-27. No additions this pass.
+  #   gorgias.chat    confirmed Gorgias, an e-commerce AI helpdesk/live-chat
+  #                   widget (Shopify app) — a customer-support tool sites
+  #                   embed, not a social network itself; same dual-use
+  #                   class as other embedded chat/support SDKs.
+  #   snapkit.com, lazybumblebee.com   re-confirmed standing skips (#2503,
+  #                   #2756) — Snap's own developer SDK and an unrelated
+  #                   lifestyle blog, respectively. No new evidence either way.
