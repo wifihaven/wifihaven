@@ -232,6 +232,9 @@ Configure infra declaratively in-repo (Render `render.yaml`, GitHub Actions, `gh
 ### Always isolate spawned work in a worktree
 Spawned sessions/agents that edit files must use an isolated git worktree under `.claude/worktrees/<slug>` — the top-level checkout is usually on some other in-flight branch. → see [`docs/process/worktree-isolation.md`](docs/process/worktree-isolation.md)
 
+### Never force-push — merge `origin/main` into a pushed branch {#no-force-push}
+Force-push (including `--force-with-lease`) is banned. Plans and briefs never say "rebase" for a pushed branch: merge `origin/main` into it and push normally. → see [`docs/process/no-force-push.md`](docs/process/no-force-push.md)
+
 ### Backwards compatibility — the router↔API wire is a public contract
 API and agents deploy independently. Wire-visible changes are additive only, both sides ignore unknown fields, removals need a deprecation window. Non-additive changes are gated on capability negotiation (#376). UCI keys, CLI flags, and DB schema are NOT part of the wire contract. → see [`docs/process/wire-contract.md`](docs/process/wire-contract.md)
 
