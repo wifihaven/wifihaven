@@ -44,14 +44,15 @@
 #
 # All of them carry severity=warning + env=prod labels, which the notification
 # policy in alerting.tf routes to the wifihaven-warning (email) contact point.
-# None of these are ratio queries, so unlike the critical set (§7.1) they need
-# no zero-traffic guard — a counter that never increments is simply absent
+# None of these except W18 (#2936) are ratio queries, so unlike the critical set
+# (§7.1) they need no zero-traffic guard — a counter that never increments is simply absent
 # (no_data_state = OK), which must not fire. W12 (#2477) and W14 are the TWO
 # deliberate inversions of that reading: both are liveness rules, so for them
 # absence is the FAILURE, and each therefore turns absence into a value inside
 # its own expression (`absent(...)` for W12, `or vector(0)` + `< bool` for W14)
 # rather than relying on a no_data verdict the group template does not — and for
-# W10's sake must not — provide.
+# W10's sake must not — provide. W18 is the one ratio query here and carries its
+# own guard: its `and` returns nothing when there were no reads, which is healthy.
 #
 # W15 (#2736) is a liveness rule too, but it deliberately does NOT make that
 # inversion, and the difference is worth being exact about. Its signal
@@ -752,7 +753,8 @@ locals {
     # every 15 min, so that is the longest a refill should wait for the job, and every read
     # between the invalidation and the next tick that misses a row also refills it. Hits, by
     # contrast, accrue on every snapshot build and every /api/time/status read of every prior day
-    # of the week. So in steady state refills are a small fraction of reads, and a sustained high
+    # of the week, and on the rollup job's own settle pass, which calls settleWeek (and so
+    # priorDays) for every household on every 15 min tick. So in steady state refills are a small fraction of reads, and a sustained high
     # FRACTION means rows are not staying settled (the write-back is failing quietly, or
     # something keeps invalidating, or the settle pass is not running). A fraction is used rather
     # than an absolute rate because the household count is not a metric.
@@ -769,7 +771,7 @@ locals {
       gt       = 0
       for      = "3h"
       paused   = false
-      summary  = "More than 20% of settled-day budget reads have been refills (computed live and written back) for 3 hours, with more than 12 in the last hour. Past days should be read as hits after they settle, so rows are not staying settled. Weekly and group budget enforcement still works because a refill returns the same figure. Each read now pays a live per-day computation, and DB load grows with it. FIRST: the 'Weekly budgets: settled-day reads by outcome' panel on the rollup-health dashboard. If errors are also non-zero, see W19. If refills line up with a deploy or with settings or profile edits, it is invalidation churn and should settle on its own. Otherwise check that the rollup job is ticking (rollup-health) and grep the API log for the settle pass."
+      summary  = "More than 20% of settled-day budget reads have been refills (computed live and written back) for 3 hours, with more than 12 in the last hour. Past days should be read as hits after they settle, so rows are not staying settled. Weekly and group budget enforcement still works because a refill returns the same figure. Each read now pays a live per-day computation, and DB load grows with it. FIRST: the 'Weekly budgets: settled-day reads by outcome' panel on the rollup-health dashboard. If errors are also non-zero, see W19. If refills line up with a deploy or with settings or profile edits, it is invalidation churn and should settle on its own. Otherwise check that the rollup job is ticking (rollup-health) and grep the API log for 'settled usage: not settling' (a write-back skipped because the day's definition changed meanwhile), 'time_used_daily tick skipped household' and 'rollup time_used_daily tick ok'."
     }
     # W19 THRESHOLD: any `error` at all, sustained. An error is a refill whose live computation or
     # write-back failed (a DB error or timeout), which fails that week read, and with it the
@@ -783,7 +785,7 @@ locals {
       gt       = 0
       for      = "15m"
       paused   = false
-      summary  = "Settled-day budget reads have been failing for at least 15 minutes (budget_usage_settle_total outcome=error). Each error is a failed live computation or write-back of a past day's usage. It fails that household's week read, and with it the snapshot and time-status for the week. FIRST: grep the API log for the exception around the settle pass and check db-health for timeouts or connection exhaustion; the 'Weekly budgets: settled-day reads by outcome' panel on the rollup-health dashboard shows when it started."
+      summary  = "Settled-day budget reads have been failing for at least 15 minutes (budget_usage_settle_total outcome=error). Each error is a failed live computation or write-back of a past day's usage. It fails that household's week read, and with it the snapshot and time-status for the week. FIRST: grep the API log for 'time_used_daily tick skipped household' and the exception around it, and check db-health for timeouts or connection exhaustion; the 'Weekly budgets: settled-day reads by outcome' panel on the rollup-health dashboard shows when it started."
     }
   }
 }
