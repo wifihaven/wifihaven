@@ -12,4 +12,4 @@ Force-pushing is not allowed: `git push --force`, `-f`, `--force-with-lease`, an
 
 - A plan, brief or spawn prompt never says "rebase onto `origin/main`" for a branch that has been pushed. Say "merge `origin/main` into the branch" instead.
 - Rebasing a branch that has not been pushed yet is fine. Once it is pushed, merge.
-- If you already rebased a pushed branch locally, do not push it. Branch from `origin/<branch>`, merge `origin/main`, cherry-pick the new commits onto it, and push that.
+- If you already rebased a pushed branch locally, do not push it. Branch from `origin/<branch>`, merge `origin/main`, cherry-pick the commits that are not on `origin/<branch>` onto it (the pre-rebase SHAs are in `git reflog`), and push that.
