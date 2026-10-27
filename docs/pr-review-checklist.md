@@ -541,8 +541,9 @@ prompt:
 
 - **Queue CI fails** (Gate 2 port collision from a sibling chip,
   infrastructure flake, etc.) → diagnose, push a fix, re-review, enqueue again.
-- **Conflict appears** with another PR that landed first → rebase on
-  `origin/main`, resolve, push, re-review, enqueue again.
+- **Conflict appears** with another PR that landed first → merge
+  `origin/main` into the branch (never rebase a pushed branch, never force-push:
+  [`docs/process/no-force-push.md`](process/no-force-push.md)), resolve, push, re-review, enqueue again.
 - **Re-review needed** because new commits got pushed → re-run `/pr-review`,
   address BLOCKERs, push. (This is the AUTHOR side of the re-run-on-push
   behavior in *Posting & re-runs* above.)

@@ -96,7 +96,7 @@ check() {
   GATE_HEAD="${head}"
   [[ "${state}" == OPEN ]] || not_ready+=("PR state is ${state}, not OPEN")
   [[ "${draft}" == false ]] || not_ready+=("PR is a draft")
-  [[ "${mergeable}" == MERGEABLE ]] || not_ready+=("mergeable is ${mergeable} (CONFLICTING: rebase; UNKNOWN: retry shortly)")
+  [[ "${mergeable}" == MERGEABLE ]] || not_ready+=("mergeable is ${mergeable} (CONFLICTING: merge origin/main into the branch, never force-push; UNKNOWN: retry shortly)")
 
   # 1. Reviewer verdict, bound to HEAD. Only the LATEST marked comment from a
   #    trusted author counts; marked comments from anyone else are ignored, so
