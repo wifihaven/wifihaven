@@ -349,6 +349,8 @@ object Main extends ZIOAppDefault {
         stlRepoForJ       <- ZIO.service[wifihaven.api.db.AppTimeLimitRepo]
         trafficRepoForJ   <- ZIO.service[wifihaven.api.db.TrafficReportRepo]
         ambientRepoForJ   <- ZIO.service[wifihaven.api.db.AmbientHostsRepo]
+        // #2932: the settle pass for weekly budgets runs on the same tick (design §6.4).
+        timeStatusForJ    <- ZIO.service[wifihaven.api.policy.TimeStatusService]
         _                 <- TimeUsedRollupJob
           .loop(
             timeRollupRepo,
@@ -361,6 +363,7 @@ object Main extends ZIOAppDefault {
             hsRepo,
             clockForJobs,
             ambientRepoForJ,
+            timeStatusForJ.settleWeek,
           )
           .forkScoped
         // #2077: the ambient-host learner — recomputes yesterday's isolated-span host counts

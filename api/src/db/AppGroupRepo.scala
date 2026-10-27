@@ -12,7 +12,7 @@ import zio.*
 import zio.interop.catz.*
 
 import java.sql.SQLException
-import java.time.LocalDate
+import java.time.Instant
 
 /** Why a group or attachment write was refused. The route maps each to a status; none is a 500. */
 sealed trait AppGroupError
@@ -44,8 +44,8 @@ object AppGroupError {
  * Every method takes the caller's household and filters on it, and the V92 composite FKs make a
  * cross-household member or attachment unrepresentable underneath that. Every write that changes a
  * profile's dispositions drops the profile's current-week settled usage in the SAME transaction
- * through [[SettledUsage.invalidate]] (design §6.4), so no caller can write and forget the drop.
- * Snapshot invalidation is the route's, since it needs the policy service.
+ * through [[SettledUsage.invalidateCurrentWeek]] (design §6.4), so no caller can write and forget
+ * the drop. Snapshot invalidation is the route's, since it needs the policy service.
  */
 trait AppGroupRepo {
   def listForHousehold(household: HouseholdId): Task[List[AppGroup]]
@@ -113,11 +113,11 @@ class AppGroupRepoLive(xa: Transactor[Task], clock: Clock) extends AppGroupRepo 
   // A unique / FK violation here is a race with another writer between our pre-checks and the
   // INSERT. The pre-checks are what name the conflict, so run the whole transaction once more: it
   // now sees the winner and answers with the typed error instead of surfacing a SQLException.
-  // `from` is the oldest date a settled-usage drop reaches ([[SettledUsage.weekFloor]]), read once
-  // per call from the injected clock so the transaction itself stays clock-free.
-  private def txn[A](f: LocalDate => ConnectionIO[Out[A]]): Task[Out[A]] =
-    clock.today.map(SettledUsage.weekFloor).flatMap { from =>
-      val run = f(from).transact(xa)
+  // `now` dates the settled-usage drop (the household week containing it), read once per call from
+  // the injected clock so the transaction itself stays clock-free.
+  private def txn[A](f: Instant => ConnectionIO[Out[A]]): Task[Out[A]] =
+    clock.instant.flatMap { now =>
+      val run = f(now).transact(xa)
       run.catchSome {
         case e: SQLException if e.getSQLState == "23505" || e.getSQLState == "23503" => run
       }
@@ -231,7 +231,7 @@ class AppGroupRepoLive(xa: Transactor[Task], clock: Clock) extends AppGroupRepo 
       name: Option[String],
       members: Option[List[AppId]],
   ) =
-    DbMetrics.timed("appGroup.update")(txn[AppGroup] { from =>
+    DbMetrics.timed("appGroup.update")(txn[AppGroup] { now =>
       val ms = members.map(_.distinct)
       for {
         existing <- findCio(household, id)
@@ -260,8 +260,8 @@ class AppGroupRepoLive(xa: Transactor[Task], clock: Clock) extends AppGroupRepo 
                     // Design §6.4: a membership edit changes every attached profile's attribution set.
                     attached <-
                       if (changed) attachedProfiles(id) else doobie.free.connection.pure(Nil)
-                    _        <- SettledUsage.invalidate(attached, SettledUsage.Kinds.All, from)
-                    g2       <- findCio(household, id)
+                    _  <- SettledUsage.invalidateCurrentWeek(attached, SettledUsage.Kinds.All, now)
+                    g2 <- findCio(household, id)
                   } yield g2.toRight(GroupNotFound: AppGroupError)
               }
             } yield out
@@ -270,7 +270,7 @@ class AppGroupRepoLive(xa: Transactor[Task], clock: Clock) extends AppGroupRepo 
     })
 
   def delete(household: HouseholdId, id: AppGroupId) =
-    DbMetrics.timed("appGroup.delete")(txn[Unit] { from =>
+    DbMetrics.timed("appGroup.delete")(txn[Unit] { now =>
       for {
         existing <- findCio(household, id)
         out      <- existing match {
@@ -280,7 +280,7 @@ class AppGroupRepoLive(xa: Transactor[Task], clock: Clock) extends AppGroupRepo 
               attached <- attachedProfiles(id)
               _        <-
                 sql"DELETE FROM app_groups WHERE id = $id AND household_id = $household".update.run
-              _        <- SettledUsage.invalidate(attached, SettledUsage.Kinds.All, from)
+              _        <- SettledUsage.invalidateCurrentWeek(attached, SettledUsage.Kinds.All, now)
             } yield Right(()): Out[Unit]
         }
       } yield out
@@ -322,7 +322,7 @@ class AppGroupRepoLive(xa: Transactor[Task], clock: Clock) extends AppGroupRepo 
       weeklyMinutes: Option[Int],
       exemptFromDaily: Boolean,
   ) =
-    DbMetrics.timed("appGroup.upsertAttachment")(txn[ProfileAppGroup] { from =>
+    DbMetrics.timed("appGroup.upsertAttachment")(txn[ProfileAppGroup] { now =>
       for {
         grp   <- findCio(household, group)
         prof  <-
@@ -351,9 +351,13 @@ class AppGroupRepoLive(xa: Transactor[Task], clock: Clock) extends AppGroupRepo 
               // kinds); an exempt-flag edit moves only the profile daily total; limits move nothing.
               _   <- prior match {
                 case None                                =>
-                  SettledUsage.invalidate(List(profile), SettledUsage.Kinds.All, from)
+                  SettledUsage.invalidateCurrentWeek(List(profile), SettledUsage.Kinds.All, now)
                 case Some(was) if was != exemptFromDaily =>
-                  SettledUsage.invalidate(List(profile), SettledUsage.Kinds.ProfileTotalOnly, from)
+                  SettledUsage.invalidateCurrentWeek(
+                    List(profile),
+                    SettledUsage.Kinds.ProfileTotalOnly,
+                    now,
+                  )
                 case Some(_)                             => doobie.free.connection.pure(0)
               }
               row <- attachmentsCio(household, profile, Some(group))
@@ -363,13 +367,14 @@ class AppGroupRepoLive(xa: Transactor[Task], clock: Clock) extends AppGroupRepo 
 
   def deleteAttachment(household: HouseholdId, profile: ProfileId, group: AppGroupId) =
     DbMetrics.timed("appGroup.deleteAttachment")(
-      clock.today.map(SettledUsage.weekFloor).flatMap { from =>
+      clock.instant.flatMap { now =>
         (for {
           n <- sql"""DELETE FROM profile_app_groups
                       WHERE household_id = $household AND profile_id = $profile
                         AND group_id = $group""".update.run
           _ <-
-            if (n > 0) SettledUsage.invalidate(List(profile), SettledUsage.Kinds.All, from)
+            if (n > 0)
+              SettledUsage.invalidateCurrentWeek(List(profile), SettledUsage.Kinds.All, now)
             else doobie.free.connection.pure(0)
         } yield n > 0).transact(xa)
       },

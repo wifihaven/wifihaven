@@ -55,6 +55,73 @@ final case class ProfileAppDispositions(
     perApp.filter(_.mode == AppMode.TimeLimited)
 
   /**
+   * #2932 (design `docs/design/weekly-limits-and-app-groups.md` §6.1): every budget on the profile,
+   * the generalization of [[capGroups]] as the cap source. One APP budget per TimeLimited
+   * assignment (its own daily and weekly limits), and one GROUP budget per attached group, covering
+   * the group's members on this profile with the attachment's limits.
+   *
+   * A covered app with no assignment (`coveredOnly`) is in [[capGroups]], so its minutes are
+   * counted and its hosts reach every projection, but it has no app budget of its own.
+   *
+   * A group's `countHosts` is the union of its TimeLimited-effective members' distinctive hosts, so
+   * every host in it is already in some app entry of [[budgetLabelHosts]] and the group entry
+   * changes no other budget's minutes (design §6.2, finding 8). A Blocked member (stricter wins,
+   * D14) is not counted: it is blocked whatever the group has used.
+   */
+  lazy val budgets: List[CapBudget] = {
+    val appBudgets   = capGroups.filterNot(_.coveredOnly).map { d =>
+      CapBudget(
+        key = BudgetKey.App(d.appId),
+        label = d.label,
+        name = d.label,
+        members = List(d),
+        countHosts = d.distinctiveHosts,
+        dailyLimit = d.dailyMinutes,
+        weeklyLimit = d.weeklyMinutes,
+        exemptFromDaily = d.exemptFromDaily,
+      )
+    }
+    val groupBudgets = perApp
+      .flatMap(d => d.coverage.map(_ -> d))
+      .groupMap(_._1.groupId)(identity)
+      .toList
+      .map { case (gid, pairs) =>
+        val c       = pairs.head._1
+        val members = pairs.map(_._2)
+        CapBudget(
+          key = BudgetKey.Group(gid),
+          label = CapBudget.groupLabel(gid),
+          name = c.name,
+          members = members,
+          countHosts =
+            members.filter(_.mode == AppMode.TimeLimited).flatMap(_.distinctiveHosts).distinct,
+          dailyLimit = c.dailyMinutes,
+          weeklyLimit = c.weeklyMinutes,
+          exemptFromDaily = c.exemptFromDaily,
+        )
+      }
+      .sortBy(_.label)
+    appBudgets ++ groupBudgets
+  }
+
+  /** #2932: the group budgets of [[budgets]], in label order. */
+  lazy val groupBudgets: List[CapBudget] =
+    budgets.filter(_.key.isInstanceOf[BudgetKey.Group])
+
+  /**
+   * #2932 (design §6.2): the `(label -> hosts)` list the ONE per-budget Presence call takes: every
+   * [[capGroups]] entry (as [[capGroupLabelDistinctiveHosts]]) followed by one entry per group
+   * budget. The per-app entries are unchanged by groups, so each app's minutes are what they were.
+   */
+  def budgetLabelHosts: List[(String, List[String])] =
+    capGroupLabelDistinctiveHosts ++ groupBudgets.map(b => b.label -> b.countHosts)
+
+  /** #2932: re-keys a [[budgetLabelHosts]] label to its [[BudgetKey]]. */
+  lazy val labelToBudgetKey: Map[String, BudgetKey] =
+    (capGroups.map(d => d.label -> (BudgetKey.App(d.appId): BudgetKey)) ++
+      groupBudgets.map(b => b.label -> b.key)).toMap
+
+  /**
    * The (label → hosts) pairs the Presence cap-aggregation primitive
    * (`Presence.patternGroupMinutesForProfile` / `Presence.appSecondsForProfile`) expects. Stable
    * order by label so the cap-group representation downstream consumers carry is deterministic.
@@ -66,7 +133,7 @@ final case class ProfileAppDispositions(
    * #1897 (shared-hosts S2): the (label → DISTINCTIVE hosts) pairs for the per-app engaged-minutes
    * stitch. Same shape and order as [[capGroupLabelHosts]] but with each app's `shared` hosts
    * dropped. This is THE single definition of "an app's distinctive host-set for presence" — both
-   * engaged-minutes consumers ([[wifihaven.api.policy.TimeStatusService.appDayStates]] /
+   * engaged-minutes consumers ([[wifihaven.api.policy.TimeStatusService.budgetDayStates]] /
    * [[wifihaven.api.policy.TimeStatusService.appSecondsByAppWithDropCount]]) and S3's shared-host
    * co-presence overlap test read through it, so the distinctive-span computation lives in exactly
    * one place (AGENTS.md §single-source-of-truth). A shared host overlapping a distinctive span is
@@ -116,12 +183,22 @@ final case class ProfileAppDispositions(
    * `allowedDuringScheduleBlock = false`. Only passes true when the profile's whole-MAC block
    * reason is `Schedule`; Paused/TimeLimit/Manual leave this false so the toggle has no effect on
    * those paths. Default `false` keeps existing call sites (unit tests, legacy paths) correct.
+   *
+   * #2933 (D17): the AllowedDuring carve is also withheld for an app in `overBudget`, so a window
+   * no longer keeps an app reachable past its own daily cap, its weekly limit or its group's. The
+   * plain `AppMode.Allowed` carve is unchanged: an Allowed row has no budget, and a covered app's
+   * Allowed row was already turned into a TimeLimited disposition by
+   * [[ProfileAppDispositions.from]].
    */
   def enforcement(
       schedWindows: Map[AppPolicyAssignmentId, List[(AppScheduleMode, ScheduleWindow)]],
       capExhausted: Boolean,
       now: Instant,
       isScheduleBlock: Boolean = false,
+      // #2933 (D17): the apps over ANY budget that contains them (`PolicyService.appsOverBudget`).
+      // An active `allowed_during` window decides WHEN an app may be used and its budgets decide
+      // HOW MUCH, so the window's carve is also withheld for these.
+      overBudget: Set[AppId] = Set.empty,
   ): (List[Hostname], List[Hostname]) = {
     val allowed = scala.collection.mutable.ListBuffer.empty[Hostname]
     val blocked = scala.collection.mutable.ListBuffer.empty[Hostname]
@@ -145,7 +222,10 @@ final case class ProfileAppDispositions(
       // assignment opts out of the "allowed during bedtime" behaviour.
       val suppressedByScheduleToggle = isScheduleBlock && !d.allowedDuringScheduleBlock
       if (allowedActive) {
-        if (!(capExhausted && !d.exemptFromDaily) && !suppressedByScheduleToggle)
+        if (
+          !(capExhausted && !d.exemptFromDaily) && !suppressedByScheduleToggle &&
+          !overBudget.contains(d.appId)
+        )
           allowed ++= hosts
       } else if (blockedActive) {
         blocked ++= distinctive
@@ -188,7 +268,44 @@ final case class AppDisposition(
     distinctiveHosts: List[String],
     // #1679: when false, suppress this app's extraAllowed carve-out during Schedule-reason blocks.
     allowedDuringScheduleBlock: Boolean = true,
+    // #2932 (design §5.2): the assignment's weekly limit; `None` = no weekly limit.
+    weeklyMinutes: Option[Int] = None,
+    // #2932 (design §6.1): the attached group that covers this app on the profile, if any.
+    coverage: Option[GroupCoverage] = None,
+    // #2932: a disposition synthesized for a covered app with no assignment (D6). It has no
+    // assignment id of its own and no app budget.
+    coveredOnly: Boolean = false,
+    // #2933: the app's display name, for the block page's budget wording.
+    appName: String = "",
 )
+
+/** #2932 (design §6.1): which budget a figure belongs to. */
+enum BudgetKey {
+  case App(id: AppId)
+  case Group(id: AppGroupId)
+}
+
+/**
+ * #2932 (design §6.1): one budget, the shared shape of a per-app cap and a group. `label` is the
+ * Presence group key (`app:<slug>` or `group:<id>`). `countHosts` is what the per-budget stitch
+ * counts: the app's distinctive hosts, or the union of the members' (design §6.2).
+ */
+final case class CapBudget(
+    key: BudgetKey,
+    label: String,
+    name: String,
+    members: List[AppDisposition],
+    countHosts: List[String],
+    dailyLimit: Option[Int],
+    weeklyLimit: Option[Int],
+    exemptFromDaily: Boolean,
+)
+
+object CapBudget {
+
+  /** The Presence key of a group budget; the block-reason label #2933 uses (design §8). */
+  def groupLabel(id: AppGroupId): String = s"group:${id.value}"
+}
 
 object ProfileAppDispositions {
 
@@ -207,27 +324,58 @@ object ProfileAppDispositions {
    * attribute on.
    */
   def from(appLimits: List[wifihaven.shared.AppTimeLimit]): ProfileAppDispositions = {
-    val byAssignment = appLimits.groupBy(_.assignmentId).toList
+    // #2932: keyed by (assignment, app). A covered-only row has no assignment (id 0), so the app id
+    // tells two such apps apart; an assigned app has exactly one assignment per profile (V28's
+    // UNIQUE (app_id, profile_id)), so this is still one disposition per assignment.
+    val byAssignment = appLimits.groupBy(r => (r.assignmentId, r.appId)).toList
     val perApp       = byAssignment
-      .map { case (assignmentId, rows) =>
-        val first = rows.head
-        AppDisposition(
+      .map { case ((assignmentId, _), rows) =>
+        val first       = rows.head
+        val hosts       = rows.map(_.domainPattern).distinct
+        // #1897: distinctive = the host rows whose `shared` flag is false. `shared` is per-(app,
+        // host) (one repo row per host), so it is read off each row, not off `first`.
+        val distinctive = rows.filterNot(_.shared).map(_.domainPattern).distinct
+        // `exemptFromDaily`, `dailyMinutes`, `weeklyMinutes`, `coverage` and
+        // `allowedDuringScheduleBlock` are uniform across an assignment's synthesized rows by
+        // construction (one assignment row × N host rows from the `app_hosts` join), so any row's
+        // value is the assignment's value. Reading off `first` makes that invariant explicit.
+        val base        = AppDisposition(
           appId = first.appId,
           assignmentId = assignmentId,
           mode = first.mode,
-          // `exemptFromDaily`, `dailyMinutes`, and `allowedDuringScheduleBlock` are uniform across
-          // an assignment's synthesized rows by construction (one assignment row × N host rows from
-          // the `app_hosts` join), so any row's value is the assignment's value. Reading off
-          // `first` makes that invariant explicit at the call site.
           exemptFromDaily = first.exemptFromDaily,
           dailyMinutes = first.dailyMinutes,
           label = first.label,
-          hosts = rows.map(_.domainPattern).distinct,
-          // #1897: distinctive = the host rows whose `shared` flag is false. `shared` is per-(app,
-          // host) (one repo row per host), so it is read off each row, not off `first`.
-          distinctiveHosts = rows.filterNot(_.shared).map(_.domainPattern).distinct,
+          hosts = hosts,
+          distinctiveHosts = distinctive,
           allowedDuringScheduleBlock = first.allowedDuringScheduleBlock,
+          weeklyMinutes = first.weeklyMinutes,
+          appName = first.appName,
         )
+        first.coverage match {
+          case None    => base
+          // #2932 (design §6.1): a covered app. A covered app with no assignment is a synthesized
+          // TimeLimited disposition with no limits of its own. One with an assignment stays Blocked
+          // if its row is Blocked (stricter wins, D14) and is otherwise TimeLimited, so an Allowed
+          // row adds no unconditional carve (finding 2); only a TimeLimited row keeps its own
+          // limits. Its "counts toward daily" flag is the ATTACHMENT's, replacing the member's own
+          // (D5, design test 8): `exemptPatterns` and every carve read it, so a group is never half
+          // counted and half exempt.
+          case Some(c) =>
+            val ownLimits = !first.coveredOnly && first.mode == AppMode.TimeLimited
+            base.copy(
+              mode =
+                if first.mode == AppMode.Blocked && !first.coveredOnly then AppMode.Blocked
+                else AppMode.TimeLimited,
+              exemptFromDaily = c.exemptFromDaily,
+              dailyMinutes = if ownLimits then first.dailyMinutes else None,
+              weeklyMinutes = if ownLimits then first.weeklyMinutes else None,
+              allowedDuringScheduleBlock =
+                if first.coveredOnly then true else first.allowedDuringScheduleBlock,
+              coverage = Some(c),
+              coveredOnly = first.coveredOnly,
+            )
+        }
       }
       .sortBy(_.label)
     ProfileAppDispositions(perApp)

@@ -353,9 +353,12 @@ export const api = {
     // deliberately no household or username in the body, because the server derives the tenancy key
     // from the caller's JWT and would ignore ours anyway. Server-side this is `requireAdmin`, so an
     // adult calling it gets a 403; gate the affordance on `isAdmin`, never `isWriter`.
-    setPassword: (id: number, newPassword: string) =>
+    // #2947: `mustChangePassword` is required here (optional on the wire) so no call site can
+    // forget to make the choice.
+    setPassword: (id: number, newPassword: string, mustChangePassword: boolean) =>
       req<SetUserPasswordResponse>('POST', `/users/${id}/password`, {
         newPassword,
+        mustChangePassword,
       } as SetUserPasswordRequest),
     delete: (id: number) => req<void>('DELETE', `/users/${id}`),
   },

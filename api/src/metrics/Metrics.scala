@@ -230,6 +230,18 @@ object MetricGuard {
     "shared_device_checkins_open"                 -> Set.empty[String],
     // #2077 ambient anchor-gate observability (unlabelled).
     "presence_ambient_spans_dropped_total"        -> Set.empty[String],
+    // #2932 (design docs/design/weekly-limits-and-app-groups.md §11): settled past-day reads for
+    // weekly budgets. `outcome` ∈ {hit, refill, error}, per (household, day) read; a sustained
+    // `refill` rate means the rollup tick's settle pass is not keeping up.
+    "budget_usage_settle_total"                   -> Set("outcome"),
+    // #2933 (design §11): count of exhausted budgets, set once per reevaluate tick, summed across
+    // households. `kind` ∈ {app, group}, `window` ∈ {day, week}: both code-bounded enums.
+    "app_budget_exhausted"                        -> Set("kind", "window"),
+    // #2932: presence rows ingested for a household-day that was already settled, so not counted
+    // toward weekly budgets (design §6.4). Unlabelled: the rate is the measurement.
+    "budget_late_presence_rows_total"             -> Set.empty[String],
+    // #2932: wall-clock of one week-to-date read (the settled rows plus any refill).
+    "budget_week_read_seconds"                    -> Set.empty[String],
     "presence_ambient_hosts"                      -> Set.empty[String],
     // #1898 — outcome of attributing a SHARED host's stitched span in usage-by-app
     // by temporal co-presence with apps' distinctive sessions. `outcome` is a
@@ -1616,6 +1628,56 @@ object AppMetrics {
         ),
       )
       .unit
+
+  // ── Weekly budgets (#2932) ───────────────────────────────────────────────────────────────────
+  // design docs/design/weekly-limits-and-app-groups.md §11. No household / profile / app / group
+  // label: the cardinality firewall forbids them, and the rates are what an operator alerts on.
+
+  /**
+   * #2933 (design §11): the `app_budget_exhausted{kind, window}` gauge: how many budgets are
+   * exhausted right now across all households. Set once per reevaluate tick from that tick's
+   * per-household results, summed (a per-household build writing it would overwrite the others').
+   * Every (kind, window) is set every tick, including zero, so a cleared budget reads 0 rather than
+   * its last non-zero value.
+   */
+  def setBudgetsExhausted(counts: Map[(String, String), Int]): UIO[Unit] =
+    ZIO.foreachDiscard(for {
+      k <- List("app", "group")
+      w <- List("day", "week")
+    } yield (k, w)) { case (k, w) =>
+      MetricGuard.gauge(
+        "app_budget_exhausted",
+        Map("kind" -> k, "window" -> w),
+        counts.getOrElse((k, w), 0).toDouble,
+      )
+    }
+
+  /** One settled past-day read: `hit`, `refill` (computed live and written back) or `error`. */
+  def recordBudgetSettle(outcome: String): UIO[Unit] =
+    MetricGuard.counter("budget_usage_settle_total", Map("outcome" -> outcome))
+
+  /** Presence rows ingested for a household-day already settled (design §6.4). */
+  def recordLatePresenceRows(count: Int): UIO[Unit] =
+    ZIO
+      .when(count > 0)(
+        MetricGuard.counter("budget_late_presence_rows_total", Map.empty, count.toLong),
+      )
+      .unit
+
+  // A steady-state week read is three indexed range reads; a cold one refills up to six days live.
+  // The buckets straddle both, up to the snapshot-build scale (`SnapshotBuildDurationBoundaries`).
+  val BudgetWeekReadBoundaries: MetricKeyType.Histogram.Boundaries =
+    MetricKeyType.Histogram.Boundaries.fromChunk(
+      Chunk(0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0),
+    )
+
+  def recordBudgetWeekRead(seconds: Double): UIO[Unit] =
+    MetricGuard.histogram(
+      "budget_week_read_seconds",
+      Map.empty[String, String],
+      math.max(0.0, seconds),
+      BudgetWeekReadBoundaries,
+    )
 
   def setAmbientHosts(count: Int): UIO[Unit] =
     MetricGuard.gauge("presence_ambient_hosts", Map.empty, count.toDouble)

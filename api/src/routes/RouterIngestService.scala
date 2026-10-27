@@ -10,7 +10,59 @@ import zio.{Clock as _, *}
 import zio.json.*
 import zio.json.ast.Json
 
-import java.time.{Duration, Instant}
+import java.time.{Duration, Instant, LocalDate}
+
+/**
+ * #2932 (design `docs/design/weekly-limits-and-app-groups.md` §6.4, §11): counts presence rows
+ * ingested for a household-day that was already settled. Weekly budgets read a settled day from its
+ * stored rows, so such a row is not counted toward them; `budget_late_presence_rows_total` measures
+ * that loss instead of assuming it is zero. The settled check runs only for a day past its settle
+ * point, so an on-time report costs no query.
+ */
+class LatePresenceMeter(settled: SettledUsageRepo, clock: Clock) {
+
+  def record(
+      household: HouseholdId,
+      date: LocalDate,
+      settings: HouseholdSettings,
+      newRows: Int,
+  ): UIO[Unit] =
+    clock.instant
+      .flatMap { now =>
+        ZIO.when(newRows > 0 && SettledUsage.settleable(date, now, settings))(
+          settled
+            .anySettled(household, date, SettledUsage.dayEnd(date, settings))
+            .flatMap(ZIO.when(_)(AppMetrics.recordLatePresenceRows(newRows))),
+        )
+      }
+      .unit
+      // A failed check must not fail the ingest it observes; the rows are already stored.
+      .catchAll(e => ZIO.logWarning(s"late-presence check failed: ${e.getMessage}"))
+}
+
+object LatePresenceMeter {
+
+  private object NoClock extends Clock {
+    def now: UIO[java.time.LocalDateTime]     = ZIO.die(new IllegalStateException("unused"))
+    def today: UIO[LocalDate]                 = ZIO.die(new IllegalStateException("unused"))
+    def currentTime: UIO[java.time.LocalTime] = ZIO.die(new IllegalStateException("unused"))
+    def instant: UIO[Instant]                 = ZIO.die(new IllegalStateException("unused"))
+  }
+
+  /** For ingest constructions that do not exercise settling (tests): records nothing. */
+  val none: LatePresenceMeter =
+    new LatePresenceMeter(NoopSettledUsageRepo, LatePresenceMeter.NoClock) {
+      override def record(
+          household: HouseholdId,
+          date: LocalDate,
+          settings: HouseholdSettings,
+          newRows: Int,
+      ): UIO[Unit] = ZIO.unit
+    }
+
+  def apply(settled: SettledUsageRepo, clock: Clock): LatePresenceMeter =
+    new LatePresenceMeter(settled, clock)
+}
 
 /**
  * #1846: transport-agnostic router ingest. The decode + per-record skip + persistence logic for the
@@ -39,6 +91,8 @@ final class RouterIngestService(
     // push path are unchanged; `Main` wires the real bus. Publishing NEVER blocks or fails ingest
     // (sliding hub, UIO) — the push surface is a latency/UX layer over the authoritative write.
     bus: SpaEventBus = SpaEventBus.noop,
+    // #2932: meters rows that arrive for an already-settled day. `Main` wires the real one.
+    lateRows: LatePresenceMeter = LatePresenceMeter.none,
 ) {
   import RouterIngestService.*
 
@@ -227,6 +281,7 @@ final class RouterIngestService(
       // Idempotency: ON CONFLICT DO NOTHING returns the count of NEW rows.
       // Only those rows should drive time_usage / device updates; replays return 0.
       newCount <- trafficRepo.insertBatch(inserts).mapError(ApiError.Db(_))
+      _        <- lateRows.record(household, date, settings, newCount)
       // applyDelta groups by (mac, host); pass the rewritten records so the
       // time_usage credit lands under the resolved fqdn too. Unaggregated is
       // fine — applyDelta already collapses duplicates with the same merge.

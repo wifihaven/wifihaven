@@ -40,6 +40,32 @@ final case class PolicyDecision(
     response: RouterDecisionResponse,
     profile: Option[Profile],
     dayState: Option[ProfileDayState],
+    // #2933 (design §8): the budget behind an `app_time_limit` verdict, for the block page.
+    budget: Option[ExhaustedBudget] = None,
+)
+
+/** #2933 (design §7.1): which kind of budget is exhausted. */
+enum BudgetKind(val wire: String) {
+  case App   extends BudgetKind("app")
+  case Group extends BudgetKind("group")
+}
+
+/** #2933: which window of a budget is exhausted. */
+enum BudgetWindow(val wire: String) {
+  case Day  extends BudgetWindow("day")
+  case Week extends BudgetWindow("week")
+}
+
+/**
+ * #2933 (design §7.1): one exhausted budget. `label` is the block-reason label (`app:<slug>` or
+ * `group:<id>`), `weekResetsAt` the end of the exhausted week (set for the Week window).
+ */
+final case class ExhaustedBudget(
+    kind: BudgetKind,
+    label: String,
+    name: String,
+    window: BudgetWindow,
+    weekResetsAt: Option[java.time.Instant],
 )
 
 trait PolicyService {
@@ -433,6 +459,13 @@ class PolicyServiceLive(
   private val lastSnapshotEtags: AtomicReference[Map[HouseholdId, ETag]] =
     new AtomicReference(Map.empty[HouseholdId, ETag])
 
+  // #2933 (design §11): the exhausted-budget counts of each household's LAST build, keyed
+  // (kind, window). A build only RECORDS here; `reevaluate` sums the swept households' entries and
+  // sets the `app_budget_exhausted` gauge once per tick, because builds run per household and a
+  // gauge written by each would overwrite the others'.
+  private val budgetCounts: AtomicReference[Map[HouseholdId, Map[(String, String), Int]]] =
+    new AtomicReference(Map.empty)
+
   // #1069/#1482: per-host /decision fallback must see the same schedule downtime as the snapshot —
   // the windows of every block-mode named schedule attached to the profile (as synthetic
   // DbSchedules so `scheduleActiveAt` applies unchanged). Named schedules are the sole source.
@@ -550,7 +583,9 @@ class PolicyServiceLive(
       // rather than every `snapshotCacheRefreshInterval`.
       publisher.get.targetHouseholds
         .map(_ + HouseholdId.Default)
-        .flatMap(ZIO.foreachDiscard(_)(reevaluateHousehold))
+        .flatMap { hs =>
+          ZIO.foreachDiscard(hs)(reevaluateHousehold) *> publishBudgetsExhausted(hs)
+        }
 
   // #2635: the single-household unit of work — rebuild ONE household's snapshot and push it iff
   // that household's ETag moved. Both callers are in this class ([[reevaluate]]'s sweep and the
@@ -599,6 +634,16 @@ class PolicyServiceLive(
             },
           )
       }
+
+  // #2933: sum the swept households' exhausted-budget counts and set the gauge, once per tick.
+  private def publishBudgetsExhausted(households: Set[HouseholdId]): UIO[Unit] =
+    ZIO.suspendSucceed {
+      val byHousehold = budgetCounts.get()
+      val summed      = households.toList
+        .flatMap(h => byHousehold.getOrElse(h, Map.empty).toList)
+        .groupMapReduce(_._1)(_._2)(_ + _)
+      AppMetrics.setBudgetsExhausted(summed)
+    }
 
   // #2843: repair device-assignment drift BEFORE the build, so a repair that changes
   // `devices.profile_id` (a shared device cleared or restored from its check-in) is in this tick's
@@ -722,6 +767,8 @@ class PolicyServiceLive(
   private def permissiveBuild(household: HouseholdId, reason: String): Task[PolicySnapshot] =
     clock.instant.flatMap { now =>
       val snap = PolicyService.permissiveSnapshot(now)
+      // No policy is enforced, so no budget is.
+      budgetCounts.updateAndGet(_.updated(household, Map.empty))
       AppMetrics
         .setGlobalPolicy(snap.global.extraAllowed.size, 0)
         .zipRight(logSnapshotChanged(household, snap))
@@ -742,6 +789,11 @@ class PolicyServiceLive(
       // #1104: today's cap/block state for every profile in one batched read. Same call the
       // /api/time/status/... endpoints use — keeps the snapshot and the UI in lockstep.
       dayStates   <- timeStatusService.dayStateAll(household, now, today, settings)
+      _           <- ZIO.succeed(
+        budgetCounts.updateAndGet(
+          _.updated(household, PolicyService.exhaustedCounts(dayStates.values)),
+        ),
+      )
       // #1771: snapshot assembly needs the global sentinel too, so it can union the sentinel's
       // resolved extraAllowed/extraBlocked/blocklistIds into every other profile. `listAll`
       // is the user-facing listing and deliberately hides the sentinel.
@@ -786,6 +838,7 @@ class PolicyServiceLive(
           capExhausted = PolicyService.dailyCapExhausted(state),
           now = now,
           isScheduleBlock = isScheduleBlock,
+          overBudget = PolicyService.appsOverBudget(state).keySet,
         )
         PolicyService.computeBlockRules(
           profile = p,
@@ -1106,7 +1159,13 @@ class PolicyServiceLive(
                 val (appAllowed, appBlocked) =
                   ProfileAppDispositions
                     .from(appLimits)
-                    .enforcement(appSchedWindows, capExhausted, now, isScheduleBlock)
+                    .enforcement(
+                      appSchedWindows,
+                      capExhausted,
+                      now,
+                      isScheduleBlock,
+                      PolicyService.appsOverBudget(dayState).keySet,
+                    )
 
                 // #1515: the per-profile carve set the snapshot puts in `extraAllowed`, reproduced
                 // here so /decision agrees with what nftables enforces. It is the allowed/allowed_during
@@ -1200,9 +1259,24 @@ class PolicyServiceLive(
             // recomputing them (a second whole-day presence aggregation, and a second chance to
             // disagree). `state` is `TimeStatusService.todaysState`'s own Option — `None` for a
             // profile row that vanished mid-decision, which is also when `pOpt` is `None`.
-          } yield PolicyDecision(res, pOpt, state)
+          } yield PolicyDecision(res, pOpt, state, budgetOf(res, state))
       }
     } yield result
+
+  /**
+   * #2933 (design §8): the budget behind an `app_time_limit` verdict, looked up by the verdict's
+   * own label in the state it was derived from, so the block page names exactly the budget (and
+   * window) that blocked. `None` for every other verdict.
+   */
+  private def budgetOf(
+      res: RouterDecisionResponse,
+      state: Option[ProfileDayState],
+  ): Option[ExhaustedBudget] =
+    BlockReason.fromWire(res.reason) match {
+      case BlockReason.AppTimeLimit(label) =>
+        state.flatMap(st => PolicyService.exhaustedBudgets(st).find(_.label == label))
+      case _                               => None
+    }
 
   private def scheduleBlock(
       schedules: List[DbSchedule],
@@ -1240,21 +1314,30 @@ class PolicyServiceLive(
       state: ProfileDayState,
   ): Option[RouterDecisionResponse] = {
     // Time-limit blocks expire at the next household daily-reset Instant.
-    val resetAt     = PolicyService.nextDailyResetAfter(settings, now).toString
-    val appLimitHit = state.perApp.find { sd =>
+    val resetAt     = PolicyService.nextDailyResetAfter(settings, now)
+    // #2933 (design §7.1, §8): the same `appsOverBudget` the snapshot's `extraBlocked` reads, so the
+    // two cannot diverge (#1532). The first exhausted budget containing the host labels the block
+    // (`app:<slug>` or `group:<id>`), and its `resetAt` is the end of the exhausted window: the next
+    // daily reset, or the next week start.
+    val over        = PolicyService.appsOverBudget(state)
+    val appLimitHit = state.perApp.collectFirst {
       // #1899 (shared-hosts S4): match only the app's DISTINCTIVE hosts — a shared backend is never
       // app-cap-blocked, so the /decision fallback agrees with the snapshot's `appCapExhaustedHosts`
       // (which also reads `distinctiveHosts`). Keeps the two paths from diverging (#1532).
-      sd.distinctiveHosts.exists(hp => HostMatch.matchesPattern(hostname, hp)) &&
-      // #1627: same Option-aware exhaustion check as `appCapExhaustedHosts`.
-      sd.dailyLimitMinutes.exists(lim => sd.usedMinutes >= lim)
+      case sd
+          if over.contains(sd.appId) &&
+            sd.distinctiveHosts.exists(hp => HostMatch.matchesPattern(hostname, hp)) =>
+        over(sd.appId)
     }
     appLimitHit
-      .map(sd =>
+      .map(b =>
         RouterDecisionResponse(
           ConnectionDecision.Block,
-          BlockReason.asWire(BlockReason.AppTimeLimit(sd.label)),
-          Some(resetAt),
+          BlockReason.asWire(BlockReason.AppTimeLimit(b.label)),
+          Some(b.window match {
+            case BudgetWindow.Day  => resetAt.toString
+            case BudgetWindow.Week => b.weekResetsAt.getOrElse(resetAt).toString
+          }),
         ),
       )
       .orElse {
@@ -1269,7 +1352,7 @@ class PolicyServiceLive(
           RouterDecisionResponse(
             ConnectionDecision.Block,
             BlockReason.asWire(MacBlockReason.TimeLimit),
-            Some(resetAt),
+            Some(resetAt.toString),
           ),
         )
       }
@@ -1639,26 +1722,101 @@ object PolicyService {
     state.dailyLimitMinutes.exists(lim => state.usedMinutes >= lim + state.extensionMinutes)
 
   /**
-   * #1515: the whole host-set of every per-app cap that is exhausted today — `usedMinutes` (the
-   * gap-bridged aggregate across the app's whole host-set, from `appSecondsForProfile`) has reached
-   * the app's daily limit. These hosts go to `extraBlocked` together so the router drops the WHOLE
-   * app, not just the one host whose traffic crossed. The single per-app cap-block computation,
-   * shared by the snapshot ([[computeBlockRules]]) and the per-host /decision fallback so the two
-   * cannot diverge (#1532). Per-app caps take no extensions — those are profile-level and apply to
-   * the daily total ([[dailyCapExhausted]]), not the per-app budget.
+   * #2933 (design §7.1): every exhausted budget on a profile-day, in a stable order: each app's own
+   * budget (its daily window, then its weekly), then each attached group's (daily, then weekly). A
+   * budget is exhausted when, for a window with a limit set, used minutes >= the limit. Per-app and
+   * group budgets take no extension (D8): those raise the profile daily total only
+   * ([[dailyCapExhausted]]). `dailyLimit = None` / `weeklyLimit = None` mean "no limit configured",
+   * never exhausted (#1627).
+   *
+   * The ONE definition of "exhausted": [[appsOverBudget]] (and so every carve and block the
+   * snapshot and `decideDetailed` derive) and the `app_budget_exhausted` gauge are folds over this
+   * list.
    */
-  private[policy] def appCapExhaustedHosts(state: ProfileDayState): List[Hostname] =
+  def exhaustedBudgets(state: ProfileDayState): List[ExhaustedBudget] = {
+    def windows(
+        kind: BudgetKind,
+        label: String,
+        name: String,
+        daily: Option[Int],
+        usedToday: Int,
+        weekly: Option[Int],
+        week: Option[WeekUsage],
+    ): List[ExhaustedBudget] =
+      Option
+        .when(daily.exists(usedToday >= _))(
+          ExhaustedBudget(kind, label, name, BudgetWindow.Day, None),
+        )
+        .toList ++
+        Option
+          .when(weekly.exists(lim => week.exists(_.usedMinutes >= lim)))(
+            ExhaustedBudget(kind, label, name, BudgetWindow.Week, week.map(_.resetsAt)),
+          )
+          .toList
+
+    state.perApp.flatMap(sd =>
+      windows(
+        BudgetKind.App,
+        sd.label,
+        sd.appName,
+        sd.dailyLimitMinutes,
+        sd.usedMinutes,
+        sd.weeklyLimitMinutes,
+        sd.week,
+      ),
+    ) ++
+      state.perGroup.flatMap(g =>
+        windows(
+          BudgetKind.Group,
+          g.label,
+          g.name,
+          g.dailyLimitMinutes,
+          g.usedMinutes,
+          g.weeklyLimitMinutes,
+          g.week,
+        ),
+      )
+  }
+
+  /** #2933: [[exhaustedBudgets]] of several profile-days, counted by (kind, window) wire name. */
+  def exhaustedCounts(states: Iterable[ProfileDayState]): Map[(String, String), Int] =
+    states.toList
+      .flatMap(exhaustedBudgets)
+      .groupMapReduce(b => (b.kind.wire, b.window.wire))(_ => 1)(_ + _)
+
+  /**
+   * #2933 (design §7.1): the apps blocked by ANY budget that contains them, each with the first
+   * exhausted one (its own, then its group's). Shared by the snapshot ([[computeBlockRules]],
+   * [[ProfileAppDispositions.enforcement]]) and the per-host /decision fallback, so the two cannot
+   * diverge (#1532): `appCapExhaustedHosts`, `exemptUnderCapHosts`, `timeLimitedUnderCapHosts`, the
+   * `AllowedDuring` carve and `timeLimitBlockFromState` all read this and nothing else.
+   */
+  def appsOverBudget(state: ProfileDayState): Map[AppId, ExhaustedBudget] = {
+    val exhausted = exhaustedBudgets(state)
+    val byLabel   = exhausted.groupBy(_.label).view.mapValues(_.head).toMap
+    state.perApp.flatMap { sd =>
+      byLabel
+        .get(sd.label)
+        .orElse(sd.groupId.flatMap(gid => byLabel.get(CapBudget.groupLabel(gid))))
+        .map(sd.appId -> _)
+    }.toMap
+  }
+
+  /**
+   * #1515: the DISTINCTIVE host-set of every app in [[appsOverBudget]] (its own cap or its group's
+   * is exhausted). These hosts go to `extraBlocked` together so the router drops the WHOLE app, not
+   * just the one host whose traffic crossed. Per-app and group budgets take no extensions — those
+   * are profile-level and apply to the daily total ([[dailyCapExhausted]]). #1899 (shared-hosts
+   * S4): only DISTINCTIVE hosts are block-eligible. A shared backend is NEVER dropped on exhaustion
+   * — dropping it because THIS app hit a limit would drop it for every OTHER app on the device (the
+   * #1636 collateral failure).
+   */
+  private[policy] def appCapExhaustedHosts(state: ProfileDayState): List[Hostname] = {
+    val over = appsOverBudget(state)
     state.perApp.collect {
-      // #1627: `dailyLimitMinutes = None` means "no per-app cap configured" —
-      // never exhausted. Only an app with `Some(lim)` and `usedMinutes >= lim`
-      // contributes hosts to extraBlocked here.
-      // #1899 (shared-hosts S4): only the app's DISTINCTIVE hosts are block-eligible. A shared
-      // backend is NEVER dropped on cap exhaustion — dropping it because THIS app hit its cap would
-      // drop it for every OTHER app on the device (the #1636 collateral failure). The cap is still
-      // enforced through the distinctive hosts; `usedMinutes` already aggregates the whole host-set.
-      case sd if sd.dailyLimitMinutes.exists(lim => sd.usedMinutes >= lim) =>
-        sd.distinctiveHosts.map(Hostname.unsafe)
+      case sd if over.contains(sd.appId) => sd.distinctiveHosts.map(Hostname.unsafe)
     }.flatten
+  }
 
   /**
    * #1515: the whole host-set of every exempt-from-daily app still UNDER its own per-app cap — the
@@ -1666,24 +1824,22 @@ object PolicyService {
    * every whole-MAC block (paused / schedule / daily-limit) at the router (#421). Shared by the
    * snapshot and the /decision fallback so the exempt carve cannot diverge (#1532, #1513).
    */
-  private[policy] def exemptUnderCapHosts(state: ProfileDayState): List[Hostname] =
+  private[policy] def exemptUnderCapHosts(state: ProfileDayState): List[Hostname] = {
+    // #1627: an exempt app with no cap is always under, so it always carves around whole-MAC blocks
+    // (Paused / Schedule / TimeLimit). #2933 (D16): "under" means under EVERY budget that contains it
+    // ([[appsOverBudget]]), so a group's or a weekly limit takes the carve away; its reach (soft
+    // Pause, Schedule, the daily total) is unchanged.
+    val over = appsOverBudget(state)
     state.perApp.collect {
-      // #1627: `dailyLimitMinutes = None` means "no per-app cap configured" —
-      // an exempt-from-daily app with no cap is treated as always-under, so it
-      // always carves around whole-MAC blocks (Paused / Schedule / TimeLimit).
-      // `forall` returns true for None, so the gate is "exempt AND (no cap OR
-      // still under cap)" — same family as `appCapExhaustedHosts` above so the
-      // two cannot disagree on what "exhausted" means (AGENTS.md §single-
-      // source-of-truth).
-      case sd if sd.exemptFromDaily && sd.dailyLimitMinutes.forall(sd.usedMinutes < _) =>
-        sd.hosts.map(Hostname.unsafe)
+      case sd if sd.exemptFromDaily && !over.contains(sd.appId) => sd.hosts.map(Hostname.unsafe)
     }.flatten
+  }
 
   /**
    * #1980: the full host-set (main + shared) of every TimeLimited app still UNDER its own per-app
    * cap — the allow-side complement of [[appCapExhaustedHosts]] across the same `state.perApp` (the
-   * TimeLimited-only subset; see [[TimeStatusService.appDayStates]]). Carved into `extraAllowed` so
-   * a within-budget app host beats category-blocklist membership (`bl_`) at the router (#421,
+   * TimeLimited-only subset; see [[TimeStatusService.budgetDayStates]]). Carved into `extraAllowed`
+   * so a within-budget app host beats category-blocklist membership (`bl_`) at the router (#421,
    * `feedback_extraallowed_beats_blocked`), which is the #1980 fix: a TimeLimited app contributes
    * nothing to `extraAllowed` on its own, so without this an app host that is also a blocklist
    * member (e.g. `gimkit.com` in the `games` list) is dropped during the app's allowed window.
@@ -1698,11 +1854,14 @@ object PolicyService {
    * over-allowing a shared host is safe — `extraAllowed` beats every drop. Shared by the snapshot
    * and the /decision fallback so the two cannot diverge (#1532).
    */
-  private[policy] def timeLimitedUnderCapHosts(state: ProfileDayState): List[Hostname] =
+  private[policy] def timeLimitedUnderCapHosts(state: ProfileDayState): List[Hostname] = {
+    // #2933: "under" is [[appsOverBudget]], so an app under its own cap but in an exhausted group, or
+    // over its weekly limit, is never put on the allow list.
+    val over = appsOverBudget(state)
     state.perApp.collect {
-      case sd if sd.dailyLimitMinutes.forall(lim => sd.usedMinutes < lim) =>
-        sd.hosts.map(Hostname.unsafe)
+      case sd if !over.contains(sd.appId) => sd.hosts.map(Hostname.unsafe)
     }.flatten
+  }
 
   /** True iff `w` (a #1069 named-schedule window) is active at `now`, via [[scheduleActiveAt]]. */
   def windowActiveAt(w: ScheduleWindow, now: Instant): Boolean =
@@ -1776,6 +1935,22 @@ object PolicyService {
    * This is the canonical "what date does this Instant belong to" function — used both to write
    * `time_usage.date` and to read today's cap/usage on the policy snapshot path.
    */
+  /**
+   * #2932 (design `docs/design/weekly-limits-and-app-groups.md` §5.1): THE definition of a
+   * household week. The week containing `instant` starts on the household-local date of `instant`
+   * moved back to the most recent `weekStartDay` (ISO 1 = Monday ... 7 = Sunday). Its instant
+   * window is `AttributionScope.rangeWindow(start, start + 6)`: seven household days, each
+   * DST-correct, so a week across a DST change is 167 or 169 hours long.
+   */
+  def householdWeekStart(instant: Instant, settings: HouseholdSettings): LocalDate =
+    weekStartOf(householdLocalDate(instant, settings), settings)
+
+  /** #2932: the start of the household week containing household-local `date` (see above). */
+  def weekStartOf(date: LocalDate, settings: HouseholdSettings): LocalDate = {
+    val back = Math.floorMod(date.getDayOfWeek.getValue - settings.weekStartDay, 7)
+    date.minusDays(back.toLong)
+  }
+
   def householdLocalDate(instant: Instant, settings: HouseholdSettings): LocalDate = {
     val zdt = instant.atZone(settings.dailyResetTz)
     if (zdt.toLocalTime.isBefore(settings.dailyResetTime)) zdt.toLocalDate.minusDays(1)

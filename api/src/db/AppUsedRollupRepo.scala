@@ -58,6 +58,22 @@ trait AppUsedRollupRepo {
       from: LocalDate,
       to: LocalDate,
   ): Task[List[(LocalDate, AppId, Long)]]
+
+  /**
+   * #2932: batched upsert of one tick's per-(profile, group) rows for `date` into
+   * `app_group_used_daily` (V92), the group counterpart of [[upsertBatch]]. Returns rows touched.
+   */
+  def upsertGroupBatch(
+      household: HouseholdId,
+      date: LocalDate,
+      rows: Map[(ProfileId, AppGroupId), RolledAppDay],
+  ): Task[Int]
+
+  /** #2932: a profile's `app_group_used_daily` rows for `date`, keyed by group. */
+  def getGroupDayForProfile(
+      profileId: ProfileId,
+      date: LocalDate,
+  ): Task[Map[AppGroupId, RolledAppDay]]
 }
 
 /**
@@ -82,6 +98,15 @@ object NoopAppUsedRollupRepo extends AppUsedRollupRepo {
       to: LocalDate,
   ): Task[List[(LocalDate, AppId, Long)]] =
     ZIO.succeed(Nil)
+  def upsertGroupBatch(
+      household: HouseholdId,
+      date: LocalDate,
+      rows: Map[(ProfileId, AppGroupId), RolledAppDay],
+  ): Task[Int] = ZIO.succeed(0)
+  def getGroupDayForProfile(
+      profileId: ProfileId,
+      date: LocalDate,
+  ): Task[Map[AppGroupId, RolledAppDay]] = ZIO.succeed(Map.empty)
 }
 
 class AppUsedRollupRepoLive(xa: Transactor[Task]) extends AppUsedRollupRepo {
@@ -136,4 +161,35 @@ class AppUsedRollupRepoLive(xa: Transactor[Task]) extends AppUsedRollupRepo {
       .query[(LocalDate, AppId, Long)]
       .to[List]
       .transact(xa)
+
+  def upsertGroupBatch(
+      household: HouseholdId,
+      date: LocalDate,
+      rows: Map[(ProfileId, AppGroupId), RolledAppDay],
+  ): Task[Int] =
+    if rows.isEmpty then ZIO.succeed(0)
+    else
+      Update[(HouseholdId, ProfileId, AppGroupId, LocalDate, Long, Instant)](
+        """INSERT INTO app_group_used_daily
+             (household_id, profile_id, group_id, date, engaged_seconds, rolled_through, rolled_at)
+           VALUES (?, ?, ?, ?, ?, ?, NOW())
+           ON CONFLICT (profile_id, group_id, date) DO UPDATE
+             SET engaged_seconds = EXCLUDED.engaged_seconds,
+                 rolled_through  = EXCLUDED.rolled_through,
+                 rolled_at       = EXCLUDED.rolled_at""",
+      ).updateMany(rows.toList.map { case ((pid, gid), r) =>
+        (household, pid, gid, date, r.engagedSeconds, r.rolledThrough)
+      }).transact(xa)
+
+  def getGroupDayForProfile(
+      profileId: ProfileId,
+      date: LocalDate,
+  ): Task[Map[AppGroupId, RolledAppDay]] =
+    sql"""SELECT group_id, engaged_seconds, rolled_through
+          FROM app_group_used_daily WHERE profile_id=$profileId AND date=$date"""
+      .query[(AppGroupId, Long, Instant)]
+      .map { case (g, s, t) => g -> RolledAppDay(s, t) }
+      .to[List]
+      .transact(xa)
+      .map(_.toMap)
 }

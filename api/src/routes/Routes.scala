@@ -5,6 +5,7 @@ import wifihaven.api.cache.TimeStatusCache
 import wifihaven.api.db.*
 import wifihaven.api.metrics.AppMetrics
 import wifihaven.api.observability.LogContext
+import wifihaven.api.policy.CalendarWeek
 import wifihaven.shared.*
 import wifihaven.shared.types.*
 import zio.{Clock as _, *}
@@ -367,12 +368,16 @@ object AuthRoutes {
                 s"password must be at least ${AuthService.MinPasswordLength} characters",
               ),
             ).when(!AuthService.isPasswordStrongEnough(spr.newPassword))
-            // #2308 SSOT: hash + store + token_version bump + the must_change_password arm, all in
-            // the one rotation `setPassword` also uses, differing only in that flag — so the admin's
-            // choice is a one-time handoff (#586/#2492), not a lasting shared secret.
-            _      <- auth
-              .setPasswordAsHandoff(uid, spr.newPassword)
-              .mapError(ApiError.Db(_))
+            // #2308 SSOT: hash + store + token_version bump all happen in the one private rotation
+            // behind both named methods, so sessions are revoked (#2080) whichever is chosen.
+            // #2947: the admin picks which. Toggle on (also what an older client gets by omitting
+            // the field) is a one-time handoff (#586/#2492), with the flag armed in the same
+            // statement. Toggle off is the flag-clearing rotation: the admin-typed password stays
+            // the member's. The choice is resolved HERE into a named call, never passed down.
+            _      <- (
+              if spr.mustChangePassword then auth.setPasswordAsHandoff(uid, spr.newPassword)
+              else auth.setPassword(uid, spr.newPassword)
+            ).mapError(ApiError.Db(_))
               .tapError(_ => AppMetrics.adminPasswordSet(Outcome.Error))
             // The audit record the target deserves: their credential was changed by someone else.
             // Actor, target and role only — the plaintext is never logged, here or anywhere.
@@ -380,10 +385,11 @@ object AuthRoutes {
               LogContext.annotate(LogContext.User, claims.sub) {
                 ZIO.logInfo(
                   s"admin password set: actor=${claims.sub} target=${target.username} " +
-                    s"targetRole=${UserRole.asString(target.role)} targetId=${uid.value}",
+                    s"targetRole=${UserRole.asString(target.role)} targetId=${uid.value} " +
+                    s"mustChangePassword=${spr.mustChangePassword}",
                 )
               }
-          } yield Response.json(SetUserPasswordResponse().toJson)
+          } yield Response.json(SetUserPasswordResponse(spr.mustChangePassword).toJson)
           handle.mapError(ErrorMapper.errorToResponse)
         },
       // #997: field-scoped partial update. Body is a subset of the User read
@@ -1224,8 +1230,9 @@ object TimeRoutes {
               .addHeader(cacheControlFor(isTodayMode = !date.isBefore(today)))
           handle.mapError(ErrorMapper.errorToResponse)
         },
-      // #777 — weekly variant of the summary endpoint. Single presence query over the trailing
-      // 7-day range, per-mac bucket-deduped totals summed per profile.
+      // #777 — weekly variant of the summary endpoint. #2932 (design §6.5, D10): the household's
+      // calendar week containing `?to=` (default today), and each profile's total is its
+      // exempt-filtered week-to-date figure off the same day state the snapshot reads.
       Method.GET / "api" / "time" / "status" / "summary" / "week"       ->
         handler { (req: Request) =>
           val handle: ZIO[Any, ApiError, Response] =
@@ -1236,66 +1243,29 @@ object TimeRoutes {
               // #1104: anchor on household-local today, not UTC today.
               today = wifihaven.api.policy.PolicyService.householdLocalDate(now, settings)
               toStr = req.url.queryParam("to").getOrElse(today.toString)
-              to    = LocalDate.parse(toStr)
-              from  = to.minusDays(6)
+              week  = CalendarWeek.containing(LocalDate.parse(toStr), today, settings)
               allProfiles <- profileRepo.listAllForHousehold(claims.hh).mapError(ApiError.Db(_))
-              allDevices  <- deviceRepo.listAllForHousehold(claims.hh).mapError(ApiError.Db(_))
               allLimits   <- timeLimitRepo.listAllForHousehold(claims.hh).mapError(ApiError.Db(_))
-              allAppLims <- appTimeLimitRepo.listAllForHousehold(claims.hh).mapError(ApiError.Db(_))
-              ambient    <- ambientRepo.gateFor(settings, today).mapError(ApiError.Db(_))
-              visible    <- visibleProfiles(claims, allProfiles, userProfileRepo)
-              appLimsByPid = allAppLims.groupBy(_.profileId)
-              // #2844: each profile is credited the rows of the devices it held, while it held them.
-              scope    <- AttributionScope
-                .forRange(deviceRepo, claims.hh, from, to, settings)
-                .mapError(ApiError.Db(_))
-              presence <- trafficRepo
-                .listPresenceRows(scope.spansForProfiles(visible.map(_.id)), from, to)
+              visible     <- visibleProfiles(claims, allProfiles, userProfileRepo)
+              states      <- ZIO
+                .foreach(week.asOf)(d => timeStatusService.dayStateAll(claims.hh, now, d, settings))
+                .map(_.getOrElse(Map.empty))
                 .mapError(ApiError.Db(_))
               limitByPid = allLimits.iterator.map(l => l.profileId -> l.dailyMinutes).toMap
-              summaries  = visible
-                .map { p =>
-                  val devices = scope.devicesFor(p.id, allDevices)
-                  // #2077: gate the weekly rows with the same profile app-attribution context
-                  // as the daily headline, so the weekly bars reconcile with the daily view.
-                  val pRows   = wifihaven.api.policy.TimeStatusService.gatedPresence(
-                    appLimsByPid.getOrElse(p.id, Nil),
-                    scope.spansFor(p.id).filter(presence),
-                    settings,
-                    ambient,
-                  )
-                  val perMac  = wifihaven.api.presence.Presence
-                    .totalMinutesByMac(
-                      pRows,
-                      Nil,
-                      settings.heartbeatFilter,
-                      settings.presenceContinuationSeconds,
-                    )
-                  // #751: same Sum/Dedup branch as the daily summary.
-                  val total   = p.crossDeviceOverlapMode match {
-                    case CrossDeviceOverlapMode.Sum   =>
-                      devices.iterator.map(d => perMac.getOrElse(d.mac, 0)).sum
-                    case CrossDeviceOverlapMode.Dedup =>
-                      wifihaven.api.presence.Presence
-                        .dedupedTotalMinutes(
-                          pRows,
-                          Nil,
-                          settings.heartbeatFilter,
-                          settings.presenceContinuationSeconds,
-                        )
-                  }
-                  ProfileTimeSummaryWeek(
-                    p.id,
-                    p.name,
-                    from.toString,
-                    to.toString,
-                    limitByPid.get(p.id),
-                    total,
-                  )
-                }
+              summaries  = visible.map { p =>
+                ProfileTimeSummaryWeek(
+                  p.id,
+                  p.name,
+                  week.from.toString,
+                  week.to.toString,
+                  limitByPid.get(p.id),
+                  // A week that has not started has no usage: a genuine zero, not a placeholder.
+                  states.get(p.id).flatMap(_.week).map(_.usedMinutes).getOrElse(0),
+                )
+              }
             } yield Response
               .json(summaries.toJson)
-              .addHeader(cacheControlFor(isTodayMode = !to.isBefore(today)))
+              .addHeader(cacheControlFor(isTodayMode = !week.to.isBefore(today)))
           handle.mapError(ErrorMapper.errorToResponse)
         },
       Method.GET / "api" / "time" / "status"                            ->
@@ -1364,8 +1334,8 @@ object TimeRoutes {
               // so each bucket falls fully within one local day on the caller's side (#794).
               // Accepts 0/15/30/45; defaults to 0 (whole-hour grid, fine for UTC-aligned zones).
               toStr = req.url.queryParam("to").getOrElse(today.toString)
-              to    = LocalDate.parse(toStr)
-              from  = to.minusDays(6)
+              // #2932 (design §6.5, D10): the calendar week containing `?to=`.
+              week  = CalendarWeek.containing(LocalDate.parse(toStr), today, settings)
               bucketOffsetMin <- parseBucketOffsetMin(req)
               // #795: same single-profile narrowing as the daily endpoint.
               profileIdOpt    <- parseProfileIdParam(req)
@@ -1384,14 +1354,14 @@ object TimeRoutes {
                   // bucketOffsetMin is in the key because different offsets yield different
                   // per-day buckets (#794), so they must not collide.
                   cache
-                    .getOrLoadWeekly(p.id, from, to, bucketOffsetMin, today) {
+                    .getOrLoadWeekly(p.id, week.from, week.to, bucketOffsetMin, today) {
                       buildProfileTimeStatusWeek(
                         claims.hh,
                         p,
                         allDevices,
                         deviceRepo,
-                        from,
-                        to,
+                        week,
+                        now,
                         timeLimitRepo,
                         trafficRepo,
                         settings.heartbeatFilter,
@@ -1399,6 +1369,7 @@ object TimeRoutes {
                         settings,
                         appTimeLimitRepo,
                         ambient,
+                        timeStatusService,
                       )
                     }
                 }
@@ -1406,7 +1377,7 @@ object TimeRoutes {
               _        <- logCacheStatsPeriodically(cache)
             } yield Response
               .json(statuses.toJson)
-              .addHeader(cacheControlFor(isTodayMode = !to.isBefore(today)))
+              .addHeader(cacheControlFor(isTodayMode = !week.to.isBefore(today)))
           handle.mapError(ErrorMapper.errorToResponse)
         },
       Method.GET / "api" / "time" / "status" / string("mac") / "week"   ->
@@ -1685,18 +1656,20 @@ object TimeRoutes {
       .assembleProfileTimeStatus(profile, devices, state, presence, appLimits, settings)
 
   /**
-   * #723 weekly variant. Sums presence rows across the trailing range and bucket-dedupes per-mac
-   * and per-host across the WHOLE range — naive day-by-day sums would double-count buckets a device
-   * spread across midnight (rare but possible). Per-day totals are computed independently per
-   * `date` so each bar in the UI matches what a `Today`-view for that date would report.
+   * #723 weekly variant. #2932 (design §6.5, D10): the household's calendar `week`. The total is
+   * the profile's exempt-filtered week-to-date figure off its day state for the week's last day so
+   * far (`week.asOf`), the same figure the weekly budgets use: past days from their settled rows,
+   * today rolled plus tail. The hourly bars, per-device minutes and top hosts still come from one
+   * presence read over the week so far, with the profile's exempt patterns excluded so they add up
+   * to the total. A day after today has no rows and is absent, never a `0m` bar.
    */
   private def buildProfileTimeStatusWeek(
       household: HouseholdId,
       profile: Profile,
       allDevices: List[Device],
       deviceRepo: DeviceRepo,
-      from: LocalDate,
-      to: LocalDate,
+      week: CalendarWeek,
+      now: java.time.Instant,
       tlRepo: TimeLimitRepo,
       trafficRepo: TrafficReportRepo,
       heartbeatFilter: HeartbeatFilter,
@@ -1704,65 +1677,79 @@ object TimeRoutes {
       settings: HouseholdSettings,
       appTimeLimitRepo: AppTimeLimitRepo,
       ambient: wifihaven.api.presence.AmbientGate,
+      timeStatusService: wifihaven.api.policy.TimeStatusService,
   ): Task[ProfileTimeStatusWeek] =
-    for {
-      tl    <- tlRepo.findForProfile(profile.id)
-      // #2844: the devices the profile held during the range, and only their in-interval rows.
-      scope <- AttributionScope.forRange(deviceRepo, household, from, to, settings)
-      devices = scope.devicesFor(profile.id, allDevices)
-      raw       <- trafficRepo.listPresenceRows(scope.spansFor(profile.id), from, to)
-      appLimits <- appTimeLimitRepo.listForProfile(profile.id)
-      // #2077: gate with the same profile app-attribution context as the daily view so the
-      // weekly bars reconcile with the daily headline.
-      presence        = wifihaven.api.policy.TimeStatusService
-        .gatedPresence(appLimits, raw, settings, ambient)
-      // Range aggregates: bucket-dedup across the full range, no exempt-pattern filtering
-      // (weekly view is informational). Heartbeat filter applied for symmetry with the daily
-      // view (#714). Per-FQDN attribution caveats from #715 still apply.
-      perMacTotal     = wifihaven.api.presence.Presence
-        .totalMinutesByMac(presence, Nil, heartbeatFilter)
-      // #751: same Sum/Dedup branch as the daily endpoint, applied across the
-      // entire weekly range. perBucket below also respects the mode so the
-      // bars reconcile to totalUsed.
-      totalUsed       = profile.crossDeviceOverlapMode match {
-        case CrossDeviceOverlapMode.Sum   =>
-          devices.iterator.map(d => perMacTotal.getOrElse(d.mac, 0)).sum
-        case CrossDeviceOverlapMode.Dedup =>
-          wifihaven.api.presence.Presence
-            .dedupedTotalMinutes(presence, Nil, heartbeatFilter)
-      }
-      deviceSummaries = devices.map { d =>
-        DeviceUsageSummary(d.mac, d.name, perMacTotal.getOrElse(d.mac, 0))
-      }
-      hostUsage       = {
-        val presenceMins = wifihaven.api.presence.Presence.hostMinutes(presence, heartbeatFilter)
-        val proportional = wifihaven.api.presence.Presence
-          .proportionalHostMinutes(presence, profile.crossDeviceOverlapMode, heartbeatFilter)
-        presenceMins.iterator
-          .filter(_._2 > 0)
-          .map { case (h, m) => HostUsage(h, m, proportional.getOrElse(h, 0)) }
-          .toList
-          .sortBy(hu => (-hu.proportionalMins, -hu.usedMins, hu.host.value))
-          .take(10)
-      }
-      perBucket       =
-        bucketHourlyAligned(
-          presence,
-          heartbeatFilter,
-          bucketOffsetMin,
-          profile.crossDeviceOverlapMode,
+    week.asOf match {
+      case None       =>
+        tlRepo
+          .findForProfile(profile.id)
+          .map(tl =>
+            ProfileTimeStatusWeek(
+              profile.id,
+              profile.name,
+              week.from.toString,
+              week.to.toString,
+              tl.map(_.dailyMinutes),
+              0,
+              Nil,
+              Nil,
+              Nil,
+            ),
+          )
+      case Some(asOf) =>
+        for {
+          tl    <- tlRepo.findForProfile(profile.id)
+          state <- timeStatusService.dayState(household, now, asOf, settings, profile.id)
+          // #2844: the devices the profile held during the range, and only their in-interval rows.
+          scope <- AttributionScope.forRange(deviceRepo, household, week.from, asOf, settings)
+          devices = scope.devicesFor(profile.id, allDevices)
+          raw       <- trafficRepo.listPresenceRows(scope.spansFor(profile.id), week.from, asOf)
+          appLimits <- appTimeLimitRepo.listForProfile(profile.id)
+          // #2077: gate with the same profile app-attribution context as the daily view so the
+          // weekly bars reconcile with the daily headline.
+          presence    = wifihaven.api.policy.TimeStatusService
+            .gatedPresence(appLimits, raw, settings, ambient)
+          exempt      = wifihaven.api.policy.ProfileAppDispositions.from(appLimits).exemptPatterns
+          // Heartbeat filter applied for symmetry with the daily view (#714). Per-FQDN attribution
+          // caveats from #715 still apply.
+          perMacTotal = wifihaven.api.presence.Presence
+            .totalMinutesByMac(presence, exempt, heartbeatFilter)
+          deviceSummaries = devices.map { d =>
+            DeviceUsageSummary(d.mac, d.name, perMacTotal.getOrElse(d.mac, 0))
+          }
+          hostUsage       = {
+            val presenceMins =
+              wifihaven.api.presence.Presence.hostMinutes(presence, heartbeatFilter)
+            val proportional = wifihaven.api.presence.Presence
+              .proportionalHostMinutes(presence, profile.crossDeviceOverlapMode, heartbeatFilter)
+            presenceMins.iterator
+              .filter(_._2 > 0)
+              .map { case (h, m) => HostUsage(h, m, proportional.getOrElse(h, 0)) }
+              .toList
+              .sortBy(hu => (-hu.proportionalMins, -hu.usedMins, hu.host.value))
+              .take(10)
+          }
+          // #751: the bars respect the profile's overlap mode so they reconcile to the total.
+          perBucket       =
+            bucketHourlyAligned(
+              presence,
+              heartbeatFilter,
+              bucketOffsetMin,
+              profile.crossDeviceOverlapMode,
+              exempt,
+            )
+        } yield ProfileTimeStatusWeek(
+          profile.id,
+          profile.name,
+          week.from.toString,
+          week.to.toString,
+          tl.map(_.dailyMinutes),
+          state.flatMap(_.week).map(_.usedMinutes).getOrElse(0),
+          perBucket,
+          deviceSummaries,
+          hostUsage,
         )
-    } yield ProfileTimeStatusWeek(
-      profile.id,
-      profile.name,
-      from.toString,
-      to.toString,
-      tl.map(_.dailyMinutes),
-      totalUsed,
-      perBucket,
-      deviceSummaries,
-      hostUsage,
-    )
+    }
 
   /** Per-device weekly variant of [[buildProfileTimeStatusWeek]]. */
   private def buildDeviceTimeStatusWeek(
@@ -1857,6 +1844,8 @@ object TimeRoutes {
       heartbeatFilter: HeartbeatFilter,
       offsetMin: Int,
       overlap: CrossDeviceOverlapMode,
+      // #2932: the profile's exempt-from-daily patterns, excluded as from the total (design §6.5).
+      exempt: List[String] = Nil,
   ): List[ProfileTimeBucket] = {
     val hourSeconds   = 3600L
     val offsetSeconds = offsetMin.toLong * 60L
@@ -1874,12 +1863,12 @@ object TimeRoutes {
         val mins = overlap match {
           case CrossDeviceOverlapMode.Sum   =>
             wifihaven.api.presence.Presence
-              .totalMinutesByMac(rows, Nil, heartbeatFilter)
+              .totalMinutesByMac(rows, exempt, heartbeatFilter)
               .values
               .sum
           case CrossDeviceOverlapMode.Dedup =>
             wifihaven.api.presence.Presence
-              .dedupedTotalMinutes(rows, Nil, heartbeatFilter)
+              .dedupedTotalMinutes(rows, exempt, heartbeatFilter)
         }
         ProfileTimeBucket(bucketStart, mins)
       }
@@ -1935,7 +1924,7 @@ object TimeRoutes {
       // #1505 + #1504: per-device per-app usage via the #1464 session-stitch primitive (one bar per
       // app). Single-device view, so cross-device overlap mode is moot — Sum and Dedup coincide.
       // #1897 (shared-hosts S2): stitch each app's DISTINCTIVE host-set only — the SAME source the
-      // canonical per-profile stitch reads (`TimeStatusService.appDayStates` →
+      // canonical per-profile stitch reads (`TimeStatusService.budgetDayStates` →
       // `ProfileAppDispositions.capGroupLabelDistinctiveHosts`). A shared backend overlapping a
       // distinctive span is already counted there, and a shared firing without distinctive activity
       // must not inflate the app's minutes; reading the full host-set here over-counted. Routes

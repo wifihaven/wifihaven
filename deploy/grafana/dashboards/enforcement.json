@@ -451,6 +451,64 @@
           "refId": "A"
         }
       ]
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "title": "Exhausted app and group budgets (#2933)",
+      "description": "max by (kind, window) (app_budget_exhausted) \u2014 how many per-app and per-group time budgets are exhausted right now, across all households, split by kind (app | group) and window (day | week). A GAUGE, so a LEVEL, not a rate: it is set once per policy reevaluate tick from that tick's per-household results, summed, and every (kind, window) is set every tick including 0, so a cleared budget reads 0. Each exhausted budget puts its members' distinctive hosts in extraBlocked and withholds every extraAllowed carve for them. Expect it to rise through the evening and drop to 0 at the daily reset (day) or the week start (week). A week series that does not drop at the week start, or a group series stuck above 0 with no kid online, means a budget is not resetting. Design docs/design/weekly-limits-and-app-groups.md \u00a77, \u00a711.",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 57
+      },
+      "id": 15,
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "stepAfter",
+            "fillOpacity": 15,
+            "showPoints": "never",
+            "lineWidth": 1
+          },
+          "min": 0,
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max by (kind, window) (app_budget_exhausted{env=\"$env\"})",
+          "legendFormat": "{{kind}} / {{window}}",
+          "refId": "A"
+        }
+      ]
     }
   ],
   "refresh": "30s",

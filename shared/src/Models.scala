@@ -304,6 +304,34 @@ case class AppTimeLimit(
     // (already counted inside any overlapping distinctive span — see docs/design/shared-host-
     // allocation.md). Default false keeps every legacy hand-built construction distinctive.
     shared: Boolean = false,
+    // #2932 (design docs/design/weekly-limits-and-app-groups.md §5.2): the assignment's weekly
+    // limit, V92 `app_policy_assignments.weekly_minutes`. `None` means no weekly limit, as `None`
+    // `dailyMinutes` means no daily limit (#1627).
+    weeklyMinutes: Option[Int] = None,
+    // #2932 (design §6.1): the group attached to this profile that covers this app, if any. Uniform
+    // across an app's rows. Carried on the same read as the assignment so every consumer of
+    // `AppTimeLimitRepo.listForProfile` sees group coverage; none can forget to load it.
+    coverage: Option[GroupCoverage] = None,
+    // #2932 (design §6.1, D6): true for a row the repo emits for a COVERED app that has no
+    // assignment of its own on the profile. Such a row carries no assignment id, mode or limits;
+    // `ProfileAppDispositions.from` turns it into a synthesized TimeLimited disposition.
+    coveredOnly: Boolean = false,
+    // #2933 (design §8): the app's display name (`apps.name`), so a block can name its budget.
+    appName: String = "",
+) derives JsonCodec
+
+/**
+ * #2932 (design `docs/design/weekly-limits-and-app-groups.md` §5.3): a profile's attachment of the
+ * household group `groupId` (`profile_app_groups`, V92), as seen from one covered app. The limits
+ * and the "counts toward daily" flag are the PROFILE's, not the group's: the household group is
+ * only a name and a member list.
+ */
+case class GroupCoverage(
+    groupId: AppGroupId,
+    name: String,
+    dailyMinutes: Option[Int],
+    weeklyMinutes: Option[Int],
+    exemptFromDaily: Boolean,
 ) derives JsonCodec
 
 // #761: app concept. An App is a household-scoped named bundle of host
@@ -1020,14 +1048,21 @@ case class ChangePasswordRequest(currentPassword: String, newPassword: String) d
  * in the body would be a client-supplied tenancy key, which is the #2533/#2386 defect class and, on
  * a credential write, a cross-household account-takeover primitive. `newPassword` is subject to the
  * same #2084 policy as every other password path.
+ *
+ * #2947: `mustChangePassword` is the admin's choice of what the set IS. `true` (the default, and
+ * what every pre-#2947 client gets by omitting the field) is a HANDOFF: the target is forced to
+ * replace it at next login. `false` makes the admin-typed password the member's real password. The
+ * route maps it onto one of `AuthService`'s two NAMED rotations; the boolean never reaches the
+ * credential write.
  */
-case class SetUserPasswordRequest(newPassword: String) derives JsonCodec
+case class SetUserPasswordRequest(newPassword: String, mustChangePassword: Boolean = true)
+    derives JsonCodec
 
 /**
- * Response to a successful admin-initiated set. `mustChangePassword` is always `true` and says what
- * the admin needs to hear: the credential they just chose is a HANDOFF — the target is forced to
- * replace it at next login (#2492/#586), so it does not persist as a secret the admin knows. The
- * plaintext is never echoed back, here or anywhere else.
+ * Response to a successful admin-initiated set. `mustChangePassword` echoes the rotation the route
+ * applied (#2947): `true` means the credential is a HANDOFF the target must replace at next login
+ * (#2492/#586); `false` means it stays their password. The plaintext is never echoed back, here or
+ * anywhere else.
  */
 case class SetUserPasswordResponse(mustChangePassword: Boolean = true) derives JsonCodec
 
@@ -1531,6 +1566,32 @@ case class AppUsage(
     limitMins: Option[Int],
     usedMins: Int,
     remainingMins: Option[Int],
+    // #2932 (design §6.5): the app's weekly limit and its week-to-date minutes, from the same
+    // `ProfileDayState` the policy snapshot reads. `weekStart` is the household-local date the week
+    // began; `weekResetsAt` is the instant the next week begins. Additive: `None` on an old body.
+    weeklyLimitMins: Option[Int] = None,
+    weekUsedMins: Option[Int] = None,
+    weekStart: Option[String] = None,
+    weekResetsAt: Option[String] = None,
+) derives JsonCodec
+
+/**
+ * #2932 (design §6.5): one attached group's usage on a profile, the group counterpart of
+ * [[AppUsage]]. Minutes are counted once across the members' distinctive hosts (design §6.2).
+ */
+case class GroupUsage(
+    groupId: AppGroupId,
+    name: String,
+    memberAppIds: List[AppId],
+    limitMins: Option[Int],
+    usedMins: Int,
+    remainingMins: Option[Int],
+    weeklyLimitMins: Option[Int],
+    // Same meaning and presence as on [[AppUsage]].
+    weekUsedMins: Option[Int],
+    weekStart: Option[String],
+    weekResetsAt: Option[String],
+    exemptFromDaily: Boolean,
 ) derives JsonCodec
 
 case class DeviceTimeStatus(
@@ -1606,6 +1667,8 @@ case class ProfileTimeStatus(
     appUsage: List[AppUsage],
     devices: List[DeviceUsageSummary],
     hostUsage: List[HostUsage],
+    // #2932: additive; empty when the profile has no group attached.
+    groupUsage: List[GroupUsage] = Nil,
 ) derives JsonCodec
 
 /**
@@ -2248,7 +2311,16 @@ case class BlockedInfoResponse(
     dailyLimitMinutes: Option[Int] = None,
     extensionMinutes: Option[Int] = None,
     remainingMinutes: Option[Int] = None,
+    // #2933 (design §8): which budget an `app_time_limit` block came from. Additive.
+    budget: Option[BudgetBlockInfo] = None,
 ) derives JsonCodec
+
+/**
+ * #2933 (design §8): the budget behind an `app_time_limit` block on `GET /api/blocked`. `kind` is
+ * "app" or "group", `name` the app's or group's display name, `window` "day" or "week". No reset
+ * time (D12).
+ */
+case class BudgetBlockInfo(kind: String, name: String, window: String) derives JsonCodec
 
 // ── Policy snapshot (target shape per docs/architecture.md §0.2, #354) ────
 //

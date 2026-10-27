@@ -969,11 +969,13 @@ export interface SetUserProfilesRequest {
 // `SetUserPasswordRequest` / `SetUserPasswordResponse` in shared/src/Models.scala.
 export interface SetUserPasswordRequest {
   newPassword: string
+  // #2947: true = a HANDOFF the member must replace at next login; false = the admin-typed password
+  // stays theirs. Optional on the wire — an omitted field means true (today's behaviour) — but this
+  // client always sends it so the admin's choice is explicit.
+  mustChangePassword?: boolean
 }
 
-// Always true: the password the admin just chose is a HANDOFF — the server re-arms
-// `must_change_password`, so the member is forced to replace it at next login and the admin's
-// choice never becomes a lasting shared secret. The plaintext is never echoed back.
+// #2947: echoes the rotation the server applied. The plaintext is never echoed back.
 export interface SetUserPasswordResponse {
   mustChangePassword: boolean
 }
@@ -1236,6 +1238,8 @@ export interface BlockedInfoResponse {
   dailyLimitMinutes?: number | null
   extensionMinutes?: number | null
   remainingMinutes?: number | null
+  // #2933: the budget behind an app_time_limit block. kind: "app" | "group", window: "day" | "week".
+  budget?: { kind: string; name: string; window: string } | null
 }
 
 // #1740 — usage retention horizons (days). Carried on `UsageConfig.horizons`
