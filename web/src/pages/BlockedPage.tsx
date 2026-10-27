@@ -19,7 +19,7 @@ import type { AccessRequestKind, BlockedInfoResponse } from '@/types/api'
 //   - paused     → "Your profile is paused"
 //   - schedule   → "Outside allowed time"     (no end time leak)
 //   - time_limit → "Out of time today"        (no minute counts)
-//   - app_time_limit → "Out of time on this app"
+//   - app_time_limit → "<Name> has used up its daily/weekly time" (#2935; generic if no budget)
 //   - extra_blocked → "Blocked by your parent"
 //   - checked_out → "This is a shared device. Check it in…" (#2847)
 //
@@ -40,8 +40,14 @@ function copyFor(info: BlockedInfoResponse): string {
       return 'Outside allowed time.'
     case 'time_limit':
       return 'Out of time today.'
-    case 'app_time_limit':
+    case 'app_time_limit': {
+      // #2935 (D12): name the budget and its window; no reset time.
+      const b = info.budget
+      if (b && b.name && (b.window === 'day' || b.window === 'week')) {
+        return `${b.name} has used up its ${b.window === 'week' ? 'weekly' : 'daily'} time.`
+      }
       return 'Out of time on this app today.'
+    }
     case 'extra_blocked':
       return 'Blocked by your parent.'
     case 'checked_out':
@@ -181,7 +187,9 @@ function offeredKindsFor(info: BlockedInfoResponse | null): AccessRequestKind[] 
   if (cls === 'paused')          return ['unpause', 'extension']
   if (cls === 'schedule')        return ['unpause', 'extension']
   if (cls === 'time_limit')      return ['extension']
-  if (cls === 'app_time_limit')  return ['extension', 'exemption']
+  // #2935 (D8): an extension raises only the profile daily total, so it never lifts an app or
+  // group budget. Offering it here would be a dead control.
+  if (cls === 'app_time_limit')  return ['exemption']
   if (cls === 'category')        return ['exemption']
   if (cls === 'extra_blocked')   return ['exemption']
   // API in flight or unknown class — offer everything so the kid still has a

@@ -51,9 +51,19 @@ vi.mock('@/api/client', () => ({
       summaryAll: vi.fn(),
       grantExtension: vi.fn(),
       statusAllWeek: vi.fn(),
+      statusAll: vi.fn(),
     },
     usage: {
       series: vi.fn(),
+    },
+    // #2935 — household app groups and a profile's attachments of them.
+    appGroups: {
+      list: vi.fn(),
+      create: vi.fn(),
+      update: vi.fn(),
+      forProfile: vi.fn(),
+      attach: vi.fn(),
+      detach: vi.fn(),
     },
   },
 }))
@@ -194,6 +204,12 @@ beforeEach(() => {
   ;(api.apps.setPolicy as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(undefined)
   ;(api.apps.deletePolicy as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(undefined)
   ;(api.schedules.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([])
+  ;(api.appGroups.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([])
+  ;(api.appGroups.forProfile as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([])
+  ;(api.appGroups.create as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({ id: 9, name: 'New group', memberAppIds: [] })
+  ;(api.appGroups.update as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(undefined)
+  ;(api.appGroups.attach as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(undefined)
+  ;(api.appGroups.detach as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(undefined)
   ;(api.schedules.create as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(undefined)
   ;(api.profiles.usageByApp as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
     profileId: 1, profileName: 'Kids', from: '2026-05-26', to: '2026-05-26', apps: [],
@@ -201,6 +217,7 @@ beforeEach(() => {
   ;(api.time.summaryAll as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([kidsSummary, adultsSummary])
   ;(api.time.grantExtension as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({ id: 1, grantedMinutes: 30 })
   ;(api.time.statusAllWeek as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([])
+  ;(api.time.statusAll as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([])
   // #1036 — ProfileTimelineChart fires /api/usage/series whenever a card is
   // expanded (Today is the default tab). Default to an empty payload; specific
   // tests can override to populate top hosts/devices.
@@ -2863,5 +2880,336 @@ describe('ProfilesPage — category coverage on the collapsed summary (#2824)', 
     const chip = await screen.findByTestId('profile-coverage-2')
     expect(chip).toHaveAttribute('data-coverage', 'default-deny')
     expect(chip).not.toHaveTextContent(/blocks nothing/i)
+  })
+})
+
+// #2935 — weekly limits and app groups in the #2764 compact layout.
+describe('ProfilesPage — weekly limits and app groups (#2935)', () => {
+  const fn = (f: unknown) => f as ReturnType<typeof vi.fn>
+
+  function app(id: number, name: string, assignment: Record<string, unknown> | null) {
+    return {
+      app: { id, name, slug: name.toLowerCase(), templateId: null, icon: '🎮', createdAt: '2026-01-01' },
+      hosts: [`${name.toLowerCase()}.com`],
+      assignments: assignment == null ? [] : [{
+        id: id + 1000, appId: id, profileId: 1, mode: 'allowed', dailyMinutes: null,
+        exemptFromDaily: true, allowedDuringScheduleBlock: true, ...assignment,
+      }],
+    }
+  }
+  const games = { id: 7, name: 'Games', memberAppIds: [60, 61] }
+  const attachment = (over: Record<string, unknown> = {}) => ({
+    profileId: 1, groupId: 7, name: 'Games', memberAppIds: [60, 61],
+    dailyMinutes: 60, weeklyMinutes: 300, exemptFromDaily: true, ...over,
+  })
+
+  async function openApps(user: ReturnType<typeof userEvent.setup>) {
+    renderPage()
+    await screen.findByTestId('profile-card-1')
+    await expand(1, user)
+    await user.click(screen.getByTestId('profile-apps-toggle-1'))
+  }
+
+  it('lists covered apps inside their group row, never as their own rows', async () => {
+    fn(api.apps.list).mockResolvedValue([app(60, 'Roblox', null), app(61, 'Minecraft', null), app(50, 'YouTube', { mode: 'allowed' })])
+    fn(api.appGroups.list).mockResolvedValue([games])
+    fn(api.appGroups.forProfile).mockResolvedValue([attachment()])
+    const user = userEvent.setup()
+    await openApps(user)
+    const row = await screen.findByTestId('group-row-7')
+    expect(within(row).getByText('Games')).toBeInTheDocument()
+    expect(screen.getByTestId('app-row-50')).toBeInTheDocument()
+    expect(screen.queryByTestId('app-row-60')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('app-row-61')).not.toBeInTheDocument()
+  })
+
+  it('shows the Also-in chip only on an assignment with coveredBy, and remove deletes the assignment', async () => {
+    fn(api.apps.list).mockResolvedValue([
+      app(60, 'Roblox', { mode: 'time_limited', dailyMinutes: 30, coveredBy: { groupId: 7, name: 'Games' } }),
+      app(50, 'YouTube', { mode: 'allowed' }),
+    ])
+    fn(api.appGroups.list).mockResolvedValue([games])
+    fn(api.appGroups.forProfile).mockResolvedValue([attachment()])
+    const user = userEvent.setup()
+    await openApps(user)
+    const chip = await screen.findByTestId('app-row-60-overlap-chip')
+    expect(chip).toHaveTextContent('Also in Games')
+    expect(screen.queryByTestId('app-row-50-overlap-chip')).not.toBeInTheDocument()
+    await user.click(chip)
+    await user.click(await screen.findByTestId('app-row-60-overlap-remove'))
+    await waitFor(() => expect(api.apps.deletePolicy).toHaveBeenCalledWith(60, 1))
+    expect(api.appGroups.detach).not.toHaveBeenCalled()
+  })
+
+  it('shows the D16 hint only while Counts toward daily limit is unchecked', async () => {
+    fn(api.apps.list).mockResolvedValue([app(50, 'YouTube', { mode: 'allowed' })])
+    fn(api.appGroups.list).mockResolvedValue([games])
+    fn(api.appGroups.forProfile).mockResolvedValue([attachment({ exemptFromDaily: true })])
+    const user = userEvent.setup()
+    await openApps(user)
+    await user.click(await screen.findByTestId('group-row-7-toggle'))
+    const box = await screen.findByTestId('group-row-7-counts-toward-daily')
+    expect(box).not.toBeChecked()
+    expect(screen.getByTestId('group-row-7-exempt-hint')).toHaveTextContent(
+      'Not counted: while under its limits, this group stays reachable during bedtime and a soft pause.',
+    )
+    await user.click(box)
+    await waitFor(() =>
+      expect(api.appGroups.attach).toHaveBeenCalledWith(1, 7, expect.objectContaining({ exemptFromDaily: false })))
+  })
+
+  it('hides the D16 hint when the attachment counts toward the daily limit', async () => {
+    fn(api.apps.list).mockResolvedValue([app(50, 'YouTube', { mode: 'allowed' })])
+    fn(api.appGroups.list).mockResolvedValue([games])
+    fn(api.appGroups.forProfile).mockResolvedValue([attachment({ exemptFromDaily: false })])
+    const user = userEvent.setup()
+    await openApps(user)
+    await user.click(await screen.findByTestId('group-row-7-toggle'))
+    expect(await screen.findByTestId('group-row-7-counts-toward-daily')).toBeChecked()
+    expect(screen.queryByTestId('group-row-7-exempt-hint')).not.toBeInTheDocument()
+  })
+
+  it('autosaves a weekly limit typed beside min/day in the app drawer', async () => {
+    fn(api.apps.list).mockResolvedValue([app(52, 'Minecraft', { mode: 'time_limited', dailyMinutes: 60 })])
+    const user = userEvent.setup()
+    await openApps(user)
+    await user.click(await screen.findByTestId('app-row-52-limit-toggle'))
+    const input = await screen.findByTestId('app-row-52-weekly-minutes')
+    await user.type(input, '300')
+    await user.tab()
+    await waitFor(() =>
+      expect(api.apps.setPolicy).toHaveBeenCalledWith(52, 1, expect.objectContaining({
+        mode: 'time_limited', dailyMinutes: 60, weeklyMinutes: 300,
+      })))
+  })
+
+  it('asks for a daily limit before attaching an existing household group', async () => {
+    fn(api.apps.list).mockResolvedValue([app(50, 'YouTube', { mode: 'allowed' })])
+    fn(api.appGroups.list).mockResolvedValue([games])
+    const user = userEvent.setup()
+    await openApps(user)
+    await user.click(await screen.findByTestId('profile-1-apps-section-add-group'))
+    expect(screen.getByTestId('profile-1-apps-section-add-group-new')).toBeInTheDocument()
+    await user.click(screen.getByTestId('profile-1-apps-section-add-group-option-7'))
+    // Nothing is written until the parent has typed a limit: no invented default.
+    expect(api.appGroups.attach).not.toHaveBeenCalled()
+    await user.type(await screen.findByTestId('profile-1-apps-section-add-group-minutes'), '90{Enter}')
+    await waitFor(() =>
+      expect(api.appGroups.attach).toHaveBeenCalledWith(1, 7, { dailyMinutes: 90, exemptFromDaily: true }))
+  })
+
+  it('creates a new group, then asks for its limit', async () => {
+    fn(api.apps.list).mockResolvedValue([app(50, 'YouTube', { mode: 'allowed' })])
+    const user = userEvent.setup()
+    await openApps(user)
+    await user.click(await screen.findByTestId('profile-1-apps-section-add-group'))
+    await user.click(screen.getByTestId('profile-1-apps-section-add-group-new'))
+    await user.type(screen.getByTestId('profile-1-apps-section-add-group-name'), 'Screens{Enter}')
+    await waitFor(() => expect(api.appGroups.create).toHaveBeenCalledWith({ name: 'Screens' }))
+    await user.type(await screen.findByTestId('profile-1-apps-section-add-group-minutes'), '45{Enter}')
+    await waitFor(() =>
+      expect(api.appGroups.attach).toHaveBeenCalledWith(1, 9, { dailyMinutes: 45, exemptFromDaily: true }))
+  })
+
+  it('says which other profiles use a group when editing its members', async () => {
+    fn(api.apps.list).mockResolvedValue([app(50, 'YouTube', { mode: 'allowed' })])
+    fn(api.appGroups.list).mockResolvedValue([games])
+    fn(api.appGroups.forProfile).mockImplementation((pid: number) =>
+      Promise.resolve([attachment({ profileId: pid })]))
+    const user = userEvent.setup()
+    await openApps(user)
+    await user.click(await screen.findByTestId('group-row-7-toggle'))
+    expect(await screen.findByTestId('group-row-7-also-used-by')).toHaveTextContent('Adults')
+  })
+
+  it('marks covered apps "In Games" in the picker', async () => {
+    fn(api.apps.list).mockResolvedValue([app(60, 'Roblox', null), app(50, 'YouTube', { mode: 'allowed' })])
+    fn(api.appGroups.list).mockResolvedValue([games])
+    fn(api.appGroups.forProfile).mockResolvedValue([attachment()])
+    const user = userEvent.setup()
+    await openApps(user)
+    await user.click(await screen.findByTestId('profile-1-apps-section-add-allowed'))
+    expect(await screen.findByTestId('profile-1-apps-section-picker-covered-60')).toHaveTextContent('In Games')
+  })
+
+  // Week-to-date usage (#2932 fields on GET /api/time/status), shown as the tighter remaining figure.
+  const usage = (over: Record<string, unknown> = {}) => ({
+    profileId: 1, profileName: 'Kids', date: '2026-10-21', dailyLimitMins: 120, usedMins: 0,
+    extensionMins: 0, remainingMins: 120, devices: [], hostUsage: [], groupUsage: [],
+    appUsage: [{
+      label: 'app:minecraft', domainPattern: 'minecraft.com', limitMins: 60, usedMins: 20, remainingMins: 40,
+      weeklyLimitMins: 300, weekUsedMins: 230, weekStart: '2026-10-19', weekResetsAt: '2026-10-26T06:00:00Z',
+    }],
+    ...over,
+  })
+  const limited = (id: number, name: string, extra: Record<string, unknown>) =>
+    app(id, name, { mode: 'time_limited', ...extra })
+
+  it('shows a skeleton, never 0m, on a weekly-limited chip while week usage is pending', async () => {
+    fn(api.apps.list).mockResolvedValue([limited(52, 'Minecraft', { dailyMinutes: 60, weeklyMinutes: 300 })])
+    fn(api.time.statusAll).mockReturnValue(new Promise(() => {}))
+    const user = userEvent.setup()
+    await openApps(user)
+    const chip = await screen.findByTestId('app-row-52-limit-toggle')
+    expect(chip.textContent).not.toMatch(/0m/)
+    expect(screen.getByTestId('app-row-52-budget-loading')).toBeInTheDocument()
+  })
+
+  it('shows the tighter remaining figure on a chip: weekly when it is the smaller', async () => {
+    fn(api.apps.list).mockResolvedValue([limited(52, 'Minecraft', { dailyMinutes: 120, weeklyMinutes: 300 })])
+    fn(api.time.statusAll).mockResolvedValue([usage({
+      appUsage: [{
+        label: 'app:minecraft', domainPattern: 'minecraft.com', limitMins: 120, usedMins: 20, remainingMins: 100,
+        weeklyLimitMins: 300, weekUsedMins: 230, weekStart: '2026-10-19', weekResetsAt: '2026-10-26T06:00:00Z',
+      }],
+    })])
+    const user = userEvent.setup()
+    await openApps(user)
+    const chip = await screen.findByTestId('app-row-52-limit-toggle')
+    await waitFor(() => expect(chip).toHaveTextContent('1h 10m left this week'))
+  })
+
+  it('shows the tighter remaining figure on a chip: daily when it is the smaller', async () => {
+    fn(api.apps.list).mockResolvedValue([limited(52, 'Minecraft', { dailyMinutes: 60, weeklyMinutes: 300 })])
+    fn(api.time.statusAll).mockResolvedValue([usage({
+      appUsage: [{
+        label: 'app:minecraft', domainPattern: 'minecraft.com', limitMins: 60, usedMins: 20, remainingMins: 40,
+        weeklyLimitMins: 300, weekUsedMins: 100, weekStart: '2026-10-19', weekResetsAt: '2026-10-26T06:00:00Z',
+      }],
+    })])
+    const user = userEvent.setup()
+    await openApps(user)
+    await waitFor(() => expect(screen.getByTestId('app-row-52-limit-toggle')).toHaveTextContent('40m left today'))
+  })
+
+  it('shows the limit, not a remaining time, when the API sends no week usage', async () => {
+    fn(api.apps.list).mockResolvedValue([limited(52, 'Minecraft', { weeklyMinutes: 300 })])
+    fn(api.time.statusAll).mockResolvedValue([usage({
+      appUsage: [{ label: 'app:minecraft', domainPattern: 'minecraft.com', limitMins: null, usedMins: 0, remainingMins: null }],
+    })])
+    const user = userEvent.setup()
+    await openApps(user)
+    const chip = await screen.findByTestId('app-row-52-limit-toggle')
+    await waitFor(() => expect(chip).toHaveTextContent('5:00/week'))
+    expect(chip).not.toHaveTextContent('left')
+  })
+
+  it('draws one usage bar per limit in the drawer once usage has loaded', async () => {
+    fn(api.apps.list).mockResolvedValue([limited(52, 'Minecraft', { dailyMinutes: 60, weeklyMinutes: 300 })])
+    fn(api.time.statusAll).mockResolvedValue([usage()])
+    const user = userEvent.setup()
+    await openApps(user)
+    await user.click(await screen.findByTestId('app-row-52-limit-toggle'))
+    expect(await screen.findByTestId('app-row-52-usage-week')).toHaveTextContent('3:50 / 5:00')
+  })
+
+  it('shows a group chip with the remaining time, and a skeleton while pending', async () => {
+    fn(api.apps.list).mockResolvedValue([app(50, 'YouTube', { mode: 'allowed' })])
+    fn(api.appGroups.list).mockResolvedValue([games])
+    fn(api.appGroups.forProfile).mockResolvedValue([attachment()])
+    fn(api.time.statusAll).mockReturnValue(new Promise(() => {}))
+    const user = userEvent.setup()
+    await openApps(user)
+    expect(await screen.findByTestId('group-row-7-budget-loading')).toBeInTheDocument()
+    expect(screen.getByTestId('group-row-7-toggle').textContent).not.toMatch(/0m/)
+  })
+
+  it('shows the group remaining time once usage has loaded', async () => {
+    fn(api.apps.list).mockResolvedValue([app(50, 'YouTube', { mode: 'allowed' })])
+    fn(api.appGroups.list).mockResolvedValue([games])
+    fn(api.appGroups.forProfile).mockResolvedValue([attachment()])
+    fn(api.time.statusAll).mockResolvedValue([usage({
+      groupUsage: [{
+        groupId: 7, name: 'Games', memberAppIds: [60, 61], limitMins: 60, usedMins: 50, remainingMins: 10,
+        weeklyLimitMins: 300, weekUsedMins: 100, weekStart: '2026-10-19', weekResetsAt: '2026-10-26T06:00:00Z',
+        exemptFromDaily: true,
+      }],
+    })])
+    const user = userEvent.setup()
+    await openApps(user)
+    await waitFor(() => expect(screen.getByTestId('group-row-7-toggle')).toHaveTextContent('10m left today'))
+  })
+
+  // The assignment PUT replaces the whole row, so each of these writes must carry the OTHER limit
+  // through (or deliberately drop it) — a slip silently changes a kid's limits.
+  it('clearing min/day keeps the weekly limit and stays time-limited', async () => {
+    fn(api.apps.list).mockResolvedValue([limited(52, 'Minecraft', { dailyMinutes: 60, weeklyMinutes: 300 })])
+    const user = userEvent.setup()
+    await openApps(user)
+    await user.click(await screen.findByTestId('app-row-52-limit-toggle'))
+    await user.clear(await screen.findByTestId('app-row-52-minutes'))
+    await user.tab()
+    await waitFor(() =>
+      expect(api.apps.setPolicy).toHaveBeenCalledWith(52, 1, expect.objectContaining({
+        mode: 'time_limited', dailyMinutes: null, weeklyMinutes: 300,
+      })))
+  })
+
+  it('clearing min/week keeps the daily limit and sends no weekly limit', async () => {
+    fn(api.apps.list).mockResolvedValue([limited(52, 'Minecraft', { dailyMinutes: 60, weeklyMinutes: 300 })])
+    const user = userEvent.setup()
+    await openApps(user)
+    await user.click(await screen.findByTestId('app-row-52-limit-toggle'))
+    await user.clear(await screen.findByTestId('app-row-52-weekly-minutes'))
+    await user.tab()
+    await waitFor(() => expect(api.apps.setPolicy).toHaveBeenCalled())
+    const calls = fn(api.apps.setPolicy).mock.calls
+    const body = calls[calls.length - 1][2]
+    expect(body).toMatchObject({ mode: 'time_limited', dailyMinutes: 60 })
+    expect(body).not.toHaveProperty('weeklyMinutes')
+  })
+
+  it('moving a weekly-limited app to Blocked drops its weekly limit', async () => {
+    fn(api.apps.list).mockResolvedValue([limited(52, 'Minecraft', { dailyMinutes: 60, weeklyMinutes: 300 })])
+    const user = userEvent.setup()
+    await openApps(user)
+    await user.click(await screen.findByTestId('app-row-52-move'))
+    await waitFor(() => expect(api.apps.setPolicy).toHaveBeenCalled())
+    const calls = fn(api.apps.setPolicy).mock.calls
+    const body = calls[calls.length - 1][2]
+    expect(body).toMatchObject({ mode: 'blocked', dailyMinutes: null })
+    expect(body).not.toHaveProperty('weeklyMinutes')
+  })
+
+  it('warns on a covered app in the Blocked list too (D14)', async () => {
+    fn(api.apps.list).mockResolvedValue([
+      app(60, 'Roblox', { mode: 'blocked', coveredBy: { groupId: 7, name: 'Games' } }),
+    ])
+    fn(api.appGroups.list).mockResolvedValue([games])
+    fn(api.appGroups.forProfile).mockResolvedValue([attachment()])
+    const user = userEvent.setup()
+    await openApps(user)
+    const chip = await screen.findByTestId('app-row-60-overlap-chip')
+    expect(chip).toHaveTextContent('Also in Games')
+    // A Blocked row has no budget of its own to run out: the copy says what removing it does.
+    await user.click(chip)
+    const drawer = await screen.findByTestId('app-row-60-overlap-drawer')
+    expect(drawer).toHaveTextContent('blocked on this profile')
+    expect(drawer).toHaveTextContent("lifts that block")
+    expect(drawer).not.toHaveTextContent('Both budgets apply')
+  })
+
+  it('takes the remaining figure from the status body, limits and usage together', async () => {
+    // The assignment says 60/day, the status body says 45: one source, so 45 - 20 = 25m left.
+    fn(api.apps.list).mockResolvedValue([limited(52, 'Minecraft', { dailyMinutes: 60, weeklyMinutes: 300 })])
+    fn(api.time.statusAll).mockResolvedValue([usage({
+      appUsage: [{
+        label: 'app:minecraft', domainPattern: 'minecraft.com', limitMins: 45, usedMins: 20, remainingMins: 25,
+        weeklyLimitMins: 300, weekUsedMins: 100, weekStart: '2026-10-19', weekResetsAt: '2026-10-26T06:00:00Z',
+      }],
+    })])
+    const user = userEvent.setup()
+    await openApps(user)
+    await waitFor(() => expect(screen.getByTestId('app-row-52-limit-toggle')).toHaveTextContent('25m left today'))
+  })
+
+  it('marks the group chip when usage failed to load', async () => {
+    fn(api.apps.list).mockResolvedValue([app(50, 'YouTube', { mode: 'allowed' })])
+    fn(api.appGroups.list).mockResolvedValue([games])
+    fn(api.appGroups.forProfile).mockResolvedValue([attachment()])
+    fn(api.time.statusAll).mockRejectedValue(new Error('boom'))
+    const user = userEvent.setup()
+    await openApps(user)
+    expect(await screen.findByTestId('group-row-7-budget-error')).toBeInTheDocument()
   })
 })
