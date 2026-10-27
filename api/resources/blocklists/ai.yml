@@ -383,8 +383,9 @@ hosts:
   # 30 devices, 2026-10-27. No additions this pass.
   #   suno.ai         confirmed genuine consumer AI music generator (text-
   #                   to-song), but its only observed host, cdn2.suno.ai,
-  #                   CNAMEs onto a dedicated CloudFront distribution
-  #                   (99.84.118.x) — an unconditional #2823 shared-CDN
+  #                   CNAMEs onto a CloudFront distribution whose edge IPs
+  #                   (99.84.118.x) are shared with other tenants — an
+  #                   unconditional #2823 shared-CDN
   #                   skip despite the strong, unambiguous identity. Filed
   #                   in ads.yml's held-out notes (#2952) for cross-reference.
   #   ivy.ai, sierra.ai   both confirmed B2B conversational-AI customer-

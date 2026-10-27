@@ -915,7 +915,12 @@ hosts:
   # streamtvinsider coverage of the 2016 acquisition), a video SSP for
   # premium publishers. Its only observed host, ads.stickyadstv.com, answers
   # on a dedicated Cogent Communications block (38.134.110.235-236), not a
-  # shared CDN — clears the #2823 rule.
+  # shared CDN — clears the #2823 rule. RESIDUAL RISK: cdn.stickyadstv.com
+  # CNAMEs onto CloudFront (dpr1wbpfzrke3.cloudfront.net). It has not been
+  # observed, but this apex entry suffix-matches it, so a device that ever
+  # resolves it would put CloudFront edges into bl_ads. If it shows up in
+  # traffic, remove this entry and pin its absence (the ebayadservices.com
+  # precedent, #2816).
   # fout.jp is FreakOut Holdings, Inc. (confirmed via whois netname
   # "FOUT-NET"), a Japanese DSP/ad-exchange operator; a websearch alone
   # misleadingly suggested an unrelated "Fout Co., Ltd." IT-services reading,
@@ -931,7 +936,12 @@ hosts:
   # traffic-steering product (`*.akadns.net`) onto Appier's own dedicated
   # backends across GCP/Linode/OVH — GTM returns the customer's own IPs, it
   # is not Akamai's shared edge-cache product (`edgesuite.net`/`akamai.net`,
-  # the loopme.me case below), so it does not arm a shared pool.
+  # the loopme.me case below), so it does not arm a shared pool. RESIDUAL
+  # RISK: static.appier.net DOES CNAME onto that same shared EdgeSuite
+  # product (edgesuite.net -> a1017.g.akamai.net). It has not been observed,
+  # but this apex entry suffix-matches it, so a device that ever resolves it
+  # would put Akamai edges into bl_ads. If it shows up in traffic, remove
+  # this entry and pin its absence (the ebayadservices.com precedent, #2816).
   # All three are corroborated by subdomain presence in the ads-extended
   # (StevenBlack) feed.
   #
@@ -954,8 +964,9 @@ hosts:
   # (104.26.x/172.67.x) on its only observed host; held out of games.yml too.
   # suno.ai (confirmed: a well-known consumer AI music generator — an
   # ai.yml-shaped candidate) is CloudFront-fronted on its only observed host,
-  # cdn2.suno.ai (CNAME to a dedicated cloudfront.net distribution,
-  # 99.84.118.x); held out of ai.yml despite a strong, unambiguous identity.
+  # cdn2.suno.ai (CNAME to a cloudfront.net distribution whose edge IPs,
+  # 99.84.118.x, are shared with other tenants); held out of ai.yml despite
+  # a strong, unambiguous identity.
   # smilewanted.com, rmbl.ws, cognitivlabs.com, samplicio.us, adncdn.net: no
   # confirmed identity (a Rumble/Cognitiv-adjacent name is not the same
   # domain per whois/registrar checks; samplicio.us reads as Dynata-style

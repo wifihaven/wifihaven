@@ -241,8 +241,14 @@ Before adding apex `X` to category `C`, confirm it isn't already blocked:
 
    If any OBSERVED host answers on Cloudflare (check the address against
    `https://www.cloudflare.com/ips-v4`; the common ones are `104.16.0.0/13`,
-   `104.24.0.0/14`, `172.64.0.0/13`), CloudFront, Akamai, Fastly, or Google's
-   shared GFE pool, do not add the apex;
+   `104.24.0.0/14`, `172.64.0.0/13`), CloudFront, Akamai's shared EdgeSuite
+   CDN (`*.edgesuite.net`/`*.akamai.net` — the actual edge-cache product),
+   Fastly, or Google's shared GFE pool, do not add the apex. Akamai's GTM/DNS
+   traffic-steering product (`*.akadns.net`) is a DIFFERENT thing — it returns
+   the customer's own backend IPs for failover/load-balancing, not a shared
+   cache, so a GTM-routed host that resolves onto the customer's own dedicated
+   cloud compute does NOT trigger this skip on its own; resolve the actual
+   returned IPs and check their ownership (#2952). When the skip does apply,
    pin its absence in `BundledBlocklistsSpec` instead. Then `dig` the
    *unobserved* usual siblings (bare apex, `cdn.`, `video.`, `static.`). A CDN
    answer there does not block the add, but record it in the `.yml` comment as
@@ -305,6 +311,18 @@ that edit in the same PR.** If a step above is now wrong, fix the step too.
 
 ## Learnings log (newest first)
 
+- **2026-10-27** (#2952, independent review) — **Clearing the OBSERVED host
+  on the CDN check does not excuse the mandatory unobserved-sibling check
+  (Step 3, "dig the unobserved usual siblings") — this PR's first draft
+  skipped it for both new ad-tech additions and got caught before merge.**
+  `cdn.stickyadstv.com` CNAMEs onto CloudFront even though the observed
+  `ads.stickyadstv.com` is on a dedicated Cogent block, and
+  `static.appier.net` CNAMEs onto Akamai's shared EdgeSuite CDN even though
+  every GTM-steered observed host resolved onto Appier's own dedicated
+  compute. Both apex entries suffix-match their CDN-fronted sibling
+  regardless, so both needed a RESIDUAL RISK note (the bttrack.com/#2816
+  shape). The sibling check is not optional just because the observed host
+  passed — run it on every addition, every time.
 - **2026-10-27** (#2952) — **Akamai's GTM/DNS-steering product
   (`*.akadns.net`) is a DIFFERENT thing from Akamai's shared EdgeSuite CDN
   (`*.edgesuite.net`/`*.akamai.net`), and the #2823 rule only bites the
