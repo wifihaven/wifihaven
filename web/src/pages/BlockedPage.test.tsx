@@ -66,6 +66,41 @@ describe('BlockedPage — API-driven reason copy (#1615)', () => {
     await waitFor(() => expect(screen.getByText(/out of time on this app/i)).toBeInTheDocument())
   })
 
+  // #2935 (D12): name the budget and its window, never a reset time.
+  it('names the app and the weekly window when the budget field is present', async () => {
+    mockBlockedInfo({
+      blocked: true,
+      reasonClass: 'app_time_limit',
+      budget: { kind: 'app', name: 'Roblox', window: 'week' },
+    })
+    renderBlocked({ mac: 'aa:bb:cc:11:22:33', host: 'roblox.com' })
+    await waitFor(() =>
+      expect(screen.getByText('Roblox has used up its weekly time.')).toBeInTheDocument(),
+    )
+  })
+
+  it('names the group and the daily window for a group budget', async () => {
+    mockBlockedInfo({
+      blocked: true,
+      reasonClass: 'app_time_limit',
+      budget: { kind: 'group', name: 'Games', window: 'day' },
+    })
+    renderBlocked({ mac: 'aa:bb:cc:11:22:33', host: 'roblox.com' })
+    await waitFor(() =>
+      expect(screen.getByText('Games has used up its daily time.')).toBeInTheDocument(),
+    )
+  })
+
+  it('falls back to the generic app-limit copy when budget is absent or unrecognised', async () => {
+    mockBlockedInfo({
+      blocked: true,
+      reasonClass: 'app_time_limit',
+      budget: { kind: 'app', name: 'Roblox', window: 'month' },
+    })
+    renderBlocked({ mac: 'aa:bb:cc:11:22:33', host: 'roblox.com' })
+    await waitFor(() => expect(screen.getByText(/out of time on this app/i)).toBeInTheDocument())
+  })
+
   // #2935 (D8): a granted extension raises only the profile daily total, so offering it for a
   // per-app or per-group budget block is a dead control.
   it('offers no "Ask for more time" for an app_time_limit block', async () => {
