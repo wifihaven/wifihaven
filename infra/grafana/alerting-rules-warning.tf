@@ -1,8 +1,8 @@
-# Warning (notify, look-today) alert rules — W1–W17
+# Warning (notify, look-today) alert rules — W1–W19
 # (W1–W5: #1405, parent #1381. W6–W7: #2416. W8: #2488. W9: #2553. W10: #2646.
 #  W11–W12: #2477. W13: #2517. W14: #2646 follow-up, W10's absence arm.
 #  W15: #2736, the ws-cutover safety net — read its block before touching it.
-#  W16: #2785. W17: #2843, device assignment drift.)
+#  W16: #2785. W17: #2843, device assignment drift. W18–W19: #2936, weekly-budget settling.)
 # Implements docs/design/alerting.md §7.2.
 #
 # Every expression is grounded in a series emitted today (§2 "alert only on
@@ -44,14 +44,15 @@
 #
 # All of them carry severity=warning + env=prod labels, which the notification
 # policy in alerting.tf routes to the wifihaven-warning (email) contact point.
-# None of these are ratio queries, so unlike the critical set (§7.1) they need
-# no zero-traffic guard — a counter that never increments is simply absent
+# None of these except W18 (#2936) are ratio queries, so unlike the critical set
+# (§7.1) they need no zero-traffic guard — a counter that never increments is simply absent
 # (no_data_state = OK), which must not fire. W12 (#2477) and W14 are the TWO
 # deliberate inversions of that reading: both are liveness rules, so for them
 # absence is the FAILURE, and each therefore turns absence into a value inside
 # its own expression (`absent(...)` for W12, `or vector(0)` + `< bool` for W14)
 # rather than relying on a no_data verdict the group template does not — and for
-# W10's sake must not — provide.
+# W10's sake must not — provide. W18 is the one ratio query here and carries its
+# own guard: its `and` returns nothing when there were no reads, which is healthy.
 #
 # W15 (#2736) is a liveness rule too, but it deliberately does NOT make that
 # inversion, and the difference is worth being exact about. Its signal
@@ -67,7 +68,7 @@
 # and the rate/increase window come straight from §7.2.
 
 locals {
-  # Keyed w1..w17 (stable resource addressing). `window_s` bounds the data fetch
+  # Keyed w1..w19 (stable resource addressing). `window_s` bounds the data fetch
   # and must cover the rate/increase window in `expr` (for W10, its
   # `last_over_time` lookback; W14 and W15 have no range selector at all and take
   # the file minimum). `paused` ships W5 off.
@@ -735,6 +736,56 @@ locals {
       for      = "30m"
       paused   = false
       summary  = "The #2843 drift check has kept repairing device profile assignments for at least 30 minutes, with a repair in every 5-minute window: something is writing devices.profile_id without going through DeviceAssignment.assign, so those devices' usage history is being attributed by a record the repair has to reconstruct at tick granularity. FIRST: grep the API log for 'device assignment drift repaired', which names the household and the device count per tick. If it started at a deploy and is still firing, the new image has a writer that bypasses the primitive: check the 'Device Profile Writer Check' CI job on the deployed commit and any statement that builds the devices write from fragments, which that text scan cannot see. If no deploy is in flight, look for a manual SQL session or script writing devices.profile_id on prod. The repair itself is safe to leave running while you look; it never loses an assignment, it only moves the transition to the tick instant. Dashboard: data-quality-ingest, 'Device assignment drift repaired' panels."
+    }
+
+    # W18/W19 (#2936) — the weekly-budget settle path (#2932, design
+    # docs/design/weekly-limits-and-app-groups.md §6.4, §11). Both read
+    # `budget_usage_settle_total{outcome}`, incremented per settled past day read in
+    # TimeStatusService.priorDays: `hit` when the settled row is usable, `refill` when the day
+    # is computed live and written back, `error` when that refill fails.
+    #
+    # W18 THRESHOLD, from the source and not from prod history: the series was not on prod when
+    # this was written (a 6 h query on 2026-10-26 returned nothing), so there is no history to
+    # fit against. A refill is expected once per (household, day) when a day first becomes
+    # settleable (SettleDelay = 2 x TimeUsedRollupJob.Interval = 30 min after the day ends), and
+    # up to six per household after an edit that invalidates the week (a settings save, an
+    # assignment or attachment change, an app-template sync). The rollup job's settle pass runs
+    # every 15 min, so that is the longest a refill should wait for the job, and every read
+    # between the invalidation and the next tick that misses a row also refills it. Hits, by
+    # contrast, accrue on every snapshot build and every /api/time/status read of every prior day
+    # of the week, and on the rollup job's own settle pass, which calls settleWeek (and so
+    # priorDays) for every household on every 15 min tick. So in steady state refills are a small fraction of reads, and a sustained high
+    # FRACTION means rows are not staying settled (the write-back is failing quietly, or
+    # something keeps invalidating, or the settle pass is not running). A fraction is used rather
+    # than an absolute rate because the household count is not a metric.
+    # The expression fires when refills are more than 20% of settled-day reads over 1 h AND there
+    # were more than 12 refills in that hour (two households' full-week invalidations, so a quiet
+    # fleet cannot trip the ratio on a handful of reads). `for = 3h` rides out a one-off
+    # invalidation burst and the 15 min settle tick. The `and` returns nothing when either side is
+    # false, which no_data_state = OK reads as healthy; the value that does come back is the
+    # ratio, always above the gt = 0 of the condition.
+    w18 = {
+      title    = "W18 Weekly-budget settle is not keeping up"
+      expr     = "(sum(increase(budget_usage_settle_total{env=\"prod\",outcome=\"refill\"}[1h])) / sum(increase(budget_usage_settle_total{env=\"prod\"}[1h]))) > 0.2 and sum(increase(budget_usage_settle_total{env=\"prod\",outcome=\"refill\"}[1h])) > 12"
+      window_s = 3600
+      gt       = 0
+      for      = "3h"
+      paused   = false
+      summary  = "More than 20% of settled-day budget reads have been refills (computed live and written back) for 3 hours, with more than 12 in the last hour. Past days should be read as hits after they settle, so rows are not staying settled. Weekly and group budget enforcement still works because a refill returns the same figure. Each read now pays a live per-day computation, and DB load grows with it. FIRST: the 'Weekly budgets: settled-day reads by outcome' panel on the rollup-health dashboard. If errors are also non-zero, see W19. If refills line up with a deploy or with settings or profile edits, it is invalidation churn and should settle on its own. Otherwise check that the rollup job is ticking (rollup-health) and grep the API log for 'settled usage: not settling' (a write-back skipped because the day's definition changed meanwhile), 'time_used_daily tick skipped household' and 'rollup time_used_daily tick ok'."
+    }
+    # W19 THRESHOLD: any `error` at all, sustained. An error is a refill whose live computation or
+    # write-back failed (a DB error or timeout), which fails that week read, and with it the
+    # snapshot and /api/time/status for that household. Steady state is zero. A 10 min increase
+    # with a 15 min `for` means a lone error drops out of the window before it notifies, while
+    # errors recurring through 15 minutes hold the condition true and fire.
+    w19 = {
+      title    = "W19 Weekly-budget settled-day reads are erroring"
+      expr     = "sum(increase(budget_usage_settle_total{env=\"prod\",outcome=\"error\"}[10m]))"
+      window_s = 600
+      gt       = 0
+      for      = "15m"
+      paused   = false
+      summary  = "Settled-day budget reads have been failing for at least 15 minutes (budget_usage_settle_total outcome=error). Each error is a failed live computation or write-back of a past day's usage. It fails that household's week read, and with it the snapshot and time-status for the week. FIRST: grep the API log for 'time_used_daily tick skipped household' and the exception around it, and check db-health for timeouts or connection exhaustion; the 'Weekly budgets: settled-day reads by outcome' panel on the rollup-health dashboard shows when it started."
     }
   }
 }
