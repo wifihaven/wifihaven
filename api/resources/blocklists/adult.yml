@@ -57,3 +57,12 @@ hosts:
   # Evidence: evidence/adult-classification-2823.md
   # (no host entries below this line — the block above is a do-not-re-add note,
   #  not an endorsement of anything appended after it.)
+  #
+  # traffic-driven pass (#2952): 30-day prod recent-apexes sweep across all
+  # 30 devices plus a serial /api/logs keyword sweep ("porn"/"xxx"/"cam4"/
+  # "onlyfans"/"nsfw"/"adult"), 2026-10-27. No additions this pass. The only
+  # hits were already-curated cam4.com subdomains (api./logger007./static.)
+  # plus cam4-campaigns.xcdnpro.com, a different apex that CNAMEs onto a
+  # shared CDN (xcdnpro.com -> sds.rncdn7.com, a multi-tenant CDN77-class
+  # pool) — held out per the #2823 rule. A zero-gap pass is a valid outcome
+  # for this category (precedent: #2503, #2212).

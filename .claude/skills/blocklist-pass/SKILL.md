@@ -241,8 +241,14 @@ Before adding apex `X` to category `C`, confirm it isn't already blocked:
 
    If any OBSERVED host answers on Cloudflare (check the address against
    `https://www.cloudflare.com/ips-v4`; the common ones are `104.16.0.0/13`,
-   `104.24.0.0/14`, `172.64.0.0/13`), CloudFront, Akamai, Fastly, or Google's
-   shared GFE pool, do not add the apex;
+   `104.24.0.0/14`, `172.64.0.0/13`), CloudFront, Akamai's shared EdgeSuite
+   CDN (`*.edgesuite.net`/`*.akamai.net` — the actual edge-cache product),
+   Fastly, or Google's shared GFE pool, do not add the apex. Akamai's GTM/DNS
+   traffic-steering product (`*.akadns.net`) is a DIFFERENT thing — it returns
+   the customer's own backend IPs for failover/load-balancing, not a shared
+   cache, so a GTM-routed host that resolves onto the customer's own dedicated
+   cloud compute does NOT trigger this skip on its own; resolve the actual
+   returned IPs and check their ownership (#2952). When the skip does apply,
    pin its absence in `BundledBlocklistsSpec` instead. Then `dig` the
    *unobserved* usual siblings (bare apex, `cdn.`, `video.`, `static.`). A CDN
    answer there does not block the add, but record it in the `.yml` comment as
@@ -305,6 +311,64 @@ that edit in the same PR.** If a step above is now wrong, fix the step too.
 
 ## Learnings log (newest first)
 
+- **2026-10-27** (#2952, independent review) — **Clearing the OBSERVED host
+  on the CDN check does not excuse the mandatory unobserved-sibling check
+  (Step 3, "dig the unobserved usual siblings") — this PR's first draft
+  skipped it for both new ad-tech additions and got caught before merge.**
+  `cdn.stickyadstv.com` CNAMEs onto CloudFront even though the observed
+  `ads.stickyadstv.com` is on a dedicated Cogent block, and
+  `static.appier.net` CNAMEs onto Akamai's shared EdgeSuite CDN even though
+  every GTM-steered observed host resolved onto Appier's own dedicated
+  compute. Both apex entries suffix-match their CDN-fronted sibling
+  regardless, so both needed a RESIDUAL RISK note (the bttrack.com/#2816
+  shape). The sibling check is not optional just because the observed host
+  passed — run it on every addition, every time.
+- **2026-10-27** (#2952) — **Akamai's GTM/DNS-steering product
+  (`*.akadns.net`) is a DIFFERENT thing from Akamai's shared EdgeSuite CDN
+  (`*.edgesuite.net`/`*.akamai.net`), and the #2823 rule only bites the
+  latter.** GTM returns the customer's OWN backend IPs for global
+  load-balancing/failover — it's DNS-level traffic steering, not edge
+  caching, so a GTM-routed host that resolves onto the customer's dedicated
+  cloud compute (GCP/Linode/OVH, in `appier.net`'s case) does NOT arm a
+  shared pool the way a CloudFront or Cloudflare CNAME does. Don't
+  auto-skip on `akadns.net` alone — resolve the actual returned IPs and
+  check THEIR ownership. Contrast with `loopme.me` the same pass: one
+  observed host (`csync.loopme.me`) was on dedicated GCP infra, but a
+  second (`i.loopme.me`) CNAMEd onto `edgesuite.net`/`akamai.net` — Akamai's
+  actual shared CDN product — which disqualified the whole apex per the
+  skmads.com per-apex rule (#2918), regardless of the first host being fine.
+- **2026-10-27** (#2952) — **A plain websearch can land a wrong-company
+  reading that IP-level whois immediately corrects — when a search result
+  reads as a plausible but unconfirmed identity, check whois on the actual
+  observed IP before trusting it.** A websearch for `fout.jp` surfaced "Fout
+  Co., Ltd.", a Japanese IT-services firm, as a "medium confidence" guess.
+  But `whois` on the observed host's IP (202.232.238.37, for `sync.fout.jp`)
+  returned netname `FOUT-NET` / org `FreakOut Holdings, inc.` — FreakOut is
+  a known Japanese DSP/ad-exchange operator, a completely different company
+  than the websearch guess. The dedicated netblock registered directly to
+  the company settled it where the search engine couldn't.
+- **2026-10-27** (#2952) — **A confirmed, well-known, unambiguous consumer
+  product identity is still not enough to clear the #2823 CDN rule — this
+  pass held out `suno.ai` (the well-known AI text-to-song generator) and
+  `gd.games` (GameDistribution/Azerion's HTML5 game-syndication network)
+  purely because their only observed hosts were CloudFront- and
+  Cloudflare-fronted respectively, despite both being the single
+  highest-confidence identity matches of the whole pass.** Confidence in
+  *what a domain is* and confidence in *whether its observed host is safe to
+  block* are fully independent axes; don't let a strong identity signal
+  erode rigor on the CDN check. Same pattern, reconfirmed: `adinplay.com`
+  (Venatus's genuine HTML5-game ad network, Cloudflare-fronted) and
+  `dxtech.ai` (standing B2B-out-of-scope pick for ai.yml, #2792 — its
+  separately-observed `sync.` cookie-sync host is ALSO Cloudflare-fronted,
+  an independent reason it couldn't go in ads.yml either).
+- **2026-10-27** (#2952) — **`samplicio.us` (Dynata-style online-survey
+  sample-routing infra) is a new borderline case for the ads.yml
+  "data broker" signal in Step 1: Dynata's own materials frame the business
+  as first-party market-research/panel data, not ad-serving or
+  third-party data brokering, which reads closer to the dual-use
+  analytics/CRM bucket (hs-analytics.net, trackcmp.net) than to confirmed
+  ad infra.** Held out rather than added; worth a firmer rule if a `*sync*`-
+  or `*route*`-shaped survey-panel domain recurs.
 - **2026-10-20** (#2918) — **"The bare apex resolves to dedicated infra" and
   "the bare apex doesn't resolve at all" are BOTH non-answers to the #2823
   CDN check — only the host that actually appears in traffic counts, and
