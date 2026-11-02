@@ -108,3 +108,7 @@ slugs:
   # GDevelop, a no-code game-creation engine (same category as scratch/
   # tinkercad), scoped to the editor site + its two asset CDNs.
   - gdevelop
+  # #2955: orphan-driven catalog pass (see evidence/classification-2955.md) —
+  # CodeHS and Coddy, two K-12/consumer coding-education platforms.
+  - codehs
+  - coddy

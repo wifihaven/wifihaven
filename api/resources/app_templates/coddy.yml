@@ -1,0 +1,32 @@
+slug: coddy
+name: Coddy
+icon: "https://icons.duckduckgo.com/ip3/coddy.tech.ico"
+icon_type: url
+# #2955 (2026-11-02 orphan-driven pass): Coddy (coddy.tech), a gamified,
+# practice-driven coding-education platform (daily streaks, scoring,
+# leaderboards, lessons in Python/JS/SQL/HTML/CSS/Java/C/Go) — web-confirmed
+# via independent third-party company profiles, not just the site's own
+# claims, since `coddy.tech` itself answers with a Cloudflare bot-challenge
+# page ("Just a moment...") to a plain curl and can't be title-confirmed
+# directly. ~26 proportional minutes / ~26 presence minutes across the three
+# kid profiles over 30d, growing from the same host cluster's ~26 min at
+# #2915 (2026-10-19), where it was left a watch-item pending clearer
+# confirmation of purpose.
+#
+#   coddy.tech                              main site + lesson UI
+#   static.coddy.tech                       static assets
+#   us-central1-coddy-15505.cloudfunctions.net   backend API — a Google Cloud
+#                               Functions project. `cloudfunctions.net` is a
+#                               generic multi-tenant domain, but this specific
+#                               hostname (`coddy-15505`) is a project-specific
+#                               literal, not a shared alias other tenants also
+#                               answer on — same reasoning `amazon-telemetry.
+#                               yml` uses for `unagi.amazon.com` on a shared
+#                               cloud platform.
+#
+# `coddy.tech` is Cloudflare-fronted (104.26.x/172.67.x) — the standard
+# accepted Class-2 shared-edge risk already present throughout this catalog.
+hosts:
+  - coddy.tech
+  - static.coddy.tech
+  - us-central1-coddy-15505.cloudfunctions.net

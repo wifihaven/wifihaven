@@ -1,0 +1,52 @@
+slug: codehs
+name: CodeHS
+icon: "https://icons.duckduckgo.com/ip3/codehs.com.ico"
+icon_type: url
+# #2955 (2026-11-02 orphan-driven pass): CodeHS, a K-12 computer-science
+# curriculum platform (title-confirmed: "The Top Coding and Computer Science
+# Platform for K-12 Schools | CodeHS"). A prior pass (#2943, 2026-10-26) saw
+# only `scalinghub.codehs.com` (a 403-answering backend host) and called it a
+# skip "without a content-facing sibling" — this pass found that sibling:
+# `codehs.com` itself serves the real site, and three distinct per-exercise
+# sandbox subdomains on `codehs.me` (Vigenere cipher, Caesar cipher
+# encryption, letter-frequency) confirm actual coursework being done, not a
+# beacon. ~44 proportional minutes / ~46 presence minutes across the three
+# kid profiles over 30d.
+#
+#   codehs.com                  main site + lesson/exercise UI
+#   static.codehs.com           static assets
+#   static1.codehs.com          static assets (second shard)
+#   cdn.codehs.com               CDN assets
+#   uploads.codehs.com          user-submitted file uploads
+#   video.codehs.com            lesson videos
+#   scalinghub.codehs.com       backend/API edge the lesson UI calls (403 to a
+#                               plain GET — not a page, but CodeHS's own
+#                               branded host, not third-party collateral)
+#   codehsstatic.s3-us-west-2.amazonaws.com   direct S3 bucket for static
+#                               assets; the bucket name is CodeHS-specific
+#                               even though the IPs are AWS S3's shared pool
+#   codehs.me                   per-exercise sandbox domain. Every observed
+#                               child (`vigenere-<id>`, `caesar-cipher-
+#                               encryption-<id>`, `letter-frequency-<id>`) is
+#                               a randomized-per-exercise label with no fixed
+#                               set to enumerate, so the bare apex is listed
+#                               (suffix-matches every child). It is its own
+#                               Route53-delegated zone (`dig +short NS
+#                               codehs.me` != `codehs.com`'s NS set) but
+#                               resolves into CloudFront's shared 99.84.118.x
+#                               /24 — the same pool already flagged as
+#                               standard accepted Class-2 risk elsewhere in
+#                               this catalog (`arduino.yml`, `instructables.
+#                               yml`). Each exercise subdomain is CodeHS's own
+#                               dedicated-bytes content; no alternative host
+#                               carries the same traffic.
+hosts:
+  - codehs.com
+  - static.codehs.com
+  - static1.codehs.com
+  - cdn.codehs.com
+  - uploads.codehs.com
+  - video.codehs.com
+  - scalinghub.codehs.com
+  - codehsstatic.s3-us-west-2.amazonaws.com
+  - codehs.me

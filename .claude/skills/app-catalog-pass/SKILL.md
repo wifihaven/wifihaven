@@ -252,6 +252,51 @@ above is now wrong, fix the step too — don't just log around it.
 
 ## Learnings log (newest first)
 
+- **2026-11-02 (#2955)** — **A prior pass's "skip, no content-facing
+  sibling" verdict can flip the very next time a brand's usage grows —
+  re-check every recent skip against this run's orphan list before assuming
+  it still holds.** #2943 (2026-10-26) skipped CodeHS for exactly that
+  reason, seeing only `scalinghub.codehs.com` (403, backend-looking). This
+  pass's orphan sweep found `codehs.com` itself serving the real,
+  title-confirmed site, plus three distinct per-exercise `codehs.me`
+  sandbox subdomains (Vigenere cipher, Caesar cipher, letter frequency) —
+  a real curriculum sequence. Templated as `codehs.yml`.
+- **2026-11-02 (#2955)** — **A Cloudflare-bot-challenged candidate that
+  can't be title-confirmed by `curl` is not permanently stuck — corroborate
+  its purpose via independent THIRD-PARTY sources (company profiles,
+  review sites) instead of the site's own claims, which you can't reach.**
+  `coddy.tech` was left a watch-item at #2915 (2026-10-19) for exactly this
+  reason. This pass confirmed it's Coddy, a real gamified coding-practice
+  platform (4M+ learners per independent company profiles), and templated
+  it as `coddy.yml` — the challenge page blocks automated verification, not
+  the kid's real browser, so it's not itself a reason to keep deferring once
+  purpose is otherwise confirmed.
+- **2026-11-02 (#2955)** — **A per-exercise sandbox domain with randomized,
+  unenumerable subdomains (CodeHS's `<slug>-<id>.codehs.me`) is exactly the
+  `scratch.mit.edu`-delegation shape: check `dig +short NS` on the apex
+  before giving up on it.** `codehs.me` is its own Route53-delegated zone,
+  distinct from `codehs.com`'s — list the bare apex and let suffix
+  matching cover every exercise, same as the Scratch precedent (#2833),
+  even though in this case the zone resolves onto a shared CloudFront pool
+  (`arduino.yml`/`instructables.yml`'s 99.84.118.x) rather than a dedicated
+  distribution — that's still only the standard accepted Class-2 risk.
+- **2026-11-02 (#2955)** — **An already-blocklisted brand can still have an
+  un-blocked SIBLING apex (not a subdomain) that reaches its real content —
+  check a blocklisted brand's own CDN/embed domain, not just its main
+  apex.** `itch.io` has been in `games.yml` since early on, but `itch.zone`
+  (itch.io's CDN/embed domain, confirmed via matching Cloudflare
+  nameservers) is a different apex entirely, so the existing block doesn't
+  suffix-match it — a kid could still load an embedded itch.io game's
+  actual playable content via a direct `itch.zone` URL. Added `itch.zone`
+  to `games.yml` alongside `itch.io`. When gap-checking, don't stop at
+  "is the brand's main domain blocked" — check its CDN/embed sibling
+  domains too, the same way an app template's host-set check does.
+- **2026-11-02 (#2955)** — A single play session (one game, ~6 min, no
+  repeat) reads as below the engagement bar even for a well-known, genuinely
+  popular free browser game (PolyTrack / `kodub.com`) — don't let "this is a
+  real, non-sketchy indie game" substitute for the recurring-engagement
+  check the Scholastic Book Clubs precedent (#2740) established. Left as a
+  watch-item; revisit if traffic recurs.
 - **2026-10-26 (#2943)** — **A thin cluster can be a real app rather than a
   beacon when it spans two DIFFERENT apexes of one vendor — don't require
   all hosts to share one apex before trusting the shape, but don't rest the
