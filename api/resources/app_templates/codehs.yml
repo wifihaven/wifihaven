@@ -43,26 +43,29 @@ icon_type: url
 # sandbox sessions (~2.3 proportional min/30d, three distinct exercises) go
 # unattributed; revisit only if CodeHS ever serves these off dedicated infra.
 #
-# Kept hosts and their collateral check (dig-verified 2026-11-02): each sits
-# on its own CloudFront/Cloudflare distribution — same /24 as another
-# template's host in two cases, but confirmed DIFFERENT exact IPs within it
-# (the #2915 "diff the 4-tuple, not the /24" check), so no demonstrated
-# sharing, same Class-2 status as every other CDN-fronted host in this
-# catalog:
-#   static.codehs.com     dedicated CloudFront dist (18.238.136.x)
-#   static1.codehs.com    same dist as static. (second shard, same app)
-#   cdn.codehs.com         dedicated CloudFront dist (18.154.101.x) — same /24
-#                          as `matlab.yml`'s `matlab.mathworks.com`, but a
-#                          different 4 IPs within it
-#   uploads.codehs.com    dedicated CloudFront dist (13.226.251.x) — same /24
-#                          as `instructables.yml`'s `content.instructables.
-#                          com`, but a different 4 IPs within it
+# Kept hosts and their collateral check (dig-verified 2026-11-02; CDN
+# resolver answers vary by vantage point, per #2762's "a dig snapshot is a
+# sample, not the host's IP set" — specific octets are deliberately omitted
+# below so this comment doesn't go stale):
+#   static.codehs.com     own CloudFront distribution
+#   static1.codehs.com    own CloudFront distribution (second shard, same app)
+#   cdn.codehs.com         own CloudFront distribution; one sampled IP landed
+#                          in the same /24 as `matlab.yml`'s `matlab.
+#                          mathworks.com`, but the specific 4-tuple differed
+#                          (the #2915 "diff the 4-tuple, not the /24" check)
+#   uploads.codehs.com    own CloudFront distribution; same /24-overlap-but-
+#                          different-4-tuple relationship to `instructables.
+#                          yml`'s `content.instructables.com`
 #   video.codehs.com      CNAMEs to `videos.codehsstatic.com`, Cloudflare-
-#                          fronted (104.21.x/172.67.x) — standard accepted
-#                          Class-2 edge sharing, same pool `coddy.yml` uses
+#                          fronted — standard accepted Class-2 edge sharing,
+#                          same pool `coddy.yml` uses
 #   scalinghub.codehs.com backend/API edge the lesson UI calls (403 to a
-#                          plain GET — not a page, but dedicated non-CDN IPs,
-#                          not a recognized multi-tenant pool)
+#                          plain GET — not a page). Resolves to AWS EC2
+#                          addresses, not a recognized CDN/multi-tenant pool;
+#                          carries the same recycled-address residual
+#                          `amazon-telemetry.yml` documents for its own
+#                          non-CDN AWS hosts (bounded by the `eb_` 1h ageing
+#                          window, not a present-tense collision)
 #
 # `codehsstatic.s3-us-west-2.amazonaws.com` (a direct S3 bucket, ~10s/30d)
 # was dropped: it sits on S3's shared regional IP pool (every us-west-2
