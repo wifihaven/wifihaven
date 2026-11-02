@@ -43,10 +43,11 @@ icon_type: url
 # sandbox sessions (~2.3 proportional min/30d, three distinct exercises) go
 # unattributed; revisit only if CodeHS ever serves these off dedicated infra.
 #
-# Kept hosts and their collateral check (dig-verified 2026-11-02; CDN
-# resolver answers vary by vantage point, per #2762's "a dig snapshot is a
-# sample, not the host's IP set" — specific octets are deliberately omitted
-# below so this comment doesn't go stale):
+# Kept hosts and their collateral check (dig-verified 2026-11-02). CDN
+# resolver answers vary by vantage point and steer between edges over
+# time — treat any single `dig` as a sample, not the host's IP set, same
+# caution `amazon.yml` documents for its own CDN-fronted hosts. Specific
+# octets are deliberately omitted below so this comment doesn't go stale:
 #   static.codehs.com     own CloudFront distribution
 #   static1.codehs.com    own CloudFront distribution (second shard, same app)
 #   cdn.codehs.com         own CloudFront distribution; one sampled IP landed
