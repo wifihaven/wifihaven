@@ -260,7 +260,12 @@ above is now wrong, fix the step too — don't just log around it.
   pass's orphan sweep found `codehs.com` itself serving the real,
   title-confirmed site, plus three distinct per-exercise `codehs.me`
   sandbox subdomains (Vigenere cipher, Caesar cipher, letter frequency) —
-  a real curriculum sequence. Templated as `codehs.yml`.
+  a real curriculum sequence. Templated as `codehs.yml` — though the
+  authoring draft wrongly listed the bare `codehs.com` apex and `codehs.me`
+  as hosts; both turned out to be shared-pool collateral (see the next two
+  entries) and were dropped before merge. The six remaining CDN/backend
+  subdomains still carry ~24 real minutes/30d, enough to justify the
+  template on their own.
 - **2026-11-02 (#2955)** — **A Cloudflare-bot-challenged candidate that
   can't be title-confirmed by `curl` is not permanently stuck — corroborate
   its purpose via independent THIRD-PARTY sources (company profiles,
@@ -271,15 +276,20 @@ above is now wrong, fix the step too — don't just log around it.
   it as `coddy.yml` — the challenge page blocks automated verification, not
   the kid's real browser, so it's not itself a reason to keep deferring once
   purpose is otherwise confirmed.
-- **2026-11-02 (#2955)** — **A per-exercise sandbox domain with randomized,
-  unenumerable subdomains (CodeHS's `<slug>-<id>.codehs.me`) is exactly the
-  `scratch.mit.edu`-delegation shape: check `dig +short NS` on the apex
-  before giving up on it.** `codehs.me` is its own Route53-delegated zone,
-  distinct from `codehs.com`'s — list the bare apex and let suffix
-  matching cover every exercise, same as the Scratch precedent (#2833),
-  even though in this case the zone resolves onto a shared CloudFront pool
-  (`arduino.yml`/`instructables.yml`'s 99.84.118.x) rather than a dedicated
-  distribution — that's still only the standard accepted Class-2 risk.
+- **2026-11-02 (#2955)** — **GOT THIS WRONG IN THE FIRST DRAFT, caught by
+  independent review: a delegated zone (its own NS set, distinct from its
+  parent brand's) is NOT automatically safe to list bare — the delegation
+  argument from the `scratch.mit.edu` precedent (#2833) only holds when the
+  delegated zone points at DEDICATED infra. `codehs.me` (CodeHS's
+  per-exercise sandbox domain, `<slug>-<id>.codehs.me`, unenumerable) *is*
+  its own Route53-delegated zone, but `dig +short codehs.me` resolves it
+  into CloudFront's shared 99.84.118.x pool — the EXACT pool
+  `arduino.yml`/`instructables.yml` EXCLUDE their own bare apexes over, not
+  "accept" as the first draft of this entry claimed. Re-read those two
+  files' own comments before citing them as precedent for a pool being
+  safe — both say the opposite. When a candidate's only coverage path is a
+  bare apex with no enumerable children, `dig` the apex's own A records
+  before writing anything about its safety, delegation or no.
 - **2026-11-02 (#2955)** — **An already-blocklisted brand can still have an
   un-blocked SIBLING apex (not a subdomain) that reaches its real content —
   check a blocklisted brand's own CDN/embed domain, not just its main
@@ -291,6 +301,39 @@ above is now wrong, fix the step too — don't just log around it.
   to `games.yml` alongside `itch.io`. When gap-checking, don't stop at
   "is the brand's main domain blocked" — check its CDN/embed sibling
   domains too, the same way an app template's host-set check does.
+- **2026-11-02 (#2955)** — **Before listing a bare apex as a host, `dig`
+  its own likely top-level subdomains (`blog.`, `status.`, `help.`,
+  `support.`, `careers.`) — a suffix match sweeps them in regardless of
+  whether you ever intended to cover them, and a brand's own blog/status
+  page is routinely hosted on a wholly different third party than its main
+  site.** The first draft of `codehs.yml` listed bare `codehs.com`; review
+  caught that `blog.codehs.com` is WP Engine, `status.codehs.com` is
+  Statuspage.io, and `help.codehs.com` sits on the same shared CloudFront
+  pool as the already-excluded `codehs.me`. All three would have ridden
+  into the drop set under the apex. Fixed by excluding the bare apex
+  entirely (same move `canva.yml` makes for `canva.com`) and accepting the
+  residual: real traffic to the literal apex — which was this app's single
+  largest orphan host — goes unattributed. Add this `dig` check as a
+  standing step whenever a candidate's content genuinely lives on its bare
+  apex (most don't — most templates already list only specific
+  subdomains, which is why this trap is rare in the existing catalog).
+- **2026-11-02 (#2955)** — **A project-specific hostname is not the same
+  thing as a dedicated IP — don't use "this subdomain name is unique to the
+  vendor" as a substitute for actually resolving it.** The first draft of
+  `coddy.yml` kept `us-central1-coddy-15505.cloudfunctions.net`, reasoning
+  that the project id in the hostname made it dedicated, by analogy to
+  `amazon-telemetry.yml`'s `unagi.amazon.com`. Review `dig`'d it:
+  216.239.36.54, inside Google's shared 216.239.32.0/19 range —
+  `canva.yml`'s own documented collateral risk for `ct.canva.com`. The
+  amazon analogy doesn't transfer: `unagi.amazon.com` is distinctive
+  because Amazon's own infra answers it on Amazon's own IPs; a Cloud
+  Functions / Lambda / Cloud Run hostname is a vendor-platform tenant
+  slot — the project id disambiguates the TENANT, not the IP pool
+  underneath it, which the hosting platform still shares across all its
+  tenants in the region. Treat any `*.cloudfunctions.net`,
+  `*.run.app`, `*.lambda-url.*.on.aws`, or similar managed-platform
+  hostname as Class-1 shared-pool risk by default, and `dig` it before
+  trusting a specific-looking name.
 - **2026-11-02 (#2955)** — A single play session (one game, ~6 min, no
   repeat) reads as below the engagement bar even for a well-known, genuinely
   popular free browser game (PolyTrack / `kodub.com`) — don't let "this is a

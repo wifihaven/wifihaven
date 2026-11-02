@@ -8,25 +8,24 @@ icon_type: url
 # via independent third-party company profiles, not just the site's own
 # claims, since `coddy.tech` itself answers with a Cloudflare bot-challenge
 # page ("Just a moment...") to a plain curl and can't be title-confirmed
-# directly. ~26 proportional minutes / ~26 presence minutes across the three
-# kid profiles over 30d, growing from the same host cluster's ~26 min at
-# #2915 (2026-10-19), where it was left a watch-item pending clearer
-# confirmation of purpose.
+# directly. A prior pass (#2915, 2026-10-19) saw the same host cluster at a
+# similar volume and left it a watch-item pending clearer confirmation of
+# purpose; this pass supplied that confirmation.
 #
 #   coddy.tech                              main site + lesson UI
 #   static.coddy.tech                       static assets
-#   us-central1-coddy-15505.cloudfunctions.net   backend API — a Google Cloud
-#                               Functions project. `cloudfunctions.net` is a
-#                               generic multi-tenant domain, but this specific
-#                               hostname (`coddy-15505`) is a project-specific
-#                               literal, not a shared alias other tenants also
-#                               answer on — same reasoning `amazon-telemetry.
-#                               yml` uses for `unagi.amazon.com` on a shared
-#                               cloud platform.
 #
 # `coddy.tech` is Cloudflare-fronted (104.26.x/172.67.x) — the standard
 # accepted Class-2 shared-edge risk already present throughout this catalog.
+#
+# `us-central1-coddy-15505.cloudfunctions.net` (a backend Cloud Functions
+# host, ~5.8 min proportional/30d) was dropped: dig-verified (2026-11-02) it
+# resolves to 216.239.36.54, inside Google's shared 216.239.32.0/19 range —
+# the exact range `canva.yml` documents and excludes `ct.canva.com` over. The
+# host's project-specific name doesn't change which IPs it resolves to; a
+# unique hostname is not the same thing as a dedicated IP. Residual: traffic
+# to that backend goes unattributed to this app, same residual pattern
+# `canva.yml` documents for `ct.canva.com`.
 hosts:
   - coddy.tech
   - static.coddy.tech
-  - us-central1-coddy-15505.cloudfunctions.net

@@ -11,7 +11,9 @@ devices (Quintus Chromebook/iPad, Prima iPad, Octavius iPad, Kid Laptop).
 ### `codehs` — CodeHS (K-12 CS curriculum platform)
 
 ~2,649 proportional seconds (~44 min) / ~2,730 presence seconds (~46 min)
-across the three kid profiles.
+across the three kid profiles for the whole CodeHS host cluster seen in
+traffic. The shipped host-set covers a subset of that (~24 min) — see the
+revision note below for why.
 
 A prior pass (#2943, 2026-10-26) saw only `scalinghub.codehs.com` (403,
 backend-looking) and skipped it for lack of a content-facing sibling. This
@@ -21,19 +23,43 @@ plus three distinct per-exercise sandbox hosts on `codehs.me`
 (`vigenere-<id>`, `caesar-cipher-encryption-<id>`, `letter-frequency-<id>`) —
 a real CS curriculum sequence, not a beacon.
 
-Host-set: `codehs.com`, `static.codehs.com`, `static1.codehs.com`,
+**Revised after independent review** (see PR #2956 review comment): the
+draft host-set listed bare `codehs.com` and bare `codehs.me`. Both are
+collateral risk, not acceptable Class-2 sharing as the draft claimed:
+
+- `codehs.com` suffix-matches `blog.codehs.com` (WP Engine shared pool),
+  `status.codehs.com` (Statuspage.io shared pool) and `help.codehs.com`
+  (the same shared CloudFront 99.84.118.x pool as `codehs.me`, below).
+  Excluded, same move `canva.yml` makes for bare `canva.com`. Residual: the
+  literal apex was this app's single largest orphan host (~18 proportional
+  min/30d) — that traffic goes unattributed.
+- `codehs.me` (the per-exercise sandbox domain) itself resolves into that
+  same shared CloudFront 99.84.118.x pool — the exact pool
+  `arduino.yml`/`instructables.yml` *exclude* their own bare apexes over,
+  not accept, contrary to the draft's claim. Its own Route53 delegation
+  (distinct NS set from `codehs.com`) doesn't rescue it, since the
+  `scratch.mit.edu` delegation precedent (#2833) requires the delegated
+  zone to point at dedicated infra, not a shared edge. Excluded entirely;
+  residual: the three observed per-exercise sandbox sessions (~2.3
+  proportional min/30d) go unattributed.
+
+Shipped host-set: `static.codehs.com`, `static1.codehs.com`,
 `cdn.codehs.com`, `uploads.codehs.com`, `video.codehs.com`,
-`scalinghub.codehs.com`, `codehsstatic.s3-us-west-2.amazonaws.com`,
-`codehs.me` (bare apex — every observed child is a randomized per-exercise
-label with no fixed enumerable set; delegated to its own Route53 zone per
-`dig +short NS`, though it resolves on CloudFront's shared 99.84.118.x pool,
-the same standard accepted Class-2 risk already present via `arduino.yml` /
-`instructables.yml`).
+`scalinghub.codehs.com` — ~24 proportional min/30d, each dig-verified onto
+its own dedicated CloudFront/Cloudflare distribution (two share a `/24`
+with another template's host — `matlab.yml`'s `matlab.mathworks.com` and
+`instructables.yml`'s `content.instructables.com` respectively — but on
+different exact IPs within it, the standard accepted Class-2 risk).
+`codehsstatic.s3-us-west-2.amazonaws.com` (~10s/30d) was also dropped: S3's
+shared regional pool, and the kept CDN hosts already carry the same asset
+class.
 
 ### `coddy` — Coddy (gamified coding-practice platform)
 
 ~1,554 proportional seconds (~26 min) / ~1,580 presence seconds (~26 min)
-across the three kid profiles. A prior pass (#2915, 2026-10-19) found the
+across the three kid profiles for the whole cluster; the shipped host-set
+covers ~20 min of that (see the revision note below). A prior pass (#2915,
+2026-10-19) found the
 same cluster at a similar volume and left it a watch-item because
 `coddy.tech` answers a plain `curl` with a Cloudflare bot-challenge page
 ("Just a moment...") and couldn't be title-confirmed directly. This pass
@@ -42,10 +68,19 @@ Coddy is a gamified, practice-driven coding-education platform (Python/JS/
 SQL/HTML/CSS/Java/C/Go lessons, daily streaks, leaderboards), not a company
 claim pulled from its own site.
 
-Host-set: `coddy.tech`, `static.coddy.tech`,
-`us-central1-coddy-15505.cloudfunctions.net` (a project-specific Cloud
-Functions hostname — not a generic shared alias — same reasoning
-`amazon-telemetry.yml` uses for `unagi.amazon.com`).
+**Revised after independent review**: the draft host-set also kept
+`us-central1-coddy-15505.cloudfunctions.net`, reasoning it was dedicated
+because the project id in the hostname is Coddy-specific. Review `dig`'d
+it — 216.239.36.54, inside Google's shared 216.239.32.0/19 range, the
+exact range `canva.yml` documents and excludes `ct.canva.com` over. A
+unique-looking hostname on a managed platform (Cloud Functions/Run/Lambda)
+doesn't mean a dedicated IP; the platform still shares its regional pool
+across tenants. Excluded; residual: that backend's traffic (~5.8
+proportional min/30d) goes unattributed.
+
+Shipped host-set: `coddy.tech`, `static.coddy.tech` — ~20 proportional
+min/30d, Cloudflare-fronted (104.26.x/172.67.x), the standard accepted
+Class-2 shared-edge risk already present throughout this catalog.
 
 ## Shipped: blocklist gap fix
 
@@ -73,10 +108,6 @@ throughout the catalog.
   (~6 min) / ~390 presence sec (~6.5 min) over 30d, reading as a single play
   session rather than recurring use — below this pass's engagement bar.
   Revisit if traffic grows.
-- **`coddy-cloudfunctions` region/project drift** — not a concern this pass;
-  noted in case the Cloud Functions hostname rotates to a different project
-  id on a future GCP redeploy, which would silently break the `coddy.yml`
-  host-set without any code change on our side.
 - **`cowg.cap.gov`** (Colorado Wing Civil Air Patrol member portal) — real
   navigational traffic but thin (~341 proportional sec, ~5.7 min) and
   administrative/extracurricular rather than a kid-chosen "app"; skip.
