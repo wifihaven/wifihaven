@@ -985,10 +985,11 @@ hosts:
   # (Boston-based ad network/marketplace confirmed via its own site,
   # Crunchbase, Dealroom; operates the Carbon Ads product). Its only
   # observed host, cdn4.buysellads.net, CNAMEs to srv.buysellads.com, which
-  # answers on dedicated DigitalOcean addresses (159.203.151.34,
-  # 24.144.70.77 — both confirmed DigitalOcean, LLC via whois), not a
-  # shared CDN pool. No other subdomain (bare apex, www, cdn/cdn1-3, ads.)
-  # resolves. Distinct from the already-held-out servedby-buysellads.com
+  # answers on three dedicated DigitalOcean addresses (159.203.151.34,
+  # 24.144.70.77, 157.230.69.73 — all confirmed DigitalOcean, LLC via
+  # whois), not a shared CDN pool. No other subdomain (bare apex, www,
+  # cdn/cdn1-3, ads.) resolves. Distinct from the already-held-out
+  # servedby-buysellads.com
   # and carbonads.com, both of which are CDN-fronted on their serving hosts
   # (#2918) — same company family, different apex, different outcome.
   #
@@ -1000,8 +1001,11 @@ hosts:
   # logger2.playablefactory.app, resolves via a dedicated AWS ALB
   # (raw-event-alb-*.eu-central-1.elb.amazonaws.com, a customer's own
   # load balancer, not a shared CDN product — same distinction as the
-  # nexverse.ai GCP-LB precedent, #2836). RESIDUAL RISK:
-  # cdn.playablefactory.app CNAMEs onto CloudFront
+  # nexverse.ai GCP-LB precedent, #2836). Checked the unobserved usual
+  # siblings too: the bare apex (104.248.102.66/209.38.176.70/68.183.243.4,
+  # all DigitalOcean) and api. (a second dedicated company ALB,
+  # playable-factory-alb-*.eu-central-1.elb.amazonaws.com) are both clean.
+  # RESIDUAL RISK: cdn.playablefactory.app CNAMEs onto CloudFront
   # (d1zyemcopc5d66.cloudfront.net). It has not been observed, but this
   # apex entry suffix-matches it, so a device that ever resolves it would
   # put CloudFront edges into bl_ads. If it shows up in traffic, remove
@@ -1016,9 +1020,10 @@ hosts:
   # — pinned absent in BundledBlocklistsSpec):
   # gamepix.com (confirmed: GamePix, a Rome-based HTML5/WebGL browser-game
   # distribution platform, acquired by Xsolla — a games.yml-shaped
-  # candidate) is CloudFront-fronted on both its bare apex (18.160.143.x)
-  # and www. (explicit *.cdn.cloudflare.net CNAME); never observed in
-  # /api/logs, only in recent-apexes.
+  # candidate) is CDN-fronted on both resolving hosts — its bare apex
+  # (18.160.143.x) is CloudFront, and www. is Cloudflare (explicit
+  # *.cdn.cloudflare.net CNAME); never observed in /api/logs, only in
+  # recent-apexes.
   # xboxlive.com (confirmed: Microsoft's Xbox Live gaming-services backend
   # — another games.yml-shaped candidate, xbox.com is already curated) has
   # seven observed subdomains; four (accounts./title.mgt./userpresence./

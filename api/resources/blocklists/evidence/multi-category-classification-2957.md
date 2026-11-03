@@ -29,9 +29,9 @@ No removals this pass.
   the company's own site, Crunchbase, Dealroom — a Boston ad network/
   marketplace operating the Carbon Ads product since 2008). Only observed
   host: `cdn4.buysellads.net`, which CNAMEs to `srv.buysellads.com`,
-  answering on two dedicated DigitalOcean addresses (`159.203.151.34`,
-  `24.144.70.77` — both confirmed `DigitalOcean, LLC` via whois), not a
-  shared CDN pool. Checked unobserved siblings (bare apex, `www.`, `cdn.`,
+  answering on three dedicated DigitalOcean addresses (`159.203.151.34`,
+  `24.144.70.77`, `157.230.69.73` — all confirmed `DigitalOcean, LLC` via
+  whois), not a shared CDN pool. Checked unobserved siblings (bare apex, `www.`, `cdn.`,
   `cdn1.`–`cdn3.`, `ads.`) — none resolve. Distinct company-family outcome
   from the already-held-out `servedby-buysellads.com` / `carbonads.com`
   (#2918), both CDN-fronted on their serving hosts — same vendor family,
@@ -47,7 +47,12 @@ No removals this pass.
   (`raw-event-alb-1915104033.eu-central-1.elb.amazonaws.com`, `3.75.168.200`,
   `63.185.98.55` — both Amazon-owned per whois, but a customer's own ALB, not
   CloudFront) — same "customer load balancer vs. shared product frontend"
-  distinction as the `nexverse.ai` GCP-LB precedent (#2836).
+  distinction as the `nexverse.ai` GCP-LB precedent (#2836). Checked the
+  unobserved usual siblings too: the bare apex
+  (`104.248.102.66`/`209.38.176.70`/`68.183.243.4`, all DigitalOcean) and
+  `api.playablefactory.app` (a second dedicated company ALB,
+  `playable-factory-alb-1708482837.eu-central-1.elb.amazonaws.com`) are
+  both clean.
   **RESIDUAL RISK:** `cdn.playablefactory.app` (unobserved) CNAMEs onto
   CloudFront (`d1zyemcopc5d66.cloudfront.net`). Not currently observed, but
   the apex entry suffix-matches it — if it appears in traffic, remove this
