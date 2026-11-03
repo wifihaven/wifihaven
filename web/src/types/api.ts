@@ -920,26 +920,6 @@ export interface MeResponse {
   isOperator?: boolean
 }
 
-// #2296 (press correspondence log, epic #2197/#2203): one recorded message in the company-global
-// press channel, in either direction. Read-only, operator-household-only (GET /api/press/messages).
-// `inReplyTo` pairs an outbound reply to the inbound inquiry it answers; `outcome` is the send
-// result ('sent' | 'failed') for outbound rows and null for inbound.
-export interface PressMessage {
-  id: number
-  direction: 'inbound' | 'outbound'
-  peerEmail: string
-  subject: string
-  body: string
-  messageId: string
-  inReplyTo: number | null
-  outcome: string | null
-  createdAt: string
-  // #2467 — the inbound `References` chain (normalised msg-id list, bounded to one RFC 5322 header
-  // line). Empty for a first-contact inbound and always for outbound. Additive: the SPA does not
-  // render it, but the wire type must match what the route now returns.
-  references: string
-}
-
 // NOTE: the beta-pipeline wire types (BetaRequestStatus, CreateBetaRequest,
 // BetaRequestAck, BetaRequestSummary, ApproveBetaResponse, AcceptInviteRequest,
 // AcceptInviteResponse) already ship below with #2132 — see "Beta access
@@ -1347,24 +1327,4 @@ export interface BillingStatusResponse {
 
 export interface BillingRedirect {
   url: string
-}
-
-// #2199 (support intake B): the server-signed Plain widget identity for the
-// authenticated admin. Every field but `configured` is nullable so the DARK case
-// (Plain widget unconfigured, or the caller has no email) is `{configured:false}`
-// with nothing else and the SPA renders no widget.
-export interface SupportIdentityResponse {
-  configured: boolean
-  appId: string | null
-  email: string | null
-  emailHash: string | null
-  tenantIdentifier: string | null
-  fullName: string | null
-  plan: string | null
-  founding: boolean | null
-  // #2429: the environment-correct support inbox for THIS deployment (support@wifihaven.net on
-  // prod, support@staging.wifihaven.net on staging) — the API is the single source of truth, the
-  // SPA never derives it. Present even when `configured` is false: the chat widget being dark does
-  // not make email unreachable. `null` = no hosted support desk (self-hosted).
-  supportEmail: string | null
 }

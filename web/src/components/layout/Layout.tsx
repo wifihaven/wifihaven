@@ -5,8 +5,6 @@ import { useMe } from '@/api/queries'
 import { ACCOUNT_PATH } from '@/routes'
 import { ApiUnreachableBanner } from '@/components/ApiUnreachableBanner'
 import { ConversionBanner } from '@/components/ConversionBanner'
-import { SupportWidget } from '@/components/SupportWidget'
-import { SupportFooter } from '@/components/SupportFooter'
 
 interface NavItem {
   to: string
@@ -51,7 +49,6 @@ const settingsNav: NavItem[] = [
   { to: '/routers', label: 'Routers', icon: '⬢', adminOnly: true },
   { to: '/billing', label: 'Billing', icon: '⊞', adminOnly: true },
   { to: '/beta-requests', label: 'Beta Requests', icon: '✦', operatorOnly: true },
-  { to: '/press',   label: 'Press',   icon: '✉', operatorOnly: true },
   { to: '/admin',   label: 'Settings', icon: '⚙', writerOnly: true },
 ]
 
@@ -262,11 +259,6 @@ export function Layout() {
         <Outlet />
       </main>
 
-      {/* #2429: the in-product support affordance — admin-only, environment-correct address, and
-          the chat-icon half only when the Plain bubble is actually rendering. In normal flow above
-          the mobile-nav spacer so it overlaps neither the fixed nav nor the chat bubble. */}
-      <SupportFooter />
-
       {/* Mobile bottom nav */}
       <nav className="md:hidden fixed bottom-0 inset-x-0 bg-white border-t border-brand-border z-50">
         <div className="grid" style={{ gridTemplateColumns: `repeat(${primaryNav.length}, minmax(0, 1fr))` }}>
@@ -289,10 +281,6 @@ export function Layout() {
 
       {/* Bottom padding for mobile nav */}
       <div className="md:hidden h-16" />
-
-      {/* #2199: identified Plain support chat — admin-only, server-signed identity, renders nothing
-          until the operator provisions the Plain widget keys (dark by default). */}
-      <SupportWidget />
     </div>
   )
 }
