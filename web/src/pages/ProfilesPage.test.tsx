@@ -1166,6 +1166,62 @@ describe('ProfilesPage — apps section (#767)', () => {
     )
   })
 
+  // #2964 — a picked row shows that it is saving, and the other rows can't be
+  // clicked meanwhile, so repeated clicks don't stack requests.
+  it('picker shows a pending state on the clicked row while the save is in flight', async () => {
+    (api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([youtubeUnassigned, tiktok])
+    let resolveSave!: () => void
+    ;(api.apps.setPolicy as unknown as ReturnType<typeof vi.fn>).mockImplementationOnce(
+      () => new Promise<void>(r => { resolveSave = r }),
+    )
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByTestId('profile-card-1')
+    await expand(1, user)
+    await user.click(screen.getByTestId('profile-apps-toggle-1'))
+    await screen.findByTestId('app-row-51')
+    await user.click(screen.getByTestId('profile-1-apps-section-add-allowed'))
+    const row = await screen.findByTestId('profile-1-apps-section-picker-add-50')
+    await user.click(row)
+    await waitFor(() => expect(row).toBeDisabled())
+    expect(within(row).getByText('Adding…')).toBeInTheDocument()
+    await user.click(row)
+    expect(api.apps.setPolicy).toHaveBeenCalledTimes(1)
+    await act(async () => { resolveSave() })
+    await waitFor(() =>
+      expect(screen.queryByTestId('profile-1-apps-section-picker')).not.toBeInTheDocument(),
+    )
+  })
+
+  // #2964 — a failed save used to be an unhandled rejection: the picker stayed
+  // open and nothing on screen changed, so it read as a dead button. It must
+  // keep the picker open, say why, and let the operator retry.
+  it('picker keeps itself open and shows the server error when the save fails', async () => {
+    (api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([youtubeUnassigned, tiktok])
+    ;(api.apps.setPolicy as unknown as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new Error('HTTP 502'),
+    )
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByTestId('profile-card-1')
+    await expand(1, user)
+    await user.click(screen.getByTestId('profile-apps-toggle-1'))
+    await screen.findByTestId('app-row-51')
+    await user.click(screen.getByTestId('profile-1-apps-section-add-allowed'))
+    await user.click(await screen.findByTestId('profile-1-apps-section-picker-add-50'))
+    const err = await screen.findByTestId('profile-1-apps-section-picker-error')
+    expect(err).toHaveTextContent('Couldn’t add YouTube: HTTP 502')
+    expect(screen.getByTestId('profile-1-apps-section-picker')).toBeInTheDocument()
+    const row = screen.getByTestId('profile-1-apps-section-picker-add-50')
+    expect(row).not.toBeDisabled()
+    // A retry clears the error and goes through.
+    await user.click(row)
+    await waitFor(() =>
+      expect(screen.queryByTestId('profile-1-apps-section-picker')).not.toBeInTheDocument(),
+    )
+    expect(api.apps.setPolicy).toHaveBeenCalledTimes(2)
+  })
+
   // #1007: exempt-from-daily toggle on the time-limit row.
   it('time-limited row shows counts-toward-daily checkbox, defaulted unchecked (exempt=true)', async () => {
     const khan = {
