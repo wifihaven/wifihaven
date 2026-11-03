@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation } from '@tanstack/react-query'
 import { Link, useSearchParams } from 'react-router-dom'
 import { api } from '@/api/client'
+import { errorMessage } from '@/api/errorMessage'
 import { newProfileDefaults } from '@/api/profileDefaults'
 import { useBlocklists, useGlobalProfile, useProfiles, useDevices, useInvalidators, useNamedSchedules, useProfileUsageByApp, useAppGroups, useProfileAppGroups, useTimeStatusProfileToday, useTimeStatusSummary } from '@/api/queries'
 import { isManaged, isUnmanaged } from '@/lib/devices'
@@ -1818,7 +1819,7 @@ function AppsSection({ profileId, isNew, apps, onChanged, testIdPrefix = 'apps-s
     } catch (e) {
       // #2964 — keep the picker open and say why, instead of an unhandled
       // rejection that leaves the click looking dead.
-      setPickerError(`Couldn’t add ${app.app.name}: ${e instanceof Error ? e.message : 'save failed'}`)
+      setPickerError(`Couldn’t add ${app.app.name}: ${errorMessage(e, 'save failed')}`)
       return
     } finally {
       setAddingAppId(null)
@@ -1951,7 +1952,7 @@ function AppsSection({ profileId, isNew, apps, onChanged, testIdPrefix = 'apps-s
               <button
                 type="button"
                 data-testid={`${testIdPrefix}-none-assigned-add`}
-                onClick={() => setPickerMode('allowed')}
+                onClick={() => { setPickerError(null); setPickerMode('allowed') }}
                 className="text-brand-accent hover:text-brand-accent underline"
               >
                 Add one
@@ -2165,7 +2166,7 @@ function AppRow({ app, profileId, onChanged, usedMins, usageStatus, budget, bloc
       await setPolicyMutation.mutateAsync(req)
       await onChanged()
     } catch (e) {
-      setLocalError(e instanceof Error ? e.message : 'Failed to update')
+      setLocalError(errorMessage(e, 'Failed to update'))
     } finally {
       setBusy(false)
     }
@@ -2179,7 +2180,7 @@ function AppRow({ app, profileId, onChanged, usedMins, usageStatus, budget, bloc
       setMinutesDraft('')
       await onChanged()
     } catch (e) {
-      setLocalError(e instanceof Error ? e.message : 'Failed to clear')
+      setLocalError(errorMessage(e, 'Failed to clear'))
     } finally {
       setBusy(false)
     }

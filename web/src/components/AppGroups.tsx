@@ -2,6 +2,7 @@
 // several apps; this profile's attachment of it carries the limits. Everything here autosaves.
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { api } from '@/api/client'
+import { errorMessage } from '@/api/errorMessage'
 import { useGroupAttachmentsOf, useInvalidators, useProfiles } from '@/api/queries'
 import { AppIcon } from '@/components/AppIcon'
 import { Skeleton } from '@/components/Skeleton'
@@ -40,10 +41,6 @@ export const EXEMPT_HINT =
 
 const chipBase = 'inline-flex items-center gap-1 h-6 px-2 rounded-lg border text-[11px] font-medium tabular-nums disabled:opacity-50'
 
-function errMsg(e: unknown, fallback: string): string {
-  return e instanceof Error ? e.message : fallback
-}
-
 // Writes shared by the add menu and the rows. PUT replaces the attachment, so every write carries
 // the full limit set.
 function useGroupWrites(profileId: number, onChanged: () => void | Promise<void>) {
@@ -80,7 +77,9 @@ export function AddGroupMenu({ profileId, testIdPrefix, groups, attached, onChan
   const [chosen, setChosen] = useState<{ id: number; name: string } | null>(null)
   const [minutes, setMinutes] = useState('')
   const [error, setError] = useState<string | null>(null)
+  // #2964 — `working` guards re-entry synchronously; `saving` is the same fact for rendering.
   const working = useRef(false)
+  const [saving, setSaving] = useState(false)
   const w = useGroupWrites(profileId, onChanged)
   const options = groups.filter(g => !attached.some(a => a.groupId === g.id))
 
@@ -92,12 +91,13 @@ export function AddGroupMenu({ profileId, testIdPrefix, groups, attached, onChan
     const trimmed = name.trim()
     if (!trimmed || working.current) return
     working.current = true
+    setSaving(true)
     setError(null)
     try {
       const g = await api.appGroups.create({ name: trimmed })
       setNaming(false); setName('')
       setChosen({ id: g.id, name: g.name })
-    } catch (e) { setError(errMsg(e, 'Failed to create group')) } finally { working.current = false }
+    } catch (e) { setError(errorMessage(e, 'Failed to create group')) } finally { working.current = false; setSaving(false) }
   }
 
   async function attachChosen() {
@@ -106,11 +106,12 @@ export function AddGroupMenu({ profileId, testIdPrefix, groups, attached, onChan
     if (minutes.trim() === '') { setError(`Enter a daily limit to add ${chosen.name}`); return }
     if (!Number.isFinite(n) || n <= 0) { setError('Enter minutes > 0'); return }
     working.current = true
+    setSaving(true)
     setError(null)
     try {
       await w.attach(chosen.id, { dailyMinutes: Math.round(n), exemptFromDaily: true })
       reset()
-    } catch (e) { setError(errMsg(e, 'Failed to add group')) } finally { working.current = false }
+    } catch (e) { setError(errorMessage(e, 'Failed to add group')) } finally { working.current = false; setSaving(false) }
   }
 
   return (
@@ -132,6 +133,7 @@ export function AddGroupMenu({ profileId, testIdPrefix, groups, attached, onChan
                 autoFocus
                 value={minutes}
                 onChange={e => setMinutes(e.target.value)}
+                disabled={saving}
                 onBlur={attachChosen}
                 onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); void attachChosen() } }}
                 placeholder="min"
@@ -155,6 +157,7 @@ export function AddGroupMenu({ profileId, testIdPrefix, groups, attached, onChan
                 autoFocus
                 value={name}
                 onChange={e => setName(e.target.value)}
+                disabled={saving}
                 onBlur={createNew}
                 onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); void createNew() } }}
                 placeholder="Group name"
@@ -171,7 +174,10 @@ export function AddGroupMenu({ profileId, testIdPrefix, groups, attached, onChan
               >New group…</button>
             )}
           </>)}
-          {error && <p className="text-xs text-red-700 px-1">{error}</p>}
+          {saving && (
+            <p className="text-xs text-brand-text-muted px-1" data-testid={`${testIdPrefix}-add-group-saving`}>Saving…</p>
+          )}
+          {error && <p className="text-xs text-red-700 px-1" data-testid={`${testIdPrefix}-add-group-error`}>{error}</p>}
         </div>
       )}
     </span>
@@ -255,7 +261,7 @@ function GroupRow({ profileId, attachment, group, apps, groups, budget, onChange
 
   async function run(fn: () => Promise<void>, fallback: string) {
     setBusy(true); setError(null)
-    try { await fn() } catch (e) { setError(errMsg(e, fallback)) } finally { setBusy(false) }
+    try { await fn() } catch (e) { setError(errorMessage(e, fallback)) } finally { setBusy(false) }
   }
 
   function parse(v: string): number | null | 'bad' {
