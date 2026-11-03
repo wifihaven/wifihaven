@@ -9,7 +9,7 @@ Source: prod cloud API, read-only. No policy writes.
 
 ```
 GET /api/devices                                                       # roster (30 devices)
-GET /api/devices/<mac>/recent-apexes?windowDays=30&limit=1000          # every device
+GET /api/devices/<mac>/recent-apexes?windowDays=30&limit=1000          # every device (server caps limit at 500)
 GET /api/profiles/<id>/usage-by-app?from=2026-10-04&to=2026-11-03       # profiles 5, 6, 7
 ```
 

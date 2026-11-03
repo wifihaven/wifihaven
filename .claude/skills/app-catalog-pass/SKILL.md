@@ -55,7 +55,7 @@ Then pull **per-apex bytes per device** over a recent window. The
 # pool and, together with long usage-by-app ranges, OOM'd prod (#2962).
 for mac in <kid-macs>; do
   curl -sS -H "Authorization: Bearer $TOKEN" \
-    "https://api.wifihaven.net/api/devices/$mac/recent-apexes?windowDays=30&limit=1000" \
+    "https://api.wifihaven.net/api/devices/$mac/recent-apexes?windowDays=30&limit=500" \
     > /tmp/apex_$mac.json
 done
 # aggregate across devices, ranked by bytes
