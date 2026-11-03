@@ -50,9 +50,7 @@ Then pull **per-apex bytes per device** over a recent window. The
 `subdomains[]` — exactly what you need:
 
 ```bash
-# focus on the kid devices (the app catalog is about kid-facing apps).
-# Keep this loop SERIAL: backgrounding each curl with `&` exhausted the DB
-# pool and, together with long usage-by-app ranges, OOM'd prod (#2962).
+# focus on the kid devices (the app catalog is about kid-facing apps)
 for mac in <kid-macs>; do
   curl -sS -H "Authorization: Bearer $TOKEN" \
     "https://api.wifihaven.net/api/devices/$mac/recent-apexes?windowDays=30&limit=500" \
@@ -264,14 +262,13 @@ above is now wrong, fix the step too — don't just log around it.
   restarted the API, and `/api/health` returned 502 for about two minutes
   (per the incident session's prod logs, #2965). Do this instead:
   - Run every call serially, with a plain `for` loop and no `&`.
-  - Query only the kid profiles (5–7). Don't call `usage-by-app` on profiles
-    2/3/4 for more than 1–2 days.
+  - Query only the kid profiles (5–7), and request ONE day per
+    `usage-by-app` call (`from == to`), looping day by day. #2965 makes the
+    server reject longer ranges with a 400.
   - Check `/api/health` before retrying anything that returned a 502.
   - If a device's `recent-apexes` call fails, the profile-level
     `usage-by-app` row already covers that device, so don't retry it in a
     loop.
-  A server-side range cap is tracked in #2965; re-check whether these limits
-  still apply on the next pass.
 - **2026-11-03 (#2962)** — **A product delivered inside another templated
   platform gets documented there, not templated.** enVision Math is Savvas
   courseware inside Savvas Realize: no host of its own in vendor docs or
