@@ -31,6 +31,16 @@ import java.time.{Duration, Instant, LocalDate, ZoneId}
 // map through [[ApiError.BadRequest]] to the identical `Response.badRequest(...)`, DB failures stay
 // 503 via [[ApiError.Db]].
 object UsageRoutes {
+
+  /**
+   * #2965: widest `from`..`to` (inclusive days) `GET /api/profiles/{id}/usage-by-app` answers. The
+   * read materialises every raw presence row in the range on the heap, so an unbounded range on a
+   * busy profile (~1.8M rows over 30 days on prod) ran the API out of memory. 7 matches the
+   * calendar week the weekly time-status read already pulls presence rows over
+   * (`Routes.buildProfileTimeStatusWeek`); the SPA itself only asks this route for today.
+   */
+  val UsageByAppMaxRangeDays: Int = 7
+
   def routes(
       auth: AuthService,
       deviceRepo: DeviceRepo,
