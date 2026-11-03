@@ -186,8 +186,10 @@ export function TrafficUsagePage() {
         // bucket switch / filter change, or it raced a teardown) is not a
         // failure — the replacement load owns the view. Never surface it as a
         // table error, never stop paging. The replacement load already set its
-        // own loading state, so leave loading alone if this load is stale.
-        if (isCanceledError(e) || (e instanceof DOMException && e.name === 'AbortError')) {
+        // own loading state, so leave loading alone if this load is stale. A
+        // timeout is not a cancellation: `req` rejects it as NoResponseError
+        // (#2964), which falls through to the table error below.
+        if (isCanceledError(e)) {
           return
         }
         setError((e as Error).message || 'failed to load')
