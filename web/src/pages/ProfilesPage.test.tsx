@@ -4,7 +4,7 @@ import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import type { BlocklistSummary, Device, NamedSchedule, ProfileDetail, ProfileTimeSummary, User } from '@/types/api'
 import { withQuery } from '@/test/queryWrapper'
-import { HttpError } from '@/api/httpError'
+import { HttpError, NoResponseError } from '@/api/httpError'
 
 vi.mock('@/api/client', () => ({
   api: {
@@ -1231,7 +1231,7 @@ describe('ProfilesPage — apps section (#767)', () => {
   it('picker says the server did not respond when the save times out', async () => {
     (api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([youtubeUnassigned, tiktok])
     ;(api.apps.setPolicy as unknown as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
-      new DOMException('signal is aborted without reason', 'AbortError'),
+      new NoResponseError('timeout'),
     )
     const user = userEvent.setup()
     renderPage()
@@ -3116,7 +3116,7 @@ describe('ProfilesPage — weekly limits and app groups (#2935)', () => {
     await user.type(minutes, '90{Enter}')
     expect(await screen.findByTestId('profile-1-apps-section-add-group-saving')).toHaveTextContent('Saving…')
     expect(minutes).toBeDisabled()
-    await act(async () => { rejectAttach(new TypeError('Failed to fetch')) })
+    await act(async () => { rejectAttach(new NoResponseError('network')) })
     expect(await screen.findByTestId('profile-1-apps-section-add-group-error')).toHaveTextContent(
       'The server didn’t respond. Try again in a moment.',
     )
