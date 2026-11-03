@@ -55,7 +55,7 @@ Then pull **per-apex bytes per device** over a recent window. The
 # pool and, together with long usage-by-app ranges, OOM'd prod (#2962).
 for mac in <kid-macs>; do
   curl -sS -H "Authorization: Bearer $TOKEN" \
-    "https://api.wifihaven.net/api/devices/$mac/recent-apexes?windowDays=30&limit=500" \
+    "https://api.wifihaven.net/api/devices/$mac/recent-apexes?windowDays=30&limit=1000" \
     > /tmp/apex_$mac.json
 done
 # aggregate across devices, ranked by bytes
@@ -262,7 +262,7 @@ above is now wrong, fix the step too — don't just log around it.
   every profile ran out the JVM heap: profiles 2/3/4 hold about 1–1.8M raw
   rows over 30 days, and that endpoint loads every row into memory. Render
   restarted the API, and `/api/health` returned 502 for about two minutes
-  (per the incident session's prod logs). Do this instead:
+  (per the incident session's prod logs, #2965). Do this instead:
   - Run every call serially, with a plain `for` loop and no `&`.
   - Query only the kid profiles (5–7). Don't call `usage-by-app` on profiles
     2/3/4 for more than 1–2 days.
@@ -270,7 +270,7 @@ above is now wrong, fix the step too — don't just log around it.
   - If a device's `recent-apexes` call fails, the profile-level
     `usage-by-app` row already covers that device, so don't retry it in a
     loop.
-  A server-side range cap is being added; re-check whether these limits
+  A server-side range cap is tracked in #2965; re-check whether these limits
   still apply on the next pass.
 - **2026-11-03 (#2962)** — **A product delivered inside another templated
   platform gets documented there, not templated.** enVision Math is Savvas

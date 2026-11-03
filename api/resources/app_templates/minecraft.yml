@@ -18,6 +18,9 @@ icon_type: url
 # the same pool minecraft.net and api.minecraftservices.com already
 # resolve to, so it adds no new collateral class to this template.
 # education.minecraft.net is already covered by minecraft.net.
+# Consequence: blocking or time-limiting this app also blocks, or bills to
+# its budget, Minecraft Education schoolwork. That was already true via
+# minecraft.net (education.minecraft.net); this entry does not change it.
 # Not added from that article: playfabapi.com (PlayFab, a Microsoft game
 # backend used by many unrelated games), and the Microsoft 365 / Azure
 # identity, SharePoint, OneNote and MakeCode hosts it also lists.
