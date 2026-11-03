@@ -317,8 +317,7 @@ case class StripeConfig(
   val foundingPromoCodeOpt: Option[String] =
     Option(foundingPromoCode).map(_.trim).filter(_.nonEmpty)
 
-  // #2414: the ONE trimmed form of the webhook signing secret, mirroring
-  // PlainConfig/PressConfig.webhookSecretTrimmed. Every consumer — StripeConfig.validate's
+  // #2414: the ONE trimmed form of the webhook signing secret. Every consumer — StripeConfig.validate's
   // boot gate, BillingService.handleWebhook's guard, and the HMAC verification itself — reads
   // this, so "blank?" is decided once and the value the gate accepted is the value we verify
   // against. Trimming in the gate but verifying with the untrimmed string would let a secret

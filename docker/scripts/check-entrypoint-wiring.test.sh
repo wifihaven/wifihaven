@@ -17,7 +17,7 @@
 # them, but render.yaml still declares them (render.yaml is deliberately left to the follow-up
 # deploy-config PR so the env vars stay harmlessly set until then). Every such key is therefore on
 # the RETIRED allowlist below and skipped, instead of being required to be wired.
-# TODO(#2954): delete this whole script together with the keys in render.yaml (follow-up PR).
+# TODO(#2959): delete this whole script together with the keys in render.yaml (follow-up PR).
 set -euo pipefail
 
 # Keys that render.yaml still declares but the API intentionally no longer reads. Prefix patterns,
