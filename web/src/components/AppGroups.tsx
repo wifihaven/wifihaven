@@ -2,7 +2,6 @@
 // several apps; this profile's attachment of it carries the limits. Everything here autosaves.
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { api } from '@/api/client'
-import { errorMessage } from '@/api/errorMessage'
 import { useGroupAttachmentsOf, useInvalidators, useProfiles } from '@/api/queries'
 import { AppIcon } from '@/components/AppIcon'
 import { Skeleton } from '@/components/Skeleton'
@@ -40,6 +39,10 @@ export const EXEMPT_HINT =
   'Not counted: while under its limits, this group stays reachable during bedtime and a soft pause.'
 
 const chipBase = 'inline-flex items-center gap-1 h-6 px-2 rounded-lg border text-[11px] font-medium tabular-nums disabled:opacity-50'
+
+function errMsg(e: unknown, fallback: string): string {
+  return e instanceof Error ? e.message : fallback
+}
 
 // Writes shared by the add menu and the rows. PUT replaces the attachment, so every write carries
 // the full limit set.
@@ -97,7 +100,7 @@ export function AddGroupMenu({ profileId, testIdPrefix, groups, attached, onChan
       const g = await api.appGroups.create({ name: trimmed })
       setNaming(false); setName('')
       setChosen({ id: g.id, name: g.name })
-    } catch (e) { setError(errorMessage(e, 'Failed to create group')) } finally { working.current = false; setSaving(false) }
+    } catch (e) { setError(errMsg(e, 'Failed to create group')) } finally { working.current = false; setSaving(false) }
   }
 
   async function attachChosen() {
@@ -111,7 +114,7 @@ export function AddGroupMenu({ profileId, testIdPrefix, groups, attached, onChan
     try {
       await w.attach(chosen.id, { dailyMinutes: Math.round(n), exemptFromDaily: true })
       reset()
-    } catch (e) { setError(errorMessage(e, 'Failed to add group')) } finally { working.current = false; setSaving(false) }
+    } catch (e) { setError(errMsg(e, 'Failed to add group')) } finally { working.current = false; setSaving(false) }
   }
 
   return (
@@ -261,7 +264,7 @@ function GroupRow({ profileId, attachment, group, apps, groups, budget, onChange
 
   async function run(fn: () => Promise<void>, fallback: string) {
     setBusy(true); setError(null)
-    try { await fn() } catch (e) { setError(errorMessage(e, fallback)) } finally { setBusy(false) }
+    try { await fn() } catch (e) { setError(errMsg(e, fallback)) } finally { setBusy(false) }
   }
 
   function parse(v: string): number | null | 'bad' {
