@@ -263,8 +263,8 @@ above is now wrong, fix the step too — don't just log around it.
   (per the incident session's prod logs, #2965). Do this instead:
   - Run every call serially, with a plain `for` loop and no `&`.
   - Query only the kid profiles (5–7), and request ONE day per
-    `usage-by-app` call (`from == to`), looping day by day. #2965 makes the
-    server reject longer ranges with a 400.
+    `usage-by-app` call (`from == to`), looping day by day. Once #2970 (for
+    #2965) merges, the server rejects longer ranges with a 400.
   - Check `/api/health` before retrying anything that returned a 502.
   - If a device's `recent-apexes` call fails, the profile-level
     `usage-by-app` row already covers that device, so don't retry it in a
