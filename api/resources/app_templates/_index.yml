@@ -108,3 +108,7 @@ slugs:
   # GDevelop, a no-code game-creation engine (same category as scratch/
   # tinkercad), scoped to the editor site + its two asset CDNs.
   - gdevelop
+  # #2962: operator-named pass (see evidence/classification-2962.md) —
+  # i-Ready (Curriculum Associates), a school math/reading lesson platform.
+  # enVision Math is covered by savvas-realize (no hosts of its own).
+  - iready

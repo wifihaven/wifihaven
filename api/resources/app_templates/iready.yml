@@ -1,0 +1,48 @@
+slug: iready
+name: i-Ready
+icon: "https://icons.duckduckgo.com/ip3/i-ready.com.ico"
+icon_type: url
+# #2962 (2026-11-03, operator-named pass): i-Ready by Curriculum Associates,
+# a K-8 math/reading diagnostic and lesson platform assigned by schools.
+# Engagement, not background: a kid working through assigned i-Ready lessons
+# is screen time that belongs in a budget, the same class as `freckle`/
+# `lexia`/`savvas-realize`. Do not add it to `InfraHosts.cloudBackground` or
+# document it as display-cleanup.
+#
+# Evidence (see evidence/classification-2962.md): 30d profile-5 orphanHosts
+# showed login.i-ready.com, write-api.i-ready.com and cdn.i-ready.com with no
+# covering app, ~77 proportional minutes combined. Rachel Mac also hit
+# cdn./login. and the test router hit g.i-ready.com in the same window.
+#
+# Host set:
+#   i-ready.com         every observed host is a child; the apex is its own
+#                       Route 53 zone and the vendor allowlist lists ~16
+#                       first-party children (login, cdn, sso, g, g-api,
+#                       app, teacher-toolbox, ...), so the apex is the stable
+#                       anchor rather than an enumeration.
+#   i-readyconnect.com  first-party i-Ready Connect host, on the vendor
+#                       allowlist. Not observed in this window; it resolves
+#                       to the same four ELB addresses as login.i-ready.com,
+#                       so it adds no new address to the drop set.
+#
+# Deliberately EXCLUDED, all from the Curriculum Associates 2026-27 system
+# requirements allowlist
+# (cdn.i-ready.com/instruction/content/system-check/iReady_System_Requirements.pdf):
+#   - learnosity.com, vidyard.com, 3playmedia.com, gainsight*.com, box.com,
+#     status.io, bfldr.com, colibrio.com, respondus2.com, stileapp.com:
+#     third-party services (assessment engine, video, captions, analytics,
+#     file sharing) used by many unrelated apps. Listing them would bill
+#     other apps' time to this budget, and an Allowed i-Ready would carve
+#     them out of every drop.
+#   - the three vendor-listed CloudFront distributions (d1q5sowf7qahc6.,
+#     d9unvfzorf0bo., dw6y82u65ww8h.cloudfront.net) and
+#     originp3.s3.amazonaws.com: none appeared in this window; they sit on
+#     shared AWS pools. Watch-item, add only if traffic shows them.
+#   - curriculumassociates.com / cainc.com: corporate site, secure mail and
+#     the vendor's Box tenant, not the student product. No observed traffic.
+#
+# cdn.i-ready.com resolved to CloudFront (99.84.122.x) on 2026-11-03, the
+# accepted Class-2 shared-edge risk (`bricklink.yml`, `sportys.yml`).
+hosts:
+  - i-ready.com
+  - i-readyconnect.com

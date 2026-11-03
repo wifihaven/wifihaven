@@ -40,5 +40,27 @@ icon_type: url
 # www.savvasrealize.com returns no `<title>` via `curl` (client-rendered SPA
 # shell, consistent with the dashboard description above) but resolves and
 # answers HTTP 200 — not our own block page.
+#
+# #2962 (2026-11-03): enVision Mathematics is covered here and has no
+# template of its own. enVision is Savvas courseware delivered INSIDE
+# Savvas Realize: the Realize system-requirements page
+# (help.learningservicestechnology.com/realize/en/Announcements/Content/system_requirements.htm,
+# "23.2.4 - 9/8/2026") names only savvasrealize.com plus Savvas-wide
+# domains, and no enVision-specific hostname turned up in vendor docs or in
+# 30d kid traffic. At the connection layer enVision is indistinguishable
+# from any other Realize course, so a separate `envision` template would
+# claim the same hosts, and two apps sharing hosts split one budget
+# between them. If enVision ever shows a host of its own, give it a template
+# then. (`name:` is left as "Savvas Realize": the seeder only sets an app's
+# name on create, so renaming here would diverge new installs from existing
+# ones.)
+#
+# rumba.pk12ls.com (#2962): Savvas's RUMBA sign-in service
+# (sso.rumba.pk12ls.com, cert CN=rumba.pk12ls.com; `pk12ls` = the K12
+# Learning Services business Savvas took over from Pearson). Seen on
+# profile 5 in the 30d window; Savvas's allowlist names *.pk12ls.com.
+# Scoped to the `rumba.` subtree, not the bare apex, so only the sign-in
+# service is claimed.
 hosts:
   - savvasrealize.com
+  - rumba.pk12ls.com

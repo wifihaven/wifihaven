@@ -50,7 +50,9 @@ Then pull **per-apex bytes per device** over a recent window. The
 `subdomains[]` — exactly what you need:
 
 ```bash
-# focus on the kid devices (the app catalog is about kid-facing apps)
+# focus on the kid devices (the app catalog is about kid-facing apps).
+# Keep this loop SERIAL: backgrounding each curl with `&` exhausted the DB
+# pool and, together with long usage-by-app ranges, OOM'd prod (#2962).
 for mac in <kid-macs>; do
   curl -sS -H "Authorization: Bearer $TOKEN" \
     "https://api.wifihaven.net/api/devices/$mac/recent-apexes?windowDays=30&limit=500" \
@@ -251,6 +253,44 @@ above is now wrong, fix the step too — don't just log around it.
 ---
 
 ## Learnings log (newest first)
+
+- **2026-11-03 (#2962)** — **This pass caused a prod incident. Never fan out
+  the Step 0/1 pulls in parallel, and keep `usage-by-app` off the adult
+  profiles over long ranges.** About 30 concurrent
+  `recent-apexes?windowDays=30` calls used up the API's 12-connection DB
+  pool, which returned 503s. Then parallel 30-day `usage-by-app` calls on
+  every profile ran out the JVM heap: profiles 2/3/4 hold about 1–1.8M raw
+  rows over 30 days, and that endpoint loads every row into memory. Render
+  restarted the API, and `/api/health` returned 502 for about two minutes
+  (per the incident session's prod logs). Do this instead:
+  - Run every call serially, with a plain `for` loop and no `&`.
+  - Query only the kid profiles (5–7). Don't call `usage-by-app` on profiles
+    2/3/4 for more than 1–2 days.
+  - Check `/api/health` before retrying anything that returned a 502.
+  - If a device's `recent-apexes` call fails, the profile-level
+    `usage-by-app` row already covers that device, so don't retry it in a
+    loop.
+  A server-side range cap is being added; re-check whether these limits
+  still apply on the next pass.
+- **2026-11-03 (#2962)** — **A product delivered inside another templated
+  platform gets documented there, not templated.** enVision Math is Savvas
+  courseware inside Savvas Realize: no host of its own in vendor docs or
+  traffic. A second template on the same hosts would split one budget
+  between two apps. Record it in the host platform's template comment so a
+  later grep for the product name finds the decision. Don't rename the
+  host app's `name:` to mention it: `AppReconciler` sets an app's name only
+  on create (`repo.create(t.name, ...)`), so a rename reaches new installs
+  only and existing rows keep the old name.
+- **2026-11-03 (#2962)** — **School vendors publish allowlists that are
+  mostly OTHER vendors' services.** The i-Ready PDF lists Learnosity,
+  Vidyard, 3Play, Gainsight, Box and bare CloudFront distributions next to
+  `*.i-ready.com`. Take only the vendor's own apexes, and confirm each with
+  `dig NS`, a cert check and a `<title>`. A district-branded SSO host
+  (`classlink.<district>.org`) is the district's, not the vendor's: skip it
+  even when it's in traffic, since the catalog is shared across households.
+  Savvas and ClassLink help-center articles are JavaScript-rendered and
+  can't be fetched; mark anything sourced from search summaries as
+  unverified in the evidence file.
 
 - **2026-10-26 (#2943)** — **A thin cluster can be a real app rather than a
   beacon when it spans two DIFFERENT apexes of one vendor — don't require
