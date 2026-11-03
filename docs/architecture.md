@@ -1326,11 +1326,9 @@ One JVM process runs in production:
 
 ### Deployment model: self-hosted vs. cloud
 
-**This is the canonical statement of the two tiers.** It is the source the
-support and press agents are pointed at (`deploy/{support,press}-agent/
-agent.yaml`), because the direction is easy to get backwards and has been
-stated backwards to a journalist in production (#2718). State it from here,
-not from memory.
+**This is the canonical statement of the two tiers.** The direction is easy to
+get backwards and has been stated backwards to a journalist in production
+(#2718). State it from here, not from memory.
 
 | | **Self-hosted** | **Cloud** |
 |---|---|---|
@@ -1338,7 +1336,7 @@ not from memory.
 | Where the dashboard is served from | The **same** API image, which bundles `web/dist` and serves it on :8080 | `app.wifihaven.net`, a static Cloudflare Pages bundle deployed independently of the API |
 | Where household/account data lives | Their own machine. Every byte of household data stays under their roof; the install reaches out only to fetch updates and blocklists, never to report household data | Our database |
 | Price | **Free forever**, stated publicly and permanently | Paid per household, currently an invite-based free beta. **This doc states no figures on purpose** — the live public statement is the pricing section of [`web-marketing/site/index.html`](../web-marketing/site/index.html), and it moves (beta → GA). Quote that, not a number remembered from here |
-| Support | GitHub issues — a self-hosted install has no account with us and no support widget | The in-dashboard widget (admin-only) and `support@wifihaven.net`, which admits registered household admins only |
+| Support | GitHub issues — a self-hosted install has no account with us | GitHub issues too: there is no in-product support widget or helpdesk (the Plain integration and the support/press responders were removed in #2954) |
 
 So: "run it yourself on a home box" is always the **customer's** hardware, and
 "cloud" is always **ours**. A sentence pairing self-hosting with our servers is

@@ -1,6 +1,6 @@
-# Warning (notify, look-today) alert rules — W1–W19
-# (W1–W5: #1405, parent #1381. W6–W7: #2416. W8: #2488. W9: #2553. W10: #2646.
-#  W11–W12: #2477. W13: #2517. W14: #2646 follow-up, W10's absence arm.
+# Warning (notify, look-today) alert rules — W1–W5, W9, W10, W14–W19
+# (W1–W5: #1405, parent #1381. W9: #2553. W10: #2646.
+#  W14: #2646 follow-up, W10's absence arm.
 #  W15: #2736, the ws-cutover safety net — read its block before touching it.
 #  W16: #2785. W17: #2843, device assignment drift. W18–W19: #2936, weekly-budget settling.)
 # Implements docs/design/alerting.md §7.2.
@@ -11,25 +11,11 @@
 # trustworthy in prod (§8 + #1382). It is authored now so it activates with a
 # one-line flip once the fleet rolls forward.
 #
-# W6–W8 (#2416, #2488) were a third case while the responders were dark: their
-# series and labels existed and were emitted, but the FEATURE behind them was
-# flag-off in prod, so they shipped UNPAUSED as coverage that would arm ITSELF
-# rather than needing a second flip to remember (unlike W5, which is genuinely
-# paused). #2537 flipped `WIFIHAVEN_{SUPPORT,PRESS}_RESPONDER_ENABLED` to "true"
-# on wifihaven-api-prod (render.yaml) and all three armed with no rule change —
-# the design worked. But the flag is necessary, NOT sufficient, and the two
-# halves are at different stages; do not read "flag on" as "exercisable":
-#   - W7 (press) is LIVE. The Cloudflare Email Worker already posts to the prod
-#     API, so a prod press dispatch failure pages today.
-#   - W6/W8 (support) are ARMED BUT NOT YET EXERCISABLE. Both series are produced
-#     only downstream of an inbound Plain webhook, and prod's Plain workspace is
-#     not wired to the prod API yet (#2543 — the 2026-07-29 verification logged
-#     NO support lines at all, where a configured webhook against a dark
-#     responder would still have logged outcome=disabled).
-#     They begin covering the moment that webhook is configured, again with no
-#     rule change — which is the point of shipping them unpaused.
+# W6–W8 and W11–W13 (the Claude support/press responder alerts, #2416/#2488/#2477/#2517) were
+# removed in #2954 together with the responders and the Plain integration they watched. The W-numbers
+# are NOT reused or renumbered: alert titles and runbook references cite them.
 #
-# W10 (#2646) is a fourth case and the only rule here that is NOT a counter: it
+# W10 (#2646) is a different case and the only rule here that is NOT a counter: it
 # is a set comparison over an info gauge, and it alerts on an ABSENCE (a router
 # that stopped updating) rather than on an error being counted. Read its own
 # comment block below before changing it.
@@ -46,10 +32,10 @@
 # policy in alerting.tf routes to the wifihaven-warning (email) contact point.
 # None of these except W18 (#2936) are ratio queries, so unlike the critical set
 # (§7.1) they need no zero-traffic guard — a counter that never increments is simply absent
-# (no_data_state = OK), which must not fire. W12 (#2477) and W14 are the TWO
-# deliberate inversions of that reading: both are liveness rules, so for them
-# absence is the FAILURE, and each therefore turns absence into a value inside
-# its own expression (`absent(...)` for W12, `or vector(0)` + `< bool` for W14)
+# (no_data_state = OK), which must not fire. W14 is the one
+# deliberate inversion of that reading: it is a liveness rule, so for it
+# absence is the FAILURE, and it therefore turns absence into a value inside
+# its own expression (`or vector(0)` + `< bool`)
 # rather than relying on a no_data verdict the group template does not — and for
 # W10's sake must not — provide. W18 is the one ratio query here and carries its
 # own guard: its `and` returns nothing when there were no reads, which is healthy.
@@ -120,65 +106,6 @@ locals {
       # forward and the counter is reliable.
       paused  = true
       summary = "Blocklist fetches are failing on the router (category enforcement degrades). DISABLED until the router-pushed counter is trustworthy in prod (#1382)."
-    }
-    # W6/W7 (#2416) — a cloud-agent responder that is PERMANENTLY dead. Both flags are on
-    # in prod since #2537, but only W7 (press) is exercisable today; W6 (support) waits on
-    # the prod Plain webhook (#2543) — see the header note.
-    # `reason="config"` is only ever emitted for a non-self-healing 4xx at the Anthropic
-    # boundary (a revoked key, a wrong agent-or-routine id, a stale anthropic-beta
-    # header), none of which recover without a human — so unlike the transient bucket,
-    # ANY sustained rate is actionable, and the threshold is the same gt=0 the other
-    # never-should-happen counters use. Deliberately does NOT alert on
-    # `reason="transient"`: a 5xx/timeout blip is expected noise. A SUSTAINED transient
-    # rate (a long Anthropic outage, or a 429 that is really an exhausted quota rather
-    # than a burst ceiling) is a real remaining hole, but it needs a threshold tuned
-    # against prod traffic — tracked separately in #2443. Support and press are separate
-    # rules because the series are separate (the two audiences alert independently) and
-    # the remediation differs.
-    w6 = {
-      title    = "W6 Support responder permanently dead (config)"
-      expr     = "sum(rate(support_ai_draft_total{env=\"prod\",outcome=\"error\",reason=\"config\"}[15m]))"
-      window_s = 900
-      gt       = 0
-      for      = "15m"
-      paused   = false
-      summary  = "Support cloud-agent dispatch is failing with a 4xx at the Anthropic boundary — a revoked/wrong anthropicApiKey, a wrong claudeAgentId/claudeEnvironmentId/claudeCodeRoutineId, or a stale anthropic-beta header. This NEVER self-heals: customers get no AI reply until a human rotates the key, fixes the id, or bumps the header. The API logs each occurrence at ERROR with the likely fix named inline."
-    }
-    w7 = {
-      title    = "W7 Press responder permanently dead (config)"
-      expr     = "sum(rate(press_ai_draft_total{env=\"prod\",outcome=\"error\",reason=\"config\"}[15m]))"
-      window_s = 900
-      gt       = 0
-      for      = "15m"
-      paused   = false
-      summary  = "Press cloud-agent dispatch is failing with a 4xx at the Anthropic boundary (same causes as W6, press credentials/ids). Journalists get no reply until a human fixes the config; the inbound webhook still returns 200 (fail-open by design), so this counter is the only signal. The API logs each occurrence at ERROR with the fix named inline."
-    }
-    # W8 (#2488) — the same never-self-heals class as W6, one seam earlier: not the Anthropic
-    # boundary but the PLAIN one. `outcome="email_reject_send_failed"` is emitted only when Plain
-    # ACCEPTED the reject write and refused to send it
-    # (SupportResponder.scala `PlainOutcome.Error` on the unregistered-sender reject →
-    # `WebhookOutcome.EmailRejectSendFailed`, whose label is `email_reject_send_failed`) — the
-    # 2026-07-26 staging failure, where a workspace with email sending switched off dropped every
-    # reject while the panel read healthy under the old shared success label. A deliberate off-state
-    # is NOT this: `plain.writeEnabled=false` labels `disabled`, so our own flag can never light this
-    # rule. Deliberately does NOT constrain `reason`: `WebhookOutcome.reason` returns `none` for this
-    # outcome on purpose (PlainClient collapses every send failure into one causeless
-    # `PlainOutcome.Error`), so pinning a second selector here would add nothing and break silently if
-    # attribution is added later. Expect a flat zero — #2488's whole point is that the dashboard tile
-    # #2485 added is only seen by someone looking at it. Same gt=0 / for=15m shape as W6/W7.
-    # HALF-COVERAGE, deliberately: the same refusal also drops the AI reply to a REGISTERED customer,
-    # which meters on a different series (`support_agent_action_total{op="reply",outcome="error"}`)
-    # with no `reason` label to narrow on — so alerting it needs a tuned threshold first, the same
-    # problem CLASS as #2443 (which is about the draft series' transient bucket, not this series).
-    # Tracked in #2539, not silently unnoticed.
-    w8 = {
-      title    = "W8 Plain REFUSED to send a support reject"
-      expr     = "sum(rate(support_ai_draft_total{env=\"prod\",outcome=\"email_reject_send_failed\"}[15m]))"
-      window_s = 900
-      gt       = 0
-      for      = "15m"
-      paused   = false
-      summary  = "Plain is REFUSING to send — the unregistered-sender reject was decided correctly and never delivered, so the customer got nothing. LIKELY FIX: the Plain workspace has email sending switched off — Settings → Channels → Email, section 3 \"Sending emails\" left unverified or section 4 \"Enable email\" never clicked. See docs/ops/plain-setup.md §3.1. This NEVER self-heals: every reject (and every AI reply) is dropped until a human completes that provisioning. The API logs each occurrence at ERROR with the same fix named inline, and the preceding `plain replyToThread failed` line carries Plain's own message."
     }
     w9 = {
       title    = "W9 A household was skipped by a rollup tick"
@@ -306,117 +233,6 @@ locals {
       paused  = false
       summary = "A router has not taken an agent update that the rest of the fleet already has, for a full day — it is running a version no peer is on and has never reported the version they are on. The agent otherwise looks healthy (last_seen_at fresh, policy applied, usage reported), which is why nothing else catches this. It will never receive a security fix until someone intervenes. FIRST, confirm which router is actually the odd one out on the router-fleet dashboard's version-distribution panel: a household enrolled while another router was already lagging has no pre-split history and gets named here too (known limit 3 on the rule) — the box to fix is the one on the OLDER version. Then on that box, run `wifihaven-update` by hand and read the failure. A common cause is a missing /etc/wifihaven/keys/release.pub (signature verification fails closed, #2078) after a pre-#2559 uninstall/reinstall (#2554)."
     }
-    # W11/W12 (#2477) — the dispatch WATCHDOG, the pair that makes "a customer wrote to
-    # support and got nothing back" an alertable state rather than something noticed when
-    # they complain again. Read the two together: W11 is the failure, W12 is the proof that
-    # W11 could have fired at all.
-    #
-    # W11 — a cloud-agent session that accepted the trigger and DIED. The threshold is not
-    # a tuned number: `outcome="no_callback"` is emitted by DispatchTracker.sweep only past
-    # the agent-token TTL (`support.agentTokenTtlMinutes`, 24h by default via
-    # AgentTokenTtl.DefaultMinutes), which is the first instant at which silence is
-    # unambiguous. BEFORE it, a claude-code-cloud run suspended on subscription usage limits
-    # can still resume and answer — #2473 observed a resumed run posting 2.5h after mint, and
-    # AgentTokenTtl records that an evening pause resumes the next morning. AFTER it that
-    # resumed run's callback 401s, so the answer can never reach the customer. So every
-    # sample is a customer who got NOTHING, gt=0 is right, and the summary can safely tell
-    # the operator to reply by hand: past the TTL a late agent reply cannot land, so a hand
-    # reply cannot produce the duplicate that made #2472 decline auto-retry.
-    # `for = 15m` matches W6-W8 and only debounces a scrape blip — the underlying condition
-    # already waited 24h.
-    # SUPPORT ONLY — because #2517 gave press its own rule (W13) rather than widening this
-    # one. Two rules, not one `{outcome="no_callback"}` sum across both series, because the
-    # ACTION differs: a dead support dispatch is recovered by replying in the Plain thread,
-    # a dead press one by replying from the #2296 correspondence log at /press, and an alert
-    # whose summary cannot name the recovery is an alert someone has to think about at 2am.
-    # The two series are separate for the same reason (#2438).
-    w11 = {
-      title    = "W11 A support customer got NO answer (dispatch died)"
-      expr     = "sum(increase(support_dispatch_total{env=\"prod\",outcome=\"no_callback\"}[1h]))"
-      window_s = 3600
-      gt       = 0
-      for      = "15m"
-      paused   = false
-      summary  = "A cloud-agent session accepted the support trigger and then died — no /api/support/agent/{reply,escalate,request-consent} call ever arrived within the agent-token TTL (24h). THE CUSTOMER GOT NOTHING, and nothing retries: auto-retry was declined in #2472 (a second billed session plus a duplicate-reply risk the #2403 loop guard cannot suppress). ACTION FOR A HUMAN: find the thread in the API log line `support dispatch NEVER CALLED BACK`, which names the thread, household and transport, then read it in Plain and reply by hand. That is safe at this threshold and only at this threshold — the dead session's token is expired, so it cannot come back and answer on top of you. Cross-check the Support dashboard's unreplied-dispatch panel for whether more are queued behind it."
-    }
-    # W12 — the DETECTOR-LIVENESS rule, and the reason this pair is two rules rather than
-    # one. `agent_dispatch_unreplied` is a gauge: a gauge keeps exporting its last written
-    # value for as long as the process lives, so a sweep fiber that died would publish a
-    # stale, reassuring 0 forever and W11's counter would simply stop moving. Absence and
-    # health would again be the same picture — the #2546 shape, where #2469's prompt-drift
-    # detector has never emitted a sample in ANY environment and its silence has read as
-    # health since the day it shipped. This rule exists so #2477 does not become the third.
-    #
-    # THE EXPRESSION HAS TWO ARMS, because two different failures both mean "nothing is
-    # looking" and neither is caught by the group's no_data_state = OK:
-    #   1. `min by (channel)` of the increase `== bool 0` — the sweep counter is still being
-    #      SCRAPED but has stopped advancing (a dead fiber inside a live process). `bool` is
-    #      load-bearing: a bare `== 0` returns the value 0, which gt=0 would read as healthy;
-    #      `== bool` turns the comparison itself into the 1 that fires. `min` and not `sum`:
-    #      the API runs at numInstances: 1 today (render.yaml), where the two are identical,
-    #      but under a scale-out one live instance's increases would carry a `sum` above zero
-    #      and hide a dead fiber on its sibling — the exact silence this rule exists to catch.
-    #      Grouped `by (channel)` so each responder gets its own alert instance and a stalled
-    #      press sweep cannot be masked by a healthy support one.
-    #   2. `absent(...)` — the series is gone entirely (the process is down, the responder
-    #      was never enabled, or the metric was renamed/dropped in a refactor). no_data_state
-    #      is OK for the whole group and must stay that way for W10, so absence has to be
-    #      turned into a VALUE here rather than into a no-data verdict.
-    # The absent arms name each channel explicitly: they assert which channels are EXPECTED
-    # to be sweeping, which is a claim only the code can make and Prometheus cannot infer
-    # from an empty result. #2517 added the `channel="press"` arm when it wired the
-    # press-channel DispatchTracker — press now forks its own sweep (Main.scala, gated on
-    # press.responderEnabled) and publishes its own {channel="press"} series, so a missing
-    # press watchdog is a real, alertable state rather than an empty query.
-    #
-    # Both arms are `absent(...)`, ORed, and not a single `absent(...{channel=~"support|press"})`:
-    # the regex form goes quiet the moment EITHER channel reports, which is exactly the
-    # masking this rule exists to prevent.
-    # `for = 30m` is 30 sweep intervals (DispatchTracker.SweepInterval = 60s) — long enough
-    # that a deploy, a restart or a scrape gap cannot fire it, short enough that a dead
-    # watchdog is caught the same hour rather than the next time someone opens the dashboard.
-    #
-    # EXPECT ONE FIRING AT ROLLOUT, and do not "fix" it. master-grafana.yml and
-    # master-api-ui.yml are independent pipelines, so this rule applies before the API build
-    # that first emits `agent_dispatch_sweeps_total` reaches prod. Until it does, the absent
-    # arm is TRUE — correctly: nothing is sweeping yet. Verified against the live stack while
-    # authoring (2026-08-09): the expression parses and returns 1 for
-    # {channel="support",env="prod"}, which is both arms doing their job. It resolves on its
-    # own once the API deploy lands, with no rule change. `for = 30m` keeps the gap quiet
-    # unless the API deploy is genuinely stuck.
-    # W13 (#2517) — the press twin of W11, and a separate rule rather than a widened one
-    # because the RECOVERY differs and the summary has to be able to state it. Same
-    # threshold logic and the same reason it is not a tuned number:
-    # `press_dispatch_total{outcome="no_callback"}` is emitted by DispatchTracker.sweep only
-    # past the press agent-token TTL (`press.agentTokenTtlMinutes`, 24h by default via the
-    # shared AgentTokenTtl.DefaultMinutes), the first instant at which silence is
-    # unambiguous — before it a usage-limit-suspended claude-code-cloud run can still resume
-    # and answer (#2473), after it that resumed run's callback 401s.
-    #
-    # One press-specific note the support rule has no equivalent for: since #2517 this bucket
-    # also holds a session that DID call back and was refused by the #2437 escalation cap
-    # (3/hour/sender), which deliberately does not close the dispatch because nothing reached
-    # a human either way. Check `press_agent_action_total{op="escalate",outcome="rate_limited"}`
-    # before concluding the session died — the fix for that case is to answer the escalation,
-    # not to hand-reply as though the agent never ran.
-    w13 = {
-      title    = "W13 A journalist got NO answer (press dispatch died)"
-      expr     = "sum(increase(press_dispatch_total{env=\"prod\",outcome=\"no_callback\"}[1h]))"
-      window_s = 3600
-      gt       = 0
-      for      = "15m"
-      paused   = false
-      summary  = "A cloud-agent session accepted the PRESS trigger and then never delivered — no /api/press/agent/{reply,escalate} call landed within the agent-token TTL (24h). A JOURNALIST EMAILED press@ AND GOT NOTHING, and nothing retries: auto-retry was declined for the same reasons as support (#2472) plus a worse duplicate-reply blast radius, since the press reply is emailed autonomously to a member of the public. ACTION FOR A HUMAN: find it in the API log line `press dispatch NEVER CALLED BACK`, which names the correlation key, the reply-to address and the transport, then open /press (the #2296 correspondence log), read the inquiry, and reply by hand. That is safe at this threshold and only at this threshold — the dead session's token is expired, so it cannot come back and answer on top of you. FIRST rule out the refused-escalation case: check press_agent_action_total{op=\"escalate\",outcome=\"rate_limited\"} over the same window, because since #2517 a callback the #2437 cap refused also lands in this bucket, and there the agent is alive and the right move is to handle the escalation. During launch coverage (#2233) treat this as time-critical: a journalist on deadline does not email twice."
-    }
-    w12 = {
-      title    = "W12 The dispatch watchdog stopped reporting"
-      expr     = "(min by (channel) (increase(agent_dispatch_sweeps_total{env=\"prod\"}[15m])) == bool 0) or absent(agent_dispatch_sweeps_total{env=\"prod\",channel=\"support\"}) or absent(agent_dispatch_sweeps_total{env=\"prod\",channel=\"press\"})"
-      window_s = 900
-      gt       = 0
-      for      = "30m"
-      paused   = false
-      summary  = "The #2477 dispatch watchdog has stopped ticking, so NOTHING is watching for a customer left unanswered by a dead cloud-agent session — and because the unreplied count is a gauge, its dashboard panel is still showing you the last value it ever wrote, which is probably a reassuring 0. Treat W11 as unable to fire until this clears. Rule out the benign causes first: the support responder is flag-off in this environment (Main.scala forks the sweep only when support.responderEnabled is true), or the API is down (C5 would also be firing). Otherwise the sweep fiber died inside a live process — grep the API log for a failure in the DispatchTracker loop and redeploy. This rule covers BOTH responders since #2517 — the alert instance's channel label says which one stopped, and each channel's dashboard has its own heartbeat panel. A press instance firing while support is healthy usually means press.responderEnabled is false in this environment, which is a legitimate state to be in but NOT one you should discover from an alert: check render.yaml before hunting a dead fiber."
-    }
     # W14 (#2646 follow-up) — W10's ABSENCE ARM. A router that is CONNECTED to us and
     # pushing nothing. Read this with W10's block above; the two cover opposite failure
     # doors and neither subsumes the other.
@@ -502,7 +318,7 @@ locals {
     # fires. `< bool` rather than a bare `<` for the same reason: a bare comparison
     # returns the LEFT value, which is 0 in exactly that total-silence case, and gt = 0
     # would then filter out the one sample that matters most. `bool` yields a clean 1/0
-    # and gt = 0 is a true boolean test (the same `== bool` reasoning as W12).
+    # and gt = 0 is a true boolean test (`== bool` reasoning, as in W14).
     #
     # `max` OVER THE REFERENCE GAUGE IS A NO-OP TODAY, and it is worth being exact about
     # that rather than dressing it up as scale-out safety. deploy/alloy/config.alloy:15-25

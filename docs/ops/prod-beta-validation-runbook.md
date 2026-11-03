@@ -1,5 +1,13 @@
 # Prod beta go-live validation runbook (#2527)
 
+> **Historical (#2954).** The Plain helpdesk integration and the Claude support and press responders
+> this runbook validates were removed in
+> [#2954](https://github.com/wifihaven/wifihaven/issues/2954). Preconditions 0.1-0.6 and Steps 4, 5
+> and 6 describe that removed code and no longer apply: do not run them. Steps 1-3 (router bring-up,
+> new-household creation, enforcement) and Step 7 are still the router/enforcement half of the
+> validation. The Plain/support/press material below is left as the record of what was verified on
+> 2026-07-31.
+
 The operator-driven half of
 [#2527](https://github.com/wifihaven/wifihaven/issues/2527). Everything that
 could be verified without hardware or a human mailbox was run ahead of time and
@@ -66,7 +74,7 @@ pq(){ curl -sG -u "3272502:$GRAFANA_READ_TOKEN" \
 API-only; there is no UI. Nothing in prod had ever exercised the tenant-write
 path as of 2026-07-31 (`support_tenant_upsert_total` had no prod series at all),
 so the schemas' presence is unverified either way. Run
-[`plain-setup.md` §7.3 "Entitlement fields"](plain-setup.md#entitlement-fields)'s
+`plain-setup.md` §7.3 "Entitlement fields" (removed in #2954)'s
 `upsertTenantFieldSchema` mutation in the **prod** workspace's API playground —
 verbatim, including `isVisible` and `order`, which the mutation is rejected
 without:

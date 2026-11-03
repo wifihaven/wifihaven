@@ -340,8 +340,8 @@ red flag to investigate before public launch, not a reason to discount deeper.
   The **customer-facing** phrasing of this — what a support agent tells someone
   who asks "can I add another router?", and what to do for them today (manual
   cap bump; no self-serve upgrade) — lives in
-  [`docs/support-faq.md` §Can I add another router?](../support-faq.md#can-i-add-another-router)
-  (#2499). Keep the two in sync when the multi-home tier actually opens.
+  `docs/support-faq.md` §Can I add another router? (#2499; removed in #2954 with the support
+  desk). If the multi-home tier opens, write the customer-facing phrasing afresh.
 - The other future tier axes, reserved (not built) now — each is additive
   and none is needed at launch: **history retention length** (retention
   windows are per-deploy constants today, `RetentionSweepJob`; making them
