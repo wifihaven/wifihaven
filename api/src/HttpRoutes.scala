@@ -123,115 +123,7 @@ object HttpRoutes {
       // #2137: the cohort flip lifecycle service (shared with the BetaFlipJob forked in the run
       // scope). Surfaces the flip-window state to the SPA billing page.
       flipService             <- ZIO.service[wifihaven.api.billing.FlipService]
-      // #2199: the support integration service (server-signed widget identity + household→Plain
-      // customer mapping). Dark unless the Plain keys are set.
-      support                 <- ZIO.service[wifihaven.api.support.SupportService]
-      // #2200: the Claude responder — the webhook→gate→dispatch pipeline plus the cloud agent's
-      // token-authenticated callback endpoints. Runs iff support.responderEnabled (#2265). Issue
-      // filing is rate-limited per-thread (3/h) and globally (10/h) — the #2241 volume control the
-      // support_agent_action_total{op="issue"} alert watches.
-      billingRepo             <- ZIO.service[wifihaven.api.db.HouseholdBillingRepo]
-      plainClient             <- ZIO.service[wifihaven.api.support.PlainClient]
-      agentDispatcher         <- ZIO.service[wifihaven.api.support.CloudAgentDispatcher]
-      githubIssues            <- ZIO.service[wifihaven.api.support.GithubIssueClient]
-      issueThreadLimiter      <- RateLimiterLive.make(maxAttempts = 3, windowSeconds = 60 * 60)
-      issueGlobalLimiter      <- RateLimiterLive.make(maxAttempts = 10, windowSeconds = 60 * 60)
-      // Cost guardrails (2026-07-16): each dispatched agent session bills real tokens, so dispatch
-      // is hard-capped — 4/hour per thread and 50/day globally. With a worst-case ~$0.50/draft the
-      // global cap bounds even sustained abuse at pocket change; normal beta volume never hits it.
-      dispatchThreadLimiter   <- RateLimiterLive.make(maxAttempts = 4, windowSeconds = 60 * 60)
-      dispatchGlobalLimiter <- RateLimiterLive.make(maxAttempts = 50, windowSeconds = 24 * 60 * 60)
-      // #2307: the static-reject cap for unregistered cold email. Cheap (a fixed string, no AI), so
-      // the ceiling is generous, but bounded globally so a spammer forging many cold-email threads
-      // can't turn us into a reply-amplification (backscatter) source.
-      rejectLimiter         <- RateLimiterLive.make(maxAttempts = 100, windowSeconds = 60 * 60)
-      // #2419: the per-(household, thread) data-access consent record (V84) + the cap on how often
-      // the agent can make us post a consent prompt into ONE thread (3/hour — an assistant that
-      // keeps re-asking, or a prompt-injected one, must not be able to spam the customer).
-      supportConsentRepo    <- ZIO.service[wifihaven.api.db.SupportConsentRepo]
-      consentThreadLimiter  <- RateLimiterLive.make(maxAttempts = 3, windowSeconds = 60 * 60)
-      // #2437: the cap on how often ONE thread can page the operator (3/hour). An escalation is a
-      // human interrupt, so a looping or prompt-injected agent must not be able to turn our alert
-      // mailbox into a firehose; 3/hour still lets a genuine back-and-forth re-escalate.
-      escalateThreadLimiter <- RateLimiterLive.make(maxAttempts = 3, windowSeconds = 60 * 60)
-      // #2472: the dispatch→completion tracker. Taken from the environment (not built here) because
-      // Main forks its sweep fiber against the SAME instance the responder records into — a second
-      // instance would sweep an empty map and report nothing, which is exactly the silence this
-      // change closes.
-      dispatchTracker       <- ZIO
-        .service[wifihaven.api.support.DispatchTracker.ForSupport]
-        .map(_.tracker)
-      supportResponder = wifihaven.api.support.SupportResponder(
-        cfg.support,
-        householdRepo,
-        userRepo,
-        billingRepo,
-        deviceRepo,
-        profileRepo,
-        // #2665: the consented read now answers "how much screen time today?" — it needs the
-        // household's daily-reset settings and the canonical day-state service. Both already in
-        // the environment; nothing new is constructed here.
-        hsRepo,
-        timeStatus,
-        supportConsentRepo,
-        plainClient,
-        githubIssues,
-        agentDispatcher,
-        clock,
-        issueThreadLimiter,
-        issueGlobalLimiter,
-        dispatchThreadLimiter,
-        dispatchGlobalLimiter,
-        rejectLimiter,
-        consentThreadLimiter,
-        // The consent link's origin: the ONE per-env SPA origin the API already carries (#2250),
-        // shared with the password-reset / dashboard links rather than a new support.* key.
-        cfg.email.appBaseUrl,
-        // #2437: the operator-notification seam — the same #578 Notifier the alert/beta/reset paths
-        // use, so an escalation reaches a human without inventing a transport.
-        notifier,
-        escalateThreadLimiter,
-        dispatchTracker,
-      )
-      // #2203: the PRESS responder — the public inbound webhook (from the Cloudflare Email Worker)
-      // → rate-cap → dispatch pipeline, plus the press agent's reply-target-bound EMAIL callback.
-      // Runs iff press.responderEnabled (#2265). NO household gate and NO data token (public
-      // audience); the reply is emailed to the sender via the shared #578 EmailSender (destination
-      // locked into the session token, so a hijacked agent cannot redirect it).
-      pressDispatcher            <- ZIO.service[wifihaven.api.press.PressAgentDispatcher]
-      pressEmailSender           <- ZIO.service[wifihaven.api.notify.EmailSender]
-      // #2296: the press correspondence log (V71). Recording is fail-open inside the responder; the
-      // household-1-only read route (PressRoutes) reads it back.
-      pressLog                   <- ZIO.service[wifihaven.api.db.PressMessageRepo]
-      // Same dispatch cost caps as the #2200 support responder (4/sender/hour, 50/day global) — each
-      // dispatched session bills tokens, and the global cap is the true ceiling for this public
-      // endpoint (the per-sender key is best-effort — an anonymous From is trivially rotated).
-      pressDispatchSenderLimiter <- RateLimiterLive.make(maxAttempts = 4, windowSeconds = 60 * 60)
-      pressDispatchGlobalLimiter <-
-        RateLimiterLive.make(maxAttempts = 50, windowSeconds = 24 * 60 * 60)
-      // #2437: the per-sender cap on operator pages from the press agent (3/hour), matching support's.
-      pressEscalateLimiter       <- RateLimiterLive.make(maxAttempts = 3, windowSeconds = 60 * 60)
-      // #2517: the press dispatch→completion tracker. Taken from the environment for the same reason
-      // support's is — Main forks its sweep fiber against the SAME instance the responder records
-      // into, and a second instance would sweep an empty map and report nothing.
-      pressDispatchTracker       <- ZIO
-        .service[wifihaven.api.support.DispatchTracker.ForPress]
-        .map(_.tracker)
-      pressResponder = wifihaven.api.press.PressResponder(
-        cfg.press,
-        pressEmailSender,
-        pressDispatcher,
-        pressLog,
-        clock,
-        pressDispatchSenderLimiter,
-        pressDispatchGlobalLimiter,
-        // #2437: press has NO inbox — this Notifier is the ONLY way a press inquiry (or an escalation
-        // of one) reaches a human at all.
-        notifier,
-        pressEscalateLimiter,
-        pressDispatchTracker,
-      )
-      betaService    = BetaService(
+      betaService   = BetaService(
         betaRepo,
         householdRepo,
         userRepo,
@@ -244,7 +136,7 @@ object HttpRoutes {
       // #2308: the forgot/reset-password service — mints single-use short-TTL tokens, emails the
       // reset link via the #578 Notifier, and on reset bumps token_version to invalidate prior JWTs.
       // Clock-injected so the token TTL is TestClock-driven in specs.
-      passwordReset  = PasswordResetServiceLive(
+      passwordReset = PasswordResetServiceLive(
         userRepo,
         resetTokenRepo,
         auth,
@@ -325,10 +217,6 @@ object HttpRoutes {
           betaReqRateLimiter,
           billing,
           flipService,
-          support,
-          supportResponder,
-          pressResponder,
-          pressLog,
           profileRepo,
           tlRepo,
           namedSchedRepo,
@@ -494,10 +382,6 @@ object HttpRoutes {
       betaReqRateLimiter: RateLimiter,
       billing: wifihaven.api.billing.BillingService,
       flipService: wifihaven.api.billing.FlipService,
-      support: wifihaven.api.support.SupportService,
-      supportResponder: wifihaven.api.support.SupportResponder,
-      pressResponder: wifihaven.api.press.PressResponder,
-      pressLog: wifihaven.api.db.PressMessageRepo,
       profileRepo: ProfileRepo,
       tlRepo: TimeLimitRepo,
       namedSchedRepo: NamedScheduleRepo,
@@ -532,27 +416,6 @@ object HttpRoutes {
           wifihaven.api.billing.FlipService.FlipWindow(open = false, flipDate = None),
         ),
       ) ++
-      // #2199: admin-only server-signed Plain widget identity. Dark (returns {configured:false})
-      // until the operator sets the Plain widget app id + identity secret.
-      SupportRoutes.routes(auth, support) ++
-      // #2419: the customer's JWT-authenticated consent action — the ONE writer of a data-access
-      // consent record (the agent can only ASK, via its thread-bound token).
-      SupportConsentRoutes.routes(auth, supportResponder) ++
-      // #2200: the Plain new-message webhook (signature-verified, authenticated-origin-gated
-      // cloud-agent dispatch — UI-originated or a #2307 registered-admin email) + the agent's
-      // token-authenticated callback endpoints. Off unless
-      // support.responderEnabled is set explicitly (#2265): webhook no-ops, agent endpoints 404.
-      SupportAgentRoutes.routes(supportResponder) ++
-      // #2203: the PRESS/PR inbox — a public, unauthenticated inbound webhook from the Cloudflare
-      // Email Worker (signature-verified, NO household gate) + the press agent's
-      // token-authenticated EMAIL-reply callback (destination locked into the token). Off unless
-      // press.responderEnabled is set explicitly (#2265): webhook no-ops, agent endpoint 404.
-      // The press agent holds no household data token (public audience).
-      PressAgentRoutes.routes(pressResponder) ++
-      // #2296: the household-1-only admin read of the recorded press correspondence log. Press is
-      // a company-global channel (no household_id); a non-default household gets 404 (not 403),
-      // so the log's existence is not disclosed across the tenant boundary.
-      PressRoutes.routes(auth, pressLog) ++
       ProfileRoutes.routes(
         auth,
         profileRepo,

@@ -200,12 +200,6 @@ report_group "stripe -> named enabled flag (only if billing should be ON here)" 
   WIFIHAVEN_STRIPE_SECRET_KEY WIFIHAVEN_STRIPE_WEBHOOK_SECRET \
   WIFIHAVEN_STRIPE_PRICE_MONTHLY WIFIHAVEN_STRIPE_PRICE_ANNUAL
 
-report_group "support WIDGET -> named enabled flag (needs BOTH)" all \
-  WIFIHAVEN_SUPPORT_PLAIN_APP_ID WIFIHAVEN_SUPPORT_PLAIN_IDENTITY_SECRET
-
-report_group "support WRITE API -> named enabled flag" all \
-  WIFIHAVEN_SUPPORT_PLAIN_API_KEY
-
 report_group "loki log export -> named logExport.enabled" all \
   GRAFANA_CLOUD_LOKI_URL GRAFANA_CLOUD_LOKI_USER GRAFANA_CLOUD_LOKI_PASSWORD
 

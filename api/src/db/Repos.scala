@@ -238,14 +238,6 @@ trait UserRepo {
    */
   def findByEmail(email: String): Task[Option[DbUser]]
 
-  /**
-   * #2199 (support intake B): resolve a user's `users.email` (V67) by their household + username —
-   * the inverse of [[findByEmail]]. An authenticated caller carries `(hh, username)` in their JWT
-   * (never an email), and the support-widget identity path needs that user's email to compute the
-   * server-signed Plain chat-auth hash. Returns `None` when the user has no email (username-only /
-   * self-hosted admin) or no such row — either way the widget stays dark for that caller.
-   */
-  def emailForUser(householdId: HouseholdId, username: String): Task[Option[String]]
   def findById(id: UserId): Task[Option[DbUser]]
   // #2130: `householdId` stamps the new user with the creating admin's
   // household (resolved from their JWT at the route). Defaults to the
@@ -1647,17 +1639,6 @@ class UserRepoLive(xa: Transactor[Task]) extends UserRepo {
         .query[UserRow]
         .map(toUser)
         .option
-        .transact(xa),
-    )
-  def emailForUser(householdId: HouseholdId, username: String)             =
-    DbMetrics.timed("user.emailForUser")(
-      // #2199: household-scoped username → email. Keyed on the V65 UNIQUE(household_id, username);
-      // the inner Option is the nullable `users.email` column (V67), so a row with a NULL email
-      // yields `Some(None)` → flattened to `None`.
-      sql"SELECT email FROM users WHERE household_id=$householdId AND username=$username"
-        .query[Option[String]]
-        .option
-        .map(_.flatten)
         .transact(xa),
     )
   def findById(id: UserId)                                                 =
@@ -5369,13 +5350,8 @@ object Repos {
   val betaCohortRepo        = ZLayer.fromFunction(BetaCohortRepoLive(_))
   // #2134 (multi-tenant P5-4): per-household entitlements (router_cap).
   val entitlementsRepo      = ZLayer.fromFunction(EntitlementsRepoLive(_))
-  // #2296 (press correspondence log, epic #2197/#2203): the company-global press message log (V71).
-  val pressMessageRepo      = ZLayer.fromFunction(PressMessageRepoLive(_))
   // #2308 (forgot-password, epic #622): single-use, short-TTL password-reset tokens (V77).
   val passwordResetRepo     = ZLayer.fromFunction(PasswordResetTokenRepoLive(_))
-  // #2419 (support data-access consent, epic #2197): the per-(household, thread) customer
-  // grants that widen the #2241 agent token's data scope (V84).
-  val supportConsentRepo    = ZLayer.fromFunction(SupportConsentRepoLive(_))
   val all                   =
-    userRepo ++ householdRepo ++ userProfileRepo ++ profileRepo ++ namedScheduleRepo ++ householdSettingsRepo ++ timeLimitRepo ++ appTimeLimitRepo ++ deviceRepo ++ deviceAssignmentRepo ++ sharedDeviceRepo ++ blocklistRepo ++ timeUsageRepo ++ timeExtRepo ++ routerRepo ++ trafficReportRepo ++ blockEventRepo ++ connEventRepo ++ alertRepo ++ appRepo ++ appGroupRepo ++ rollupRepo ++ timeUsedRollupRepo ++ appUsedRollupRepo ++ settledUsageRepo ++ partitionRepo ++ ambientHostsRepo ++ householdBillingRepo ++ betaRequestRepo ++ betaCohortRepo ++ entitlementsRepo ++ pressMessageRepo ++ passwordResetRepo ++ supportConsentRepo
+    userRepo ++ householdRepo ++ userProfileRepo ++ profileRepo ++ namedScheduleRepo ++ householdSettingsRepo ++ timeLimitRepo ++ appTimeLimitRepo ++ deviceRepo ++ deviceAssignmentRepo ++ sharedDeviceRepo ++ blocklistRepo ++ timeUsageRepo ++ timeExtRepo ++ routerRepo ++ trafficReportRepo ++ blockEventRepo ++ connEventRepo ++ alertRepo ++ appRepo ++ appGroupRepo ++ rollupRepo ++ timeUsedRollupRepo ++ appUsedRollupRepo ++ settledUsageRepo ++ partitionRepo ++ ambientHostsRepo ++ householdBillingRepo ++ betaRequestRepo ++ betaCohortRepo ++ entitlementsRepo ++ passwordResetRepo
 }
