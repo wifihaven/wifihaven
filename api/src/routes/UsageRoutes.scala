@@ -18,6 +18,7 @@ import zio.http.*
 import zio.json.*
 
 import java.time.{Duration, Instant, LocalDate, ZoneId}
+import java.time.temporal.ChronoUnit
 
 // ── Usage routes (#716) ─────────────────────────────────────────────────────
 //
@@ -184,7 +185,7 @@ object UsageRoutes {
                 ),
               )
               .when(
-                java.time.temporal.ChronoUnit.DAYS.between(from, to) + 1 > UsageByAppMaxRangeDays,
+                ChronoUnit.DAYS.between(from, to) + 1 > UsageByAppMaxRangeDays,
               )
             settings <- hsRepo.getForHousehold(claims.hh).mapError(ApiError.Db(_))
             resp     <- buildUsageByApp(

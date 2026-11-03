@@ -3594,8 +3594,10 @@ class TrafficReportRepoLive(xa: Transactor[Task]) extends TrafficReportRepo {
       toInstant: Instant,
   ) = {
     type Row = (String, Long, Long)
-    // #2965: bounded so a slow or parallel sweep fails fast (503) instead of holding the pool,
-    // and timed so its latency shows on the per-op DB panels.
+    // #2965: bounded so a slow or parallel sweep fails fast (503) instead of holding the pool.
+    // Timed under db_queries_total{op,status}, where a timeout counts as status="error"; the
+    // latency histogram tops out at 5s (`DbDurationBoundaries`), so a normal 30-day read of a busy
+    // device (~20s) shows there only as the top bucket.
     DbMetrics
       .timed("traffic.listFqdnHostAggregatesForDevice")(
         QueryTimeout.bounded(xa, QueryTimeout.RecentApexesWindow)(
