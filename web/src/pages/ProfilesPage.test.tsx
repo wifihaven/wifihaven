@@ -3228,10 +3228,14 @@ describe('ProfilesPage — weekly limits and app groups (#2935)', () => {
     const ixl = screen.getByTestId('group-row-7-member-pick-63')
     expect(ixl).toBeEnabled()
     await user.click(ixl)
+    // Serialized: the second write waits for the first, so a late first reply cannot drop IXL.
+    expect(api.appGroups.update).toHaveBeenCalledTimes(1)
+    expect(screen.getByTestId('group-row-7-member-remove-63')).toBeInTheDocument()
     await act(async () => { release() })
     await waitFor(() => expect(fn(api.appGroups.update).mock.calls.length).toBe(2))
     await act(async () => { release() })
-    const last = fn(api.appGroups.update).mock.calls.at(-1)!
+    const calls = fn(api.appGroups.update).mock.calls
+    const last = calls[calls.length - 1]
     expect(last[0]).toBe(7)
     expect([...last[1].memberAppIds].sort()).toEqual([62, 63])
     await waitFor(() => {

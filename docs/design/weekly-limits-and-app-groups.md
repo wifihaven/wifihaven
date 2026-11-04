@@ -604,8 +604,10 @@ grows taller when collapsed.
   "In *Games*" (D2). The row opens on its members right after "+ Add group"
   attaches it. Because the group is household-wide, the members panel says
   which other profiles use it ("Also used by: Sam"). The Manage apps page has
-  a Groups section with the same member editor and "+ New group" (#2974). Adding a member that a profile already lists on its own shows the
-  overlap warning on that profile.
+  a Groups section with the same member editor and "+ New group" (#2974).
+  Member edits are optimistic and serialized per group, so several apps can
+  be added in a row. Adding a member that a profile already lists on its own
+  shows the overlap warning on that profile.
 - Loading: week-to-date bars use the same three states as #2764 (pending
   skeleton, error, value). The `UsageStatus` prop is required and threaded the
   same way.

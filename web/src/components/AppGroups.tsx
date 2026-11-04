@@ -1,8 +1,10 @@
 // #2935 — household app groups on a profile (design §10). A group is one shared time budget over
 // several apps; this profile's attachment of it carries the limits. Everything here autosaves.
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import { api } from '@/api/client'
 import { useGroupAttachmentsOf, useInvalidators, useProfiles } from '@/api/queries'
+import { qk } from '@/api/queryKeys'
 import { AppIcon } from '@/components/AppIcon'
 import { Skeleton } from '@/components/Skeleton'
 import { tighterLeft } from '@/lib/budget'
@@ -40,7 +42,7 @@ export const EXEMPT_HINT =
 
 const chipBase = 'inline-flex items-center gap-1 h-6 px-2 rounded-lg border text-[11px] font-medium tabular-nums disabled:opacity-50'
 
-function errMsg(e: unknown, fallback: string): string {
+export function errMsg(e: unknown, fallback: string): string {
   return e instanceof Error ? e.message : fallback
 }
 
@@ -305,12 +307,7 @@ function GroupRow({ profileId, attachment, group, apps, groups, budget, onChange
     }), 'Failed to update')
   }
 
-  async function setMembers(next: number[]) {
-    await run(async () => {
-      await api.appGroups.update(attachment.groupId, { memberAppIds: next })
-      await w.done()
-    }, 'Failed to update members')
-  }
+  const memberWrites = useGroupMemberWrites(attachment.groupId, onChanged)
 
   const dGtW = attachment.dailyMinutes != null && attachment.weeklyMinutes != null
     && attachment.dailyMinutes > attachment.weeklyMinutes
@@ -341,7 +338,7 @@ function GroupRow({ profileId, attachment, group, apps, groups, budget, onChange
         </span>
         <div className="flex-1 min-w-[6rem] overflow-hidden flex items-baseline gap-2">
           <p className="text-[13px] text-brand-ink font-medium truncate">{attachment.name}</p>
-          <MembersToggle tid={tid} count={members.length} open={membersOpen} onClick={() => setMembersOpen(v => !v)} />
+          <MembersToggle tid={tid} count={memberIds.length} open={membersOpen} onClick={() => setMembersOpen(v => !v)} />
         </div>
         <div className="flex items-center gap-1.5 shrink-0 ml-auto">
           <button
@@ -449,8 +446,7 @@ function GroupRow({ profileId, attachment, group, apps, groups, budget, onChange
             memberIds={memberIds}
             apps={apps}
             groups={groups}
-            busy={busy}
-            setMembers={setMembers}
+            writes={memberWrites}
           />
           <p data-testid={`${tid}-also-used-by`} className="text-[11px] text-brand-text-muted">
             {usedByLoading
@@ -461,9 +457,73 @@ function GroupRow({ profileId, attachment, group, apps, groups, budget, onChange
           </p>
         </div>
       )}
-      {error && <p className="text-xs text-red-700 px-3 pb-2" data-testid={`${tid}-error`}>{error}</p>}
+      {(error ?? memberWrites.error) && (
+        <p className="text-xs text-red-700 px-3 pb-2" data-testid={`${tid}-error`}>{error ?? memberWrites.error}</p>
+      )}
     </div>
   )
+}
+
+// #2974 — member writes for one group, shared by a profile's group row and Manage apps. A write
+// used to hold the whole row disabled until the update AND every refetch it triggered (groups,
+// profiles, time status) had finished, so "+ app" went dead for seconds after each add. Now:
+// - the member list in the `qk.appGroups()` cache changes at once (optimistic), and only the app
+//   being written is disabled;
+// - writes to one group run one after another, each sending the list as it stands when it runs.
+//   `memberAppIds` REPLACES the list, so two adds sent side by side from the same starting list
+//   would drop one; serialized, the last write carries every change made so far;
+// - a failed write takes its own change back out of the cache and says why;
+// - the refetches run in the background once the group has no write in flight.
+const memberWriteChains = new Map<number, Promise<void>>()
+
+export interface GroupMemberWrites {
+  pending: ReadonlySet<number>
+  error: string | null
+  add: (appId: number) => void
+  remove: (appId: number) => void
+}
+
+export function useGroupMemberWrites(groupId: number, onChanged?: () => void | Promise<void>): GroupMemberWrites {
+  const qc = useQueryClient()
+  const invalidators = useInvalidators()
+  const [pending, setPending] = useState<ReadonlySet<number>>(new Set())
+  const [error, setError] = useState<string | null>(null)
+  const inFlight = useRef(0)
+
+  function patch(f: (ids: number[]) => number[]) {
+    qc.setQueryData<AppGroup[]>(qk.appGroups(), gs =>
+      gs?.map(g => (g.id === groupId ? { ...g, memberAppIds: f(g.memberAppIds) } : g)))
+  }
+
+  function change(appId: number, add: boolean) {
+    setError(null)
+    setPending(p => new Set(p).add(appId))
+    inFlight.current += 1
+    // A refetch already under way would land on top of the optimistic list.
+    void qc.cancelQueries({ queryKey: qk.appGroups(), exact: true })
+    patch(ids => (add ? (ids.includes(appId) ? ids : [...ids, appId]) : ids.filter(id => id !== appId)))
+    const run = async () => {
+      try {
+        const group = qc.getQueryData<AppGroup[]>(qk.appGroups())?.find(g => g.id === groupId)
+        if (group == null) throw new Error('Groups are not loaded yet')
+        await api.appGroups.update(groupId, { memberAppIds: group.memberAppIds })
+      } catch (e) {
+        patch(ids => (add ? ids.filter(id => id !== appId) : ids.includes(appId) ? ids : [...ids, appId]))
+        setError(errMsg(e, 'Failed to update members'))
+      } finally {
+        setPending(p => { const n = new Set(p); n.delete(appId); return n })
+        inFlight.current -= 1
+        if (inFlight.current === 0) {
+          void invalidators.appGroups()
+          void onChanged?.()
+        }
+      }
+    }
+    const next = (memberWriteChains.get(groupId) ?? Promise.resolve()).then(run)
+    memberWriteChains.set(groupId, next)
+  }
+
+  return { pending, error, add: id => change(id, true), remove: id => change(id, false) }
 }
 
 // #2974 — the row's member control. A group with no apps asks for some instead of reading "0 apps",
@@ -494,15 +554,14 @@ export function MembersToggle({ tid, count, open, onClick }: {
 // profile's group row and the Manage apps page. The picker is the profile's "Allow an app" picker
 // in shape: a filter and a list. An app in another group stays listed but disabled with that
 // group's name, so the one-group-per-app rule (D2) explains itself rather than hiding the app.
-export function GroupMembersEditor({ tid, groupId, groupName, memberIds, apps, groups, busy, setMembers }: {
+export function GroupMembersEditor({ tid, groupId, groupName, memberIds, apps, groups, writes }: {
   tid: string
   groupId: number
   groupName: string
   memberIds: number[]
   apps: AppDetail[]
   groups: AppGroup[]
-  busy: boolean
-  setMembers: (next: number[]) => Promise<void>
+  writes: GroupMemberWrites
 }) {
   // An empty group opens straight onto the picker; otherwise it waits behind "+ Add apps".
   const [adding, setAdding] = useState(false)
@@ -532,8 +591,8 @@ export function GroupMembersEditor({ tid, groupId, groupName, memberIds, apps, g
                 type="button"
                 data-testid={`${tid}-member-remove-${m.app.id}`}
                 aria-label={`Remove ${m.app.name} from ${groupName}`}
-                disabled={busy}
-                onClick={() => void setMembers(memberIds.filter(id => id !== m.app.id))}
+                disabled={writes.pending.has(m.app.id)}
+                onClick={() => writes.remove(m.app.id)}
                 className="px-1 text-brand-text-muted hover:text-red-700"
               >×</button>
             </span>
@@ -574,7 +633,9 @@ export function GroupMembersEditor({ tid, groupId, groupName, memberIds, apps, g
           />
           {matches.length === 0 ? (
             <p className="text-xs text-brand-text-muted" data-testid={`${tid}-member-picker-empty`}>
-              {candidates.length === 0 ? `Every app is already in ${groupName}.` : 'No apps match that filter.'}
+              {apps.length === 0
+                ? 'No apps in the library yet.'
+                : candidates.length === 0 ? `Every app is already in ${groupName}.` : 'No apps match that filter.'}
             </p>
           ) : (
             <div className="space-y-1 max-h-56 overflow-y-auto">
@@ -585,9 +646,9 @@ export function GroupMembersEditor({ tid, groupId, groupName, memberIds, apps, g
                     key={a.app.id}
                     type="button"
                     data-testid={`${tid}-member-pick-${a.app.id}`}
-                    disabled={busy || other != null}
+                    disabled={writes.pending.has(a.app.id) || other != null}
                     title={other != null ? `An app can be in only one group. ${a.app.name} is in ${other}.` : undefined}
-                    onClick={() => { setAdding(true); void setMembers([...memberIds, a.app.id]) }}
+                    onClick={() => { setAdding(true); writes.add(a.app.id) }}
                     className="w-full flex items-center gap-2 px-2 py-1 rounded-lg bg-white hover:bg-brand-alt border border-brand-border-strong text-left disabled:opacity-50 disabled:hover:bg-white"
                   >
                     <AppIcon icon={a.app.icon} iconType={a.app.iconType} size="sm" className="w-5 text-center" />

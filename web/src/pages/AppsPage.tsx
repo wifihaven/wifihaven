@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { api } from '@/api/client'
 import { useAppGroups, useBlocklists, useInvalidators, useProfiles } from '@/api/queries'
 import type { AppDetail, AppGroup } from '@/types/api'
@@ -6,7 +6,7 @@ import { PageLoader } from './DashboardPage'
 import { AppIcon } from '@/components/AppIcon'
 import { EmptyState } from '@/components/EmptyState'
 import { AppBlocklistWarningBadge, AppBlocklistWarningDetail } from '@/components/AppBlocklistWarning'
-import { GroupMembersEditor, MembersToggle } from '@/components/AppGroups'
+import { errMsg, GroupMembersEditor, MembersToggle, useGroupMemberWrites } from '@/components/AppGroups'
 import { Skeleton } from '@/components/Skeleton'
 
 // #1798 — app *definitions* (name, slug, icon, host-set) are authored only via
@@ -62,7 +62,7 @@ export function AppsPage() {
         </div>
       )}
 
-      <GroupsSection apps={apps} />
+      <GroupsSection apps={apps} appsFailed={error != null} />
 
       <div className="bg-white rounded-2xl border border-brand-border overflow-hidden">
         {apps.length === 0
@@ -158,7 +158,7 @@ function AppDetailView({ detail, profileNameById, blocklistNameById }: {
 // #2974 — household app groups: a name and a member list. Their limits live on each profile's
 // attachment (the Profiles page); membership is household-wide, so it is edited here as well as
 // from a profile's group row, with the same picker.
-function GroupsSection({ apps }: { apps: AppDetail[] }) {
+function GroupsSection({ apps, appsFailed }: { apps: AppDetail[]; appsFailed: boolean }) {
   const groupsQ = useAppGroups()
   const invalidators = useInvalidators()
   const [openId, setOpenId] = useState<number | null>(null)
@@ -166,20 +166,27 @@ function GroupsSection({ apps }: { apps: AppDetail[] }) {
   const [name, setName] = useState('')
   const [creating, setCreating] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // As in AddGroupMenu (#2964): `working` guards re-entry synchronously (Enter then blur), and
+  // `creating` is the same fact for rendering.
+  const working = useRef(false)
   const groups = groupsQ.data ?? []
+
+  function cancelNaming() { setNaming(false); setName('') }
 
   async function createGroup() {
     const trimmed = name.trim()
-    if (!trimmed || creating) return
+    if (!trimmed) { cancelNaming(); return }
+    if (working.current) return
+    working.current = true
     setCreating(true); setError(null)
     try {
       const g = await api.appGroups.create({ name: trimmed })
-      setNaming(false); setName('')
+      cancelNaming()
       setOpenId(g.id)
       await invalidators.appGroups()
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to create group')
-    } finally { setCreating(false) }
+      setError(errMsg(e, 'Failed to create group'))
+    } finally { working.current = false; setCreating(false) }
   }
 
   return (
@@ -198,7 +205,10 @@ function GroupsSection({ apps }: { apps: AppDetail[] }) {
               disabled={creating}
               onChange={e => setName(e.target.value)}
               onBlur={createGroup}
-              onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); void createGroup() } }}
+              onKeyDown={e => {
+                if (e.key === 'Enter') { e.preventDefault(); void createGroup() }
+                if (e.key === 'Escape') { e.preventDefault(); cancelNaming() }
+              }}
               placeholder="Group name"
               aria-label="New group name"
               data-testid="apps-groups-new-name"
@@ -230,9 +240,9 @@ function GroupsSection({ apps }: { apps: AppDetail[] }) {
               group={g}
               groups={groups}
               apps={apps}
+              appsFailed={appsFailed}
               open={openId === g.id}
               onToggle={() => setOpenId(id => (id === g.id ? null : g.id))}
-              onChanged={invalidators.appGroups}
             />
           ))}
         </div>
@@ -241,27 +251,16 @@ function GroupsSection({ apps }: { apps: AppDetail[] }) {
   )
 }
 
-function GroupDirectoryRow({ group, groups, apps, open, onToggle, onChanged }: {
+function GroupDirectoryRow({ group, groups, apps, appsFailed, open, onToggle }: {
   group: AppGroup
   groups: AppGroup[]
   apps: AppDetail[]
+  appsFailed: boolean
   open: boolean
   onToggle: () => void
-  onChanged: () => Promise<unknown>
 }) {
   const tid = `apps-group-${group.id}`
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-
-  async function setMembers(next: number[]) {
-    setBusy(true); setError(null)
-    try {
-      await api.appGroups.update(group.id, { memberAppIds: next })
-      await onChanged()
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to update members')
-    } finally { setBusy(false) }
-  }
+  const writes = useGroupMemberWrites(group.id)
 
   return (
     <div data-testid={tid} className="border-b border-brand-border last:border-0">
@@ -271,19 +270,25 @@ function GroupDirectoryRow({ group, groups, apps, open, onToggle, onChanged }: {
       </div>
       {open && (
         <div className="px-5 pb-4 pt-1 bg-brand-surface/30 border-t border-brand-border">
-          <GroupMembersEditor
-            tid={tid}
-            groupId={group.id}
-            groupName={group.name}
-            memberIds={group.memberAppIds}
-            apps={apps}
-            groups={groups}
-            busy={busy}
-            setMembers={setMembers}
-          />
+          {appsFailed ? (
+            // Without the app list the picker would read as "every app is already in this group".
+            <p className="text-xs text-red-700" data-testid={`${tid}-apps-error`}>
+              Couldn't load apps, so this group's members can't be shown or edited.
+            </p>
+          ) : (
+            <GroupMembersEditor
+              tid={tid}
+              groupId={group.id}
+              groupName={group.name}
+              memberIds={group.memberAppIds}
+              apps={apps}
+              groups={groups}
+              writes={writes}
+            />
+          )}
         </div>
       )}
-      {error && <p className="text-xs text-red-700 px-5 pb-2" data-testid={`${tid}-error`}>{error}</p>}
+      {writes.error && <p className="text-xs text-red-700 px-5 pb-2" data-testid={`${tid}-error`}>{writes.error}</p>}
     </div>
   )
 }
