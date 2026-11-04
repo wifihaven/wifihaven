@@ -20,8 +20,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - env: staging
-            url: https://api-staging.wifihaven.net/api/health
           - env: prod
             url: https://api.wifihaven.net/api/health
     steps:

@@ -1,0 +1,70 @@
+name: Staging power (suspend when idle)
+
+# #2960: wifihaven-api-staging is suspended between deploys. Every workflow
+# that uses staging resumes it first (`scripts/render-staging-power.sh resume`
+# in master-api-ui.yml and the Gate 3a / 3b workflows). This workflow puts it
+# back to sleep once nothing that needs it is running.
+#
+# Race handling: check for in-flight runs, suspend, then check again. A run
+# created before the second check is caught by it and staging is resumed. A
+# run created after it finds staging already suspended, and its own resume
+# step wakes it.
+#
+# Manual use: `gh workflow run staging-power.yml -f action=resume` to wake
+# staging for hands-on testing. The next hourly sweep suspends it again.
+
+on:
+  schedule:
+    - cron: "17 * * * *"
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "sweep (suspend if idle), resume, or suspend"
+        type: choice
+        options: [sweep, resume, suspend]
+        default: sweep
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  power:
+    name: Staging power — ${{ inputs.action || 'sweep' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Resume / suspend / sweep
+        env:
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          GH_TOKEN: ${{ github.token }}
+          ACTION: ${{ inputs.action || 'sweep' }}
+        run: |
+          set -euo pipefail
+          if [ "$ACTION" != "sweep" ]; then
+            scripts/render-staging-power.sh "$ACTION"
+            exit 0
+          fi
+
+          # Every workflow file that resumes staging. A reusable workflow
+          # called from a CD run counts as part of that run, so only
+          # standalone dispatches of the gates show up under their own name.
+          in_flight() {
+            local n=0 w
+            for w in master-api-ui.yml master-router.yml e2e-vm-gate3a.yml e2e-vm-gate3b.yml; do
+              n=$(( n + $(gh run list -R "$GITHUB_REPOSITORY" --workflow "$w" -L 20 \
+                    --json status -q '[.[] | select(.status != "completed")] | length') ))
+            done
+            echo "$n"
+          }
+
+          if [ "$(in_flight)" -gt 0 ]; then
+            echo "A staging-consuming run is in flight; leaving staging up."
+            exit 0
+          fi
+          scripts/render-staging-power.sh suspend
+          if [ "$(in_flight)" -gt 0 ]; then
+            echo "A run started while suspending; resuming staging."
+            scripts/render-staging-power.sh resume
+          fi

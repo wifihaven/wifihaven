@@ -50,6 +50,10 @@ services:
     # fallback ("try JVM tuning, bump if needed") we move to standard — which
     # also makes staging memory-representative of prod. JVM_HEAP_OPTS below
     # now mirror prod rather than the (removed) 512 MB-fit envelope.
+    #
+    # #2960: the cost lever is suspension, not a smaller plan. Staging is
+    # suspended between deploys (.github/workflows/staging-power.yml) and every
+    # workflow that uses it resumes it first (scripts/render-staging-power.sh).
     plan: standard
     region: oregon
     numInstances: 1

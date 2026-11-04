@@ -255,10 +255,23 @@ jobs:
   # The Render staging service is configured to track the `staging` image
   # tag. The deploy hook tells Render to pull whatever now lives at that tag
   # (which the build-image job just pushed) and roll the service.
+  # #2960: staging is suspended between deploys (staging-power.yml); wake it
+  # before anything talks to it. Runs alongside the image build.
+  resume-staging:
+    name: Resume staging (Render)
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Resume staging and wait for health
+        env:
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+        run: scripts/render-staging-power.sh resume
+
   deploy-staging:
     name: Deploy staging (Render)
     if: github.ref == 'refs/heads/main'
-    needs: [build-image]
+    needs: [build-image, resume-staging]
     runs-on: ubuntu-latest
     steps:
       # #1390: composite action lives in-repo; checkout so `uses: ./...`
