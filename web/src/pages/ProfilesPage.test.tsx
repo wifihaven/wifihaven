@@ -3206,6 +3206,54 @@ describe('ProfilesPage — weekly limits and app groups (#2935)', () => {
     expect(screen.getByTestId('group-row-7-member-picker')).toBeInTheDocument()
   })
 
+  // #2974 — adding several apps in a row: the picker stays live while a write is in flight, and a
+  // second add cannot overwrite the first (memberAppIds REPLACES the list).
+  it('adds two apps back to back, and both land in the request and in the row', async () => {
+    fn(api.apps.list).mockResolvedValue([app(62, 'Khan Academy', null), app(63, 'IXL', null)])
+    let groupMembers: number[] = []
+    fn(api.appGroups.list).mockImplementation(async () => [{ id: 7, name: 'Homework', memberAppIds: groupMembers }])
+    fn(api.appGroups.forProfile).mockImplementation(async () =>
+      [attachment({ name: 'Homework', memberAppIds: groupMembers })])
+    let release: () => void = () => {}
+    fn(api.appGroups.update).mockImplementation((_id: number, body: { memberAppIds: number[] }) =>
+      new Promise(resolve => {
+        release = () => { groupMembers = body.memberAppIds; resolve({ id: 7, name: 'Homework', memberAppIds: body.memberAppIds }) }
+      }))
+    const user = userEvent.setup()
+    await openApps(user)
+    await user.click(await screen.findByTestId('group-row-7-members-toggle'))
+    await user.click(await screen.findByTestId('group-row-7-member-pick-62'))
+    // The first write is still in flight: the app shows as a member and the next one is live.
+    expect(await screen.findByTestId('group-row-7-member-remove-62')).toBeInTheDocument()
+    const ixl = screen.getByTestId('group-row-7-member-pick-63')
+    expect(ixl).toBeEnabled()
+    await user.click(ixl)
+    await act(async () => { release() })
+    await waitFor(() => expect(fn(api.appGroups.update).mock.calls.length).toBe(2))
+    await act(async () => { release() })
+    const last = fn(api.appGroups.update).mock.calls.at(-1)!
+    expect(last[0]).toBe(7)
+    expect([...last[1].memberAppIds].sort()).toEqual([62, 63])
+    await waitFor(() => {
+      expect(screen.getByTestId('group-row-7-member-remove-62')).toBeInTheDocument()
+      expect(screen.getByTestId('group-row-7-member-remove-63')).toBeInTheDocument()
+    })
+  })
+
+  it('rolls an add back and says why when the write fails', async () => {
+    fn(api.apps.list).mockResolvedValue([app(62, 'Khan Academy', null)])
+    fn(api.appGroups.list).mockResolvedValue([{ id: 7, name: 'Homework', memberAppIds: [] }])
+    fn(api.appGroups.forProfile).mockResolvedValue([attachment({ name: 'Homework', memberAppIds: [] })])
+    fn(api.appGroups.update).mockRejectedValue(new Error('Khan Academy is already in the group "Games".'))
+    const user = userEvent.setup()
+    await openApps(user)
+    await user.click(await screen.findByTestId('group-row-7-members-toggle'))
+    await user.click(await screen.findByTestId('group-row-7-member-pick-62'))
+    expect(await screen.findByTestId('group-row-7-error')).toHaveTextContent('already in the group')
+    await waitFor(() => expect(screen.queryByTestId('group-row-7-member-remove-62')).not.toBeInTheDocument())
+    expect(screen.getByTestId('group-row-7-member-pick-62')).toBeEnabled()
+  })
+
   it('opens the member picker right after a new group is created and attached', async () => {
     fn(api.apps.list).mockResolvedValue([app(50, 'YouTube', { mode: 'allowed' }), app(62, 'Khan Academy', null)])
     let attachedNew = false

@@ -226,4 +226,23 @@ describe('AppsPage — groups', () => {
     expect(api.appGroups.create).toHaveBeenCalledWith({ name: 'Homework' })
     expect(await screen.findByTestId('apps-group-9-member-picker')).toBeInTheDocument()
   })
+
+  it('does not claim every app is already in a group when the apps failed to load', async () => {
+    const user = userEvent.setup()
+    ;(api.apps.list as unknown as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('boom'))
+    fn(api.appGroups.list).mockResolvedValue([{ id: 7, name: 'Homework', memberAppIds: [] }])
+    render(withQuery(<AppsPage />))
+    await user.click(await screen.findByTestId('apps-group-7-members-toggle'))
+    expect(await screen.findByTestId('apps-group-7-apps-error')).toBeInTheDocument()
+    expect(screen.queryByTestId('apps-group-7-member-picker-empty')).not.toBeInTheDocument()
+  })
+
+  it('dismisses the new-group name input on Escape', async () => {
+    const user = userEvent.setup()
+    render(withQuery(<AppsPage />))
+    await user.click(await screen.findByTestId('apps-groups-new'))
+    await user.keyboard('{Escape}')
+    expect(screen.queryByTestId('apps-groups-new-name')).not.toBeInTheDocument()
+    expect(screen.getByTestId('apps-groups-new')).toBeInTheDocument()
+  })
 })
