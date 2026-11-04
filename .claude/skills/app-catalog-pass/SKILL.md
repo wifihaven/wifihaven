@@ -51,6 +51,7 @@ Then pull **per-apex bytes per device** over a recent window. The
 
 ```bash
 # focus on the kid devices (the app catalog is about kid-facing apps)
+# SEQUENTIAL on purpose (#2965): a parallel sweep exhausts the prod DB pool.
 for mac in <kid-macs>; do
   curl -sS -H "Authorization: Bearer $TOKEN" \
     "https://api.wifihaven.net/api/devices/$mac/recent-apexes?windowDays=30&limit=500" \
@@ -82,6 +83,15 @@ rm -f /tmp/wh_token.txt   # don't leave creds on disk
 returns `apps[]` — what IS attributed — and `orphanHosts[]`, every host carrying
 real time that no app covers, each with `proportionalSeconds`/`presenceSeconds`.
 That is already time-weighted, which the raw byte table is not.
+
+> **One day per request, one request at a time (#2965).** The route answers at
+> most `UsageRoutes.UsageByAppMaxRangeDays` (1) day: `from` must equal `to`,
+> anything wider is a 400. It loads every raw row in the range onto the API's
+> heap, and on 2026-11-03 parallel 30-day calls for six profiles ran prod out of
+> memory. For a multi-day view, loop over the days **sequentially** and merge
+> client-side. Never background (`&`) or `xargs -P` these calls, or the
+> `recent-apexes` sweep above: each holds a DB connection from a 12-connection
+> pool shared with `/api/health`.
 
 Two cautions before you treat an orphan as a gap:
 
