@@ -3144,8 +3144,84 @@ describe('ProfilesPage — weekly limits and app groups (#2935)', () => {
       Promise.resolve([attachment({ profileId: pid })]))
     const user = userEvent.setup()
     await openApps(user)
-    await user.click(await screen.findByTestId('group-row-7-toggle'))
+    await user.click(await screen.findByTestId('group-row-7-members-toggle'))
     expect(await screen.findByTestId('group-row-7-also-used-by')).toHaveTextContent('Adults')
+  })
+
+  // #2974 — members are edited from their own control on the row, not from behind the limit chip.
+  it('asks for apps on a group that has none, and adds one from a searchable picker', async () => {
+    fn(api.apps.list).mockResolvedValue([app(50, 'YouTube', { mode: 'allowed' }), app(62, 'Khan Academy', null)])
+    fn(api.appGroups.list).mockResolvedValue([{ id: 7, name: 'Homework', memberAppIds: [] }])
+    fn(api.appGroups.forProfile).mockResolvedValue([attachment({ name: 'Homework', memberAppIds: [] })])
+    const user = userEvent.setup()
+    await openApps(user)
+    const toggle = await screen.findByTestId('group-row-7-members-toggle')
+    expect(toggle).toHaveTextContent('No apps yet. Add apps')
+    await user.click(toggle)
+    expect(screen.queryByTestId('group-row-7-drawer')).not.toBeInTheDocument()
+    await user.type(await screen.findByTestId('group-row-7-member-filter'), 'khan')
+    expect(screen.queryByTestId('group-row-7-member-pick-50')).not.toBeInTheDocument()
+    await user.click(screen.getByTestId('group-row-7-member-pick-62'))
+    await waitFor(() => expect(api.appGroups.update).toHaveBeenCalledWith(7, { memberAppIds: [62] }))
+  })
+
+  it('shows the member count as its own control, apart from the limit chip', async () => {
+    fn(api.apps.list).mockResolvedValue([app(60, 'Roblox', null), app(61, 'Minecraft', null), app(50, 'YouTube', { mode: 'allowed' })])
+    fn(api.appGroups.list).mockResolvedValue([games])
+    fn(api.appGroups.forProfile).mockResolvedValue([attachment()])
+    const user = userEvent.setup()
+    await openApps(user)
+    const toggle = await screen.findByTestId('group-row-7-members-toggle')
+    expect(toggle).toHaveTextContent('2 apps')
+    await user.click(toggle)
+    expect(await screen.findByTestId('group-row-7-member-remove-60')).toBeInTheDocument()
+    expect(screen.queryByTestId('group-row-7-drawer')).not.toBeInTheDocument()
+  })
+
+  it('marks an app in another group as unavailable in the member picker (one group per app)', async () => {
+    fn(api.apps.list).mockResolvedValue([app(60, 'Roblox', null), app(61, 'Minecraft', null), app(62, 'Khan Academy', null)])
+    fn(api.appGroups.list).mockResolvedValue([games, { id: 8, name: 'Homework', memberAppIds: [] }])
+    fn(api.appGroups.forProfile).mockResolvedValue([attachment({ groupId: 8, name: 'Homework', memberAppIds: [] })])
+    const user = userEvent.setup()
+    await openApps(user)
+    await user.click(await screen.findByTestId('group-row-8-members-toggle'))
+    const roblox = await screen.findByTestId('group-row-8-member-pick-60')
+    expect(roblox).toBeDisabled()
+    expect(roblox).toHaveTextContent('In Games')
+    await user.click(roblox)
+    expect(api.appGroups.update).not.toHaveBeenCalled()
+    expect(screen.getByTestId('group-row-8-member-pick-62')).toBeEnabled()
+  })
+
+  it('shows an error and keeps the picker open when adding a member fails', async () => {
+    fn(api.apps.list).mockResolvedValue([app(62, 'Khan Academy', null)])
+    fn(api.appGroups.list).mockResolvedValue([{ id: 7, name: 'Homework', memberAppIds: [] }])
+    fn(api.appGroups.forProfile).mockResolvedValue([attachment({ name: 'Homework', memberAppIds: [] })])
+    fn(api.appGroups.update).mockRejectedValue(new Error('Khan Academy is already in the group "Games".'))
+    const user = userEvent.setup()
+    await openApps(user)
+    await user.click(await screen.findByTestId('group-row-7-members-toggle'))
+    await user.click(await screen.findByTestId('group-row-7-member-pick-62'))
+    expect(await screen.findByTestId('group-row-7-error')).toHaveTextContent('already in the group')
+    expect(screen.getByTestId('group-row-7-member-picker')).toBeInTheDocument()
+  })
+
+  it('opens the member picker right after a new group is created and attached', async () => {
+    fn(api.apps.list).mockResolvedValue([app(50, 'YouTube', { mode: 'allowed' }), app(62, 'Khan Academy', null)])
+    let attachedNew = false
+    fn(api.appGroups.attach).mockImplementation(async () => { attachedNew = true })
+    fn(api.appGroups.list).mockImplementation(async () =>
+      attachedNew ? [{ id: 9, name: 'Screens', memberAppIds: [] }] : [])
+    fn(api.appGroups.forProfile).mockImplementation(async () =>
+      attachedNew ? [attachment({ groupId: 9, name: 'Screens', memberAppIds: [] })] : [])
+    const user = userEvent.setup()
+    await openApps(user)
+    await user.click(await screen.findByTestId('profile-1-apps-section-add-group'))
+    await user.click(screen.getByTestId('profile-1-apps-section-add-group-new'))
+    await user.type(screen.getByTestId('profile-1-apps-section-add-group-name'), 'Screens{Enter}')
+    await user.type(await screen.findByTestId('profile-1-apps-section-add-group-minutes'), '45{Enter}')
+    expect(await screen.findByTestId('group-row-9-member-picker')).toBeInTheDocument()
+    expect(screen.getByTestId('group-row-9-member-pick-62')).toBeInTheDocument()
   })
 
   it('marks covered apps "In Games" in the picker', async () => {
