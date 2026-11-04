@@ -40,6 +40,10 @@ export { UsageBar }
 export const EXEMPT_HINT =
   'Not counted: while under its limits, this group stays reachable during bedtime and a soft pause.'
 
+// #2973 — EXEMPT_HINT's "while under its limits" for a group that has none.
+export const NO_LIMIT_EXEMPT_HINT =
+  'Not counted: with no limit, this group stays reachable during bedtime and a soft pause.'
+
 const chipBase = 'inline-flex items-center gap-1 h-6 px-2 rounded-lg border text-[11px] font-medium tabular-nums disabled:opacity-50'
 
 export function errMsg(e: unknown, fallback: string): string {
@@ -303,7 +307,15 @@ function GroupRow({ profileId, attachment, group, apps, groups, budget, onChange
   async function commitLimits() {
     const d = parse(daily), wk = parse(weekly)
     if (d === 'bad' || wk === 'bad') { setError('Enter minutes > 0'); return }
-    // #2973: clearing both is "No limit", a valid attachment.
+    // #2973: "No limit" is an explicit choice, never an emptied box. A parent clearing the only limit
+    // on the way to typing another would otherwise save a limitless (and, not counted, bedtime-
+    // reachable) group on the blur in between.
+    if (d == null && wk == null && !noLimit) {
+      setError('Enter a daily or weekly limit, or choose No limit')
+      setDaily(attachment.dailyMinutes != null ? String(attachment.dailyMinutes) : '')
+      setWeekly(attachment.weeklyMinutes != null ? String(attachment.weeklyMinutes) : '')
+      return
+    }
     if (d === attachment.dailyMinutes && wk === attachment.weeklyMinutes) { setError(null); return }
     await run(() => w.attach(attachment.groupId, {
       dailyMinutes: d, weeklyMinutes: wk, exemptFromDaily: attachment.exemptFromDaily,
@@ -368,7 +380,7 @@ function GroupRow({ profileId, attachment, group, apps, groups, budget, onChange
             aria-pressed={!attachment.exemptFromDaily}
             disabled={busy}
             title={attachment.exemptFromDaily
-              ? `${EXEMPT_HINT} Click to count it toward the daily limit.`
+              ? `${noLimit ? NO_LIMIT_EXEMPT_HINT : EXEMPT_HINT} Click to count it toward the daily limit.`
               : 'Counts toward the daily limit. Click to stop counting it.'}
             onClick={() => setCounts(attachment.exemptFromDaily)}
             className={`${chipBase} ${attachment.exemptFromDaily
@@ -445,6 +457,8 @@ function GroupRow({ profileId, attachment, group, apps, groups, budget, onChange
               type="button"
               data-testid={`${tid}-no-limit`}
               disabled={busy}
+              // Keep focus in a limit box so its blur does not save an edited value first.
+              onMouseDown={e => e.preventDefault()}
               onClick={setNoLimit}
               className="text-[11px] text-brand-accent hover:underline disabled:opacity-50"
             >No limit</button>

@@ -904,7 +904,8 @@ object WeeklyBudgetSpec
           )
           ga = shown.head.groupUsage.find(_.groupId == g)
         } yield assertTrue(
-          rows >= 3,
+          // Monday to Wednesday settled by the tick, plus today's rolled row.
+          rows == 4,
           groupWeek(s(a), g).contains(40),
           PolicyService.exhaustedBudgets(s(a)).isEmpty,
           PolicyService.appsOverBudget(s(a)).isEmpty,
