@@ -6,7 +6,7 @@ import doobie.postgres.implicits.*
 import cats.syntax.all.*
 import wifihaven.api.db.TypeMeta.given
 import wifihaven.api.metrics.DbMetrics
-import wifihaven.shared.{AppGroup, AppGroupRef, Clock, ProfileAppGroup}
+import wifihaven.shared.{AppGroup, AppGroupRef, AppMode, Clock, ProfileAppGroup}
 import wifihaven.shared.types.*
 import zio.*
 import zio.interop.catz.*
@@ -77,8 +77,9 @@ trait AppGroupRepo {
   def listAttachments(household: HouseholdId, profile: ProfileId): Task[List[ProfileAppGroup]]
 
   /**
-   * Create or replace the attachment. "At least one limit" is the caller's check (V92 CHECKs it
-   * too).
+   * Create or replace the attachment. The caller resolves `mode` (design §17.6) and checks "a limit
+   * if and only if TimeLimited", which V93 also CHECKs. The default is the pre-#2981 caller's
+   * TimeLimited, which always sends a limit.
    */
   def upsertAttachment(
       household: HouseholdId,
@@ -87,6 +88,8 @@ trait AppGroupRepo {
       dailyMinutes: Option[Int],
       weeklyMinutes: Option[Int],
       exemptFromDaily: Boolean,
+      mode: AppMode = AppMode.TimeLimited,
+      allowedDuringScheduleBlock: Boolean = true,
   ): Task[Either[AppGroupError, ProfileAppGroup]]
 
   /** True if an attachment existed. */
@@ -321,6 +324,8 @@ class AppGroupRepoLive(xa: Transactor[Task], clock: Clock) extends AppGroupRepo 
       dailyMinutes: Option[Int],
       weeklyMinutes: Option[Int],
       exemptFromDaily: Boolean,
+      mode: AppMode,
+      allowedDuringScheduleBlock: Boolean,
   ) =
     DbMetrics.timed("appGroup.upsertAttachment")(txn[ProfileAppGroup] { now =>
       for {

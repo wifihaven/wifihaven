@@ -332,6 +332,10 @@ case class GroupCoverage(
     dailyMinutes: Option[Int],
     weeklyMinutes: Option[Int],
     exemptFromDaily: Boolean,
+    // #2980 (design §17): the attachment's mode, V93 `profile_app_groups.mode`, and its #1679
+    // toggle, read for an Allowed attachment only.
+    mode: AppMode = AppMode.TimeLimited,
+    allowedDuringScheduleBlock: Boolean = true,
 ) derives JsonCodec
 
 // #761: app concept. An App is a household-scoped named bundle of host
@@ -456,7 +460,8 @@ case class UpdateAppGroupRequest(
 /**
  * A profile's attachment of a household group (`profile_app_groups`, V92): the profile's own limits
  * on the group and its "counts toward daily limit" choice (inverted in the SPA label, as for apps —
- * AGENTS.md#exempt-from-daily). At least one limit is required (D4).
+ * AGENTS.md#exempt-from-daily). A TimeLimited attachment has a limit and an Allowed or Blocked one
+ * has none (V93, design §17).
  */
 case class ProfileAppGroup(
     profileId: ProfileId,
@@ -466,6 +471,9 @@ case class ProfileAppGroup(
     dailyMinutes: Option[Int],
     weeklyMinutes: Option[Int],
     exemptFromDaily: Boolean,
+    // #2980 (design §17): V93's mode and #1679 toggle. Defaults are what a pre-V93 row reads as.
+    mode: AppMode = AppMode.TimeLimited,
+    allowedDuringScheduleBlock: Boolean = true,
 ) derives JsonCodec
 
 case class UpsertProfileAppGroupRequest(
