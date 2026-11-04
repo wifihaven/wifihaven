@@ -1,7 +1,7 @@
 # Design for weekly limits and app groups
 
 Tracking: [#2930](https://github.com/wifihaven/wifihaven/issues/2930).
-Product decisions: confirmed by the operator on 2026-10-23 and 2026-10-24, recorded in §15.
+Product decisions: confirmed by the operator on 2026-10-23 and 2026-10-24, recorded in §15; group modes (2026-11-03) in §17.
 
 ## 1. Goal
 
@@ -807,3 +807,146 @@ Slices 2 and 3 are separate so the counting can be checked on prod, by reading
   settle delay is tunable. S6 reviews it after a few weeks on prod.
 - Overlap policy. D14 and D15 warn rather than forbid. If overlaps turn out to
   be mistakes in practice, forbidding them is the alternative recorded in §14.
+
+## 17. Group modes (addendum, 2026-11-03)
+
+Operator request: "groups are in their own section, you should be able to block
+a group or allow a group". Product calls were confirmed by the operator on
+2026-11-03 and are recorded as D18–D22 below.
+
+### 17.1 What changes
+
+Today an attachment (`profile_app_groups`) can only carry limits. V92's
+`profile_app_groups_has_limit` CHECK requires a daily or weekly one (D4). With
+this addendum an attachment has a **mode**, the same three an app assignment
+has:
+
+| Attachment mode | Effect on every member app on this profile |
+|---|---|
+| `blocked` | Blocked. Its distinctive hosts go to `extraBlocked` (#1899). |
+| `allowed` | Allowed. Its full host-set goes to `extraAllowed`, the plain Allowed carve an Allowed app gets today. |
+| `time_limited` | Today's behaviour: one group budget with a daily and/or weekly limit (§6, §7). |
+
+The household group is still a name and a member list. The mode is the
+profile's, like the limits, so it adds no policy tier (#1452).
+
+### 17.2 Schema (one migration, schema only)
+
+```sql
+ALTER TABLE profile_app_groups
+  ADD COLUMN mode TEXT NOT NULL DEFAULT 'time_limited',
+  ADD COLUMN allowed_during_schedule_block BOOLEAN NOT NULL DEFAULT TRUE,
+  ADD CONSTRAINT profile_app_groups_mode_check
+    CHECK (mode IN ('blocked', 'allowed', 'time_limited')),
+  DROP CONSTRAINT profile_app_groups_has_limit,
+  ADD CONSTRAINT profile_app_groups_limit_iff_time_limited
+    CHECK ((mode = 'time_limited') = (daily_minutes IS NOT NULL OR weekly_minutes IS NOT NULL));
+```
+
+- `mode` is TEXT with a CHECK, as `app_policy_assignments.mode` is (V28). The
+  default keeps every existing row, and every INSERT from image N-1, TimeLimited.
+- The new CHECK replaces D4's: a TimeLimited attachment still needs a limit,
+  and an Allowed or Blocked one carries none. Setting a limit means TimeLimited,
+  and clearing both means Allowed, as for apps (§5.2, D21). No stale limit can
+  sit on an Allowed row.
+- `allowed_during_schedule_block` is the attachment's #1679 toggle (D19). It is
+  read only for an Allowed attachment.
+- Cost: two metadata-only ADD COLUMNs on a table with one row per attachment,
+  and CHECK validation over the same few rows.
+- Rollback to image N-1 after Allowed or Blocked rows exist: N-1 reads every
+  row as TimeLimited. An Allowed row has no limits, so its group budget is never
+  exhausted and its members stay reachable (close to Allowed). A Blocked row
+  stops blocking. That loss is bounded to the rollback window, and is why
+  enforcement ships before the API write surface (§17.7).
+
+### 17.3 Fold (`ProfileAppDispositions.from`)
+
+`GroupCoverage` gains `mode` and `allowedDuringScheduleBlock`. The fold keeps
+one disposition per member and picks its mode by **stricter wins** (D20),
+extending D14: `Blocked > TimeLimited > Allowed`.
+
+| Attachment | Member's own row | Disposition |
+|---|---|---|
+| Blocked | none, Allowed, TimeLimited or Blocked | Blocked |
+| Allowed | none | Allowed; `allowedDuringScheduleBlock` from the attachment |
+| Allowed | Allowed | Allowed; the toggle is off if either row's toggle is off (stricter) |
+| Allowed | TimeLimited | TimeLimited with its own limits (it bites inside the group) |
+| Allowed | Blocked | Blocked |
+| TimeLimited | any | unchanged from §6.1 |
+
+Only a TimeLimited attachment makes a group budget. `budgets` /
+`groupBudgets` filter on the attachment mode, so an Allowed or Blocked group
+never appears in `perGroup`, `exhaustedBudgets` or the `app_budget_exhausted`
+gauge.
+
+### 17.4 Precedence rows (extends §7.3)
+
+| # | Whole-MAC block | Attachment | Member's own row | Hosts land in | Outcome |
+|---|---|---|---|---|---|
+| 16 | none | Blocked | none | `extraBlocked` (distinctive) | Blocked |
+| 17 | none | Blocked | Allowed | `extraBlocked` | Blocked (stricter wins) |
+| 18 | none | Allowed | none | `extraAllowed` (full) | Reachable, also through a category blocklist (#421) |
+| 19 | none | Allowed | Blocked | `extraBlocked` | Blocked (stricter wins) |
+| 20 | none | Allowed | TimeLimited, own daily **over** | `extraBlocked` | Blocked by its own limit |
+| 21 | Schedule | Allowed, toggle on | none | `extraAllowed` | Reachable at bedtime, as an Allowed app is |
+| 22 | Schedule | Allowed, toggle off | none | — | Blocked by the whole-MAC drop (#1679) |
+| 23 | TimeLimit / soft Pause | Allowed | none | `extraAllowed` | Reachable: the plain Allowed carve does not read the daily cap (#2747) |
+| 24 | Paused (hard) | Allowed | none | — | Blocked (#1418 empties per-profile carves) |
+| 25 | none | Blocked, a member host also distinctive on an unrelated Allowed app | — | both | Reachable for that host: allow beats block (#763, §7.2) |
+
+An unrelated host (in no member app) is untouched in every row.
+
+### 17.5 The exempt flag outside TimeLimited (D22)
+
+`exempt_from_daily` stays on the attachment and keeps its per-app meaning by
+mode (#2747):
+
+- **Allowed**: budget only. Unchecked ("not counted", the default) removes the
+  members' usage from the profile's daily total. It gives no extra reach,
+  because the plain Allowed carve already outlives the daily cap (row 23).
+- **Blocked**: no effect, and the SPA hides the checkbox. Groups take no
+  per-app schedule rules, so the `allowed_during` gate that makes the flag
+  matter for a Blocked app cannot arise.
+
+### 17.6 API and SPA
+
+- `ProfileAppGroup` and `UpsertProfileAppGroupRequest` gain
+  `mode: AppMode` and `allowedDuringScheduleBlock: Boolean` (both optional on
+  the request; absent means unchanged on update, and TimeLimited / true on
+  create). Validation mirrors the CHECK: a TimeLimited attachment needs a
+  limit, and an Allowed or Blocked one rejects limits. All additive.
+- **Groups get their own section on the profile page (D18)**, above Apps,
+  laid out like the app lists: an Allowed sub-list (Allowed and TimeLimited
+  groups, with the limit drawer) and a Blocked sub-list, with "+ Allow group"
+  and "+ Block group" buttons and a "Move to blocked / allowed" control per
+  row. Adding a group no longer requires a daily limit first. An Allowed
+  group's drawer holds the min/day and min/week inputs, "Counts toward daily
+  limit" and "Reachable during scheduled downtime". Setting a limit makes it
+  TimeLimited; clearing both makes it Allowed.
+- The per-app picker's "In *Games*" marking and the overlap chip (D14, D15)
+  are unchanged and apply in every mode.
+
+### 17.7 Rollout
+
+1. **Schema only**: §17.2. The operator merges it.
+2. **Enforcement**: repo reads and writes the two columns, the §17.3 fold,
+   the §17.4 rows as feature tests, and an `app_group_attachments{mode}` gauge
+   set on the reevaluate tick beside `app_budget_exhausted`, with a panel.
+   No API or wire change.
+3. **API**: the request and response fields and validation, the TS client.
+4. **SPA**: §17.6.
+
+### 17.8 Decisions (operator, 2026-11-03)
+
+- **D18 Groups section.** Groups get their own section on the profile page,
+  mirroring the app lists: Allowed and Blocked sub-lists with "+ Allow group"
+  and "+ Block group".
+- **D19 Allowed group at bedtime.** Reachable during a Schedule block by
+  default, with a per-attachment "Reachable during scheduled downtime" toggle,
+  as for an Allowed app (#1679).
+- **D20 Overlap.** Stricter wins, extending D14: Blocked > TimeLimited >
+  Allowed, whichever of the attachment and the member's own row is stricter.
+- **D21 Limits imply TimeLimited.** As for apps: setting a limit makes the
+  attachment TimeLimited, and clearing both makes it Allowed.
+- **D22 Exempt by mode.** Budget only for an Allowed group; hidden and inert
+  for a Blocked one.
