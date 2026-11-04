@@ -17,6 +17,7 @@ import wifihaven.testinfra.*
 import io.zonky.test.db.postgres.embedded.EmbeddedPostgres
 import zio.{Clock as _, *}
 import zio.interop.catz.*
+import zio.metrics.Metric
 import zio.test.*
 
 /**
@@ -63,7 +64,7 @@ object BundledBlocklistsSpec
   private val stubbedUpstreams: Map[String, List[Hostname]] = Map(
     adsExtendedUrl                                                                            ->
       List("ads-extended-upstream.example", "tracker.example").map(Hostname.unsafe),
-    "https://urlhaus.abuse.ch/downloads/hostfile/"                                            ->
+    "https://malware-filter.gitlab.io/malware-filter/urlhaus-filter-hosts.txt"                ->
       List("malware-upstream.example").map(Hostname.unsafe),
     "https://raw.githubusercontent.com/StevenBlack/hosts/master/alternates/social-only/hosts" ->
       List("social-extended-upstream.example").map(Hostname.unsafe),
@@ -191,6 +192,9 @@ object BundledBlocklistsSpec
         assertTrue(ads.contains(Hostname.unsafe("stickyadstv.com"))) &&
         assertTrue(ads.contains(Hostname.unsafe("fout.jp"))) &&
         assertTrue(ads.contains(Hostname.unsafe("appier.net"))) &&
+        // traffic-driven additions pinned for presence (#2957)
+        assertTrue(ads.contains(Hostname.unsafe("buysellads.net"))) &&
+        assertTrue(ads.contains(Hostname.unsafe("playablefactory.app"))) &&
         assertTrue(meta.isDefined) &&
         assertTrue(meta.exists(m => m.bundled && m.name == "Ads & Trackers"))
     },
@@ -391,10 +395,81 @@ object BundledBlocklistsSpec
           cached.exists(_.hosts.contains(Hostname.unsafe("ads-extended-upstream.example"))),
         )
     },
+    // #2978: urlhaus.abuse.ch retired every public /downloads/ path (HTTP 410 Gone; downloads now
+    // need an Auth-Key). The list kept "refreshing" with a WARN and serving stale rows for weeks.
+    test("#2978: no bundled remote list points at the retired urlhaus /downloads/ paths") {
+      for {
+        bundled <- BundledBlocklists.loadAll()
+        urls = bundled.collect {
+          case BundledBlocklist(_, _, _, _, BundledBlocklistContent.Remote(u, _)) => u
+        }
+      } yield assertTrue(urls.nonEmpty) && assertTrue(!urls.exists(_.contains("urlhaus.abuse.ch")))
+    },
+    // #2978: a fetch that fails is a WARN and "keep existing rows", which is right for a flaky
+    // upstream and invisible for a dead one. The outcome counter is what a dashboard panel reads.
+    test("#2978: every remote fetch is counted by outcome (ok | error)") {
+      def count(id: String, outcome: String): UIO[Double] =
+        Metric
+          .counter("blocklist_fetch_total")
+          .tagged("blocklist_id", id)
+          .tagged("outcome", outcome)
+          .value
+          .map(_.count)
+      for {
+        _       <- cleanDb
+        blRepo  <- ZIO.service[BlocklistRepo]
+        cache   <- newCache
+        bundled <- BundledBlocklists.loadAll()
+        malware    = bundled.filter(_.id == BlocklistId.unsafe("malware"))
+        malwareUrl = malware.collect {
+          case BundledBlocklist(_, _, _, _, BundledBlocklistContent.Remote(u, _)) => u
+        }
+        okBefore <- count("malware", "ok")
+        errBefore <- count("malware", "error")
+        _         <- BundledBlocklists.seed(blRepo, cache, stubFetcher, malware)
+        okMid     <- count("malware", "ok")
+        failing = new StubFetcher(stubbedUpstreams, failures = malwareUrl.toSet)
+        _        <- BundledBlocklists.seed(blRepo, cache, failing, malware)
+        okAfter  <- count("malware", "ok")
+        errAfter <- count("malware", "error")
+      } yield assertTrue(okMid - okBefore == 1.0) &&
+        assertTrue(okAfter == okMid) &&
+        assertTrue(errAfter - errBefore == 1.0)
+    },
+    test("#2978: a 4xx that will not recover counts as outcome=gone, a 5xx or 429 as error") {
+      def count(outcome: String): UIO[Double]      =
+        Metric
+          .counter("blocklist_fetch_total")
+          .tagged("blocklist_id", "malware")
+          .tagged("outcome", outcome)
+          .value
+          .map(_.count)
+      def rejecting(status: Int): BlocklistFetcher = new BlocklistFetcher {
+        def fetch(url: String, format: BlocklistFormat): Task[List[Hostname]] =
+          ZIO.fail(new BlocklistFetcher.UpstreamRejected(status, url))
+      }
+      for {
+        _       <- cleanDb
+        blRepo  <- ZIO.service[BlocklistRepo]
+        cache   <- newCache
+        bundled <- BundledBlocklists.loadAll()
+        malware = bundled.filter(_.id == BlocklistId.unsafe("malware"))
+        g0 <- count("gone")
+        e0 <- count("error")
+        _  <- BundledBlocklists.seed(blRepo, cache, rejecting(410), malware)
+        _  <- BundledBlocklists.seed(blRepo, cache, rejecting(404), malware)
+        g1 <- count("gone")
+        e1 <- count("error")
+        _  <- BundledBlocklists.seed(blRepo, cache, rejecting(503), malware)
+        _  <- BundledBlocklists.seed(blRepo, cache, rejecting(429), malware)
+        g2 <- count("gone")
+        e2 <- count("error")
+      } yield assertTrue(g1 - g0 == 2.0, e1 == e0, g2 == g1, e2 - e1 == 2.0)
+    },
     test("remote fetch failure leaves existing DB rows untouched") {
       val failingFetcher = new StubFetcher(
         responses = stubbedUpstreams,
-        failures = Set("https://urlhaus.abuse.ch/downloads/hostfile/"),
+        failures = Set("https://malware-filter.gitlab.io/malware-filter/urlhaus-filter-hosts.txt"),
       )
       for {
         _       <- cleanDb
@@ -588,6 +663,47 @@ object BundledBlocklistsSpec
         "dxtech.ai",
         "gd.games",
         "suno.ai",
+      ).map(Hostname.unsafe)
+      for {
+        inlineLists <- loadInlineOnly
+        offenders = inlineLists.flatMap { bl =>
+          val hosts = bl.content match {
+            case BundledBlocklistContent.Inline(hs) => hs
+            case _                                  => Nil
+          }
+          hosts
+            .filter { x =>
+              val xv = x.value.toLowerCase
+              heldOut.exists { h =>
+                val hv = h.value.toLowerCase
+                xv == hv || xv.endsWith("." + hv)
+              }
+            }
+            .map(x => s"${bl.id.value}:${x.value}")
+        }
+      } yield
+      // liveness anchor: the ads list loaded, so the absence check is not vacuous
+      assertTrue(inlineHostsOf(inlineLists, "ads").contains(Hostname.unsafe("mgid.com"))) &&
+        assertTrue(offenders.isEmpty)
+    },
+    test("#2957: CDN-fronted blocklist-pass candidates stay out of every inline list") {
+      // Each of these read as genuine ad-tech, or (for gamepix.com/
+      // xboxlive.com) a genuine games product, but the host that actually
+      // appears in traffic is CDN-fronted (Cloudflare, Akamai EdgeSuite, or
+      // CloudFront) on at least one observed host, so none can be an
+      // IP-layer enforcement target without taking unrelated tenants with
+      // it. See ads.yml's #2957 comment and
+      // evidence/multi-category-classification-2957.md for per-host
+      // resolution detail.
+      val heldOut = List(
+        "gamepix.com",
+        "xboxlive.com",
+        "mgln.ai",
+        "panxo.ai",
+        "megaplay.buzz",
+        "ygametime.com",
+        "brand-display.com",
+        "playablefactory.com",
       ).map(Hostname.unsafe)
       for {
         inlineLists <- loadInlineOnly

@@ -509,6 +509,58 @@
           "refId": "A"
         }
       ]
+    },
+    {
+      "title": "Bundled blocklist fetches by outcome (#2978)",
+      "description": "sum by (blocklist_id, outcome) (blocklist_fetch_total) \u2014 upstream fetches of each bundled remote blocklist since the API last started, by outcome. `gone` is a 4xx that retrying will not fix (404/410/401/403: the source was retired or now needs credentials) and is what W20 pages on; `error` is a network failure, 5xx, 408 or 429 and recovers by itself. A LEVEL since process start (counter resets on restart), not a rate: the fetch runs at startup and on an admin refresh, so do not switch this to rate(). A list with only `ok` is healthy; a list with `gone` is serving stale rows (the 2026-11 urlhaus 410 is the worked example, #2978). Pair with 'Fetched-blocklist ingest exceptions' above, whose `kept` series shows what was last actually ingested. API-side series, so not filtered by the Router variable.",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 57
+      },
+      "id": 16,
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "short",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 15,
+            "showPoints": "auto",
+            "lineWidth": 1
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (blocklist_id, outcome) (blocklist_fetch_total{env=\"$env\"})",
+          "legendFormat": "{{blocklist_id}} {{outcome}}",
+          "refId": "A"
+        }
+      ]
     }
   ],
   "refresh": "30s",

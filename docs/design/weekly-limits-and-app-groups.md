@@ -200,7 +200,7 @@ CREATE TABLE profile_app_groups (
   created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   FOREIGN KEY (profile_id, household_id) REFERENCES profiles(id, household_id) ON DELETE CASCADE,
   FOREIGN KEY (group_id, household_id)   REFERENCES app_groups(id, household_id) ON DELETE CASCADE,
-  CHECK (daily_minutes IS NOT NULL OR weekly_minutes IS NOT NULL),   -- D4
+  CHECK (daily_minutes IS NOT NULL OR weekly_minutes IS NOT NULL),   -- D4; dropped by V93 (#2973)
   UNIQUE (profile_id, group_id)
 );
 CREATE INDEX idx_profile_app_groups_group ON profile_app_groups(group_id);
@@ -564,7 +564,10 @@ All changes are additive. Each route follows `docs/process/api-route-checklist.m
 - `/api/time/status/...` responses gain the §6.5 fields.
 
 Validation:
-- an attachment needs at least one of daily or weekly;
+- an attachment may carry a daily limit, a weekly limit, both, or neither
+  (D4, revised 2026-11-03, #2973). With neither it is a bundle with no shared
+  budget and is never exhausted. V93 drops the schema CHECK; the route accepts
+  a limitless body from #2973's code PR on;
 - an app already in another group of the household is rejected with a message
   that names that group (D2);
 - daily > weekly is accepted, and the SPA shows a hint (D11).
@@ -597,10 +600,17 @@ grows taller when collapsed.
   from the field, as
   today (AGENTS.md#exempt-from-daily). "+ Add group" lists the household's
   groups and a "New group…" entry.
-- Editing members happens in the group's expander. Because the group is
-  household-wide, the expander says which other profiles use it ("Also used by:
-  Sam"). Adding a member that a profile already lists on its own shows the
-  overlap warning on that profile.
+- Members are edited from their own control on the group row, beside the
+  limit chip and separate from it (#2974): "N apps ▾", or "No apps yet. Add
+  apps" for an empty group. It opens a searchable picker shaped like "Allow an
+  app". An app already in another group stays listed but disabled, labelled
+  "In *Games*" (D2). The row opens on its members right after "+ Add group"
+  attaches it. Because the group is household-wide, the members panel says
+  which other profiles use it ("Also used by: Sam"). The Manage apps page has
+  a Groups section with the same member editor and "+ New group" (#2974).
+  Member edits are optimistic and serialized per group, so several apps can
+  be added in a row. Adding a member that a profile already lists on its own
+  shows the overlap warning on that profile.
 - Loading: week-to-date bars use the same three states as #2764 (pending
   skeleton, error, value). The `UsageStatus` prop is required and threaded the
   same way.
@@ -764,8 +774,16 @@ Slices 2 and 3 are separate so the counting can be checked on prod, by reading
   assignment (D14).
 - **D3 Scope.** Groups are defined per household (name and members). Each
   profile attaches a group with its own limits.
-- **D4 Group limits.** Daily and weekly are both optional on an attachment, and
-  at least one is required.
+- **D4 Group limits.** Daily and weekly are both optional on an attachment.
+  *(Revised 2026-11-03, #2973: neither is also allowed; it replaces "at least
+  one is required".)* An attachment with no limit is a bundle with no shared
+  budget: it is never exhausted, as a NULL `daily_minutes` means no cap
+  (#1627). A member that also has its own per-app limit keeps it (D14,
+  stricter wins), so "blocked when over any budget that contains it" (#2933)
+  is unchanged. Not counted toward the daily total is the attach default
+  (D5), and its reach is D16's: a not-counted member under every budget stays
+  reachable through bedtime, a soft pause and the daily total, with no new
+  wire field.
 - **D5 Counts toward daily.** The flag lives on the attachment and overrides
   members' own flags while they are in the group. The default is not counted
   (exempt), matching the per-app default.

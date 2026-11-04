@@ -18,6 +18,7 @@ import zio.http.*
 import zio.json.*
 
 import java.time.{Duration, Instant, LocalDate, ZoneId}
+import java.time.temporal.ChronoUnit
 
 // ── Usage routes (#716) ─────────────────────────────────────────────────────
 //
@@ -31,6 +32,18 @@ import java.time.{Duration, Instant, LocalDate, ZoneId}
 // map through [[ApiError.BadRequest]] to the identical `Response.badRequest(...)`, DB failures stay
 // 503 via [[ApiError.Db]].
 object UsageRoutes {
+
+  /**
+   * #2965: widest `from`..`to` (inclusive days) `GET /api/profiles/{id}/usage-by-app` answers. The
+   * read materialises every raw presence row in the range on the heap, so an unbounded range on a
+   * busy profile (~1.8M rows over 30 days on prod) ran the API out of memory. The SPA only ever
+   * asks for one day (`ProfileUsageBreakdown` defaults `to` to `from` = today, and the ws push is
+   * today). On the busiest prod profile one day is ~87K rows; seven days measured 609K rows / 8.9s,
+   * too much to hold per request. A wider read needs a pre-aggregated path (the #2174 pattern), not
+   * a bigger cap; multi-day callers loop day by day.
+   */
+  val UsageByAppMaxRangeDays: Int = 1
+
   def routes(
       auth: AuthService,
       deviceRepo: DeviceRepo,
@@ -165,6 +178,15 @@ object UsageRoutes {
             _        <- ZIO
               .fail(ApiError.BadRequest("from must be <= to"))
               .when(from.isAfter(to))
+            _        <- ZIO
+              .fail(
+                ApiError.BadRequest(
+                  s"date range too wide: at most $UsageByAppMaxRangeDays day(s) per request",
+                ),
+              )
+              .when(
+                ChronoUnit.DAYS.between(from, to) + 1 > UsageByAppMaxRangeDays,
+              )
             settings <- hsRepo.getForHousehold(claims.hh).mapError(ApiError.Db(_))
             resp     <- buildUsageByApp(
               pid,

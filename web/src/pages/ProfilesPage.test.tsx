@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import type { BlocklistSummary, Device, NamedSchedule, ProfileDetail, ProfileTimeSummary, User } from '@/types/api'
 import { withQuery } from '@/test/queryWrapper'
+import { HttpError, NoResponseError } from '@/api/httpError'
 
 vi.mock('@/api/client', () => ({
   api: {
@@ -1164,6 +1165,108 @@ describe('ProfilesPage — apps section (#767)', () => {
         mode: 'allowed', dailyMinutes: null, allowedDuringScheduleBlock: false,
       }),
     )
+  })
+
+  // #2964 — a picked row shows that it is saving, and the other rows can't be
+  // clicked meanwhile, so repeated clicks don't stack requests.
+  it('picker shows a pending state on the clicked row while the save is in flight', async () => {
+    const khanUnassigned = { ...youtubeUnassigned, app: { ...youtubeUnassigned.app, id: 53, name: 'Khan', slug: 'khan' } }
+    ;(api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([youtubeUnassigned, khanUnassigned, tiktok])
+    let resolveSave!: () => void
+    ;(api.apps.setPolicy as unknown as ReturnType<typeof vi.fn>).mockImplementationOnce(
+      () => new Promise<void>(r => { resolveSave = r }),
+    )
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByTestId('profile-card-1')
+    await expand(1, user)
+    await user.click(screen.getByTestId('profile-apps-toggle-1'))
+    await screen.findByTestId('app-row-51')
+    await user.click(screen.getByTestId('profile-1-apps-section-add-allowed'))
+    const row = await screen.findByTestId('profile-1-apps-section-picker-add-50')
+    await user.click(row)
+    await waitFor(() => expect(row).toBeDisabled())
+    expect(within(row).getByText('Adding…')).toBeInTheDocument()
+    // Every row, not just the clicked one: a second pick would race the first.
+    expect(screen.getByTestId('profile-1-apps-section-picker-add-53')).toBeDisabled()
+    await user.click(row)
+    expect(api.apps.setPolicy).toHaveBeenCalledTimes(1)
+    await act(async () => { resolveSave() })
+    await waitFor(() =>
+      expect(screen.queryByTestId('profile-1-apps-section-picker')).not.toBeInTheDocument(),
+    )
+  })
+
+  // #2964 — a failed save used to be an unhandled rejection: the picker stayed
+  // open and nothing on screen changed, so it read as a dead button. It must
+  // keep the picker open, say why, and let the operator retry.
+  it('picker keeps itself open and shows the server error when the save fails', async () => {
+    (api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([youtubeUnassigned, tiktok])
+    ;(api.apps.setPolicy as unknown as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new HttpError(502, 'Bad gateway'),
+    )
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByTestId('profile-card-1')
+    await expand(1, user)
+    await user.click(screen.getByTestId('profile-apps-toggle-1'))
+    await screen.findByTestId('app-row-51')
+    await user.click(screen.getByTestId('profile-1-apps-section-add-allowed'))
+    await user.click(await screen.findByTestId('profile-1-apps-section-picker-add-50'))
+    const err = await screen.findByTestId('profile-1-apps-section-picker-error')
+    expect(err).toHaveTextContent('Couldn’t add YouTube: Bad gateway')
+    expect(screen.getByTestId('profile-1-apps-section-picker')).toBeInTheDocument()
+    const row = screen.getByTestId('profile-1-apps-section-picker-add-50')
+    expect(row).not.toBeDisabled()
+    // A retry clears the error and goes through.
+    await user.click(row)
+    await waitFor(() =>
+      expect(screen.queryByTestId('profile-1-apps-section-picker')).not.toBeInTheDocument(),
+    )
+    expect(api.apps.setPolicy).toHaveBeenCalledTimes(2)
+  })
+
+  // #2964 — the prod failure: the request timed out, and the raw DOMException text
+  // ("signal is aborted without reason") says nothing a parent can act on.
+  it('picker says the server did not respond when the save times out', async () => {
+    (api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([youtubeUnassigned, tiktok])
+    ;(api.apps.setPolicy as unknown as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new NoResponseError('timeout'),
+    )
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByTestId('profile-card-1')
+    await expand(1, user)
+    await user.click(screen.getByTestId('profile-apps-toggle-1'))
+    await screen.findByTestId('app-row-51')
+    await user.click(screen.getByTestId('profile-1-apps-section-add-allowed'))
+    await user.click(await screen.findByTestId('profile-1-apps-section-picker-add-50'))
+    expect(await screen.findByTestId('profile-1-apps-section-picker-error')).toHaveTextContent(
+      'Couldn’t add YouTube: The server didn’t respond. Try again in a moment.',
+    )
+  })
+
+  // #2964 review — a save that fails after the picker was closed must not leave its
+  // error waiting for the next opening, whichever opener is used.
+  it('picker reopened via Add one does not show a stale error', async () => {
+    (api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([youtubeUnassigned])
+    let rejectSave!: (e: unknown) => void
+    ;(api.apps.setPolicy as unknown as ReturnType<typeof vi.fn>).mockImplementationOnce(
+      () => new Promise<void>((_, rej) => { rejectSave = rej }),
+    )
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByTestId('profile-card-1')
+    await expand(1, user)
+    await user.click(screen.getByTestId('profile-apps-toggle-1'))
+    await user.click(await screen.findByTestId('profile-1-apps-section-none-assigned-add'))
+    await user.click(await screen.findByTestId('profile-1-apps-section-picker-add-50'))
+    await user.click(screen.getByTestId('profile-1-apps-section-add-allowed'))
+    expect(screen.queryByTestId('profile-1-apps-section-picker')).not.toBeInTheDocument()
+    await act(async () => { rejectSave(new HttpError(502, 'Bad gateway')) })
+    await user.click(screen.getByTestId('profile-1-apps-section-none-assigned-add'))
+    expect(await screen.findByTestId('profile-1-apps-section-picker')).toBeInTheDocument()
+    expect(screen.queryByTestId('profile-1-apps-section-picker-error')).not.toBeInTheDocument()
   })
 
   // #1007: exempt-from-daily toggle on the time-limit row.
@@ -2998,6 +3101,29 @@ describe('ProfilesPage — weekly limits and app groups (#2935)', () => {
       expect(api.appGroups.attach).toHaveBeenCalledWith(1, 7, { dailyMinutes: 90, exemptFromDaily: true }))
   })
 
+  // #2964 — on prod the attach hung on a dead API and the menu showed nothing until the
+  // raw "Failed to fetch" landed. It must show that it is saving, then say what happened.
+  it('shows a saving state while a group attaches, then the no-response error', async () => {
+    fn(api.apps.list).mockResolvedValue([app(50, 'YouTube', { mode: 'allowed' })])
+    fn(api.appGroups.list).mockResolvedValue([games])
+    let rejectAttach!: (e: unknown) => void
+    fn(api.appGroups.attach).mockImplementationOnce(() => new Promise((_, rej) => { rejectAttach = rej }))
+    const user = userEvent.setup()
+    await openApps(user)
+    await user.click(await screen.findByTestId('profile-1-apps-section-add-group'))
+    await user.click(screen.getByTestId('profile-1-apps-section-add-group-option-7'))
+    const minutes = await screen.findByTestId('profile-1-apps-section-add-group-minutes')
+    await user.type(minutes, '90{Enter}')
+    expect(await screen.findByTestId('profile-1-apps-section-add-group-saving')).toHaveTextContent('Saving…')
+    expect(minutes).toBeDisabled()
+    await act(async () => { rejectAttach(new NoResponseError('network')) })
+    expect(await screen.findByTestId('profile-1-apps-section-add-group-error')).toHaveTextContent(
+      'The server didn’t respond. Try again in a moment.',
+    )
+    expect(screen.queryByTestId('profile-1-apps-section-add-group-saving')).not.toBeInTheDocument()
+    expect(minutes).not.toBeDisabled()
+  })
+
   it('creates a new group, then asks for its limit', async () => {
     fn(api.apps.list).mockResolvedValue([app(50, 'YouTube', { mode: 'allowed' })])
     const user = userEvent.setup()
@@ -3018,8 +3144,171 @@ describe('ProfilesPage — weekly limits and app groups (#2935)', () => {
       Promise.resolve([attachment({ profileId: pid })]))
     const user = userEvent.setup()
     await openApps(user)
-    await user.click(await screen.findByTestId('group-row-7-toggle'))
+    await user.click(await screen.findByTestId('group-row-7-members-toggle'))
     expect(await screen.findByTestId('group-row-7-also-used-by')).toHaveTextContent('Adults')
+  })
+
+  // #2974 — members are edited from their own control on the row, not from behind the limit chip.
+  it('asks for apps on a group that has none, and adds one from a searchable picker', async () => {
+    fn(api.apps.list).mockResolvedValue([app(50, 'YouTube', { mode: 'allowed' }), app(62, 'Khan Academy', null)])
+    fn(api.appGroups.list).mockResolvedValue([{ id: 7, name: 'Homework', memberAppIds: [] }])
+    fn(api.appGroups.forProfile).mockResolvedValue([attachment({ name: 'Homework', memberAppIds: [] })])
+    const user = userEvent.setup()
+    await openApps(user)
+    const toggle = await screen.findByTestId('group-row-7-members-toggle')
+    expect(toggle).toHaveTextContent('No apps yet. Add apps')
+    await user.click(toggle)
+    expect(screen.queryByTestId('group-row-7-drawer')).not.toBeInTheDocument()
+    await user.type(await screen.findByTestId('group-row-7-member-filter'), 'khan')
+    expect(screen.queryByTestId('group-row-7-member-pick-50')).not.toBeInTheDocument()
+    await user.click(screen.getByTestId('group-row-7-member-pick-62'))
+    await waitFor(() => expect(api.appGroups.update).toHaveBeenCalledWith(7, { memberAppIds: [62] }))
+  })
+
+  it('shows the member count as its own control, apart from the limit chip', async () => {
+    fn(api.apps.list).mockResolvedValue([app(60, 'Roblox', null), app(61, 'Minecraft', null), app(50, 'YouTube', { mode: 'allowed' })])
+    fn(api.appGroups.list).mockResolvedValue([games])
+    fn(api.appGroups.forProfile).mockResolvedValue([attachment()])
+    const user = userEvent.setup()
+    await openApps(user)
+    const toggle = await screen.findByTestId('group-row-7-members-toggle')
+    expect(toggle).toHaveTextContent('2 apps')
+    await user.click(toggle)
+    expect(await screen.findByTestId('group-row-7-member-remove-60')).toBeInTheDocument()
+    expect(screen.queryByTestId('group-row-7-drawer')).not.toBeInTheDocument()
+  })
+
+  it('marks an app in another group as unavailable in the member picker (one group per app)', async () => {
+    fn(api.apps.list).mockResolvedValue([app(60, 'Roblox', null), app(61, 'Minecraft', null), app(62, 'Khan Academy', null)])
+    fn(api.appGroups.list).mockResolvedValue([games, { id: 8, name: 'Homework', memberAppIds: [] }])
+    fn(api.appGroups.forProfile).mockResolvedValue([attachment({ groupId: 8, name: 'Homework', memberAppIds: [] })])
+    const user = userEvent.setup()
+    await openApps(user)
+    await user.click(await screen.findByTestId('group-row-8-members-toggle'))
+    const roblox = await screen.findByTestId('group-row-8-member-pick-60')
+    expect(roblox).toBeDisabled()
+    expect(roblox).toHaveTextContent('In Games')
+    await user.click(roblox)
+    expect(api.appGroups.update).not.toHaveBeenCalled()
+    expect(screen.getByTestId('group-row-8-member-pick-62')).toBeEnabled()
+  })
+
+  it('shows an error and keeps the picker open when adding a member fails', async () => {
+    fn(api.apps.list).mockResolvedValue([app(62, 'Khan Academy', null)])
+    fn(api.appGroups.list).mockResolvedValue([{ id: 7, name: 'Homework', memberAppIds: [] }])
+    fn(api.appGroups.forProfile).mockResolvedValue([attachment({ name: 'Homework', memberAppIds: [] })])
+    fn(api.appGroups.update).mockRejectedValue(new Error('Khan Academy is already in the group "Games".'))
+    const user = userEvent.setup()
+    await openApps(user)
+    await user.click(await screen.findByTestId('group-row-7-members-toggle'))
+    await user.click(await screen.findByTestId('group-row-7-member-pick-62'))
+    expect(await screen.findByTestId('group-row-7-error')).toHaveTextContent('already in the group')
+    expect(screen.getByTestId('group-row-7-member-picker')).toBeInTheDocument()
+  })
+
+  // #2974 — adding several apps in a row: the picker stays live while a write is in flight, and a
+  // second add cannot overwrite the first (memberAppIds REPLACES the list).
+  it('adds two apps back to back, and both land in the request and in the row', async () => {
+    fn(api.apps.list).mockResolvedValue([app(62, 'Khan Academy', null), app(63, 'IXL', null)])
+    let groupMembers: number[] = []
+    fn(api.appGroups.list).mockImplementation(async () => [{ id: 7, name: 'Homework', memberAppIds: groupMembers }])
+    fn(api.appGroups.forProfile).mockImplementation(async () =>
+      [attachment({ name: 'Homework', memberAppIds: groupMembers })])
+    let release: () => void = () => {}
+    fn(api.appGroups.update).mockImplementation((_id: number, body: { memberAppIds: number[] }) =>
+      new Promise(resolve => {
+        release = () => { groupMembers = body.memberAppIds; resolve({ id: 7, name: 'Homework', memberAppIds: body.memberAppIds }) }
+      }))
+    const user = userEvent.setup()
+    await openApps(user)
+    await user.click(await screen.findByTestId('group-row-7-members-toggle'))
+    await user.click(await screen.findByTestId('group-row-7-member-pick-62'))
+    // The first write is still in flight: the app shows as a member and the next one is live.
+    expect(await screen.findByTestId('group-row-7-member-remove-62')).toBeInTheDocument()
+    const ixl = screen.getByTestId('group-row-7-member-pick-63')
+    expect(ixl).toBeEnabled()
+    await user.click(ixl)
+    // Serialized: the second write waits for the first, so a late first reply cannot drop IXL.
+    expect(api.appGroups.update).toHaveBeenCalledTimes(1)
+    expect(screen.getByTestId('group-row-7-member-remove-63')).toBeInTheDocument()
+    await act(async () => { release() })
+    await waitFor(() => expect(fn(api.appGroups.update).mock.calls.length).toBe(2))
+    await act(async () => { release() })
+    const calls = fn(api.appGroups.update).mock.calls
+    const last = calls[calls.length - 1]
+    expect(last[0]).toBe(7)
+    expect([...last[1].memberAppIds].sort()).toEqual([62, 63])
+    await waitFor(() => {
+      expect(screen.getByTestId('group-row-7-member-remove-62')).toBeInTheDocument()
+      expect(screen.getByTestId('group-row-7-member-remove-63')).toBeInTheDocument()
+    })
+  })
+
+  // #2974 review: another group's write finishing must not refetch the list under a queued add and
+  // make it send a list without the apps still in flight.
+  it('keeps queued adds when another group finishes saving in between', async () => {
+    fn(api.apps.list).mockResolvedValue([app(62, 'Khan Academy', null), app(63, 'IXL', null), app(64, 'Duolingo', null)])
+    const server: Record<number, number[]> = { 7: [], 8: [] }
+    fn(api.appGroups.list).mockImplementation(async () => [
+      { id: 7, name: 'Homework', memberAppIds: server[7] },
+      { id: 8, name: 'Languages', memberAppIds: server[8] },
+    ])
+    fn(api.appGroups.forProfile).mockImplementation(async () => [
+      attachment({ groupId: 7, name: 'Homework', memberAppIds: server[7] }),
+      attachment({ groupId: 8, name: 'Languages', memberAppIds: server[8] }),
+    ])
+    const hung: (() => void)[] = []
+    fn(api.appGroups.update).mockImplementation((id: number, body: { memberAppIds: number[] }) => {
+      const apply = () => { server[id] = body.memberAppIds; return { id, name: '', memberAppIds: body.memberAppIds } }
+      if (id === 8) return Promise.resolve(apply())
+      return new Promise(resolve => hung.push(() => resolve(apply())))
+    })
+    const user = userEvent.setup()
+    await openApps(user)
+    await user.click(await screen.findByTestId('group-row-7-members-toggle'))
+    await user.click(await screen.findByTestId('group-row-8-members-toggle'))
+    await user.click(await screen.findByTestId('group-row-7-member-pick-62'))
+    await user.click(screen.getByTestId('group-row-7-member-pick-63'))
+    await user.click(screen.getByTestId('group-row-8-member-pick-64'))
+    await waitFor(() => expect(server[8]).toEqual([64]))
+    // Let any refetch the group-8 write triggered land before group 7's writes go out.
+    await act(async () => { await new Promise(r => setTimeout(r, 50)) })
+    while (hung.length > 0 || fn(api.appGroups.update).mock.calls.filter(c => c[0] === 7).length < 2) {
+      await act(async () => { hung.shift()?.(); await new Promise(r => setTimeout(r, 10)) })
+    }
+    await waitFor(() => expect([...server[7]].sort()).toEqual([62, 63]))
+  })
+
+  it('rolls an add back and says why when the write fails', async () => {
+    fn(api.apps.list).mockResolvedValue([app(62, 'Khan Academy', null)])
+    fn(api.appGroups.list).mockResolvedValue([{ id: 7, name: 'Homework', memberAppIds: [] }])
+    fn(api.appGroups.forProfile).mockResolvedValue([attachment({ name: 'Homework', memberAppIds: [] })])
+    fn(api.appGroups.update).mockRejectedValue(new Error('Khan Academy is already in the group "Games".'))
+    const user = userEvent.setup()
+    await openApps(user)
+    await user.click(await screen.findByTestId('group-row-7-members-toggle'))
+    await user.click(await screen.findByTestId('group-row-7-member-pick-62'))
+    expect(await screen.findByTestId('group-row-7-error')).toHaveTextContent('already in the group')
+    await waitFor(() => expect(screen.queryByTestId('group-row-7-member-remove-62')).not.toBeInTheDocument())
+    expect(screen.getByTestId('group-row-7-member-pick-62')).toBeEnabled()
+  })
+
+  it('opens the member picker right after a new group is created and attached', async () => {
+    fn(api.apps.list).mockResolvedValue([app(50, 'YouTube', { mode: 'allowed' }), app(62, 'Khan Academy', null)])
+    let attachedNew = false
+    fn(api.appGroups.attach).mockImplementation(async () => { attachedNew = true })
+    fn(api.appGroups.list).mockImplementation(async () =>
+      attachedNew ? [{ id: 9, name: 'Screens', memberAppIds: [] }] : [])
+    fn(api.appGroups.forProfile).mockImplementation(async () =>
+      attachedNew ? [attachment({ groupId: 9, name: 'Screens', memberAppIds: [] })] : [])
+    const user = userEvent.setup()
+    await openApps(user)
+    await user.click(await screen.findByTestId('profile-1-apps-section-add-group'))
+    await user.click(screen.getByTestId('profile-1-apps-section-add-group-new'))
+    await user.type(screen.getByTestId('profile-1-apps-section-add-group-name'), 'Screens{Enter}')
+    await user.type(await screen.findByTestId('profile-1-apps-section-add-group-minutes'), '45{Enter}')
+    expect(await screen.findByTestId('group-row-9-member-picker')).toBeInTheDocument()
+    expect(screen.getByTestId('group-row-9-member-pick-62')).toBeInTheDocument()
   })
 
   it('marks covered apps "In Games" in the picker', async () => {
