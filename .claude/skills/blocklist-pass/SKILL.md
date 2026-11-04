@@ -130,6 +130,9 @@ PW=$(grep -oE 'is `[^`]+`' ~/.claude/projects/*wifihaven*/memory/prod_api_admin_
 TOKEN=$(curl -sS -X POST https://api.wifihaven.net/api/auth/login -H 'Content-Type: application/json' \
   -d "{\"username\":\"admin\",\"password\":\"$PW\"}" | jq -r '.token')
 MACS=$(curl -sS -H "Authorization: Bearer $TOKEN" https://api.wifihaven.net/api/devices | jq -r '.[].mac')
+# SEQUENTIAL on purpose (#2965): never `&` / `xargs -P` this loop. Each call holds one of the prod
+# API's 12 DB connections (shared with /api/health) for up to 30s; a parallel sweep exhausted the
+# pool on 2026-11-03.
 for mac in $MACS; do
   curl -sS -H "Authorization: Bearer $TOKEN" \
     "https://api.wifihaven.net/api/devices/$mac/recent-apexes?windowDays=30&limit=500" > /tmp/apex_$mac.json
