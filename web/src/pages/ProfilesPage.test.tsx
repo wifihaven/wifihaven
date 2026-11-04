@@ -3039,6 +3039,8 @@ describe('ProfilesPage — weekly limits and app groups (#2935)', () => {
     expect(chip).toHaveTextContent('Also in Games')
     expect(screen.queryByTestId('app-row-50-overlap-chip')).not.toBeInTheDocument()
     await user.click(chip)
+    expect(await screen.findByTestId('app-row-60-overlap-drawer'))
+      .toHaveTextContent("blocked as soon as its own limit or the group's runs out")
     await user.click(await screen.findByTestId('app-row-60-overlap-remove'))
     await waitFor(() => expect(api.apps.deletePolicy).toHaveBeenCalledWith(60, 1))
     expect(api.appGroups.detach).not.toHaveBeenCalled()
@@ -3188,6 +3190,28 @@ describe('ProfilesPage — weekly limits and app groups (#2935)', () => {
     await waitFor(() => expect(api.appGroups.attach).toHaveBeenCalled())
     expect(api.appGroups.attach).toHaveBeenCalledTimes(1)
     expect(api.appGroups.attach).toHaveBeenCalledWith(1, 7, expect.objectContaining({ dailyMinutes: null, weeklyMinutes: null }))
+  })
+
+  // The emptied box "No limit" leaves behind can blur before the saved attachment arrives; that blur
+  // is not a parent clearing the limits, so it must not show the "choose No limit" error (#2973).
+  it('shows no error when a limit input blurs while No limit is saving', async () => {
+    fn(api.apps.list).mockResolvedValue([app(50, 'YouTube', { mode: 'allowed' })])
+    fn(api.appGroups.list).mockResolvedValue([games])
+    fn(api.appGroups.forProfile).mockResolvedValue([attachment({ dailyMinutes: 60, weeklyMinutes: null })])
+    let finish!: () => void
+    fn(api.appGroups.attach).mockImplementation(() => new Promise(r => { finish = () => r(undefined) }))
+    const user = userEvent.setup()
+    await openApps(user)
+    await user.click(await screen.findByTestId('group-row-7-toggle'))
+    const daily = await screen.findByTestId('group-row-7-daily')
+    await user.click(daily)
+    await user.click(screen.getByTestId('group-row-7-no-limit'))
+    await waitFor(() => expect(api.appGroups.attach).toHaveBeenCalledTimes(1))
+    fireEvent.blur(daily)
+    expect(screen.queryByTestId('group-row-7-error')).not.toBeInTheDocument()
+    await act(async () => { finish() })
+    expect(screen.queryByTestId('group-row-7-error')).not.toBeInTheDocument()
+    expect(api.appGroups.attach).toHaveBeenCalledTimes(1)
   })
 
   it('toggles Counts toward daily limit from the collapsed row', async () => {
