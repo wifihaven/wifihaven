@@ -3039,6 +3039,8 @@ describe('ProfilesPage — weekly limits and app groups (#2935)', () => {
     expect(chip).toHaveTextContent('Also in Games')
     expect(screen.queryByTestId('app-row-50-overlap-chip')).not.toBeInTheDocument()
     await user.click(chip)
+    expect(await screen.findByTestId('app-row-60-overlap-drawer'))
+      .toHaveTextContent("blocked as soon as its own limit or the group's runs out")
     await user.click(await screen.findByTestId('app-row-60-overlap-remove'))
     await waitFor(() => expect(api.apps.deletePolicy).toHaveBeenCalledWith(60, 1))
     expect(api.appGroups.detach).not.toHaveBeenCalled()
