@@ -21,9 +21,10 @@
 -- slice, so no behaviour changes.
 --
 -- ── Cost ─────────────────────────────────────────────────────────────────────
--- Both ADD COLUMNs add a constant default, metadata-only on Postgres 11+. The
--- two CHECKs validate by scanning `profile_app_groups`, one row per (profile,
--- attached group). No growth table is scanned, rewritten or re-indexed.
+-- Both ADD COLUMNs add a constant default, which Postgres stores without a
+-- table rewrite. The two CHECKs validate by scanning `profile_app_groups`, one
+-- row per (profile, attached group). No growth table is scanned, rewritten or
+-- re-indexed.
 
 ALTER TABLE profile_app_groups
   ADD COLUMN mode TEXT NOT NULL DEFAULT 'time_limited',

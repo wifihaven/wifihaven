@@ -811,8 +811,10 @@ Slices 2 and 3 are separate so the counting can be checked on prod, by reading
 ## 17. Group modes (addendum, 2026-11-03)
 
 Operator request: "groups are in their own section, you should be able to block
-a group or allow a group". Product calls were confirmed by the operator on
-2026-11-03 and are recorded as D18–D22 below.
+a group or allow a group", refined the same day to "the groups that are
+blocked should be in the blocked section, allowed should be in the allowed
+section". Product calls were confirmed by the operator on 2026-11-03 and are
+recorded as D18–D22 below.
 
 ### 17.1 What changes
 
@@ -857,7 +859,11 @@ ALTER TABLE profile_app_groups
   row as TimeLimited. An Allowed row has no limits, so its group budget is never
   exhausted and its members stay reachable (close to Allowed). A Blocked row
   stops blocking. That loss is bounded to the rollback window, and is why
-  enforcement ships before the API write surface (§17.7).
+  enforcement ships before the API write surface (§17.7). Writes degrade too:
+  N-1's upsert does not write `mode`, so setting a limit on an Allowed or
+  Blocked row violates the new CHECK and fails with a 500 until the image rolls
+  forward. Every image from #2980 on writes `mode` in the upsert's
+  `DO UPDATE SET`, so the CHECK can only fail on N-1.
 
 ### 17.3 Fold (`ProfileAppDispositions.from`)
 
@@ -892,7 +898,7 @@ gauge.
 | 22 | Schedule | Allowed, toggle off | none | — | Blocked by the whole-MAC drop (#1679) |
 | 23 | TimeLimit / soft Pause | Allowed | none | `extraAllowed` | Reachable: the plain Allowed carve does not read the daily cap (#2747) |
 | 24 | Paused (hard) | Allowed | none | — | Blocked (#1418 empties per-profile carves) |
-| 25 | none | Blocked, a member host also distinctive on an unrelated Allowed app | — | both | Reachable for that host: allow beats block (#763, §7.2) |
+| 25 | none | Blocked, a member host also distinctive on an unrelated Allowed app | none | both | Reachable for that host: allow beats block (#763, §7.2) |
 
 An unrelated host (in no member app) is untouched in every row.
 
@@ -911,24 +917,42 @@ mode (#2747):
 ### 17.6 API and SPA
 
 - `ProfileAppGroup` and `UpsertProfileAppGroupRequest` gain
-  `mode: AppMode` and `allowedDuringScheduleBlock: Boolean` (both optional on
-  the request; absent means unchanged on update, and TimeLimited / true on
-  create). Validation mirrors the CHECK: a TimeLimited attachment needs a
-  limit, and an Allowed or Blocked one rejects limits. All additive.
-- **Groups get their own section on the profile page (D18)**, above Apps,
-  laid out like the app lists: an Allowed sub-list (Allowed and TimeLimited
-  groups, with the limit drawer) and a Blocked sub-list, with "+ Allow group"
-  and "+ Block group" buttons and a "Move to blocked / allowed" control per
-  row. Adding a group no longer requires a daily limit first. An Allowed
-  group's drawer holds the min/day and min/week inputs, "Counts toward daily
-  limit" and "Reachable during scheduled downtime". Setting a limit makes it
-  TimeLimited; clearing both makes it Allowed.
+  `mode: AppMode` and `allowedDuringScheduleBlock: Boolean`, both optional on
+  the request. An absent toggle means unchanged on update and true on create.
+  The request's mode resolves as follows, so the stored row always satisfies
+  the CHECK:
+  - `mode` present: TimeLimited needs a limit, and Allowed or Blocked with a
+    limit is rejected with a 400. Both cases follow D21.
+  - `mode` absent and a limit present: TimeLimited (D21: setting a limit makes
+    it TimeLimited). This is also what every pre-#2981 caller sends, since they
+    always send a limit.
+  - `mode` absent and no limit: the existing row's mode if it is Allowed or
+    Blocked, otherwise a 400 that asks for a limit (today's rule).
+
+  The repo always writes the resolved `mode` and toggle, `DO UPDATE SET`
+  included. All additive.
+- **A group sits in the app list that matches its mode (D18).** The profile
+  page keeps its two app lists. A Blocked group is a row in the Blocked list.
+  An Allowed or TimeLimited group is a row in the Allowed list, which is where
+  a time-limited app already sits (`listOf` in `ProfilesPage.tsx`). The
+  separate "Groups" sub-list above the app lists goes away. A group row stands
+  out from an app row by showing its member apps, and group rows come first in
+  each list, before the apps in name order. Each row has the same "Move to
+  blocked / allowed" control an app row has. "+ Allow app" and "+ Block app"
+  list the household's unattached groups at the top of the picker, marked as
+  groups with their members, plus a "New group…" entry; the separate
+  "+ Add group" button goes away. Adding a group no longer requires a daily
+  limit first. An Allowed group's drawer holds the min/day and min/week
+  inputs, "Counts toward daily limit" and "Reachable during scheduled
+  downtime". Setting a limit makes it TimeLimited; clearing both makes it
+  Allowed. A Blocked group's drawer has neither checkbox (§17.5).
 - The per-app picker's "In *Games*" marking and the overlap chip (D14, D15)
   are unchanged and apply in every mode.
 
 ### 17.7 Rollout
 
-1. **Schema only**: §17.2. The operator merges it.
+1. **Schema only**: §17.2. It is a migration, an excluded class under
+   [the merge rule](../pr-review-checklist.md#monitor-to-merged).
 2. **Enforcement**: repo reads and writes the two columns, the §17.3 fold,
    the §17.4 rows as feature tests, and an `app_group_attachments{mode}` gauge
    set on the reevaluate tick beside `app_budget_exhausted`, with a panel.
@@ -938,9 +962,11 @@ mode (#2747):
 
 ### 17.8 Decisions (operator, 2026-11-03)
 
-- **D18 Groups section.** Groups get their own section on the profile page,
-  mirroring the app lists: Allowed and Blocked sub-lists with "+ Allow group"
-  and "+ Block group".
+- **D18 Groups in the matching list.** A group is a row in the profile's
+  Blocked or Allowed app list, by its mode, with TimeLimited groups in the
+  Allowed list beside time-limited apps. A group row shows its member apps so
+  it stands out from a single app, and group rows come first in each list.
+  Groups are added from the same "+ Allow app" / "+ Block app" pickers as apps.
 - **D19 Allowed group at bedtime.** Reachable during a Schedule block by
   default, with a per-attachment "Reachable during scheduled downtime" toggle,
   as for an Allowed app (#1679).
