@@ -1,11 +1,13 @@
 import { useEffect, useMemo, useState } from 'react'
 import { api } from '@/api/client'
-import { useBlocklists, useProfiles } from '@/api/queries'
-import type { AppDetail } from '@/types/api'
+import { useAppGroups, useBlocklists, useInvalidators, useProfiles } from '@/api/queries'
+import type { AppDetail, AppGroup } from '@/types/api'
 import { PageLoader } from './DashboardPage'
 import { AppIcon } from '@/components/AppIcon'
 import { EmptyState } from '@/components/EmptyState'
 import { AppBlocklistWarningBadge, AppBlocklistWarningDetail } from '@/components/AppBlocklistWarning'
+import { GroupMembersEditor, MembersToggle } from '@/components/AppGroups'
+import { Skeleton } from '@/components/Skeleton'
 
 // #1798 — app *definitions* (name, slug, icon, host-set) are authored only via
 // the built-in `AppTemplates` in code (which seed/reconcile server-side); the
@@ -59,6 +61,8 @@ export function AppsPage() {
           {error}
         </div>
       )}
+
+      <GroupsSection apps={apps} />
 
       <div className="bg-white rounded-2xl border border-brand-border overflow-hidden">
         {apps.length === 0
@@ -147,6 +151,139 @@ function AppDetailView({ detail, profileNameById, blocklistNameById }: {
           ? <span className="text-brand-text">no profiles</span>
           : <span className="text-brand-text">{assignedProfiles.join(', ')}</span>}.
       </p>
+    </div>
+  )
+}
+
+// #2974 — household app groups: a name and a member list. Their limits live on each profile's
+// attachment (the Profiles page); membership is household-wide, so it is edited here as well as
+// from a profile's group row, with the same picker.
+function GroupsSection({ apps }: { apps: AppDetail[] }) {
+  const groupsQ = useAppGroups()
+  const invalidators = useInvalidators()
+  const [openId, setOpenId] = useState<number | null>(null)
+  const [naming, setNaming] = useState(false)
+  const [name, setName] = useState('')
+  const [creating, setCreating] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const groups = groupsQ.data ?? []
+
+  async function createGroup() {
+    const trimmed = name.trim()
+    if (!trimmed || creating) return
+    setCreating(true); setError(null)
+    try {
+      const g = await api.appGroups.create({ name: trimmed })
+      setNaming(false); setName('')
+      setOpenId(g.id)
+      await invalidators.appGroups()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to create group')
+    } finally { setCreating(false) }
+  }
+
+  return (
+    <section data-testid="apps-groups" className="space-y-2">
+      <div className="flex items-center gap-2">
+        <h2 className="text-sm font-semibold text-brand-ink">Groups</h2>
+        <span className="text-xs text-brand-text-muted">
+          Several apps sharing one time budget. Set each group's limits on a profile.
+        </span>
+        <span className="ml-auto">
+          {naming ? (
+            <input
+              type="text"
+              autoFocus
+              value={name}
+              disabled={creating}
+              onChange={e => setName(e.target.value)}
+              onBlur={createGroup}
+              onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); void createGroup() } }}
+              placeholder="Group name"
+              aria-label="New group name"
+              data-testid="apps-groups-new-name"
+              className="bg-white border border-brand-border-strong rounded-lg px-2 py-1 text-xs text-brand-ink"
+            />
+          ) : (
+            <button
+              type="button"
+              data-testid="apps-groups-new"
+              onClick={() => setNaming(true)}
+              className="text-xs px-2 py-1 rounded-lg border bg-white border-brand-accent/40 text-brand-accent hover:bg-brand-accent/10"
+            >+ New group</button>
+          )}
+        </span>
+      </div>
+      {creating && <p className="text-xs text-brand-text-muted" data-testid="apps-groups-saving">Saving…</p>}
+      {error && <p className="text-xs text-red-700" data-testid="apps-groups-create-error">{error}</p>}
+      {groupsQ.isPending ? (
+        <Skeleton className="h-12 w-full rounded-2xl" testId="apps-groups-loading" />
+      ) : groupsQ.isError ? (
+        <p className="text-xs text-red-700" data-testid="apps-groups-error">Couldn't load groups.</p>
+      ) : groups.length === 0 ? (
+        <p className="text-xs text-brand-text-muted italic" data-testid="apps-groups-empty">No groups yet.</p>
+      ) : (
+        <div className="bg-white rounded-2xl border border-brand-border overflow-hidden">
+          {groups.map(g => (
+            <GroupDirectoryRow
+              key={g.id}
+              group={g}
+              groups={groups}
+              apps={apps}
+              open={openId === g.id}
+              onToggle={() => setOpenId(id => (id === g.id ? null : g.id))}
+              onChanged={invalidators.appGroups}
+            />
+          ))}
+        </div>
+      )}
+    </section>
+  )
+}
+
+function GroupDirectoryRow({ group, groups, apps, open, onToggle, onChanged }: {
+  group: AppGroup
+  groups: AppGroup[]
+  apps: AppDetail[]
+  open: boolean
+  onToggle: () => void
+  onChanged: () => Promise<unknown>
+}) {
+  const tid = `apps-group-${group.id}`
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  async function setMembers(next: number[]) {
+    setBusy(true); setError(null)
+    try {
+      await api.appGroups.update(group.id, { memberAppIds: next })
+      await onChanged()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to update members')
+    } finally { setBusy(false) }
+  }
+
+  return (
+    <div data-testid={tid} className="border-b border-brand-border last:border-0">
+      <div className="flex items-center gap-3 px-5 py-3">
+        <p className="font-medium text-brand-ink truncate flex-1">{group.name}</p>
+        <MembersToggle tid={tid} count={group.memberAppIds.length} open={open} onClick={onToggle} />
+      </div>
+      {open && (
+        <div className="px-5 pb-4 pt-1 bg-brand-surface/30 border-t border-brand-border">
+          <GroupMembersEditor
+            tid={tid}
+            groupId={group.id}
+            groupName={group.name}
+            memberIds={group.memberAppIds}
+            apps={apps}
+            groups={groups}
+            busy={busy}
+            setMembers={setMembers}
+          />
+        </div>
+      )}
+      {error && <p className="text-xs text-red-700 px-5 pb-2" data-testid={`${tid}-error`}>{error}</p>}
     </div>
   )
 }

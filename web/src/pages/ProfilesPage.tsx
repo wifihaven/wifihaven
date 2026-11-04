@@ -1756,6 +1756,9 @@ function AppsSection({ profileId, isNew, apps, onChanged, testIdPrefix = 'apps-s
   // and "+ Block app" land the picked app directly in the list you asked for.
   const [pickerMode, setPickerMode] = useState<'allowed' | 'blocked' | null>(null)
   const [pickerFilter, setPickerFilter] = useState('')
+  // #2974 — the group just attached from "+ Add group": its row opens on its members, since filling
+  // the group is what the parent wants to do next.
+  const [justAttachedGroup, setJustAttachedGroup] = useState<number | null>(null)
   // #2964 — the picked app's save in flight, and the last save's failure.
   const [addingAppId, setAddingAppId] = useState<number | null>(null)
   const [pickerError, setPickerError] = useState<string | null>(null)
@@ -1842,6 +1845,7 @@ function AppsSection({ profileId, isNew, apps, onChanged, testIdPrefix = 'apps-s
         groups={groupsQ.data ?? []}
         attached={attached}
         onChanged={onChanged}
+        onAttached={setJustAttachedGroup}
       />
       <button
         type="button"
@@ -1968,6 +1972,7 @@ function AppsSection({ profileId, isNew, apps, onChanged, testIdPrefix = 'apps-s
             apps={apps}
             budget={budget}
             onChanged={onChanged}
+            openMembersFor={justAttachedGroup}
           />
           {assigned.length > 0 && renderList('allowed', allowedApps)}
           {assigned.length > 0 && renderList('blocked', blockedApps)}
