@@ -1,8 +1,9 @@
-# Warning (notify, look-today) alert rules — W1–W5, W9, W10, W14–W19
+# Warning (notify, look-today) alert rules — W1–W5, W9, W10, W14–W20
 # (W1–W5: #1405, parent #1381. W9: #2553. W10: #2646.
 #  W14: #2646 follow-up, W10's absence arm.
 #  W15: #2736, the ws-cutover safety net — read its block before touching it.
-#  W16: #2785. W17: #2843, device assignment drift. W18–W19: #2936, weekly-budget settling.)
+#  W16: #2785. W17: #2843, device assignment drift. W18–W19: #2936, weekly-budget settling.
+#  W20: #2978, a bundled blocklist's upstream is permanently gone.)
 # Implements docs/design/alerting.md §7.2.
 #
 # Every expression is grounded in a series emitted today (§2 "alert only on
@@ -54,7 +55,7 @@
 # and the rate/increase window come straight from §7.2.
 
 locals {
-  # Keyed w1..w19 (stable resource addressing). `window_s` bounds the data fetch
+  # Keyed w1..w20 (stable resource addressing). `window_s` bounds the data fetch
   # and must cover the rate/increase window in `expr` (for W10, its
   # `last_over_time` lookback; W14 and W15 have no range selector at all and take
   # the file minimum). `paused` ships W5 off.
@@ -602,6 +603,28 @@ locals {
       for      = "15m"
       paused   = false
       summary  = "Settled-day budget reads have been failing for at least 15 minutes (budget_usage_settle_total outcome=error). Each error is a failed live computation or write-back of a past day's usage. It fails that household's week read, and with it the snapshot and time-status for the week. FIRST: grep the API log for 'time_used_daily tick skipped household' and the exception around it, and check db-health for timeouts or connection exhaustion; the 'Weekly budgets: settled-day reads by outcome' panel on the rollup-health dashboard shows when it started."
+    }
+
+    # W20 (#2978) — a bundled remote blocklist's upstream answers with a 4xx that retrying will
+    # not fix. A failed fetch keeps the existing rows and logs a WARN, which is the right answer
+    # to a flaky upstream and the wrong one to a source that is gone: urlhaus retired its
+    # hostfile with a 410 and the `malware` list went stale for weeks behind that WARN.
+    # `blocklist_fetch_total{outcome="gone"}` counts 404/410/401/403-class answers only (408, 429
+    # and 5xx count as `error`). It is compared as a LEVEL, not a rate: the fetch runs at API
+    # startup and on an admin refresh, so there is no steady stream for rate() to see, and the
+    # counter resets on restart, which is when the fix (a new URL) arrives. An absent series is
+    # healthy (no_data_state = OK). An admin refresh that later succeeds does not clear it until
+    # the next restart, which a fix needs anyway.
+    #
+    # QUERY COST: one instant read of a low-cardinality counter (one series per bundled list).
+    w20 = {
+      title    = "W20 A bundled blocklist's upstream is gone"
+      expr     = "max by (blocklist_id) (blocklist_fetch_total{env=\"prod\",outcome=\"gone\"})"
+      window_s = 300
+      gt       = 0
+      for      = "5m"
+      paused   = false
+      summary  = "Blocklist {{ $labels.blocklist_id }} cannot be refreshed: its upstream URL answers with a 4xx (404/410/401/403), so the API is serving the rows it seeded earlier and will keep doing so. This is a configuration problem, not a flaky network: the source was retired or now requires credentials. FIRST: grep the API log (Loki: {service=\"wifihaven-api\", env=\"production\"} |= \"failed to fetch bundled blocklist\") for the URL and status, then check that URL with curl. The URL lives in api/resources/blocklists/<blocklist_id>.yml. Dashboard: enforcement, 'Bundled blocklist fetches by outcome (#2978)'."
     }
   }
 }

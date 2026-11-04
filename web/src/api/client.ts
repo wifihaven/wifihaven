@@ -3,7 +3,7 @@ import { inflightWrites } from '@/api/inflightWrites'
 // #2824: HttpError lives in the leaf `api/httpError` module, NOT here, so a
 // component can import it without pulling in this module — which most page tests
 // mock wholesale, and a mocked module cannot supply a helper the component calls.
-import { HttpError } from '@/api/httpError'
+import { HttpError, NoResponseError } from '@/api/httpError'
 import { setMustChangePassword } from '@/api/mustChangePassword'
 import { ACCOUNT_PATH, loginUrlReturningTo } from '@/routes'
 import type {
@@ -195,7 +195,7 @@ async function send<T>(
     // right now — light up the global banner via apiHealth.
     const aborted = e instanceof DOMException && e.name === 'AbortError'
     apiHealth.reportFailure(aborted ? 'timeout' : 'network')
-    throw e
+    throw new NoResponseError(aborted ? 'timeout' : 'network', e)
   }
   cleanup()
 

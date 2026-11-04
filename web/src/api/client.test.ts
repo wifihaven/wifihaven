@@ -4,7 +4,7 @@
 // the first occurrence), plus pass-through of date/tz/topN/groupBy.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { api, isCanceledError } from './client'
-import { httpStatusOf } from './httpError'
+import { httpStatusOf, NoResponseError, NO_RESPONSE_MESSAGE } from './httpError'
 import { apiHealth } from './apiHealth'
 import { inflightWrites } from './inflightWrites'
 import type { CreateUserRequest, UsageSeriesBatchResponse } from '@/types/api'
@@ -159,7 +159,11 @@ describe('req caller-cancellation is not an API-down signal (#2047)', () => {
     vi.stubGlobal('fetch', fetchMock)
 
     const p = api.usage.traffic({ bucket: '1m' })
-    const assertion = expect(p).rejects.toThrow()
+    // #2964 — a typed no-response error carrying a sentence a parent can act on,
+    // not the browser's "signal is aborted without reason".
+    const assertion = expect(p).rejects.toSatisfy(
+      (e: unknown) => e instanceof NoResponseError && e.reason === 'timeout' && e.message === NO_RESPONSE_MESSAGE,
+    )
     await vi.advanceTimersByTimeAsync(10_001)
     await assertion
     // No caller signal → the abort is the timeout → genuine unreachable.
@@ -234,6 +238,15 @@ describe('in-flight write tracking (#2903)', () => {
     resolve(okJson({ id: 1 }))
     await p
     expect(inflightWrites.count()).toBe(0)
+  })
+
+  // #2964 — a fetch that never reached the API rejects with NoResponseError, so callers
+  // show `e.message` without re-deriving "no response" from the browser's error shape.
+  it('rejects a network failure with NoResponseError(network)', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('Failed to fetch')))
+    await expect(api.users.create(NEW_USER)).rejects.toSatisfy(
+      (e: unknown) => e instanceof NoResponseError && e.reason === 'network' && e.message === NO_RESPONSE_MESSAGE,
+    )
   })
 
   it('releases the count when the write fails', async () => {

@@ -33,5 +33,13 @@ icon_type: url
 # through it) — same reasoning as Blocksi/GoGuardian: blocking the portal
 # itself would risk breaking the student's ability to reach schoolwork
 # assigned through other, legitimate apps.
+#
+# classlink.io (#2962): a second ClassLink-owned apex (its own Route 53
+# zone; ClassLink's allowlist names *.classlink.io). Seen on profile 5 in
+# the 30d window as analytics-log.classlink.io. Listed as the bare apex for
+# the same single-purpose-vendor reason as classlink.com. Not added:
+# classlink.svvsd.org, a district-run host (Cloudflare, cert CN=svvsd.org)
+# under the school district's own apex that only exists for one district.
 hosts:
   - classlink.com
+  - classlink.io
