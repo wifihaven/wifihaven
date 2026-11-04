@@ -3124,6 +3124,72 @@ describe('ProfilesPage — weekly limits and app groups (#2935)', () => {
     expect(minutes).not.toBeDisabled()
   })
 
+  // #2973 — "No limit" is an explicit choice: a group can be a plain bundle with no shared budget.
+  it('attaches a group with No limit, not counted toward the daily limit', async () => {
+    fn(api.apps.list).mockResolvedValue([app(50, 'YouTube', { mode: 'allowed' })])
+    fn(api.appGroups.list).mockResolvedValue([games])
+    const user = userEvent.setup()
+    await openApps(user)
+    await user.click(await screen.findByTestId('profile-1-apps-section-add-group'))
+    await user.click(screen.getByTestId('profile-1-apps-section-add-group-option-7'))
+    await user.click(await screen.findByTestId('profile-1-apps-section-add-group-no-limit'))
+    await waitFor(() =>
+      expect(api.appGroups.attach).toHaveBeenCalledWith(1, 7, { dailyMinutes: null, weeklyMinutes: null, exemptFromDaily: true }))
+  })
+
+  it('shows "No limit" on the row of a limitless group, even before usage loads', async () => {
+    fn(api.apps.list).mockResolvedValue([app(50, 'YouTube', { mode: 'allowed' })])
+    fn(api.appGroups.list).mockResolvedValue([games])
+    fn(api.appGroups.forProfile).mockResolvedValue([attachment({ dailyMinutes: null, weeklyMinutes: null })])
+    fn(api.time.statusAll).mockReturnValue(new Promise(() => {}))
+    const user = userEvent.setup()
+    await openApps(user)
+    const chip = await screen.findByTestId('group-row-7-toggle')
+    expect(chip).toHaveTextContent('No limit')
+    expect(chip.textContent).not.toMatch(/0m/)
+  })
+
+  it('switches a limited group to No limit from the drawer', async () => {
+    fn(api.apps.list).mockResolvedValue([app(50, 'YouTube', { mode: 'allowed' })])
+    fn(api.appGroups.list).mockResolvedValue([games])
+    fn(api.appGroups.forProfile).mockResolvedValue([attachment({ dailyMinutes: 60, weeklyMinutes: 300, exemptFromDaily: true })])
+    const user = userEvent.setup()
+    await openApps(user)
+    await user.click(await screen.findByTestId('group-row-7-toggle'))
+    await user.click(await screen.findByTestId('group-row-7-no-limit'))
+    await waitFor(() =>
+      expect(api.appGroups.attach).toHaveBeenCalledWith(1, 7, { dailyMinutes: null, weeklyMinutes: null, exemptFromDaily: true }))
+  })
+
+  it('saves No limit when both limit inputs are cleared', async () => {
+    fn(api.apps.list).mockResolvedValue([app(50, 'YouTube', { mode: 'allowed' })])
+    fn(api.appGroups.list).mockResolvedValue([games])
+    fn(api.appGroups.forProfile).mockResolvedValue([attachment({ dailyMinutes: 60, weeklyMinutes: null })])
+    const user = userEvent.setup()
+    await openApps(user)
+    await user.click(await screen.findByTestId('group-row-7-toggle'))
+    await user.clear(await screen.findByTestId('group-row-7-daily'))
+    await user.tab()
+    await waitFor(() =>
+      expect(api.appGroups.attach).toHaveBeenCalledWith(1, 7, expect.objectContaining({ dailyMinutes: null, weeklyMinutes: null })))
+    expect(screen.queryByTestId('group-row-7-error')).not.toBeInTheDocument()
+  })
+
+  it('toggles Counts toward daily limit from the collapsed row', async () => {
+    fn(api.apps.list).mockResolvedValue([app(50, 'YouTube', { mode: 'allowed' })])
+    fn(api.appGroups.list).mockResolvedValue([games])
+    fn(api.appGroups.forProfile).mockResolvedValue([attachment({ dailyMinutes: null, weeklyMinutes: null, exemptFromDaily: true })])
+    const user = userEvent.setup()
+    await openApps(user)
+    const counts = await screen.findByTestId('group-row-7-counts-chip')
+    expect(counts).toHaveTextContent('Not counted')
+    expect(counts).toHaveAttribute('aria-pressed', 'false')
+    expect(screen.queryByTestId('group-row-7-drawer')).not.toBeInTheDocument()
+    await user.click(counts)
+    await waitFor(() =>
+      expect(api.appGroups.attach).toHaveBeenCalledWith(1, 7, { dailyMinutes: null, weeklyMinutes: null, exemptFromDaily: false }))
+  })
+
   it('creates a new group, then asks for its limit', async () => {
     fn(api.apps.list).mockResolvedValue([app(50, 'YouTube', { mode: 'allowed' })])
     const user = userEvent.setup()
