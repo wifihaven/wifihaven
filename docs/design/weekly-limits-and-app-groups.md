@@ -600,6 +600,12 @@ grows taller when collapsed.
   from the field, as
   today (AGENTS.md#exempt-from-daily). "+ Add group" lists the household's
   groups and a "New group…" entry.
+- No limit (#2973): "+ Add group" offers "No limit" beside the minutes box, and
+  the limits drawer has a "No limit" control; clearing both inputs also saves
+  no limit. Such a row's chip reads "No limit", with no usage loading state
+  since it shows no usage figure. The collapsed row carries a "Counts" / "Not
+  counted" toggle, so a group's effect on the daily total is visible without
+  opening the drawer.
 - Members are edited from their own control on the group row, beside the
   limit chip and separate from it (#2974): "N apps ▾", or "No apps yet. Add
   apps" for an empty group. It opens a searchable picker shaped like "Allow an
