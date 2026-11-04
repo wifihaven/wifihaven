@@ -675,6 +675,91 @@ object AppsOverBudgetSpec
         )
       },
     ),
+    // #2973 (D4 revised 2026-11-03): an attachment with neither limit is a bundle with no shared
+    // budget. It is never exhausted, so every carve treats its members as under budget; a member's
+    // own limit still applies (D14).
+    suite("no-limit group (#2973)")(
+      test("not counted: members stay reachable through the daily total and bedtime") {
+        for {
+          r    <- rig
+          a    <- kid("A", macA)
+          b    <- kid("B", macB)
+          tlr  <- ZIO.service[TimeLimitRepo]
+          kh   <- app("Khan", "khan.org")
+          z    <- app("Counted", "counted.com")
+          g    <- group("Homework", kh)
+          _    <- ZIO.foreachDiscard(List(a, b))(p =>
+            attach(p, g, daily = None, weekly = None, exempt = true) *> assign(z, p),
+          )
+          // A: the daily total is spent. B: bedtime is on.
+          _    <- tlr.upsert(a, 30)
+          _    <- bedtime(b)
+          _    <- traffic(r, macA, "counted.com", at(thu, 9), 40)
+          // Hours of homework this week: no budget to run out.
+          _    <- traffic(r, macA, "khan.org", at(mon, 10), 240)
+          _    <- traffic(r, macA, "khan.org", at(thu, 11), 120)
+          _    <- traffic(r, macB, "khan.org", at(thu, 11), 120)
+          svc  <- policyAt(nowThu)
+          va   <- verdicts(svc, a, macA, "khan.org", "counted.com")
+          vb   <- verdicts(svc, b, macB, "khan.org", "counted.com")
+          snap <- svc.snapshot
+        } yield assertTrue(
+          snap.profiles(a).rules.blocked,
+          snap.profiles(b).rules.blocked,
+          reachable(va, "khan.org"),
+          blocked(va, "counted.com"),
+          reachable(vb, "khan.org"),
+          blocked(vb, "counted.com"),
+        )
+      },
+      test("counted: members' time goes into the daily total, and the total's block applies") {
+        for {
+          r    <- rig
+          a    <- kid("A", macA)
+          b    <- kid("B", macB)
+          tlr  <- ZIO.service[TimeLimitRepo]
+          kh   <- app("Khan", "khan.org")
+          g    <- group("Homework", kh)
+          _    <- attach(a, g, daily = None, weekly = None, exempt = false)
+          _    <- attach(b, g, daily = None, weekly = None, exempt = false)
+          _    <- tlr.upsert(a, 30)
+          _    <- tlr.upsert(b, 120)
+          _    <- traffic(r, macA, "khan.org", at(thu, 10), 40)
+          _    <- traffic(r, macB, "khan.org", at(thu, 10), 40)
+          svc  <- policyAt(nowThu)
+          va   <- verdicts(svc, a, macA, "khan.org")
+          vb   <- verdicts(svc, b, macB, "khan.org")
+          snap <- svc.snapshot
+        } yield assertTrue(
+          // 40 counted minutes against 30: the whole-MAC block, no carve.
+          snap.profiles(a).rules.blocked,
+          blocked(va, "khan.org"),
+          // The same 40 against 120: reachable.
+          !snap.profiles(b).rules.blocked,
+          reachable(vb, "khan.org"),
+        )
+      },
+      test("a member's own limit still blocks it (D14); the other member is reachable") {
+        for {
+          r   <- rig
+          a   <- kid("A", macA)
+          kh  <- app("Khan", "khan.org")
+          yt  <- app("YouTube", "youtube.com")
+          g   <- group("Homework", kh, yt)
+          _   <- attach(a, g, daily = None, weekly = None, exempt = true)
+          _   <- assign(yt, a, daily = Some(30))
+          _   <- traffic(r, macA, "youtube.com", at(thu, 10), 40)
+          _   <- traffic(r, macA, "khan.org", at(thu, 12), 60)
+          svc <- policyAt(nowThu)
+          v   <- verdicts(svc, a, macA, "youtube.com", "khan.org")
+          d   <- svc.decideDetailed(hh, macA.value, "youtube.com")
+        } yield assertTrue(
+          blocked(v, "youtube.com"),
+          reachable(v, "khan.org"),
+          d.budget.map(b => (b.kind, b.window)) == Some((BudgetKind.App, BudgetWindow.Day)),
+        )
+      },
+    ),
     suite("app_budget_exhausted gauge (design §11)")(
       test("one gauge per kind and window, set once per reevaluate tick, back to 0 when cleared") {
         def gauge(kind: String, window: String) =

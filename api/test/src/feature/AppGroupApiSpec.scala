@@ -271,7 +271,7 @@ object AppGroupApiSpec
         attA.map(_.groupId) == List(gA.id),
       )
     },
-    test("an attachment needs at least one limit; values round-trip; DELETE detaches") {
+    test("an attachment may have no limit (#2973); values round-trip; DELETE detaches") {
       for {
         _              <- cleanDb
         two            <- TestLayers.seedTwoHouseholds(macA, macB)
@@ -280,9 +280,10 @@ object AppGroupApiSpec
         tok            <- login(auth, two.adminA, two.password)
         (roblox, _, _) <- newApps
         g              <- createGroup(r.groups, tok, "Games", List(roblox)).flatMap(decodeGroup)
-        none           <- attach(r.groups, tok, two.profileA, g.id, "{}")
         zero           <- attach(r.groups, tok, two.profileA, g.id, """{"weeklyMinutes":0}""")
         afterBad       <- attachments(r.groups, tok, two.profileA)
+        none           <- attach(r.groups, tok, two.profileA, g.id, "{}")
+        noLimit        <- attachments(r.groups, tok, two.profileA)
         daily          <- attach(r.groups, tok, two.profileA, g.id, """{"dailyMinutes":45}""")
         both           <- attach(
           r.groups,
@@ -300,9 +301,14 @@ object AppGroupApiSpec
         )
         afterDel       <- attachments(r.groups, tok, two.profileA)
       } yield assertTrue(
-        none.status == Status.BadRequest,
         zero.status == Status.BadRequest,
         afterBad.isEmpty,
+        none.status.isSuccess,
+        noLimit.size == 1,
+        noLimit.head.dailyMinutes.isEmpty,
+        noLimit.head.weeklyMinutes.isEmpty,
+        // Not counted toward the daily total unless asked (D5).
+        noLimit.head.exemptFromDaily,
         daily.status.isSuccess,
         both.status.isSuccess,
         listed.size == 1,
@@ -513,7 +519,7 @@ object AppGroupApiSpec
         c8  <- count
         _   <- send(r.groups, Method.DELETE, s"/api/app-groups/${g.id.value}", tok)
         c9  <- count
-        // rejected writes: no limit, unknown group, duplicate member
+        // rejected writes: unknown group (the group was deleted), duplicate member
         _   <- attach(r.groups, tok, two.profileA, g.id, "{}")
         _   <- createGroup(r.groups, tok, "Games2", List(minecraf))
         c10 <- count
