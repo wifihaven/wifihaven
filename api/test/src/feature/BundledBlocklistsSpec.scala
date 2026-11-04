@@ -17,6 +17,7 @@ import wifihaven.testinfra.*
 import io.zonky.test.db.postgres.embedded.EmbeddedPostgres
 import zio.{Clock as _, *}
 import zio.interop.catz.*
+import zio.metrics.Metric
 import zio.test.*
 
 /**
@@ -390,6 +391,47 @@ object BundledBlocklistsSpec
         assertTrue(
           cached.exists(_.hosts.contains(Hostname.unsafe("ads-extended-upstream.example"))),
         )
+    },
+    // #2978: urlhaus.abuse.ch retired every public /downloads/ path (HTTP 410 Gone; downloads now
+    // need an Auth-Key). The list kept "refreshing" with a WARN and serving stale rows for weeks.
+    test("#2978: no bundled remote list points at the retired urlhaus /downloads/ paths") {
+      for {
+        bundled <- BundledBlocklists.loadAll()
+        urls = bundled.collect {
+          case BundledBlocklist(_, _, _, _, BundledBlocklistContent.Remote(u, _)) => u
+        }
+      } yield assertTrue(urls.nonEmpty) && assertTrue(!urls.exists(_.contains("urlhaus.abuse.ch")))
+    },
+    // #2978: a fetch that fails is a WARN and "keep existing rows", which is right for a flaky
+    // upstream and invisible for a dead one. The outcome counter is what a dashboard panel reads.
+    test("#2978: every remote fetch is counted by outcome (ok | error)") {
+      def count(id: String, outcome: String): UIO[Double] =
+        Metric
+          .counter("blocklist_fetch_total")
+          .tagged("blocklist_id", id)
+          .tagged("outcome", outcome)
+          .value
+          .map(_.count)
+      for {
+        _       <- cleanDb
+        blRepo  <- ZIO.service[BlocklistRepo]
+        cache   <- newCache
+        bundled <- BundledBlocklists.loadAll()
+        malware    = bundled.filter(_.id == BlocklistId.unsafe("malware"))
+        malwareUrl = malware.collect {
+          case BundledBlocklist(_, _, _, _, BundledBlocklistContent.Remote(u, _)) => u
+        }
+        okBefore <- count("malware", "ok")
+        errBefore <- count("malware", "error")
+        _         <- BundledBlocklists.seed(blRepo, cache, stubFetcher, malware)
+        okMid     <- count("malware", "ok")
+        failing = new StubFetcher(stubbedUpstreams, failures = malwareUrl.toSet)
+        _        <- BundledBlocklists.seed(blRepo, cache, failing, malware)
+        okAfter  <- count("malware", "ok")
+        errAfter <- count("malware", "error")
+      } yield assertTrue(okMid - okBefore == 1.0) &&
+        assertTrue(okAfter == okMid) &&
+        assertTrue(errAfter - errBefore == 1.0)
     },
     test("remote fetch failure leaves existing DB rows untouched") {
       val failingFetcher = new StubFetcher(
