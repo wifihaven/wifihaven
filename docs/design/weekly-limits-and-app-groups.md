@@ -600,10 +600,17 @@ grows taller when collapsed.
   from the field, as
   today (AGENTS.md#exempt-from-daily). "+ Add group" lists the household's
   groups and a "New group…" entry.
-- Editing members happens in the group's expander. Because the group is
-  household-wide, the expander says which other profiles use it ("Also used by:
-  Sam"). Adding a member that a profile already lists on its own shows the
-  overlap warning on that profile.
+- Members are edited from their own control on the group row, beside the
+  limit chip and separate from it (#2974): "N apps ▾", or "No apps yet. Add
+  apps" for an empty group. It opens a searchable picker shaped like "Allow an
+  app". An app already in another group stays listed but disabled, labelled
+  "In *Games*" (D2). The row opens on its members right after "+ Add group"
+  attaches it. Because the group is household-wide, the members panel says
+  which other profiles use it ("Also used by: Sam"). The Manage apps page has
+  a Groups section with the same member editor and "+ New group" (#2974).
+  Member edits are optimistic and serialized per group, so several apps can
+  be added in a row. Adding a member that a profile already lists on its own
+  shows the overlap warning on that profile.
 - Loading: week-to-date bars use the same three states as #2764 (pending
   skeleton, error, value). The `UsageStatus` prop is required and threaded the
   same way.
