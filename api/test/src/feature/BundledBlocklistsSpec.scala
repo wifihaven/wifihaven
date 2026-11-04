@@ -64,7 +64,7 @@ object BundledBlocklistsSpec
   private val stubbedUpstreams: Map[String, List[Hostname]] = Map(
     adsExtendedUrl                                                                            ->
       List("ads-extended-upstream.example", "tracker.example").map(Hostname.unsafe),
-    "https://urlhaus.abuse.ch/downloads/hostfile/"                                            ->
+    "https://malware-filter.gitlab.io/malware-filter/urlhaus-filter-hosts.txt"                ->
       List("malware-upstream.example").map(Hostname.unsafe),
     "https://raw.githubusercontent.com/StevenBlack/hosts/master/alternates/social-only/hosts" ->
       List("social-extended-upstream.example").map(Hostname.unsafe),
@@ -433,10 +433,40 @@ object BundledBlocklistsSpec
         assertTrue(okAfter == okMid) &&
         assertTrue(errAfter - errBefore == 1.0)
     },
+    test("#2978: a 4xx that will not recover counts as outcome=gone, a 5xx or 429 as error") {
+      def count(outcome: String): UIO[Double]      =
+        Metric
+          .counter("blocklist_fetch_total")
+          .tagged("blocklist_id", "malware")
+          .tagged("outcome", outcome)
+          .value
+          .map(_.count)
+      def rejecting(status: Int): BlocklistFetcher = new BlocklistFetcher {
+        def fetch(url: String, format: BlocklistFormat): Task[List[Hostname]] =
+          ZIO.fail(new BlocklistFetcher.UpstreamRejected(status, url))
+      }
+      for {
+        _       <- cleanDb
+        blRepo  <- ZIO.service[BlocklistRepo]
+        cache   <- newCache
+        bundled <- BundledBlocklists.loadAll()
+        malware = bundled.filter(_.id == BlocklistId.unsafe("malware"))
+        g0 <- count("gone")
+        e0 <- count("error")
+        _  <- BundledBlocklists.seed(blRepo, cache, rejecting(410), malware)
+        _  <- BundledBlocklists.seed(blRepo, cache, rejecting(404), malware)
+        g1 <- count("gone")
+        e1 <- count("error")
+        _  <- BundledBlocklists.seed(blRepo, cache, rejecting(503), malware)
+        _  <- BundledBlocklists.seed(blRepo, cache, rejecting(429), malware)
+        g2 <- count("gone")
+        e2 <- count("error")
+      } yield assertTrue(g1 - g0 == 2.0, e1 == e0, g2 == g1, e2 - e1 == 2.0)
+    },
     test("remote fetch failure leaves existing DB rows untouched") {
       val failingFetcher = new StubFetcher(
         responses = stubbedUpstreams,
-        failures = Set("https://urlhaus.abuse.ch/downloads/hostfile/"),
+        failures = Set("https://malware-filter.gitlab.io/malware-filter/urlhaus-filter-hosts.txt"),
       )
       for {
         _       <- cleanDb
