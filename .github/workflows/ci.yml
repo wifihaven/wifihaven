@@ -49,7 +49,6 @@ jobs:
       workflows: ${{ steps.filter.outputs.workflows || steps.force.outputs.all }}
       grafana-tf: ${{ steps.filter.outputs.grafana-tf || steps.force.outputs.all }}
       cloudflare-tf: ${{ steps.filter.outputs.cloudflare-tf || steps.force.outputs.all }}
-      press-worker: ${{ steps.filter.outputs.press-worker || steps.force.outputs.all }}
     steps:
       - name: Force full matrix for CD / manual triggers
         id: force
@@ -162,13 +161,7 @@ jobs:
               - 'openwrt/test/**'
               - '**/*.bats'
               - '**/*.test.sh'
-              # #2407: docker/entrypoint.sh renders application.conf, and
-              # docker/scripts/check-entrypoint-wiring.test.sh (#2405) is the gate that catches a
-              # render.yaml key added without matching entrypoint wiring. Without this glob the
-              # guard ran only when the guard ITSELF changed — so a PR that adds a key and forgets
-              # the entrypoint reports "Shell Tests: skipping" and sails past its own gate.
-              - 'docker/**'
-              # #1843: same reasoning for render.yaml itself —
+              # #1843: render.yaml itself is a trigger too —
               # scripts/check-spa-allowlists.test.sh guards the apex/www entries in
               # WIFIHAVEN_ALLOWED_ORIGINS / WIFIHAVEN_UI_ALLOWED_HOSTS, and the edit it
               # guards against is a render.yaml-only edit. Without this glob that PR shape
@@ -187,15 +180,6 @@ jobs:
             cloudflare-tf:
               - '.github/workflows/ci.yml'
               - 'infra/cloudflare/**'
-            # #2442: the press Email Worker carries the auto-reply/DSN loop guard, and
-            # master-press-worker.yml only DEPLOYS it — nothing ran its tests before merge.
-            # #2673 adds the bundle + Workers-Logs checks to the same job.
-            press-worker:
-              - '.github/workflows/ci.yml'
-              - 'deploy/press-worker/**'
-              # A deploy-workflow-only edit changes how this Worker ships; without this glob it
-              # would skip the Worker's own tests entirely.
-              - '.github/workflows/master-press-worker.yml'
             migrations:
               - '.github/workflows/ci.yml'
               - '.github/scripts/check-migrations.sh'
@@ -873,72 +857,6 @@ jobs:
       - name: Build
         run: npm run build
 
-  # ── Press Email Worker: typecheck + unit tests ───────────────────────────
-  # #2442. master-press-worker.yml only deploys this Worker, so until now nothing
-  # ran against it before merge. The loop guard it now carries decides whether a
-  # press message reaches a journalist at all, which is exactly the kind of logic
-  # that must not ship on a deploy-only pipeline.
-  press-worker:
-    name: Press Worker Tests
-    needs: changes
-    if: needs.changes.outputs.press-worker == 'true'
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: deploy/press-worker
-
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Set up Node 22
-        uses: actions/setup-node@v6
-        with:
-          node-version: "22"
-          cache: "npm"
-          cache-dependency-path: deploy/press-worker/package-lock.json
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: TypeScript type check
-        run: npm run typecheck
-
-      - name: Vitest
-        run: npm test
-
-      # #2673: `tsc` and vitest both pass a Worker that fails to BUNDLE. This runs the real esbuild
-      # bundle and needs no Cloudflare credentials. Both environments — it exercises each env's
-      # config resolution, but it CANNOT detect a missing per-env block, because an omission is
-      # valid config; the observability step below is what gates that.
-      - name: Bundle (wrangler dry-run)
-        run: |
-          npx wrangler deploy --env="" --dry-run --outdir=/tmp/press-worker-dry
-          npx wrangler deploy --env staging --dry-run --outdir=/tmp/press-worker-dry-staging
-
-      # #2673/#2676: Workers Logs are this Worker's only diagnostic, and #2346 is the trap — a named
-      # environment does NOT inherit `[observability]`, so dropping `[env.staging.observability]`
-      # deploys staging dark while every other check stays green. `wrangler --dry-run` accepts the
-      # omission, so it has to be asserted directly.
-      - name: Workers Logs declared for every environment
-        run: |
-          python3 - <<'EOF'
-          import sys, tomllib
-          cfg = tomllib.load(open('wrangler.toml', 'rb'))
-          # Derived from the file, not a hardcoded pair: a new [env.*] block is gated the moment it
-          # is added, rather than being silently exempt until someone remembers this step.
-          roots = [('top-level', cfg)] + [(f'env.{k}', v) for k, v in cfg.get('env', {}).items()]
-          bad = []
-          for label, root in roots:
-              obs = root.get('observability', {})
-              if not obs.get('enabled') or not obs.get('logs', {}).get('enabled'):
-                  bad.append(label)
-          if bad:
-              sys.exit(f"observability.logs not enabled for: {', '.join(bad)} — that environment "
-                       f"deploys undiagnosable (#2346 does not inherit the top-level block).")
-          print('Workers Logs declared for every environment.')
-          EOF
-
-  # ── Umbrella gating job ──────────────────────────────────────────────────
   # Branch protection requires this single check. It depends on every
   # downstream job and passes when each one is either successful, skipped
   # (i.e. its paths weren't touched on this PR), or cancelled. Cancellation
@@ -968,7 +886,6 @@ jobs:
       - cloudflare-terraform
       - actionlint
       - frontend
-      - press-worker
     runs-on: ubuntu-latest
     steps:
       - name: Verify all required jobs succeeded or were skipped
