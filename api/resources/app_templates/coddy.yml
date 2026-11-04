@@ -1,0 +1,31 @@
+slug: coddy
+name: Coddy
+icon: "https://icons.duckduckgo.com/ip3/coddy.tech.ico"
+icon_type: url
+# #2955 (2026-11-02 orphan-driven pass): Coddy (coddy.tech), a gamified,
+# practice-driven coding-education platform (daily streaks, scoring,
+# leaderboards, lessons in Python/JS/SQL/HTML/CSS/Java/C/Go) — web-confirmed
+# via independent third-party company profiles, not just the site's own
+# claims, since `coddy.tech` itself answers with a Cloudflare bot-challenge
+# page ("Just a moment...") to a plain curl and can't be title-confirmed
+# directly. A prior pass (#2915, 2026-10-19) saw the same host cluster at a
+# similar volume and left it a watch-item pending clearer confirmation of
+# purpose; this pass supplied that confirmation.
+#
+#   coddy.tech                              main site + lesson UI
+#   static.coddy.tech                       static assets
+#
+# `coddy.tech` is Cloudflare-fronted (104.26.x/172.67.x) — the standard
+# accepted Class-2 shared-edge risk already present throughout this catalog.
+#
+# `us-central1-coddy-15505.cloudfunctions.net` (a backend Cloud Functions
+# host, ~5.8 min proportional/30d) was dropped: dig-verified (2026-11-02) it
+# resolves to 216.239.36.54, inside Google's shared 216.239.32.0/19 range —
+# the exact range `canva.yml` documents and excludes `ct.canva.com` over. The
+# host's project-specific name doesn't change which IPs it resolves to; a
+# unique hostname is not the same thing as a dedicated IP. Residual: traffic
+# to that backend goes unattributed to this app, same residual pattern
+# `canva.yml` documents for `ct.canva.com`.
+hosts:
+  - coddy.tech
+  - static.coddy.tech
