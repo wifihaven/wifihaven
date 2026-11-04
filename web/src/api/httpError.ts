@@ -34,3 +34,17 @@ export function httpStatusOf(e: unknown): number | undefined {
   }
   return undefined
 }
+
+// #2964 — a request that got no answer from the API: the connection failed (fetch's
+// TypeError, "Failed to fetch") or `req`'s REQUEST_TIMEOUT_MS fired (an AbortError,
+// "signal is aborted without reason"). `req` is the one place that can tell these from a
+// real response, so it decides once and every caller just shows `e.message`. The
+// browser's own error is kept as `cause`.
+export const NO_RESPONSE_MESSAGE = 'The server didn’t respond. Try again in a moment.'
+
+export class NoResponseError extends Error {
+  constructor(readonly reason: 'timeout' | 'network', readonly cause?: unknown) {
+    super(NO_RESPONSE_MESSAGE)
+    this.name = 'NoResponseError'
+  }
+}

@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { TrafficUsageResponse } from '@/types/api'
+import { NoResponseError, NO_RESPONSE_MESSAGE } from '@/api/httpError'
 
 vi.mock('@/api/client', () => ({
   api: {
@@ -78,6 +79,11 @@ const aggResp: TrafficUsageResponse = {
       distinctDomains: 1,
     },
   ],
+}
+
+// What `req` rejects with when the caller aborted (the mocked `isCanceledError` matches the name).
+function canceled(): Error {
+  return Object.assign(new Error('Request canceled'), { name: 'RequestCanceledError' })
 }
 
 function makeQueryClient() {
@@ -365,18 +371,26 @@ describe('TrafficUsagePage', () => {
   // #2047 — a cancelled/aborted in-flight request ("signal is aborted without
   // reason") is a client-side cancellation, NOT a server failure. It must never
   // be surfaced as a user-facing table error (the prod regression: the whole
-  // page showed the AbortError + "No rows in window.").
-  it('does not surface an AbortError as a user-facing error (#2047)', async () => {
+  // page showed the AbortError + "No rows in window."). `req` rejects a caller
+  // cancellation as RequestCanceledError (#2964: a timeout is NoResponseError).
+  it('does not surface a cancellation as a user-facing error (#2047)', async () => {
     const trafficMock = api.usage.traffic as ReturnType<typeof vi.fn>
-    trafficMock.mockRejectedValueOnce(
-      new DOMException('signal is aborted without reason', 'AbortError'),
-    )
+    trafficMock.mockRejectedValueOnce(canceled())
     renderPage()
     await waitFor(() => expect(api.usage.traffic).toHaveBeenCalled())
     // The page recovers to a clean empty state (the abort is swallowed).
     await waitFor(() => expect(screen.getByText('No rows in window.')).toBeInTheDocument())
     expect(screen.queryByText(/aborted/i)).not.toBeInTheDocument()
     expect(screen.queryByTestId('error')).not.toBeInTheDocument()
+  })
+
+  // #2964 — a request that timed out is a real failure, not a cancellation: it
+  // must show the error banner instead of being swallowed like an abort.
+  it('surfaces a timed-out request as an error (#2964)', async () => {
+    const trafficMock = api.usage.traffic as ReturnType<typeof vi.fn>
+    trafficMock.mockRejectedValueOnce(new NoResponseError('timeout'))
+    renderPage()
+    expect(await screen.findByTestId('error')).toHaveTextContent(NO_RESPONSE_MESSAGE)
   })
 
   // #2047 — switching bucket supersedes the in-flight request. When the
@@ -400,7 +414,7 @@ describe('TrafficUsagePage', () => {
     await waitFor(() => expect(api.usage.traffic).toHaveBeenCalledTimes(2))
 
     // The superseded raw request now aborts — the page must swallow it.
-    rejectFirst(new DOMException('signal is aborted without reason', 'AbortError'))
+    rejectFirst(canceled())
 
     await waitFor(() => expect(screen.getByTestId('aggregate-table')).toBeInTheDocument())
     expect(screen.queryByText(/aborted/i)).not.toBeInTheDocument()
