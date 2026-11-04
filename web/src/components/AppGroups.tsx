@@ -271,6 +271,9 @@ function GroupRow({ profileId, attachment, group, apps, groups, budget, onChange
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [daily, setDaily] = useState(attachment.dailyMinutes != null ? String(attachment.dailyMinutes) : '')
+  // Set while "No limit" saves: the emptied box it leaves focused may blur before the saved
+  // attachment arrives, and that blur is not a parent clearing the limits.
+  const choosingNoLimit = useRef(false)
   const [weekly, setWeekly] = useState(attachment.weeklyMinutes != null ? String(attachment.weeklyMinutes) : '')
   // Re-seed the inputs when the saved attachment changes (a failed save leaves the old values).
   useEffect(() => {
@@ -311,6 +314,7 @@ function GroupRow({ profileId, attachment, group, apps, groups, budget, onChange
     // on the way to typing another would otherwise save a limitless (and, not counted, bedtime-
     // reachable) group on the blur in between.
     if (d == null && wk == null && !noLimit) {
+      if (choosingNoLimit.current) return
       setError('Enter a daily or weekly limit, or choose No limit')
       setDaily(attachment.dailyMinutes != null ? String(attachment.dailyMinutes) : '')
       setWeekly(attachment.weeklyMinutes != null ? String(attachment.weeklyMinutes) : '')
@@ -323,10 +327,13 @@ function GroupRow({ profileId, attachment, group, apps, groups, budget, onChange
   }
 
   async function setNoLimit() {
+    choosingNoLimit.current = true
     setDaily(''); setWeekly('')
+    // `run` resolves after the refetch (`w.attach` awaits it), so the inputs are re-seeded by then.
     await run(() => w.attach(attachment.groupId, {
       dailyMinutes: null, weeklyMinutes: null, exemptFromDaily: attachment.exemptFromDaily,
     }), 'Failed to update')
+    choosingNoLimit.current = false
   }
 
   async function setCounts(counts: boolean) {
