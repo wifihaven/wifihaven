@@ -3161,7 +3161,9 @@ describe('ProfilesPage — weekly limits and app groups (#2935)', () => {
       expect(api.appGroups.attach).toHaveBeenCalledWith(1, 7, { dailyMinutes: null, weeklyMinutes: null, exemptFromDaily: true }))
   })
 
-  it('saves No limit when both limit inputs are cleared', async () => {
+  // "No limit" is an explicit choice (#2973): clearing the only limit on the way to typing another
+  // must not save a limitless, bedtime-reachable group.
+  it('does not save No limit when both limit inputs are cleared', async () => {
     fn(api.apps.list).mockResolvedValue([app(50, 'YouTube', { mode: 'allowed' })])
     fn(api.appGroups.list).mockResolvedValue([games])
     fn(api.appGroups.forProfile).mockResolvedValue([attachment({ dailyMinutes: 60, weeklyMinutes: null })])
@@ -3170,9 +3172,22 @@ describe('ProfilesPage — weekly limits and app groups (#2935)', () => {
     await user.click(await screen.findByTestId('group-row-7-toggle'))
     await user.clear(await screen.findByTestId('group-row-7-daily'))
     await user.tab()
-    await waitFor(() =>
-      expect(api.appGroups.attach).toHaveBeenCalledWith(1, 7, expect.objectContaining({ dailyMinutes: null, weeklyMinutes: null })))
-    expect(screen.queryByTestId('group-row-7-error')).not.toBeInTheDocument()
+    expect(await screen.findByTestId('group-row-7-error')).toHaveTextContent('No limit')
+    expect(api.appGroups.attach).not.toHaveBeenCalled()
+  })
+
+  it('applies No limit from the drawer even while a limit input has an edited value', async () => {
+    fn(api.apps.list).mockResolvedValue([app(50, 'YouTube', { mode: 'allowed' })])
+    fn(api.appGroups.list).mockResolvedValue([games])
+    fn(api.appGroups.forProfile).mockResolvedValue([attachment({ dailyMinutes: 60, weeklyMinutes: null })])
+    const user = userEvent.setup()
+    await openApps(user)
+    await user.click(await screen.findByTestId('group-row-7-toggle'))
+    await user.type(await screen.findByTestId('group-row-7-daily'), '5')
+    await user.click(screen.getByTestId('group-row-7-no-limit'))
+    await waitFor(() => expect(api.appGroups.attach).toHaveBeenCalled())
+    expect(api.appGroups.attach).toHaveBeenCalledTimes(1)
+    expect(api.appGroups.attach).toHaveBeenCalledWith(1, 7, expect.objectContaining({ dailyMinutes: null, weeklyMinutes: null }))
   })
 
   it('toggles Counts toward daily limit from the collapsed row', async () => {
