@@ -307,7 +307,7 @@ function GroupRow({ profileId, attachment, group, apps, groups, budget, onChange
     }), 'Failed to update')
   }
 
-  const memberWrites = useGroupMemberWrites(attachment.groupId, onChanged)
+  const memberWrites = useGroupMemberWrites(attachment.groupId, onChanged, attachment.memberAppIds)
 
   const dGtW = attachment.dailyMinutes != null && attachment.weeklyMinutes != null
     && attachment.dailyMinutes > attachment.weeklyMinutes
@@ -469,12 +469,24 @@ function GroupRow({ profileId, attachment, group, apps, groups, budget, onChange
 // profiles, time status) had finished, so "+ app" went dead for seconds after each add. Now:
 // - the member list in the `qk.appGroups()` cache changes at once (optimistic), and only the app
 //   being written is disabled;
-// - writes to one group run one after another, each sending the list as it stands when it runs.
-//   `memberAppIds` REPLACES the list, so two adds sent side by side from the same starting list
-//   would drop one; serialized, the last write carries every change made so far;
-// - a failed write takes its own change back out of the cache and says why;
-// - the refetches run in the background once the group has no write in flight.
+// - writes to one group run one after another. `memberAppIds` REPLACES the list, so each write
+//   sends the cached list with every unsettled change to that group re-applied on top. A refetch
+//   that lands mid-chain (from any source) therefore cannot make a write drop an app still queued
+//   or in flight;
+// - the background refetch waits until no member write is in flight for any group, so our own
+//   writes never refetch the list under one another;
+// - a failed write takes its own change back out of the cache and says why.
+interface MemberOp { appId: number; add: boolean }
 const memberWriteChains = new Map<number, Promise<void>>()
+const unsettledOps = new Map<number, MemberOp[]>()
+let memberWritesInFlight = 0
+
+function applyOps(ids: number[], ops: MemberOp[]): number[] {
+  return ops.reduce(
+    (acc, op) => (op.add ? (acc.includes(op.appId) ? acc : [...acc, op.appId]) : acc.filter(id => id !== op.appId)),
+    ids,
+  )
+}
 
 export interface GroupMemberWrites {
   pending: ReadonlySet<number>
@@ -483,37 +495,54 @@ export interface GroupMemberWrites {
   remove: (appId: number) => void
 }
 
-export function useGroupMemberWrites(groupId: number, onChanged?: () => void | Promise<void>): GroupMemberWrites {
+// `fallbackMemberIds` is the list to start from if the groups query has no entry for this group
+// (it errored, or has not loaded): a profile row passes its attachment's members.
+export function useGroupMemberWrites(
+  groupId: number,
+  onChanged?: () => void | Promise<void>,
+  fallbackMemberIds?: number[],
+): GroupMemberWrites {
   const qc = useQueryClient()
   const invalidators = useInvalidators()
   const [pending, setPending] = useState<ReadonlySet<number>>(new Set())
   const [error, setError] = useState<string | null>(null)
-  const inFlight = useRef(0)
+  const fallback = useRef(fallbackMemberIds)
+  fallback.current = fallbackMemberIds
 
-  function patch(f: (ids: number[]) => number[]) {
+  function cached(): number[] | undefined {
+    return qc.getQueryData<AppGroup[]>(qk.appGroups())?.find(g => g.id === groupId)?.memberAppIds
+  }
+  function setCached(ids: number[]) {
     qc.setQueryData<AppGroup[]>(qk.appGroups(), gs =>
-      gs?.map(g => (g.id === groupId ? { ...g, memberAppIds: f(g.memberAppIds) } : g)))
+      gs?.map(g => (g.id === groupId ? { ...g, memberAppIds: ids } : g)))
   }
 
   function change(appId: number, add: boolean) {
+    const op: MemberOp = { appId, add }
     setError(null)
     setPending(p => new Set(p).add(appId))
-    inFlight.current += 1
+    unsettledOps.set(groupId, [...(unsettledOps.get(groupId) ?? []), op])
+    memberWritesInFlight += 1
     // A refetch already under way would land on top of the optimistic list.
     void qc.cancelQueries({ queryKey: qk.appGroups(), exact: true })
-    patch(ids => (add ? (ids.includes(appId) ? ids : [...ids, appId]) : ids.filter(id => id !== appId)))
+    const now = cached()
+    if (now != null) setCached(applyOps(now, [op]))
     const run = async () => {
       try {
-        const group = qc.getQueryData<AppGroup[]>(qk.appGroups())?.find(g => g.id === groupId)
-        if (group == null) throw new Error('Groups are not loaded yet')
-        await api.appGroups.update(groupId, { memberAppIds: group.memberAppIds })
+        const base = cached() ?? fallback.current
+        if (base == null) throw new Error('Groups are not loaded yet')
+        const next = applyOps(base, unsettledOps.get(groupId) ?? [])
+        setCached(next)
+        await api.appGroups.update(groupId, { memberAppIds: next })
       } catch (e) {
-        patch(ids => (add ? ids.filter(id => id !== appId) : ids.includes(appId) ? ids : [...ids, appId]))
+        const now = cached()
+        if (now != null) setCached(applyOps(now, [{ appId, add: !add }]))
         setError(errMsg(e, 'Failed to update members'))
       } finally {
+        unsettledOps.set(groupId, (unsettledOps.get(groupId) ?? []).filter(o => o !== op))
         setPending(p => { const n = new Set(p); n.delete(appId); return n })
-        inFlight.current -= 1
-        if (inFlight.current === 0) {
+        memberWritesInFlight -= 1
+        if (memberWritesInFlight === 0) {
           void invalidators.appGroups()
           void onChanged?.()
         }
