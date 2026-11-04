@@ -3244,6 +3244,41 @@ describe('ProfilesPage — weekly limits and app groups (#2935)', () => {
     })
   })
 
+  // #2974 review: another group's write finishing must not refetch the list under a queued add and
+  // make it send a list without the apps still in flight.
+  it('keeps queued adds when another group finishes saving in between', async () => {
+    fn(api.apps.list).mockResolvedValue([app(62, 'Khan Academy', null), app(63, 'IXL', null), app(64, 'Duolingo', null)])
+    const server: Record<number, number[]> = { 7: [], 8: [] }
+    fn(api.appGroups.list).mockImplementation(async () => [
+      { id: 7, name: 'Homework', memberAppIds: server[7] },
+      { id: 8, name: 'Languages', memberAppIds: server[8] },
+    ])
+    fn(api.appGroups.forProfile).mockImplementation(async () => [
+      attachment({ groupId: 7, name: 'Homework', memberAppIds: server[7] }),
+      attachment({ groupId: 8, name: 'Languages', memberAppIds: server[8] }),
+    ])
+    const hung: (() => void)[] = []
+    fn(api.appGroups.update).mockImplementation((id: number, body: { memberAppIds: number[] }) => {
+      const apply = () => { server[id] = body.memberAppIds; return { id, name: '', memberAppIds: body.memberAppIds } }
+      if (id === 8) return Promise.resolve(apply())
+      return new Promise(resolve => hung.push(() => resolve(apply())))
+    })
+    const user = userEvent.setup()
+    await openApps(user)
+    await user.click(await screen.findByTestId('group-row-7-members-toggle'))
+    await user.click(await screen.findByTestId('group-row-8-members-toggle'))
+    await user.click(await screen.findByTestId('group-row-7-member-pick-62'))
+    await user.click(screen.getByTestId('group-row-7-member-pick-63'))
+    await user.click(screen.getByTestId('group-row-8-member-pick-64'))
+    await waitFor(() => expect(server[8]).toEqual([64]))
+    // Let any refetch the group-8 write triggered land before group 7's writes go out.
+    await act(async () => { await new Promise(r => setTimeout(r, 50)) })
+    while (hung.length > 0 || fn(api.appGroups.update).mock.calls.filter(c => c[0] === 7).length < 2) {
+      await act(async () => { hung.shift()?.(); await new Promise(r => setTimeout(r, 10)) })
+    }
+    await waitFor(() => expect([...server[7]].sort()).toEqual([62, 63]))
+  })
+
   it('rolls an add back and says why when the write fails', async () => {
     fn(api.apps.list).mockResolvedValue([app(62, 'Khan Academy', null)])
     fn(api.appGroups.list).mockResolvedValue([{ id: 7, name: 'Homework', memberAppIds: [] }])
