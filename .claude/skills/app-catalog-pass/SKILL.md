@@ -51,6 +51,7 @@ Then pull **per-apex bytes per device** over a recent window. The
 
 ```bash
 # focus on the kid devices (the app catalog is about kid-facing apps)
+# SEQUENTIAL on purpose (#2965): a parallel sweep exhausts the prod DB pool.
 for mac in <kid-macs>; do
   curl -sS -H "Authorization: Bearer $TOKEN" \
     "https://api.wifihaven.net/api/devices/$mac/recent-apexes?windowDays=30&limit=500" \
@@ -82,6 +83,15 @@ rm -f /tmp/wh_token.txt   # don't leave creds on disk
 returns `apps[]` — what IS attributed — and `orphanHosts[]`, every host carrying
 real time that no app covers, each with `proportionalSeconds`/`presenceSeconds`.
 That is already time-weighted, which the raw byte table is not.
+
+> **One day per request, one request at a time (#2965).** The route answers at
+> most `UsageRoutes.UsageByAppMaxRangeDays` (1) day: `from` must equal `to`,
+> anything wider is a 400. It loads every raw row in the range onto the API's
+> heap, and on 2026-11-03 parallel 30-day calls for six profiles ran prod out of
+> memory. For a multi-day view, loop over the days **sequentially** and merge
+> client-side. Never background (`&`) or `xargs -P` these calls, or the
+> `recent-apexes` sweep above: each holds a DB connection from a 12-connection
+> pool shared with `/api/health`.
 
 Two cautions before you treat an orphan as a gap:
 
@@ -252,6 +262,42 @@ above is now wrong, fix the step too — don't just log around it.
 
 ## Learnings log (newest first)
 
+- **2026-11-03 (#2962)** — **This pass caused a prod incident. Never fan out
+  the Step 0/1 pulls in parallel, and keep `usage-by-app` off the adult
+  profiles over long ranges.** About 30 concurrent
+  `recent-apexes?windowDays=30` calls used up the API's 12-connection DB
+  pool, which returned 503s. Then parallel 30-day `usage-by-app` calls on
+  every profile ran out the JVM heap: profiles 2/3/4 hold about 1–1.8M raw
+  rows over 30 days, and that endpoint loads every row into memory. Render
+  restarted the API, and `/api/health` returned 502 for about two minutes
+  (per the incident session's prod logs, #2965). Do this instead:
+  - Run every call serially, with a plain `for` loop and no `&`.
+  - Query only the kid profiles (5–7), and request ONE day per
+    `usage-by-app` call (`from == to`), looping day by day. Once #2970 (for
+    #2965) merges, the server rejects longer ranges with a 400.
+  - Check `/api/health` before retrying anything that returned a 502.
+  - If a device's `recent-apexes` call fails, the profile-level
+    `usage-by-app` row already covers that device, so don't retry it in a
+    loop.
+- **2026-11-03 (#2962)** — **A product delivered inside another templated
+  platform gets documented there, not templated.** enVision Math is Savvas
+  courseware inside Savvas Realize: no host of its own in vendor docs or
+  traffic. A second template on the same hosts would split one budget
+  between two apps. Record it in the host platform's template comment so a
+  later grep for the product name finds the decision. Don't rename the
+  host app's `name:` to mention it: `AppReconciler` sets an app's name only
+  on create (`repo.create(t.name, ...)`), so a rename reaches new installs
+  only and existing rows keep the old name.
+- **2026-11-03 (#2962)** — **School vendors publish allowlists that are
+  mostly OTHER vendors' services.** The i-Ready PDF lists Learnosity,
+  Vidyard, 3Play, Gainsight, Box and bare CloudFront distributions next to
+  `*.i-ready.com`. Take only the vendor's own apexes, and confirm each with
+  `dig NS`, a cert check and a `<title>`. A district-branded SSO host
+  (`classlink.<district>.org`) is the district's, not the vendor's: skip it
+  even when it's in traffic, since the catalog is shared across households.
+  Savvas and ClassLink help-center articles are JavaScript-rendered and
+  can't be fetched; mark anything sourced from search summaries as
+  unverified in the evidence file.
 - **2026-11-02 (#2955)** — **A prior pass's "skip, no content-facing
   sibling" verdict can flip the very next time a brand's usage grows —
   re-check every recent skip against this run's orphan list before assuming

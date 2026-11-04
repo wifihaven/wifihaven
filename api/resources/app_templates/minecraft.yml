@@ -7,9 +7,27 @@ icon_type: url
 # app-catalog pass): net-secondary.web.minecraft-services.net is a distinct,
 # confirmed-genuine Minecraft Bedrock backend domain, separate from the
 # already-templated minecraftservices.com.
+#
+# minecrafteduservices.com added at #2962 (2026-11-03): sign-in, multiplayer
+# and coding backend for Minecraft Education, the school edition. Listed in
+# Microsoft's "URLs Used by Minecraft Education" article
+# (edusupport.minecraft.net/hc/en-us/articles/4404784181524). NOT observed
+# in kid traffic (no Minecraft traffic on kid profiles in the 30d window);
+# added from the vendor doc because kids here use school Chromebooks.
+# login.minecrafteduservices.com fronts on Azure Front Door (150.171.109.x),
+# the same pool minecraft.net and api.minecraftservices.com already
+# resolve to, so it adds no new collateral class to this template.
+# education.minecraft.net is already covered by minecraft.net.
+# Consequence: blocking or time-limiting this app also blocks, or bills to
+# its budget, Minecraft Education schoolwork. That was already true via
+# minecraft.net (education.minecraft.net); this entry does not change it.
+# Not added from that article: playfabapi.com (PlayFab, a Microsoft game
+# backend used by many unrelated games), and the Microsoft 365 / Azure
+# identity, SharePoint, OneNote and MakeCode hosts it also lists.
 hosts:
   - minecraft.net
   - mojang.com
   - minecraftservices.com
   - minecraft-services.net
   - xboxlive.com
+  - minecrafteduservices.com

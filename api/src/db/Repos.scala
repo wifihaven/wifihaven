@@ -3594,7 +3594,14 @@ class TrafficReportRepoLive(xa: Transactor[Task]) extends TrafficReportRepo {
       toInstant: Instant,
   ) = {
     type Row = (String, Long, Long)
-    (fr"""SELECT host, SUM(bytes)::BIGINT AS bytes, COUNT(*)::BIGINT AS hits
+    // #2965: bounded so a slow or parallel sweep fails fast (503) instead of holding the pool.
+    // Timed under db_queries_total{op,status}, where a timeout counts as status="error"; the
+    // latency histogram tops out at 5s (`DbDurationBoundaries`), so a normal 30-day read of a busy
+    // device (~20s) shows there only as the top bucket.
+    DbMetrics
+      .timed("traffic.listFqdnHostAggregatesForDevice")(
+        QueryTimeout.bounded(xa, QueryTimeout.RecentApexesWindow)(
+          (fr"""SELECT host, SUM(bytes)::BIGINT AS bytes, COUNT(*)::BIGINT AS hits
           FROM (
             SELECT COALESCE(
                      CASE WHEN tr.host_type IN ('ipv4','ipv6') THEN ce.resolved_host_value END,
@@ -3607,15 +3614,16 @@ class TrafficReportRepoLive(xa: Transactor[Task]) extends TrafficReportRepo {
               AND tr.period_start >= $fromInstant
               AND tr.period_start <  $toInstant
               AND (tr.bytes_in + tr.bytes_out) > 0 """
-      ++ SqlFragments.householdRouterScope(household, "tr.router_id") ++
-      fr"""
+            ++ SqlFragments.householdRouterScope(household, "tr.router_id") ++
+            fr"""
           ) sub
           WHERE host IS NOT NULL
           GROUP BY host
           ORDER BY bytes DESC""")
-      .query[Row]
-      .to[List]
-      .transact(xa)
+            .query[Row]
+            .to[List],
+        ),
+      )
       .map(_.flatMap { case (h, b, hits) =>
         Hostname.parse(h).toOption.map(hn => (hn, b, hits))
       })

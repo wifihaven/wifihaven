@@ -1756,6 +1756,12 @@ function AppsSection({ profileId, isNew, apps, onChanged, testIdPrefix = 'apps-s
   // and "+ Block app" land the picked app directly in the list you asked for.
   const [pickerMode, setPickerMode] = useState<'allowed' | 'blocked' | null>(null)
   const [pickerFilter, setPickerFilter] = useState('')
+  // #2974 — the group just attached from "+ Add group": its row opens on its members, since filling
+  // the group is what the parent wants to do next.
+  const [justAttachedGroup, setJustAttachedGroup] = useState<number | null>(null)
+  // #2964 — the picked app's save in flight, and the last save's failure.
+  const [addingAppId, setAddingAppId] = useState<number | null>(null)
+  const [pickerError, setPickerError] = useState<string | null>(null)
   // #1983 — blocklist id → display name for the per-app overlap warning badges.
   const { data: blocklists = [] } = useBlocklists()
   const blocklistNameById = useMemo(() => {
@@ -1798,20 +1804,36 @@ function AppsSection({ profileId, isNew, apps, onChanged, testIdPrefix = 'apps-s
   }, [unassigned, pickerFilter])
 
   async function addApp(app: AppDetail, mode: 'allowed' | 'blocked') {
-    if (profileId == null) return
-    // #2764 — an app added to the ALLOWED list obeys scheduled downtime
-    // (`allowedDuringScheduleBlock: false`). This is the one deliberate
-    // behaviour change in the redesign: a fresh allowance shouldn't quietly
-    // punch a hole through the profile's downtime windows. It is a client-side
-    // payload change only — the column default, the wire default and every
-    // existing assignment are untouched, and moving an app back from Blocked
-    // restores whatever value that assignment already carried.
-    await api.apps.setPolicy(app.app.id, profileId, mode === 'allowed'
-      ? { mode, dailyMinutes: null, allowedDuringScheduleBlock: false }
-      : { mode, dailyMinutes: null })
+    if (profileId == null || addingAppId != null) return
+    setAddingAppId(app.app.id)
+    setPickerError(null)
+    try {
+      // #2764 — an app added to the ALLOWED list obeys scheduled downtime
+      // (`allowedDuringScheduleBlock: false`). This is the one deliberate
+      // behaviour change in the redesign: a fresh allowance shouldn't quietly
+      // punch a hole through the profile's downtime windows. It is a client-side
+      // payload change only — the column default, the wire default and every
+      // existing assignment are untouched, and moving an app back from Blocked
+      // restores whatever value that assignment already carried.
+      await api.apps.setPolicy(app.app.id, profileId, mode === 'allowed'
+        ? { mode, dailyMinutes: null, allowedDuringScheduleBlock: false }
+        : { mode, dailyMinutes: null })
+    } catch (e) {
+      // #2964 — keep the picker open and say why, instead of an unhandled
+      // rejection that leaves the click looking dead.
+      setPickerError(`Couldn’t add ${app.app.name}: ${e instanceof Error ? e.message : 'save failed'}`)
+      return
+    } finally {
+      setAddingAppId(null)
+    }
+    closePicker()
+    await onChanged()
+  }
+
+  function closePicker() {
     setPickerMode(null)
     setPickerFilter('')
-    await onChanged()
+    setPickerError(null)
   }
 
   const addBtn = 'text-xs px-2 py-1 rounded-lg border bg-white transition-colors disabled:opacity-50'
@@ -1823,11 +1845,12 @@ function AppsSection({ profileId, isNew, apps, onChanged, testIdPrefix = 'apps-s
         groups={groupsQ.data ?? []}
         attached={attached}
         onChanged={onChanged}
+        onAttached={setJustAttachedGroup}
       />
       <button
         type="button"
         data-testid={`${testIdPrefix}-add-allowed`}
-        onClick={() => setPickerMode(m => (m === 'allowed' ? null : 'allowed'))}
+        onClick={() => { setPickerError(null); setPickerMode(m => (m === 'allowed' ? null : 'allowed')) }}
         className={`${addBtn} border-brand-accent/40 text-brand-accent hover:bg-brand-accent/10`}
       >
         {pickerMode === 'allowed' ? 'Close' : '+ Allow app'}
@@ -1835,7 +1858,7 @@ function AppsSection({ profileId, isNew, apps, onChanged, testIdPrefix = 'apps-s
       <button
         type="button"
         data-testid={`${testIdPrefix}-add-blocked`}
-        onClick={() => setPickerMode(m => (m === 'blocked' ? null : 'blocked'))}
+        onClick={() => { setPickerError(null); setPickerMode(m => (m === 'blocked' ? null : 'blocked')) }}
         className={`${addBtn} border-red-500/40 text-red-700 hover:bg-red-500/10`}
       >
         {pickerMode === 'blocked' ? 'Close' : '+ Block app'}
@@ -1932,7 +1955,7 @@ function AppsSection({ profileId, isNew, apps, onChanged, testIdPrefix = 'apps-s
               <button
                 type="button"
                 data-testid={`${testIdPrefix}-none-assigned-add`}
-                onClick={() => setPickerMode('allowed')}
+                onClick={() => { setPickerError(null); setPickerMode('allowed') }}
                 className="text-brand-accent hover:text-brand-accent underline"
               >
                 Add one
@@ -1949,6 +1972,7 @@ function AppsSection({ profileId, isNew, apps, onChanged, testIdPrefix = 'apps-s
             apps={apps}
             budget={budget}
             onChanged={onChanged}
+            openMembersFor={justAttachedGroup}
           />
           {assigned.length > 0 && renderList('allowed', allowedApps)}
           {assigned.length > 0 && renderList('blocked', blockedApps)}
@@ -1973,6 +1997,9 @@ function AppsSection({ profileId, isNew, apps, onChanged, testIdPrefix = 'apps-s
                 data-testid={`${testIdPrefix}-picker-filter`}
                 className="w-full bg-white border border-brand-border-strong rounded-lg px-2 py-1 text-brand-ink text-xs"
               />
+              {pickerError && (
+                <p className="text-xs text-red-700" data-testid={`${testIdPrefix}-picker-error`}>{pickerError}</p>
+              )}
               {pickerMatches.length === 0 ? (
                 <p className="text-xs text-brand-text-muted" data-testid={`${testIdPrefix}-picker-empty`}>
                   {unassigned.length === 0
@@ -1987,7 +2014,9 @@ function AppsSection({ profileId, isNew, apps, onChanged, testIdPrefix = 'apps-s
                       type="button"
                       data-testid={`${testIdPrefix}-picker-add-${a.app.id}`}
                       onClick={() => addApp(a, pickerMode)}
-                      className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg bg-white hover:bg-brand-alt border border-brand-border-strong text-left"
+                      disabled={addingAppId != null}
+                      aria-busy={addingAppId === a.app.id}
+                      className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg bg-white hover:bg-brand-alt border border-brand-border-strong text-left disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                       <AppIcon icon={a.app.icon} iconType={a.app.iconType} size="sm" className="w-5 text-center" />
                       <span className="text-sm text-brand-ink flex-1 truncate">{a.app.name}</span>
@@ -1998,7 +2027,9 @@ function AppsSection({ profileId, isNew, apps, onChanged, testIdPrefix = 'apps-s
                           className="text-[10.5px] font-semibold px-1.5 rounded-full bg-amber-500/15 border border-amber-500/40 text-amber-800 shrink-0"
                         >In {coveredNameByAppId.get(a.app.id)}</span>
                       )}
-                      <span className="text-xs text-brand-text-muted">{a.hosts.length} host{a.hosts.length === 1 ? '' : 's'}</span>
+                      <span className="text-xs text-brand-text-muted">
+                        {addingAppId === a.app.id ? 'Adding…' : `${a.hosts.length} host${a.hosts.length === 1 ? '' : 's'}`}
+                      </span>
                     </button>
                   ))}
                 </div>
