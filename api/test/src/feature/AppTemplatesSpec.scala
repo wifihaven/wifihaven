@@ -213,6 +213,8 @@ object AppTemplatesSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
           // #2943: orphan-driven catalog pass — GDevelop, a no-code
           // game-creation engine (same category as scratch/tinkercad)
           "gdevelop",
+          // #2962: operator-named pass — i-Ready (Curriculum Associates)
+          "iready",
         )
         val slugs    = templates.map(_.slug.value).toSet
         assertTrue(slugs == expected) &&
