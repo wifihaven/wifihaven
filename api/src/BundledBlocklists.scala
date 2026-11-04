@@ -405,15 +405,24 @@ object BundledBlocklists {
             cache.put(b.id, BlocklistCache.Entry(hosts, fetchedAt = now, source = url)),
           ),
         )
+        .tap(_ => AppMetrics.recordBlocklistFetch(b.id, "ok"))
         .flatMap(exceptSharedGfe(b.id, _))
         .map(Some(_))
-        .catchAll(e =>
-          ZIO
-            .logWarning(
-              s"failed to fetch bundled blocklist '${b.id.value}' from $url: ${e.getMessage}; keeping existing DB rows",
-            )
-            .as(None),
-        )
+        .catchAll { e =>
+          // #2978: a source that answers 4xx will not recover on its own (urlhaus retired its
+          // hostfile with a 410 and the WARN went unread for weeks). Split it from a flaky
+          // upstream so W20 can page on it; the rows are kept either way.
+          val permanent = e match {
+            case r: BlocklistFetcher.UpstreamRejected => r.permanent
+            case _                                    => false
+          }
+          AppMetrics.recordBlocklistFetch(b.id, if (permanent) "gone" else "error") *>
+            ZIO
+              .logWarning(
+                s"failed to fetch bundled blocklist '${b.id.value}' from $url: ${e.getMessage}; keeping existing DB rows",
+              )
+              .as(None)
+        }
   }
 
   /**
