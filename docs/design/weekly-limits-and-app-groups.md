@@ -601,8 +601,9 @@ grows taller when collapsed.
   today (AGENTS.md#exempt-from-daily). "+ Add group" lists the household's
   groups and a "New group…" entry.
 - No limit (#2973): "+ Add group" offers "No limit" beside the minutes box, and
-  the limits drawer has a "No limit" control; clearing both inputs also saves
-  no limit. Such a row's chip reads "No limit", with no usage loading state
+  the limits drawer has a "No limit" control. No limit is only ever that
+  explicit choice: clearing both inputs asks for a limit or No limit instead
+  of saving. Such a row's chip reads "No limit", with no usage loading state
   since it shows no usage figure. The collapsed row carries a "Counts" / "Not
   counted" toggle, so a group's effect on the daily total is visible without
   opening the drawer.
