@@ -62,6 +62,15 @@ hosts:
   - xbox.com
   - gog.com
   - itch.io
+  # #2955: itch.io's own CDN apex (sibling domain, NOT a subdomain of
+  # itch.io, so blocking itch.io alone does not suffix-match it). 30d prod
+  # orphan sweep showed real `html-classic.itch.zone` traffic through this
+  # gap — an embedded itch.io game can still load its playable content over
+  # itch.zone even with itch.io itself blocked. Same two Cloudflare
+  # nameservers (`dawn`/`noah.ns.cloudflare.com`) as itch.io, corroborating
+  # common ownership; content itself is Akamai-fronted (standard shared-edge
+  # risk already accepted throughout this catalog).
+  - itch.zone
   - poki.com
   # traffic-driven addition (#2599): Poki's own CDN apex (sibling of poki.com)
   # observed serving substantial video/asset traffic. 30-day prod

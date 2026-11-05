@@ -3039,6 +3039,8 @@ describe('ProfilesPage — weekly limits and app groups (#2935)', () => {
     expect(chip).toHaveTextContent('Also in Games')
     expect(screen.queryByTestId('app-row-50-overlap-chip')).not.toBeInTheDocument()
     await user.click(chip)
+    expect(await screen.findByTestId('app-row-60-overlap-drawer'))
+      .toHaveTextContent("blocked as soon as its own limit or the group's runs out")
     await user.click(await screen.findByTestId('app-row-60-overlap-remove'))
     await waitFor(() => expect(api.apps.deletePolicy).toHaveBeenCalledWith(60, 1))
     expect(api.appGroups.detach).not.toHaveBeenCalled()
@@ -3122,6 +3124,109 @@ describe('ProfilesPage — weekly limits and app groups (#2935)', () => {
     )
     expect(screen.queryByTestId('profile-1-apps-section-add-group-saving')).not.toBeInTheDocument()
     expect(minutes).not.toBeDisabled()
+  })
+
+  // #2973 — "No limit" is an explicit choice: a group can be a plain bundle with no shared budget.
+  it('attaches a group with No limit, not counted toward the daily limit', async () => {
+    fn(api.apps.list).mockResolvedValue([app(50, 'YouTube', { mode: 'allowed' })])
+    fn(api.appGroups.list).mockResolvedValue([games])
+    const user = userEvent.setup()
+    await openApps(user)
+    await user.click(await screen.findByTestId('profile-1-apps-section-add-group'))
+    await user.click(screen.getByTestId('profile-1-apps-section-add-group-option-7'))
+    await user.click(await screen.findByTestId('profile-1-apps-section-add-group-no-limit'))
+    await waitFor(() =>
+      expect(api.appGroups.attach).toHaveBeenCalledWith(1, 7, { dailyMinutes: null, weeklyMinutes: null, exemptFromDaily: true }))
+  })
+
+  it('shows "No limit" on the row of a limitless group, even before usage loads', async () => {
+    fn(api.apps.list).mockResolvedValue([app(50, 'YouTube', { mode: 'allowed' })])
+    fn(api.appGroups.list).mockResolvedValue([games])
+    fn(api.appGroups.forProfile).mockResolvedValue([attachment({ dailyMinutes: null, weeklyMinutes: null })])
+    fn(api.time.statusAll).mockReturnValue(new Promise(() => {}))
+    const user = userEvent.setup()
+    await openApps(user)
+    const chip = await screen.findByTestId('group-row-7-toggle')
+    expect(chip).toHaveTextContent('No limit')
+    expect(chip.textContent).not.toMatch(/0m/)
+  })
+
+  it('switches a limited group to No limit from the drawer', async () => {
+    fn(api.apps.list).mockResolvedValue([app(50, 'YouTube', { mode: 'allowed' })])
+    fn(api.appGroups.list).mockResolvedValue([games])
+    fn(api.appGroups.forProfile).mockResolvedValue([attachment({ dailyMinutes: 60, weeklyMinutes: 300, exemptFromDaily: true })])
+    const user = userEvent.setup()
+    await openApps(user)
+    await user.click(await screen.findByTestId('group-row-7-toggle'))
+    await user.click(await screen.findByTestId('group-row-7-no-limit'))
+    await waitFor(() =>
+      expect(api.appGroups.attach).toHaveBeenCalledWith(1, 7, { dailyMinutes: null, weeklyMinutes: null, exemptFromDaily: true }))
+  })
+
+  // "No limit" is an explicit choice (#2973): clearing the only limit on the way to typing another
+  // must not save a limitless, bedtime-reachable group.
+  it('does not save No limit when both limit inputs are cleared', async () => {
+    fn(api.apps.list).mockResolvedValue([app(50, 'YouTube', { mode: 'allowed' })])
+    fn(api.appGroups.list).mockResolvedValue([games])
+    fn(api.appGroups.forProfile).mockResolvedValue([attachment({ dailyMinutes: 60, weeklyMinutes: null })])
+    const user = userEvent.setup()
+    await openApps(user)
+    await user.click(await screen.findByTestId('group-row-7-toggle'))
+    await user.clear(await screen.findByTestId('group-row-7-daily'))
+    await user.tab()
+    expect(await screen.findByTestId('group-row-7-error')).toHaveTextContent('No limit')
+    expect(api.appGroups.attach).not.toHaveBeenCalled()
+  })
+
+  it('applies No limit from the drawer even while a limit input has an edited value', async () => {
+    fn(api.apps.list).mockResolvedValue([app(50, 'YouTube', { mode: 'allowed' })])
+    fn(api.appGroups.list).mockResolvedValue([games])
+    fn(api.appGroups.forProfile).mockResolvedValue([attachment({ dailyMinutes: 60, weeklyMinutes: null })])
+    const user = userEvent.setup()
+    await openApps(user)
+    await user.click(await screen.findByTestId('group-row-7-toggle'))
+    await user.type(await screen.findByTestId('group-row-7-daily'), '5')
+    await user.click(screen.getByTestId('group-row-7-no-limit'))
+    await waitFor(() => expect(api.appGroups.attach).toHaveBeenCalled())
+    expect(api.appGroups.attach).toHaveBeenCalledTimes(1)
+    expect(api.appGroups.attach).toHaveBeenCalledWith(1, 7, expect.objectContaining({ dailyMinutes: null, weeklyMinutes: null }))
+  })
+
+  // The emptied box "No limit" leaves behind can blur before the saved attachment arrives; that blur
+  // is not a parent clearing the limits, so it must not show the "choose No limit" error (#2973).
+  it('shows no error when a limit input blurs while No limit is saving', async () => {
+    fn(api.apps.list).mockResolvedValue([app(50, 'YouTube', { mode: 'allowed' })])
+    fn(api.appGroups.list).mockResolvedValue([games])
+    fn(api.appGroups.forProfile).mockResolvedValue([attachment({ dailyMinutes: 60, weeklyMinutes: null })])
+    let finish!: () => void
+    fn(api.appGroups.attach).mockImplementation(() => new Promise(r => { finish = () => r(undefined) }))
+    const user = userEvent.setup()
+    await openApps(user)
+    await user.click(await screen.findByTestId('group-row-7-toggle'))
+    const daily = await screen.findByTestId('group-row-7-daily')
+    await user.click(daily)
+    await user.click(screen.getByTestId('group-row-7-no-limit'))
+    await waitFor(() => expect(api.appGroups.attach).toHaveBeenCalledTimes(1))
+    fireEvent.blur(daily)
+    expect(screen.queryByTestId('group-row-7-error')).not.toBeInTheDocument()
+    await act(async () => { finish() })
+    expect(screen.queryByTestId('group-row-7-error')).not.toBeInTheDocument()
+    expect(api.appGroups.attach).toHaveBeenCalledTimes(1)
+  })
+
+  it('toggles Counts toward daily limit from the collapsed row', async () => {
+    fn(api.apps.list).mockResolvedValue([app(50, 'YouTube', { mode: 'allowed' })])
+    fn(api.appGroups.list).mockResolvedValue([games])
+    fn(api.appGroups.forProfile).mockResolvedValue([attachment({ dailyMinutes: null, weeklyMinutes: null, exemptFromDaily: true })])
+    const user = userEvent.setup()
+    await openApps(user)
+    const counts = await screen.findByTestId('group-row-7-counts-chip')
+    expect(counts).toHaveTextContent('Not counted')
+    expect(counts).toHaveAttribute('aria-pressed', 'false')
+    expect(screen.queryByTestId('group-row-7-drawer')).not.toBeInTheDocument()
+    await user.click(counts)
+    await waitFor(() =>
+      expect(api.appGroups.attach).toHaveBeenCalledWith(1, 7, { dailyMinutes: null, weeklyMinutes: null, exemptFromDaily: false }))
   })
 
   it('creates a new group, then asks for its limit', async () => {
