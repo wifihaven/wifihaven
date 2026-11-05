@@ -839,20 +839,24 @@ Operator request: "groups are in their own section, you should be able to block
 a group or allow a group", refined the same day to "the groups that are
 blocked should be in the blocked section, allowed should be in the allowed
 section". Product calls were confirmed by the operator on 2026-11-03 and are
-recorded as D18–D22 below.
+recorded as D18–D22 below; D23 followed on 2026-11-04.
 
 ### 17.1 What changes
 
-Today an attachment (`profile_app_groups`) can only carry limits. V92's
-`profile_app_groups_has_limit` CHECK requires a daily or weekly one (D4). With
-this addendum an attachment has a **mode**, the same three an app assignment
-has:
+Before this addendum an attachment (`profile_app_groups`) could only carry
+limits. V93 (#2973) dropped V92's at-least-one-limit CHECK, so a limitless
+attachment became a bundle that is never exhausted (D4, revised). With this
+addendum an attachment has a **mode**, the same three an app assignment has:
 
 | Attachment mode | Effect on every member app on this profile |
 |---|---|
 | `blocked` | Blocked. Its distinctive hosts go to `extraBlocked` (#1899). |
 | `allowed` | Allowed. Its full host-set goes to `extraAllowed`, the plain Allowed carve an Allowed app gets today. |
-| `time_limited` | Today's behaviour: one group budget with a daily and/or weekly limit (§6, §7). |
+| `time_limited` | One group budget with a daily and/or weekly limit (§6, §7). |
+
+An attachment with no limit is Allowed (D23). #2973's "No limit" choice and
+an Allowed group are the same thing. The attach flow #2973 added stays as it
+is; a request with no limit now resolves to Allowed.
 
 The household group is still a name and a member list. The mode is the
 profile's, like the limits, so it adds no policy tier (#1452).
@@ -865,36 +869,49 @@ ALTER TABLE profile_app_groups
   ADD COLUMN allowed_during_schedule_block BOOLEAN NOT NULL DEFAULT TRUE,
   ADD CONSTRAINT profile_app_groups_mode_check
     CHECK (mode IN ('blocked', 'allowed', 'time_limited')),
-  DROP CONSTRAINT profile_app_groups_has_limit,
-  ADD CONSTRAINT profile_app_groups_limit_iff_time_limited
-    CHECK ((mode = 'time_limited') = (daily_minutes IS NOT NULL OR weekly_minutes IS NOT NULL));
+  ADD CONSTRAINT profile_app_groups_limit_only_if_time_limited
+    CHECK (mode = 'time_limited' OR (daily_minutes IS NULL AND weekly_minutes IS NULL));
+
+UPDATE profile_app_groups SET mode = 'allowed'
+ WHERE daily_minutes IS NULL AND weekly_minutes IS NULL;
 ```
+
+V94, after #2973's V93.
 
 - `mode` is TEXT with a CHECK, as `app_policy_assignments.mode` is (V28). The
   default keeps every existing row, and every INSERT from image N-1, TimeLimited.
-- The new CHECK replaces D4's: a TimeLimited attachment still needs a limit,
-  and an Allowed or Blocked one carries none. Setting a limit means TimeLimited,
-  and clearing both means Allowed, as for apps (§5.2, D21). No stale limit can
-  sit on an Allowed row.
+- An Allowed or Blocked attachment carries no limit, so no stale limit can sit
+  on one. Setting a limit means TimeLimited, and clearing both means Allowed,
+  as for apps (§5.2, D21).
+- The CHECK does not require a TimeLimited row to have a limit. Image N-1
+  (#2973's code) writes limitless rows without a `mode`, so they arrive as
+  `time_limited`, and a stricter CHECK would fail those writes. The fold reads
+  a TimeLimited attachment with no limit as Allowed (§17.3, D23), so such a row
+  behaves the same whichever image wrote it. The UPDATE moves the limitless rows
+  that exist at migration time to `allowed`, so new code never has to rely on
+  that reading for them.
 - `allowed_during_schedule_block` is the attachment's #1679 toggle (D19). It is
   read only for an Allowed attachment.
-- Cost: two metadata-only ADD COLUMNs on a table with one row per attachment,
-  and CHECK validation over the same few rows.
+- Cost: two metadata-only ADD COLUMNs, CHECK validation and an UPDATE, all on a
+  table with one row per attachment.
 - Rollback to image N-1 after Allowed or Blocked rows exist: N-1 reads every
-  row as TimeLimited. An Allowed row has no limits, so its group budget is never
-  exhausted and its members stay reachable (close to Allowed). A Blocked row
-  stops blocking. That loss is bounded to the rollback window, and is why
-  enforcement ships before the API write surface (§17.7). Writes degrade too:
-  N-1's upsert does not write `mode`, so setting a limit on an Allowed or
-  Blocked row violates the new CHECK and fails with a 500 until the image rolls
-  forward. Every image from #2980 on writes `mode` in the upsert's
-  `DO UPDATE SET`, so the CHECK can only fail on N-1.
+  row as TimeLimited. An Allowed row has no limits, so N-1 reads it as #2973's
+  never-exhausted bundle: a not-counted one is still reachable through bedtime,
+  a soft pause and the daily total, and a counted one goes off with the daily
+  total. A Blocked row stops blocking. That loss is bounded to the rollback
+  window, and is why enforcement ships before the API write surface (§17.7).
+  Writes degrade too: N-1's upsert does not write `mode`, so setting a limit on
+  an Allowed or Blocked row violates the new CHECK and fails with a 500 until
+  the image rolls forward. Every image from #2980 on writes `mode` in the
+  upsert's `DO UPDATE SET`, so the CHECK can only fail on N-1.
 
 ### 17.3 Fold (`ProfileAppDispositions.from`)
 
-`GroupCoverage` gains `mode` and `allowedDuringScheduleBlock`. The fold keeps
-one disposition per member and picks its mode by **stricter wins** (D20),
-extending D14: `Blocked > TimeLimited > Allowed`.
+`GroupCoverage` gains `mode` and `allowedDuringScheduleBlock`. The fold first
+reads a TimeLimited attachment with no limit as Allowed (D23); that is the one
+place the mapping lives. It then keeps one disposition per member and picks its
+mode by **stricter wins** (D20), extending D14: `Blocked > TimeLimited >
+Allowed`.
 
 | Attachment | Member's own row | Disposition |
 |---|---|---|
@@ -949,10 +966,10 @@ mode (#2747):
   - `mode` present: TimeLimited needs a limit, and Allowed or Blocked with a
     limit is rejected with a 400. Both cases follow D21.
   - `mode` absent and a limit present: TimeLimited (D21: setting a limit makes
-    it TimeLimited). This is also what every pre-#2981 caller sends, since they
-    always send a limit.
-  - `mode` absent and no limit: the existing row's mode if it is Allowed or
-    Blocked, otherwise a 400 that asks for a limit (today's rule).
+    it TimeLimited).
+  - `mode` absent and no limit: Blocked if the existing row is Blocked,
+    otherwise Allowed (D23). This is how #2973's "No limit" body, which sends
+    no `mode`, lands as an Allowed group.
 
   The repo always writes the resolved `mode` and toggle, `DO UPDATE SET`
   included. All additive.
@@ -1001,3 +1018,14 @@ mode (#2747):
   attachment TimeLimited, and clearing both makes it Allowed.
 - **D22 Exempt by mode.** Budget only for an Allowed group; hidden and inert
   for a Blocked one.
+- **D23 No limit is Allowed (2026-11-04).** #2973's "attach with no limit"
+  and an Allowed group are the same thing. A limitless attachment is Allowed:
+  V94 moves existing limitless rows to `allowed`, the API resolves a limitless
+  request to Allowed, and the fold reads a limitless TimeLimited row as
+  Allowed. #2973's attach flow and request body are unchanged. One consequence
+  differs from #2973 as designed: a no-limit group that counts toward the
+  daily total stays reachable after the daily total runs out, as an Allowed
+  app does (#2747), instead of going off with it. A not-counted one behaves
+  the same either way. Revisit if a counted no-limit group should still stop
+  with the daily total; the V94 UPDATE, the API default and the fold mapping
+  (§17.3) are the three places that would change.
