@@ -66,7 +66,7 @@ openwrt/wifihaven_*.ipk
 openwrt/wifihaven_*.apk
 .venv-test/
 
-# Cloudflare Worker local-dev scratch (deploy/press-worker). `.dev.vars` holds real local secret
+# wrangler local-dev scratch (web/ Pages deploys). `.dev.vars` holds real local secret
 # values for `wrangler dev` and must never be committed; `.wrangler/` is miniflare's state dir.
 .dev.vars
 .wrangler/

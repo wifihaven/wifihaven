@@ -14,7 +14,6 @@ updates:
   - package-ecosystem: npm
     directories:
       - /web
-      - /deploy/press-worker
     schedule:
       interval: weekly
     # 0 disables version-update PRs; security updates are not affected by this limit.

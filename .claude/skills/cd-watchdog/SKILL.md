@@ -1,6 +1,6 @@
 ---
 name: cd-watchdog
-description: Daily health check of every WifiHaven `Master … CD` deploy pipeline (Router, API/UI, Cloudflare, Grafana, Marketing, Press Agent/Worker, Support Agent, and any future ones). Detects a RED deploy pipeline on main, triages infra flakes (re-run, don't patch), and ONLY for a genuine unaddressed code failure opens a fix PR. Invoke as the daily CD watchdog, or whenever asked "is CD green", "check the deploy pipelines", "why is Master … CD red", or "watchdog the CD".
+description: Daily health check of every WifiHaven `Master … CD` deploy pipeline (Router, API/UI, Cloudflare, Grafana, Marketing, and any future ones). Detects a RED deploy pipeline on main, triages infra flakes (re-run, don't patch), and ONLY for a genuine unaddressed code failure opens a fix PR. Invoke as the daily CD watchdog, or whenever asked "is CD green", "check the deploy pipelines", "why is Master … CD red", or "watchdog the CD".
 ---
 
 # CD health watchdog
@@ -40,8 +40,7 @@ cd /Users/sameer/workspace/wifihaven && git fetch origin
 
 **The set of pipelines to check is discovered dynamically, never hardcoded.**
 Every deploy pipeline is a workflow whose GitHub name is `Master … CD` — today
-that is Router, API/UI, Cloudflare, Grafana, Marketing, Press Agent, Press
-Worker, and Support Agent, but new ones get added, so enumerate by name so this
+that is Router, API/UI, Cloudflare, Grafana, and Marketing, but new ones get added, so enumerate by name so this
 skill stays current automatically:
 
 ```bash
@@ -84,11 +83,8 @@ Each pipeline has a different shape — don't assume the failing step:
 - **Master Cloudflare CD** / **Master Grafana CD**: Terraform apply — failures
   are usually a provider/auth error, a plan drift, or a missing secret/token
   scope, not a test.
-- **Master Marketing CD** / **Master Press Worker CD**: static-site / Cloudflare
-  Worker build + deploy (wrangler) — failures are usually a build or a
-  wrangler/secret error.
-- **Master Press Agent CD** / **Master Support Agent CD**: agent build/deploy —
-  failures are usually a build, a container push, or a deploy-target error.
+- **Master Marketing CD**: static-site build + deploy (wrangler) — failures are
+  usually a build or a wrangler/secret error.
 
 Identify which job/step actually failed before classifying.
 
