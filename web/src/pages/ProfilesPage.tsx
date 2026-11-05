@@ -2766,8 +2766,8 @@ function AppRow({ app, profileId, onChanged, usedMins, usageStatus, budget, bloc
         <div data-testid={`${tid}-overlap-drawer`} className="border-t border-brand-border px-3 py-2.5 bg-brand-surface rounded-b-xl">
           <p className="text-[11px] leading-relaxed text-amber-800">
             {isAllowedList
-              ? `${app.app.name} is also in the ${coveredBy.name} group on this profile. Both budgets apply, and whichever runs out first blocks it.`
-              : `${app.app.name} is blocked on this profile and also in the ${coveredBy.name} group. Removing it from this profile lifts that block. ${app.app.name} then follows the ${coveredBy.name} group's limits.`}
+              ? `${app.app.name} is also in the ${coveredBy.name} group on this profile. Both apply: it is blocked as soon as its own limit or the group's runs out. A group with No limit adds no limit of its own.`
+              : `${app.app.name} is blocked on this profile and also in the ${coveredBy.name} group. Removing it from this profile lifts that block. ${app.app.name} then follows the ${coveredBy.name} group's settings.`}
           </p>
           <button
             type="button"

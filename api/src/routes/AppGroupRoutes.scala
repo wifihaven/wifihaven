@@ -59,10 +59,10 @@ object AppGroupRoutes {
     else ZIO.succeed(n)
   }
 
+  // #2973 (D4 revised 2026-11-03): neither limit is allowed. Such an attachment is a bundle with no
+  // shared budget, never exhausted (`PolicyService.exhaustedBudgets`), as a None limit means no cap.
   private def validLimits(daily: Option[Int], weekly: Option[Int]): IO[ApiError, Unit] =
-    if (daily.isEmpty && weekly.isEmpty)
-      ZIO.fail(ApiError.BadRequest("an app group needs a dailyMinutes or weeklyMinutes limit"))
-    else if (daily.exists(_ <= 0)) ZIO.fail(ApiError.BadRequest("dailyMinutes must be > 0"))
+    if (daily.exists(_ <= 0)) ZIO.fail(ApiError.BadRequest("dailyMinutes must be > 0"))
     else if (weekly.exists(_ <= 0)) ZIO.fail(ApiError.BadRequest("weeklyMinutes must be > 0"))
     else ZIO.unit
 
@@ -180,6 +180,10 @@ object AppGroupRoutes {
                   ar.weeklyMinutes,
                   // Same default as a per-app assignment (D5): exempt unless the client says it counts.
                   ar.exemptFromDaily.getOrElse(true),
+                  // TODO(#2981): resolve the mode and keep the row's toggle. Until then every write
+                  // is TimeLimited, which a limitless body makes Allowed on read (D23).
+                  AppMode.TimeLimited,
+                  allowedDuringScheduleBlock = true,
                 )
                 .mapError(ApiError.Db(_))
                 .flatMap(ZIO.fromEither(_).mapError(toApiError))

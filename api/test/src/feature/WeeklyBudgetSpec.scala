@@ -883,6 +883,34 @@ object WeeklyBudgetSpec
           ga.map(_.usedMins).contains(15),
         )
       },
+      test("#2973 + D23: a no-limit group is Allowed, so it is no budget and never exhausted") {
+        for {
+          r     <- rig()
+          pr    <- ZIO.service[ProfileRepo]
+          a     <- pr.create("A", Nil)
+          kh    <- app1("khan.org")
+          g     <- group("Homework", kh)
+          _     <- attach(a, g, daily = None, weekly = None, exempt = true)
+          _     <- device(macA, a)
+          _     <- traffic(r, macA, "khan.org", at(tue, 10), 25)
+          _     <- traffic(r, macA, "khan.org", at(thu, 10), 15)
+          _     <- tick(nowThu)
+          rows  <- rowCount("app_group_used_daily", a)
+          s     <- states(r, nowThu)
+          shown <- getJson[List[ProfileTimeStatus]](
+            s"/api/time/status?profileId=${a.value}",
+            nowThu,
+          )
+        } yield assertTrue(
+          // #2980 (design §17.3): only a TimeLimited attachment is a budget, and a limitless one
+          // is Allowed (D23), so nothing is settled or shown for it as a group budget.
+          rows == 0,
+          groupWeek(s(a), g).isEmpty,
+          PolicyService.exhaustedBudgets(s(a)).isEmpty,
+          PolicyService.appsOverBudget(s(a)).isEmpty,
+          !shown.head.groupUsage.exists(_.groupId == g),
+        )
+      },
     ),
     suite("settling (design §6.4, tests 17-19)")(
       test("17: a cold week refills each past day once; the next read is all hits") {

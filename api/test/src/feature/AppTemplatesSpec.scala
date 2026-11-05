@@ -213,6 +213,10 @@ object AppTemplatesSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
           // #2943: orphan-driven catalog pass — GDevelop, a no-code
           // game-creation engine (same category as scratch/tinkercad)
           "gdevelop",
+          // #2955: orphan-driven catalog pass — CodeHS and Coddy, two
+          // K-12/consumer coding-education platforms
+          "codehs",
+          "coddy",
           // #2962: operator-named pass — i-Ready (Curriculum Associates)
           "iready",
         )

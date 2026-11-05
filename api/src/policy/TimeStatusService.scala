@@ -799,7 +799,8 @@ object TimeStatusService {
         appId = a.appId,
         usedSeconds = secs,
         weeklyLimitMinutes = a.weeklyMinutes,
-        groupId = a.coverage.map(_.groupId),
+        // #2980: only a TimeLimited attachment is a group budget, so only it is this app's group here.
+        groupId = a.coverage.filter(_.mode == AppMode.TimeLimited).map(_.groupId),
         appName = a.appName,
       )
     }

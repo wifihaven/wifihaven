@@ -40,6 +40,10 @@ export { UsageBar }
 export const EXEMPT_HINT =
   'Not counted: while under its limits, this group stays reachable during bedtime and a soft pause.'
 
+// #2973 — EXEMPT_HINT's "while under its limits" for a group that has none.
+export const NO_LIMIT_EXEMPT_HINT =
+  'Not counted: with no limit, this group stays reachable during bedtime and a soft pause.'
+
 const chipBase = 'inline-flex items-center gap-1 h-6 px-2 rounded-lg border text-[11px] font-medium tabular-nums disabled:opacity-50'
 
 export function errMsg(e: unknown, fallback: string): string {
@@ -107,16 +111,23 @@ export function AddGroupMenu({ profileId, testIdPrefix, groups, attached, onChan
     } catch (e) { setError(errMsg(e, 'Failed to create group')) } finally { working.current = false; setSaving(false) }
   }
 
-  async function attachChosen() {
+  // #2973 — `noLimit` attaches the group as a bundle with no shared budget. Otherwise the typed
+  // minutes are the daily limit; an empty box writes nothing (blur on the way to "No limit").
+  async function attachChosen(noLimit = false, fromBlur = false) {
     if (!chosen || working.current) return
     const n = Number(minutes.trim())
-    if (minutes.trim() === '') { setError(`Enter a daily limit to add ${chosen.name}`); return }
-    if (!Number.isFinite(n) || n <= 0) { setError('Enter minutes > 0'); return }
+    if (!noLimit && minutes.trim() === '') {
+      if (!fromBlur) setError(`Enter minutes per day, or choose No limit, to add ${chosen.name}`)
+      return
+    }
+    if (!noLimit && (!Number.isFinite(n) || n <= 0)) { setError('Enter minutes > 0'); return }
     working.current = true
     setSaving(true)
     setError(null)
     try {
-      await w.attach(chosen.id, { dailyMinutes: Math.round(n), exemptFromDaily: true })
+      await w.attach(chosen.id, noLimit
+        ? { dailyMinutes: null, weeklyMinutes: null, exemptFromDaily: true }
+        : { dailyMinutes: Math.round(n), exemptFromDaily: true })
       onAttached?.(chosen.id)
       reset()
     } catch (e) { setError(errMsg(e, 'Failed to add group')) } finally { working.current = false; setSaving(false) }
@@ -142,12 +153,21 @@ export function AddGroupMenu({ profileId, testIdPrefix, groups, attached, onChan
                 value={minutes}
                 onChange={e => setMinutes(e.target.value)}
                 disabled={saving}
-                onBlur={attachChosen}
+                onBlur={() => void attachChosen(false, true)}
                 onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); void attachChosen() } }}
                 placeholder="min"
                 data-testid={`${testIdPrefix}-add-group-minutes`}
                 className="mt-1 w-full bg-white border border-brand-border-strong rounded-lg px-2 py-1 text-xs text-brand-ink"
               />
+              <button
+                type="button"
+                disabled={saving}
+                // Keep focus in the minutes box so its blur does not save typed minutes first.
+                onMouseDown={e => e.preventDefault()}
+                onClick={() => void attachChosen(true)}
+                data-testid={`${testIdPrefix}-add-group-no-limit`}
+                className="mt-1.5 w-full text-left text-xs px-2 py-1.5 rounded-lg border border-brand-border-strong hover:bg-brand-alt text-brand-ink disabled:opacity-50"
+              >No limit <span className="text-brand-text-muted">· just group the apps</span></button>
             </label>
           ) : (<>
             {options.map(g => (
@@ -251,6 +271,9 @@ function GroupRow({ profileId, attachment, group, apps, groups, budget, onChange
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [daily, setDaily] = useState(attachment.dailyMinutes != null ? String(attachment.dailyMinutes) : '')
+  // Set while "No limit" saves: the emptied box it leaves focused may blur before the saved
+  // attachment arrives, and that blur is not a parent clearing the limits.
+  const choosingNoLimit = useRef(false)
   const [weekly, setWeekly] = useState(attachment.weeklyMinutes != null ? String(attachment.weeklyMinutes) : '')
   // Re-seed the inputs when the saved attachment changes (a failed save leaves the old values).
   useEffect(() => {
@@ -287,8 +310,12 @@ function GroupRow({ profileId, attachment, group, apps, groups, budget, onChange
   async function commitLimits() {
     const d = parse(daily), wk = parse(weekly)
     if (d === 'bad' || wk === 'bad') { setError('Enter minutes > 0'); return }
-    if (d == null && wk == null) {
-      setError('Set a daily or weekly limit')
+    // #2973: "No limit" is an explicit choice, never an emptied box. A parent clearing the only limit
+    // on the way to typing another would otherwise save a limitless (and, not counted, bedtime-
+    // reachable) group on the blur in between.
+    if (d == null && wk == null && !noLimit) {
+      if (choosingNoLimit.current) return
+      setError('Enter a daily or weekly limit, or choose No limit')
       setDaily(attachment.dailyMinutes != null ? String(attachment.dailyMinutes) : '')
       setWeekly(attachment.weeklyMinutes != null ? String(attachment.weeklyMinutes) : '')
       return
@@ -297,6 +324,16 @@ function GroupRow({ profileId, attachment, group, apps, groups, budget, onChange
     await run(() => w.attach(attachment.groupId, {
       dailyMinutes: d, weeklyMinutes: wk, exemptFromDaily: attachment.exemptFromDaily,
     }), 'Failed to update')
+  }
+
+  async function setNoLimit() {
+    choosingNoLimit.current = true
+    setDaily(''); setWeekly('')
+    // `run` resolves after the refetch (`w.attach` awaits it), so the inputs are re-seeded by then.
+    await run(() => w.attach(attachment.groupId, {
+      dailyMinutes: null, weeklyMinutes: null, exemptFromDaily: attachment.exemptFromDaily,
+    }), 'Failed to update')
+    choosingNoLimit.current = false
   }
 
   async function setCounts(counts: boolean) {
@@ -317,6 +354,7 @@ function GroupRow({ profileId, attachment, group, apps, groups, budget, onChange
   ].filter(Boolean).join(' · ')
   // The collapsed chip: the tighter remaining figure once usage is in, the limits until then (a
   // limit is real data; a remaining figure is not, so it waits behind a skeleton instead).
+  const noLimit = attachment.dailyMinutes == null && attachment.weeklyMinutes == null
   const gu = budget.groupById.get(attachment.groupId)
   const left = budget.status === 'success' && gu != null && gu.weekUsedMins != null
     // Limits and usage both come from the one status body, so the figure cannot mix two reads.
@@ -343,13 +381,32 @@ function GroupRow({ profileId, attachment, group, apps, groups, budget, onChange
         <div className="flex items-center gap-1.5 shrink-0 ml-auto">
           <button
             type="button"
+            // #2973: "Counts toward daily limit" on the row itself, so a limit-free group's daily
+            // effect is visible without opening the limits. Inverted, as everywhere.
+            data-testid={`${tid}-counts-chip`}
+            aria-pressed={!attachment.exemptFromDaily}
+            disabled={busy}
+            title={attachment.exemptFromDaily
+              ? `${noLimit ? NO_LIMIT_EXEMPT_HINT : EXEMPT_HINT} Click to count it toward the daily limit.`
+              : 'Counts toward the daily limit. Click to stop counting it.'}
+            onClick={() => setCounts(attachment.exemptFromDaily)}
+            className={`${chipBase} ${attachment.exemptFromDaily
+              ? 'bg-white border-brand-border-strong text-brand-text-muted'
+              : 'bg-brand-accent/10 border-brand-accent/40 text-brand-accent'}`}
+          >{attachment.exemptFromDaily ? 'Not counted' : 'Counts'}</button>
+          <button
+            type="button"
             data-testid={`${tid}-toggle`}
             aria-expanded={open}
             disabled={busy}
             onClick={() => setOpen(v => !v)}
             className={`${chipBase} bg-amber-500/15 border-amber-500/40 text-amber-800`}
           >
-            {budget.status === 'pending' ? (
+            {noLimit ? (
+              // A limit-free group has no remaining figure; this is config, not usage, so it needs
+              // no loading state.
+              <span data-testid={`${tid}-no-limit-label`}>No limit</span>
+            ) : budget.status === 'pending' ? (
               <span
                 data-testid={`${tid}-budget-loading`}
                 aria-label="Loading usage"
@@ -398,7 +455,22 @@ function GroupRow({ profileId, attachment, group, apps, groups, budget, onChange
               ),
             )}
           </div>
-          {budget.status === 'pending' && (
+          {noLimit ? (
+            <p data-testid={`${tid}-no-limit-hint`} className="text-[11px] text-brand-text-muted">
+              No limit: these apps are only grouped. Type minutes to give them a shared budget.
+            </p>
+          ) : (
+            <button
+              type="button"
+              data-testid={`${tid}-no-limit`}
+              disabled={busy}
+              // Keep focus in a limit box so its blur does not save an edited value first.
+              onMouseDown={e => e.preventDefault()}
+              onClick={setNoLimit}
+              className="text-[11px] text-brand-accent hover:underline disabled:opacity-50"
+            >No limit</button>
+          )}
+          {!noLimit && budget.status === 'pending' && (
             <div className="h-1 rounded-full bg-brand-alt animate-pulse" data-testid={`${tid}-usage-loading`} />
           )}
           {budget.status === 'success' && gu != null && gu.weekUsedMins != null && (
