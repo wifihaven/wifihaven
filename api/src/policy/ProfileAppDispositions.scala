@@ -224,7 +224,12 @@ final case class ProfileAppDispositions(
       // #1679: suppress extraAllowed carve for this app if we're in a Schedule block and the
       // assignment opts out of the "allowed during bedtime" behaviour.
       val suppressedByScheduleToggle = isScheduleBlock && !d.allowedDuringScheduleBlock
-      if (allowedActive) {
+      // #2980 (D20): a Blocked group blocks its members whatever their own rows say, and that
+      // includes a member's own `allowed_during` window: stricter wins.
+      val groupBlocked               = d.coverage.exists(_.mode == AppMode.Blocked)
+      if (groupBlocked) {
+        blocked ++= distinctive
+      } else if (allowedActive) {
         if (
           !(capExhausted && !d.exemptFromDaily) && !suppressedByScheduleToggle &&
           !overBudget.contains(d.appId)

@@ -90,8 +90,8 @@ trait AppGroupRepo {
       dailyMinutes: Option[Int],
       weeklyMinutes: Option[Int],
       exemptFromDaily: Boolean,
-      mode: AppMode = AppMode.TimeLimited,
-      allowedDuringScheduleBlock: Boolean = true,
+      mode: AppMode,
+      allowedDuringScheduleBlock: Boolean,
   ): Task[Either[AppGroupError, ProfileAppGroup]]
 
   /** True if an attachment existed. */
@@ -319,7 +319,7 @@ class AppGroupRepoLive(xa: Transactor[Task], clock: Clock) extends AppGroupRepo 
         d,
         w,
         e,
-        ProfileAppGroup.effectiveMode(AppMode.parse(m).getOrElse(AppMode.TimeLimited), d, w),
+        ProfileAppGroup.effectiveMode(m, d, w),
         ads,
       ),
     )
@@ -378,16 +378,11 @@ class AppGroupRepoLive(xa: Transactor[Task], clock: Clock) extends AppGroupRepo 
               // budget, and a member's mode follows the attachment's); an exempt-flag edit moves
               // only the profile daily total; limits and the #1679 toggle move nothing.
               _   <- prior match {
-                case None                                           =>
+                case None                                                                         =>
                   SettledUsage.invalidateCurrentWeek(List(profile), SettledUsage.Kinds.All, now)
-                case Some((_, m, d, w))
-                    if ProfileAppGroup.effectiveMode(
-                      AppMode.parse(m).getOrElse(AppMode.TimeLimited),
-                      d,
-                      w,
-                    ) != newEffective =>
+                case Some((_, m, d, w)) if ProfileAppGroup.effectiveMode(m, d, w) != newEffective =>
                   SettledUsage.invalidateCurrentWeek(List(profile), SettledUsage.Kinds.All, now)
-                case Some((was, _, _, _)) if was != exemptFromDaily =>
+                case Some((was, _, _, _)) if was != exemptFromDaily                               =>
                   SettledUsage.invalidateCurrentWeek(
                     List(profile),
                     SettledUsage.Kinds.ProfileTotalOnly,

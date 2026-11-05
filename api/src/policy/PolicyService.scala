@@ -1796,7 +1796,8 @@ object PolicyService {
   /**
    * #2980 (design §17.7): profile attachments of a group, counted by mode, from the coverage the
    * `AppTimeLimitRepo` rows carry. Each attachment is counted once however many member rows it
-   * covers.
+   * covers; an attachment whose group has no member app with hosts produces no row, so it is not
+   * counted.
    */
   def attachmentsByMode(rows: Iterable[AppTimeLimit]): Map[AppMode, Int] =
     rows
