@@ -229,6 +229,9 @@ function M.apply(snapshot, write_fn, reload_fn, log, opts)
   local dnsmasq_content = timed("render_dnsmasq", function()
     return render.dnsmasq(snapshot, {
       enforcement_disabled = enforcement_disabled,
+      -- #2995: bl_ specs for main-conf hosts at or below a blocklist member,
+      -- collected by the shard render (blocklists.render_outputs state).
+      bl_specs_by_host = opts.bl_specs_by_host,
       bl_shard_exists = function(id)
         local ok = bl_shard_exists(id)
         if not ok then
