@@ -81,7 +81,8 @@ trait AppGroupRepo {
    * Blocked attachment carries no limit, which V94 CHECKs. A TimeLimited one may carry either
    * limit, both or neither (#2973; V93 dropped V92's at-least-one CHECK), and one with neither is
    * read as Allowed (D23, [[ProfileAppGroup.effectiveMode]]). Each set limit must be > 0, which the
-   * caller checks and V92 CHECKs. The default mode is the pre-#2981 caller's TimeLimited.
+   * caller checks and V92 CHECKs. `mode` and the toggle are written as given, so a caller keeps the
+   * row's values only by passing them.
    */
   def upsertAttachment(
       household: HouseholdId,

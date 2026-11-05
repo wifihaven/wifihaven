@@ -1,15 +1,15 @@
-// #2935 — household app groups on a profile (design §10). A group is one shared time budget over
-// several apps; this profile's attachment of it carries the limits. Everything here autosaves.
+// #2935 — household app groups on a profile (design §10). This profile's attachment of a group
+// carries its mode and limits (#2982, design §17): a Blocked group is a row in the Blocked list, an
+// Allowed or time-limited one a row in the Allowed list. Everything here autosaves.
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { api } from '@/api/client'
 import { useGroupAttachmentsOf, useInvalidators, useProfiles } from '@/api/queries'
 import { qk } from '@/api/queryKeys'
 import { AppIcon } from '@/components/AppIcon'
-import { Skeleton } from '@/components/Skeleton'
 import { tighterLeft } from '@/lib/budget'
 import { formatMins } from '@/lib/timeFormat'
-import type { AppDetail, AppGroup, AppUsage, GroupUsage, ProfileAppGroup, UpsertProfileAppGroupRequest } from '@/types/api'
+import type { AppDetail, AppGroup, AppMode, AppUsage, GroupUsage, ProfileAppGroup, UpsertProfileAppGroupRequest } from '@/types/api'
 
 // #2935 — the query state behind the week-to-date figures, threaded down like #2764's UsageStatus so
 // a row can tell "not loaded yet" from a genuine zero (AGENTS.md#loading-states).
@@ -40,9 +40,16 @@ export { UsageBar }
 export const EXEMPT_HINT =
   'Not counted: while under its limits, this group stays reachable during bedtime and a soft pause.'
 
-// #2973 — EXEMPT_HINT's "while under its limits" for a group that has none.
-export const NO_LIMIT_EXEMPT_HINT =
-  'Not counted: with no limit, this group stays reachable during bedtime and a soft pause.'
+// #2982 — an Allowed group (no limit, D23) is reachable whether or not it counts, as an Allowed app
+// is (#2747), so the flag only moves its time in or out of the daily total.
+export const ALLOWED_EXEMPT_HINT =
+  'Not counted: its time is left out of the daily limit.'
+
+// #2982 (design §17, D18) — which of the profile's two lists a group sits in. Same rule as apps'
+// `listOf`: a time-limited group sits with the allowed ones.
+export function groupList(a: Pick<ProfileAppGroup, 'mode'>): 'allowed' | 'blocked' {
+  return a.mode === 'blocked' ? 'blocked' : 'allowed'
+}
 
 const chipBase = 'inline-flex items-center gap-1 h-6 px-2 rounded-lg border text-[11px] font-medium tabular-nums disabled:opacity-50'
 
@@ -50,9 +57,10 @@ export function errMsg(e: unknown, fallback: string): string {
   return e instanceof Error ? e.message : fallback
 }
 
-// Writes shared by the add menu and the rows. PUT replaces the attachment, so every write carries
-// the full limit set.
-function useGroupWrites(profileId: number, onChanged: () => void | Promise<void>) {
+// Writes shared by the pickers and the rows. PUT replaces the limits, so every write carries the
+// full limit set; the server resolves an absent `mode` from the limits and the row (design §17.6)
+// and keeps an absent #1679 toggle.
+export function useGroupWrites(profileId: number, onChanged: () => void | Promise<void>) {
   const invalidators = useInvalidators()
   async function done() {
     await invalidators.appGroups()
@@ -71,188 +79,7 @@ function useGroupWrites(profileId: number, onChanged: () => void | Promise<void>
   }
 }
 
-export function AddGroupMenu({ profileId, testIdPrefix, groups, attached, onChanged, onAttached }: {
-  profileId: number
-  testIdPrefix: string
-  groups: AppGroup[]
-  attached: ProfileAppGroup[]
-  onChanged: () => void | Promise<void>
-  // #2974 — told which group was just attached, so its row can open on the member picker.
-  onAttached?: (groupId: number) => void
-}) {
-  const [open, setOpen] = useState(false)
-  const [naming, setNaming] = useState(false)
-  const [name, setName] = useState('')
-  // The group picked (or just created) that is waiting for its first daily limit. An attachment
-  // needs a limit, and none is invented: nothing is written until the parent has typed one.
-  const [chosen, setChosen] = useState<{ id: number; name: string } | null>(null)
-  const [minutes, setMinutes] = useState('')
-  const [error, setError] = useState<string | null>(null)
-  // #2964 — `working` guards re-entry synchronously; `saving` is the same fact for rendering.
-  const working = useRef(false)
-  const [saving, setSaving] = useState(false)
-  const w = useGroupWrites(profileId, onChanged)
-  const options = groups.filter(g => !attached.some(a => a.groupId === g.id))
-
-  function reset() {
-    setOpen(false); setNaming(false); setName(''); setChosen(null); setMinutes('')
-  }
-
-  async function createNew() {
-    const trimmed = name.trim()
-    if (!trimmed || working.current) return
-    working.current = true
-    setSaving(true)
-    setError(null)
-    try {
-      const g = await api.appGroups.create({ name: trimmed })
-      setNaming(false); setName('')
-      setChosen({ id: g.id, name: g.name })
-    } catch (e) { setError(errMsg(e, 'Failed to create group')) } finally { working.current = false; setSaving(false) }
-  }
-
-  // #2973 — `noLimit` attaches the group as a bundle with no shared budget. Otherwise the typed
-  // minutes are the daily limit; an empty box writes nothing (blur on the way to "No limit").
-  async function attachChosen(noLimit = false, fromBlur = false) {
-    if (!chosen || working.current) return
-    const n = Number(minutes.trim())
-    if (!noLimit && minutes.trim() === '') {
-      if (!fromBlur) setError(`Enter minutes per day, or choose No limit, to add ${chosen.name}`)
-      return
-    }
-    if (!noLimit && (!Number.isFinite(n) || n <= 0)) { setError('Enter minutes > 0'); return }
-    working.current = true
-    setSaving(true)
-    setError(null)
-    try {
-      await w.attach(chosen.id, noLimit
-        ? { dailyMinutes: null, weeklyMinutes: null, exemptFromDaily: true }
-        : { dailyMinutes: Math.round(n), exemptFromDaily: true })
-      onAttached?.(chosen.id)
-      reset()
-    } catch (e) { setError(errMsg(e, 'Failed to add group')) } finally { working.current = false; setSaving(false) }
-  }
-
-  return (
-    <span className="relative">
-      <button
-        type="button"
-        data-testid={`${testIdPrefix}-add-group`}
-        onClick={() => setOpen(v => !v)}
-        className="text-xs px-2 py-1 rounded-lg border bg-white transition-colors border-brand-accent/40 text-brand-accent hover:bg-brand-accent/10"
-      >{open ? 'Close' : '+ Add group'}</button>
-      {open && (
-        <div className="absolute right-0 z-10 mt-1 w-56 bg-white border border-brand-border-strong rounded-xl shadow-lg p-1.5 space-y-1">
-          {chosen ? (
-            <label className="block text-[11px] text-brand-text-muted px-1">
-              Minutes per day for {chosen.name}
-              <input
-                type="number"
-                min={1}
-                autoFocus
-                value={minutes}
-                onChange={e => setMinutes(e.target.value)}
-                disabled={saving}
-                onBlur={() => void attachChosen(false, true)}
-                onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); void attachChosen() } }}
-                placeholder="min"
-                data-testid={`${testIdPrefix}-add-group-minutes`}
-                className="mt-1 w-full bg-white border border-brand-border-strong rounded-lg px-2 py-1 text-xs text-brand-ink"
-              />
-              <button
-                type="button"
-                disabled={saving}
-                // Keep focus in the minutes box so its blur does not save typed minutes first.
-                onMouseDown={e => e.preventDefault()}
-                onClick={() => void attachChosen(true)}
-                data-testid={`${testIdPrefix}-add-group-no-limit`}
-                className="mt-1.5 w-full text-left text-xs px-2 py-1.5 rounded-lg border border-brand-border-strong hover:bg-brand-alt text-brand-ink disabled:opacity-50"
-              >No limit <span className="text-brand-text-muted">· just group the apps</span></button>
-            </label>
-          ) : (<>
-            {options.map(g => (
-              <button
-                key={g.id}
-                type="button"
-                data-testid={`${testIdPrefix}-add-group-option-${g.id}`}
-                onClick={() => setChosen({ id: g.id, name: g.name })}
-                className="w-full text-left text-xs px-2 py-1.5 rounded-lg hover:bg-brand-alt text-brand-ink truncate"
-              >{g.name}</button>
-            ))}
-            {naming ? (
-              <input
-                type="text"
-                autoFocus
-                value={name}
-                onChange={e => setName(e.target.value)}
-                disabled={saving}
-                onBlur={createNew}
-                onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); void createNew() } }}
-                placeholder="Group name"
-                aria-label="New group name"
-                data-testid={`${testIdPrefix}-add-group-name`}
-                className="w-full bg-white border border-brand-border-strong rounded-lg px-2 py-1 text-xs text-brand-ink"
-              />
-            ) : (
-              <button
-                type="button"
-                data-testid={`${testIdPrefix}-add-group-new`}
-                onClick={() => setNaming(true)}
-                className="w-full text-left text-xs px-2 py-1.5 rounded-lg hover:bg-brand-alt text-brand-accent"
-              >New group…</button>
-            )}
-          </>)}
-          {saving && (
-            <p className="text-xs text-brand-text-muted px-1" data-testid={`${testIdPrefix}-add-group-saving`}>Saving…</p>
-          )}
-          {error && <p className="text-xs text-red-700 px-1" data-testid={`${testIdPrefix}-add-group-error`}>{error}</p>}
-        </div>
-      )}
-    </span>
-  )
-}
-
-export function GroupsSubList({ profileId, testIdPrefix, status, attached, groups, apps, budget, onChanged, openMembersFor }: {
-  profileId: number
-  testIdPrefix: string
-  status: 'pending' | 'error' | 'success'
-  attached: ProfileAppGroup[]
-  groups: AppGroup[]
-  apps: AppDetail[]
-  budget: BudgetUsage
-  onChanged: () => void | Promise<void>
-  // #2974 — the group just attached from the add menu; its row opens on its members.
-  openMembersFor?: number | null
-}) {
-  if (status === 'success' && attached.length === 0) return null
-  return (
-    <div data-testid={`${testIdPrefix}-groups-list`} className="space-y-1">
-      <div className="flex items-center gap-2 mb-1.5 pb-1 border-b border-brand-border">
-        <span className="text-[11px] font-bold uppercase tracking-wider text-brand-ink">Groups</span>
-        <span className="ml-auto text-[11px] text-brand-text-muted">One shared time budget for several apps</span>
-      </div>
-      {status === 'pending' && <Skeleton className="h-10 w-full rounded-xl" testId={`${testIdPrefix}-groups-loading`} />}
-      {status === 'error' && (
-        <p className="text-xs text-red-700" data-testid={`${testIdPrefix}-groups-error`}>Couldn't load groups.</p>
-      )}
-      {status === 'success' && attached.map(a => (
-        <GroupRow
-          key={a.groupId}
-          profileId={profileId}
-          attachment={a}
-          group={groups.find(g => g.id === a.groupId)}
-          apps={apps}
-          groups={groups}
-          budget={budget}
-          onChanged={onChanged}
-          autoOpenMembers={openMembersFor === a.groupId}
-        />
-      ))}
-    </div>
-  )
-}
-
-function GroupRow({ profileId, attachment, group, apps, groups, budget, onChanged, autoOpenMembers }: {
+export function GroupRow({ profileId, attachment, group, apps, groups, budget, onChanged, autoOpenMembers }: {
   profileId: number
   attachment: ProfileAppGroup
   group: AppGroup | undefined
@@ -331,9 +158,24 @@ function GroupRow({ profileId, attachment, group, apps, groups, budget, onChange
     setDaily(''); setWeekly('')
     // `run` resolves after the refetch (`w.attach` awaits it), so the inputs are re-seeded by then.
     await run(() => w.attach(attachment.groupId, {
-      dailyMinutes: null, weeklyMinutes: null, exemptFromDaily: attachment.exemptFromDaily,
+      mode: 'allowed', dailyMinutes: null, weeklyMinutes: null, exemptFromDaily: attachment.exemptFromDaily,
     }), 'Failed to update')
     choosingNoLimit.current = false
+  }
+
+  // #2982 — the move control, as on an app row: list membership is the mode. A move drops any
+  // limits, since an Allowed or Blocked group carries none (D21).
+  async function moveTo(mode: AppMode) {
+    await run(() => w.attach(attachment.groupId, {
+      mode, dailyMinutes: null, weeklyMinutes: null, exemptFromDaily: attachment.exemptFromDaily,
+    }), 'Failed to move')
+  }
+
+  async function setReachableInDowntime(on: boolean) {
+    await run(() => w.attach(attachment.groupId, {
+      dailyMinutes: null, weeklyMinutes: null, exemptFromDaily: attachment.exemptFromDaily,
+      allowedDuringScheduleBlock: on,
+    }), 'Failed to update')
   }
 
   async function setCounts(counts: boolean) {
@@ -355,6 +197,9 @@ function GroupRow({ profileId, attachment, group, apps, groups, budget, onChange
   // The collapsed chip: the tighter remaining figure once usage is in, the limits until then (a
   // limit is real data; a remaining figure is not, so it waits behind a skeleton instead).
   const noLimit = attachment.dailyMinutes == null && attachment.weeklyMinutes == null
+  const isBlocked = attachment.mode === 'blocked'
+  const isAllowed = attachment.mode === 'allowed'
+  const moveBase = 'h-6 px-2 rounded-lg border bg-white text-[11px] font-semibold transition-colors disabled:opacity-50'
   const gu = budget.groupById.get(attachment.groupId)
   const left = budget.status === 'success' && gu != null && gu.weekUsedMins != null
     // Limits and usage both come from the one status body, so the figure cannot mix two reads.
@@ -375,10 +220,15 @@ function GroupRow({ profileId, attachment, group, apps, groups, budget, onChange
           ))}
         </span>
         <div className="flex-1 min-w-[6rem] overflow-hidden flex items-baseline gap-2">
+          <span
+            data-testid={`${tid}-group-tag`}
+            className="text-[9.5px] font-bold uppercase tracking-wider px-1.5 rounded-full bg-brand-alt text-brand-text-muted shrink-0"
+          >Group</span>
           <p className="text-[13px] text-brand-ink font-medium truncate">{attachment.name}</p>
           <MembersToggle tid={tid} count={memberIds.length} open={membersOpen} onClick={() => setMembersOpen(v => !v)} />
         </div>
         <div className="flex items-center gap-1.5 shrink-0 ml-auto">
+          {!isBlocked && (<>
           <button
             type="button"
             // #2973: "Counts toward daily limit" on the row itself, so a limit-free group's daily
@@ -387,7 +237,7 @@ function GroupRow({ profileId, attachment, group, apps, groups, budget, onChange
             aria-pressed={!attachment.exemptFromDaily}
             disabled={busy}
             title={attachment.exemptFromDaily
-              ? `${noLimit ? NO_LIMIT_EXEMPT_HINT : EXEMPT_HINT} Click to count it toward the daily limit.`
+              ? `${isAllowed ? ALLOWED_EXEMPT_HINT : EXEMPT_HINT} Click to count it toward the daily limit.`
               : 'Counts toward the daily limit. Click to stop counting it.'}
             onClick={() => setCounts(attachment.exemptFromDaily)}
             className={`${chipBase} ${attachment.exemptFromDaily
@@ -419,6 +269,17 @@ function GroupRow({ profileId, attachment, group, apps, groups, budget, onChange
             )}
             <span className="text-[8px] opacity-60">{open ? '▲' : '▼'}</span>
           </button>
+          </>)}
+          <button
+            type="button"
+            data-testid={`${tid}-move`}
+            disabled={busy}
+            onClick={() => moveTo(isBlocked ? 'allowed' : 'blocked')}
+            title={isBlocked ? `Move ${attachment.name} to the allowed list` : `Move ${attachment.name} to the blocked list`}
+            className={`${moveBase} ${isBlocked
+              ? 'border-brand-accent/40 text-brand-accent hover:bg-brand-accent/10'
+              : 'border-red-500/40 text-red-700 hover:bg-red-500/10'}`}
+          >{isBlocked ? 'Allow' : 'Block'}</button>
           <button
             type="button"
             data-testid={`${tid}-detach`}
@@ -430,7 +291,7 @@ function GroupRow({ profileId, attachment, group, apps, groups, budget, onChange
         </div>
       </div>
 
-      {open && (
+      {open && !isBlocked && (
         <div data-testid={`${tid}-drawer`} className="border-t border-brand-border px-3 py-2.5 bg-brand-surface rounded-b-xl space-y-2">
           <p className="text-[10.5px] font-bold uppercase tracking-wider text-brand-text-muted">Limits for this profile</p>
           <div className="flex items-center gap-2 flex-wrap">
@@ -457,7 +318,7 @@ function GroupRow({ profileId, attachment, group, apps, groups, budget, onChange
           </div>
           {noLimit ? (
             <p data-testid={`${tid}-no-limit-hint`} className="text-[11px] text-brand-text-muted">
-              No limit: these apps are only grouped. Type minutes to give them a shared budget.
+              No limit: every app in this group is allowed. Type minutes to give them a shared budget.
             </p>
           ) : (
             <button
@@ -501,10 +362,27 @@ function GroupRow({ profileId, attachment, group, apps, groups, budget, onChange
             <span>
               Counts toward daily limit
               {attachment.exemptFromDaily && (
-                <span data-testid={`${tid}-exempt-hint`} className="block text-brand-text-muted">{EXEMPT_HINT}</span>
+                <span data-testid={`${tid}-exempt-hint`} className="block text-brand-text-muted">
+                  {isAllowed ? ALLOWED_EXEMPT_HINT : EXEMPT_HINT}
+                </span>
               )}
             </span>
           </label>
+
+          {isAllowed && (
+            // #2982 (D19): the attachment's #1679 toggle, read for an Allowed group only.
+            <label className="flex items-start gap-2 text-xs text-brand-text cursor-pointer select-none">
+              <input
+                type="checkbox"
+                data-testid={`${tid}-reachable-in-downtime`}
+                checked={attachment.allowedDuringScheduleBlock}
+                disabled={busy}
+                onChange={e => setReachableInDowntime(e.target.checked)}
+                className="w-3.5 h-3.5 mt-0.5 accent-amber-500"
+              />
+              <span>Reachable during scheduled downtime</span>
+            </label>
+          )}
 
         </div>
       )}

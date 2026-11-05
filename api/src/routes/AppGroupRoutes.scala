@@ -74,6 +74,10 @@ object AppGroupRoutes {
    *   - no mode, a limit: TimeLimited (D21: setting a limit makes it TimeLimited).
    *   - no mode, no limit: Blocked if the row is Blocked, otherwise Allowed (D23). That is how
    *     #2973's "No limit" body, which sends no mode, lands as an Allowed group.
+   *
+   * This differs on purpose from a per-app assignment, where a limit promotes the row to
+   * TimeLimited: a group request that names Allowed or Blocked AND a limit is ambiguous, so it is
+   * rejected rather than guessed.
    */
   private[routes] def resolveMode(
       requested: Option[AppMode],
