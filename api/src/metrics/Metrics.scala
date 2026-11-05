@@ -154,6 +154,10 @@ object MetricGuard {
       // NOT labels (attacker-controlled sender content, unbounded — they never leave the process
       // as a label, and the log line does not carry them either).
       "shape",
+      // #2980 — a profile group attachment's mode for `app_group_attachments`. A fixed 3-value enum
+      // (blocked | allowed | time_limited — `AppMode`), bounded by the code, not by household,
+      // profile or group growth, so it satisfies the §4 cardinality firewall.
+      "mode",
     )
 
   /**
