@@ -347,11 +347,15 @@ class AppGroupRepoLive(xa: Transactor[Task], clock: Clock) extends AppGroupRepo 
           sql"SELECT EXISTS (SELECT 1 FROM profiles WHERE id = $profile AND household_id = $household)"
             .query[Boolean]
             .unique
-        prior <- sql"""SELECT exempt_from_daily, mode FROM profile_app_groups
+        prior <- sql"""SELECT exempt_from_daily, mode, daily_minutes, weekly_minutes
+                         FROM profile_app_groups
                         WHERE profile_id = $profile AND group_id = $group"""
-          .query[(Boolean, String)]
+          .query[(Boolean, String, Option[Int], Option[Int])]
           .option
-        modeStr = AppMode.asString(mode)
+        modeStr      = AppMode.asString(mode)
+        // #2980 (D23): compare the modes the row HAS, not the strings it stores: a limitless edit of
+        // a TimeLimited row keeps 'time_limited' stored but makes it Allowed, and no longer a budget.
+        newEffective = ProfileAppGroup.effectiveMode(mode, dailyMinutes, weeklyMinutes)
         out <-
           if (grp.isEmpty) fail[ProfileAppGroup](GroupNotFound)
           else if (!prof) fail[ProfileAppGroup](ProfileNotFound)
@@ -370,21 +374,26 @@ class AppGroupRepoLive(xa: Transactor[Task], clock: Clock) extends AppGroupRepo 
                              allowed_during_schedule_block =
                                EXCLUDED.allowed_during_schedule_block""".update.run
               // Design §6.4: a new attachment changes the profile's dispositions (drop all three
-              // kinds), and so does a mode change (§17.3: only a TimeLimited attachment is a
+              // kinds), and so does an effective-mode change (§17.3: only a TimeLimited attachment is a
               // budget, and a member's mode follows the attachment's); an exempt-flag edit moves
               // only the profile daily total; limits and the #1679 toggle move nothing.
               _   <- prior match {
-                case None                                     =>
+                case None                                           =>
                   SettledUsage.invalidateCurrentWeek(List(profile), SettledUsage.Kinds.All, now)
-                case Some((_, wasMode)) if wasMode != modeStr =>
+                case Some((_, m, d, w))
+                    if ProfileAppGroup.effectiveMode(
+                      AppMode.parse(m).getOrElse(AppMode.TimeLimited),
+                      d,
+                      w,
+                    ) != newEffective =>
                   SettledUsage.invalidateCurrentWeek(List(profile), SettledUsage.Kinds.All, now)
-                case Some((was, _)) if was != exemptFromDaily =>
+                case Some((was, _, _, _)) if was != exemptFromDaily =>
                   SettledUsage.invalidateCurrentWeek(
                     List(profile),
                     SettledUsage.Kinds.ProfileTotalOnly,
                     now,
                   )
-                case Some(_)                                  => doobie.free.connection.pure(0)
+                case Some(_) => doobie.free.connection.pure(0)
               }
               row <- attachmentsCio(household, profile, Some(group))
             } yield row.headOption.toRight(GroupNotFound: AppGroupError)
