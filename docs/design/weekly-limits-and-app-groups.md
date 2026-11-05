@@ -871,9 +871,6 @@ ALTER TABLE profile_app_groups
     CHECK (mode IN ('blocked', 'allowed', 'time_limited')),
   ADD CONSTRAINT profile_app_groups_limit_only_if_time_limited
     CHECK (mode = 'time_limited' OR (daily_minutes IS NULL AND weekly_minutes IS NULL));
-
-UPDATE profile_app_groups SET mode = 'allowed'
- WHERE daily_minutes IS NULL AND weekly_minutes IS NULL;
 ```
 
 V94, after #2973's V93.
@@ -887,13 +884,15 @@ V94, after #2973's V93.
   (#2973's code) writes limitless rows without a `mode`, so they arrive as
   `time_limited`, and a stricter CHECK would fail those writes. The fold reads
   a TimeLimited attachment with no limit as Allowed (§17.3, D23), so such a row
-  behaves the same whichever image wrote it. The UPDATE moves the limitless rows
-  that exist at migration time to `allowed`, so new code never has to rely on
-  that reading for them.
+  behaves the same whichever image wrote it. There is deliberately no backfill
+  to `allowed`: until #2980 deploys, #2973's image keeps a limits drawer on a
+  "No limit" row, and its upsert never writes `mode`, so setting a limit on a
+  backfilled row would fail the CHECK with a 500. The fold mapping covers the
+  existing rows instead.
 - `allowed_during_schedule_block` is the attachment's #1679 toggle (D19). It is
   read only for an Allowed attachment.
-- Cost: two metadata-only ADD COLUMNs, CHECK validation and an UPDATE, all on a
-  table with one row per attachment.
+- Cost: two metadata-only ADD COLUMNs and CHECK validation, on a table with
+  one row per attachment.
 - Rollback to image N-1 after Allowed or Blocked rows exist: N-1 reads every
   row as TimeLimited. An Allowed row has no limits, so N-1 reads it as #2973's
   never-exhausted bundle: a not-counted one is still reachable through bedtime,
@@ -1020,12 +1019,12 @@ mode (#2747):
   for a Blocked one.
 - **D23 No limit is Allowed (2026-11-04).** #2973's "attach with no limit"
   and an Allowed group are the same thing. A limitless attachment is Allowed:
-  V94 moves existing limitless rows to `allowed`, the API resolves a limitless
-  request to Allowed, and the fold reads a limitless TimeLimited row as
-  Allowed. #2973's attach flow and request body are unchanged. One consequence
-  differs from #2973 as designed: a no-limit group that counts toward the
-  daily total stays reachable after the daily total runs out, as an Allowed
-  app does (#2747), instead of going off with it. A not-counted one behaves
-  the same either way. Revisit if a counted no-limit group should still stop
-  with the daily total; the V94 UPDATE, the API default and the fold mapping
-  (§17.3) are the three places that would change.
+  the API resolves a limitless request to Allowed, and the fold reads a
+  limitless TimeLimited row, such as one #2973's code wrote, as Allowed.
+  #2973's attach flow and request body are unchanged. One consequence differs
+  from #2973 as designed: a no-limit group that counts toward the daily total
+  stays reachable after the daily total runs out, as an Allowed app does
+  (#2747), instead of going off with it. A not-counted one behaves the same
+  either way. Revisit if a counted no-limit group should still stop with the
+  daily total; the API default and the fold mapping (§17.3) are the two places
+  that would change.

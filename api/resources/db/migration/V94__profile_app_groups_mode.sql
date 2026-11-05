@@ -13,21 +13,24 @@
 --    may still have none: image N-1 (#2973) writes limitless rows without a
 --    `mode`, so they arrive as 'time_limited', and a stricter CHECK would fail
 --    those writes. The adopting code reads a limitless TimeLimited row as
---    Allowed (D23).
--- 4. The limitless rows that exist now, #2973's "no limit" bundles, become
---    'allowed' (D23: a limitless attachment is an Allowed one).
+--    Allowed (D23: a limitless attachment is an Allowed one).
+--
+-- No backfill moves today's limitless rows to 'allowed'. Until the adopting
+-- code deploys, image N-1 offers a limits drawer on those rows and its upsert
+-- never writes `mode`, so setting a limit on a backfilled row would fail the
+-- CHECK. The adopting code's reading covers them instead.
 --
 -- ── Inert until the adoption PRs ────────────────────────────────────────────
 -- Schema only (docs/process/migrations.md#migrations-back-compat). Image N-1
--- reads neither column, so the UPDATE changes nothing it sees, and its INSERTs
--- (which omit both columns) get 'time_limited' and TRUE, which pass both
--- CHECKs whatever limits they carry.
+-- reads neither column, and its INSERTs and upserts (which omit both columns)
+-- leave 'time_limited' and TRUE, which pass both CHECKs whatever limits they
+-- carry.
 --
 -- ── Cost ─────────────────────────────────────────────────────────────────────
 -- Both ADD COLUMNs add a constant default, which Postgres stores without a
--- table rewrite. The two CHECKs validate, and the UPDATE scans, only
--- `profile_app_groups`, one row per (profile, attached group). No growth table
--- is scanned, rewritten or re-indexed.
+-- table rewrite. The two CHECKs validate by scanning only `profile_app_groups`,
+-- one row per (profile, attached group). No growth table is scanned, rewritten
+-- or re-indexed.
 
 ALTER TABLE profile_app_groups
   ADD COLUMN mode TEXT NOT NULL DEFAULT 'time_limited',
@@ -36,6 +39,3 @@ ALTER TABLE profile_app_groups
     CHECK (mode IN ('blocked', 'allowed', 'time_limited')),
   ADD CONSTRAINT profile_app_groups_limit_only_if_time_limited
     CHECK (mode = 'time_limited' OR (daily_minutes IS NULL AND weekly_minutes IS NULL));
-
-UPDATE profile_app_groups SET mode = 'allowed'
- WHERE daily_minutes IS NULL AND weekly_minutes IS NULL;
