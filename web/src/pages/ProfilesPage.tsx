@@ -12,12 +12,12 @@ import { SaveStatusBadge } from '@/components/SaveStatusBadge'
 import { SchedulePicker } from '@/components/SchedulePicker'
 import type {
   AppDetail, AppMode, AppPolicyAssignment, AppScheduleMode, AppScheduleRule,
-  CrossDeviceOverlapMode, Device, PatchProfileRequest, PauseMode, ProfileDetail,
+  CrossDeviceOverlapMode, Device, PatchProfileRequest, PauseMode, ProfileAppGroup, ProfileDetail,
   ProfileTimeSummary, ScheduleWindow,
   UpsertAppAssignmentRequest, UpsertProfileRequest, User,
 } from '@/types/api'
 import { AppIcon } from '@/components/AppIcon'
-import { AddGroupMenu, GroupsSubList, UsageBar, type BudgetUsage } from '@/components/AppGroups'
+import { GroupRow, UsageBar, errMsg, groupList, useGroupWrites, type BudgetUsage } from '@/components/AppGroups'
 import { tighterLeft } from '@/lib/budget'
 import { AppBlocklistWarningBadge } from '@/components/AppBlocklistWarning'
 import { ProfileTimelineChart } from '@/components/usage/ProfileTimelineChart'
@@ -1756,9 +1756,12 @@ function AppsSection({ profileId, isNew, apps, onChanged, testIdPrefix = 'apps-s
   // and "+ Block app" land the picked app directly in the list you asked for.
   const [pickerMode, setPickerMode] = useState<'allowed' | 'blocked' | null>(null)
   const [pickerFilter, setPickerFilter] = useState('')
-  // #2974 — the group just attached from "+ Add group": its row opens on its members, since filling
+  // #2974 — the group just attached from a picker: its row opens on its members, since filling
   // the group is what the parent wants to do next.
   const [justAttachedGroup, setJustAttachedGroup] = useState<number | null>(null)
+  // #2982 — "New group…" in a picker: the name being typed, and the group write in flight.
+  const [newGroupName, setNewGroupName] = useState<string | null>(null)
+  const [addingGroupId, setAddingGroupId] = useState<number | 'new' | null>(null)
   // #2964 — the picked app's save in flight, and the last save's failure.
   const [addingAppId, setAddingAppId] = useState<number | null>(null)
   const [pickerError, setPickerError] = useState<string | null>(null)
@@ -1802,6 +1805,40 @@ function AppsSection({ profileId, isNew, apps, onChanged, testIdPrefix = 'apps-s
     if (!q) return unassigned
     return unassigned.filter(a => a.app.name.toLowerCase().includes(q))
   }, [unassigned, pickerFilter])
+  // #2982 (design §17.6, D18) — a group sits in the list its mode puts it in, ahead of the apps.
+  const allowedGroups = useMemo(() => attached.filter(a => groupList(a) === 'allowed'), [attached])
+  const blockedGroups = useMemo(() => attached.filter(a => groupList(a) === 'blocked'), [attached])
+  // The household's groups not yet on this profile, offered at the top of both pickers.
+  const groupMatches = useMemo(() => {
+    const q = pickerFilter.trim().toLowerCase()
+    const open = (groupsQ.data ?? []).filter(g => !attached.some(a => a.groupId === g.id))
+    return q ? open.filter(g => g.name.toLowerCase().includes(q)) : open
+  }, [groupsQ.data, attached, pickerFilter])
+  const groupWrites = useGroupWrites(profileId ?? -1, onChanged)
+
+  // #2982 — a group picked from "+ Allow app" / "+ Block app" lands in that list with no limit
+  // (an Allowed group, D23, or a Blocked one) and opens on its members.
+  async function addGroup(groupId: number | 'new', mode: 'allowed' | 'blocked') {
+    if (profileId == null || addingGroupId != null) return
+    setAddingGroupId(groupId)
+    setPickerError(null)
+    try {
+      let id: number
+      if (groupId === 'new') {
+        const name = (newGroupName ?? '').trim()
+        if (!name) return
+        id = (await api.appGroups.create({ name })).id
+      } else id = groupId
+      await groupWrites.attach(id, { mode, dailyMinutes: null, weeklyMinutes: null, exemptFromDaily: true })
+      setJustAttachedGroup(id)
+      setNewGroupName(null)
+      closePicker()
+    } catch (e) {
+      setPickerError(`Couldn’t add the group: ${errMsg(e, 'save failed')}`)
+    } finally {
+      setAddingGroupId(null)
+    }
+  }
 
   async function addApp(app: AppDetail, mode: 'allowed' | 'blocked') {
     if (profileId == null || addingAppId != null) return
@@ -1834,19 +1871,12 @@ function AppsSection({ profileId, isNew, apps, onChanged, testIdPrefix = 'apps-s
     setPickerMode(null)
     setPickerFilter('')
     setPickerError(null)
+    setNewGroupName(null)
   }
 
   const addBtn = 'text-xs px-2 py-1 rounded-lg border bg-white transition-colors disabled:opacity-50'
   const headerCta = !isNew && profileId != null && apps.length > 0 && (
     <>
-      <AddGroupMenu
-        profileId={profileId}
-        testIdPrefix={testIdPrefix}
-        groups={groupsQ.data ?? []}
-        attached={attached}
-        onChanged={onChanged}
-        onAttached={setJustAttachedGroup}
-      />
       <button
         type="button"
         data-testid={`${testIdPrefix}-add-allowed`}
@@ -1866,7 +1896,7 @@ function AppsSection({ profileId, isNew, apps, onChanged, testIdPrefix = 'apps-s
     </>
   )
 
-  function renderList(list: 'allowed' | 'blocked', rows: AppDetail[]) {
+  function renderList(list: 'allowed' | 'blocked', rows: AppDetail[], groupRows: ProfileAppGroup[]) {
     return (
       <div>
         <div className="flex items-center gap-2 mb-1.5 pb-1 border-b border-brand-border">
@@ -1875,7 +1905,7 @@ function AppsSection({ profileId, isNew, apps, onChanged, testIdPrefix = 'apps-s
             {list === 'allowed' ? 'Allowed' : 'Blocked'}
           </span>
           <span className="text-[11px] font-mono text-brand-text-muted" data-testid={`${testIdPrefix}-${list}-count`}>
-            {rows.length}
+            {rows.length + groupRows.length}
           </span>
           <span className="ml-auto text-[11px] text-brand-text-muted">
             {list === 'allowed'
@@ -1888,7 +1918,27 @@ function AppsSection({ profileId, isNew, apps, onChanged, testIdPrefix = 'apps-s
           </span>
         </div>
         <div className="space-y-1" data-testid={`${testIdPrefix}-${list}-list`}>
+          {groupsStatus === 'pending' && (
+            <Skeleton className="h-10 w-full rounded-xl" testId={`${testIdPrefix}-${list}-groups-loading`} />
+          )}
+          {groupsStatus === 'error' && (
+            <p className="text-xs text-red-700" data-testid={`${testIdPrefix}-${list}-groups-error`}>Couldn't load groups.</p>
+          )}
+          {groupsStatus === 'success' && groupRows.map(a => (
+            <GroupRow
+              key={a.groupId}
+              profileId={profileId!}
+              attachment={a}
+              group={groupsQ.data?.find(g => g.id === a.groupId)}
+              apps={apps}
+              groups={groupsQ.data ?? []}
+              budget={budget}
+              onChanged={onChanged}
+              autoOpenMembers={justAttachedGroup === a.groupId}
+            />
+          ))}
           {rows.length === 0 ? (
+            groupRows.length > 0 ? null :
             <p className="text-xs text-brand-text-muted italic py-1" data-testid={`${testIdPrefix}-${list}-empty`}>
               {list === 'allowed' ? 'No allowed apps.' : 'No blocked apps.'}
             </p>
@@ -1949,7 +1999,7 @@ function AppsSection({ profileId, isNew, apps, onChanged, testIdPrefix = 'apps-s
         />
       ) : (
         <div className="space-y-3">
-          {assigned.length === 0 && pickerMode == null && (
+          {assigned.length === 0 && attached.length === 0 && groupsStatus === 'success' && pickerMode == null && (
             <p className="text-xs text-brand-text-muted" data-testid={`${testIdPrefix}-none-assigned`}>
               No apps assigned to this profile.{' '}
               <button
@@ -1963,19 +2013,10 @@ function AppsSection({ profileId, isNew, apps, onChanged, testIdPrefix = 'apps-s
               {' '}from the {apps.length}-app library.
             </p>
           )}
-          <GroupsSubList
-            profileId={profileId}
-            testIdPrefix={testIdPrefix}
-            status={groupsStatus}
-            attached={attached}
-            groups={groupsQ.data ?? []}
-            apps={apps}
-            budget={budget}
-            onChanged={onChanged}
-            openMembersFor={justAttachedGroup}
-          />
-          {assigned.length > 0 && renderList('allowed', allowedApps)}
-          {assigned.length > 0 && renderList('blocked', blockedApps)}
+          {(assigned.length > 0 || attached.length > 0 || groupsStatus !== 'success') &&
+            renderList('allowed', allowedApps, allowedGroups)}
+          {(assigned.length > 0 || attached.length > 0 || groupsStatus !== 'success') &&
+            renderList('blocked', blockedApps, blockedGroups)}
           {pickerMode != null && (
             <div
               data-testid={`${testIdPrefix}-picker`}
@@ -1986,7 +2027,7 @@ function AppsSection({ profileId, isNew, apps, onChanged, testIdPrefix = 'apps-s
               <p className={`text-[11px] font-semibold uppercase tracking-wider ${
                 pickerMode === 'allowed' ? 'text-brand-accent' : 'text-red-700'
               }`}>
-                {pickerMode === 'allowed' ? 'Allow an app' : 'Block an app'}
+                {pickerMode === 'allowed' ? 'Allow an app or group' : 'Block an app or group'}
               </p>
               <input
                 type="text"
@@ -2000,6 +2041,50 @@ function AppsSection({ profileId, isNew, apps, onChanged, testIdPrefix = 'apps-s
               {pickerError && (
                 <p className="text-xs text-red-700" data-testid={`${testIdPrefix}-picker-error`}>{pickerError}</p>
               )}
+              <div className="space-y-1" data-testid={`${testIdPrefix}-picker-groups`}>
+                {groupMatches.map(g => (
+                  <button
+                    key={g.id}
+                    type="button"
+                    data-testid={`${testIdPrefix}-picker-group-${g.id}`}
+                    onClick={() => addGroup(g.id, pickerMode)}
+                    disabled={addingGroupId != null || addingAppId != null}
+                    aria-busy={addingGroupId === g.id}
+                    className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg bg-white hover:bg-brand-alt border border-brand-border-strong text-left disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    <span className="text-[9.5px] font-bold uppercase tracking-wider px-1.5 rounded-full bg-brand-alt text-brand-text-muted shrink-0">Group</span>
+                    <span className="text-sm text-brand-ink truncate">{g.name}</span>
+                    <span className="text-xs text-brand-text-muted flex-1 truncate">
+                      {addingGroupId === g.id ? 'Adding…' : g.memberAppIds
+                        .map(id => apps.find(a => a.app.id === id)?.app.name)
+                        .filter(Boolean)
+                        .join(', ') || 'No apps yet'}
+                    </span>
+                  </button>
+                ))}
+                {newGroupName == null ? (
+                  <button
+                    type="button"
+                    data-testid={`${testIdPrefix}-picker-new-group`}
+                    onClick={() => setNewGroupName('')}
+                    disabled={addingGroupId != null}
+                    className="w-full text-left text-xs px-2 py-1.5 rounded-lg hover:bg-brand-alt text-brand-accent disabled:opacity-50"
+                  >New group…</button>
+                ) : (
+                  <input
+                    type="text"
+                    autoFocus
+                    value={newGroupName}
+                    onChange={e => setNewGroupName(e.target.value)}
+                    disabled={addingGroupId != null}
+                    onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); void addGroup('new', pickerMode) } }}
+                    placeholder="Group name, then Enter"
+                    aria-label="New group name"
+                    data-testid={`${testIdPrefix}-picker-new-group-name`}
+                    className="w-full bg-white border border-brand-border-strong rounded-lg px-2 py-1 text-xs text-brand-ink"
+                  />
+                )}
+              </div>
               {pickerMatches.length === 0 ? (
                 <p className="text-xs text-brand-text-muted" data-testid={`${testIdPrefix}-picker-empty`}>
                   {unassigned.length === 0
