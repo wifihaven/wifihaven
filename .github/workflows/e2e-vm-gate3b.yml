@@ -49,8 +49,21 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # #2960: staging is suspended between deploys (staging-power.yml); wake it
+  # before anything talks to it.
+  resume-staging:
+    name: Resume staging (Render)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Resume staging and wait for health
+        env:
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+        run: scripts/render-staging-power.sh resume
+
   e2e-gate3b:
     name: Gate 3b (API/UI-side staging) — ${{ matrix.pkg_format }}
+    needs: [resume-staging]
     if: >-
       github.event_name != 'pull_request'
       || github.event.pull_request.head.repo.full_name == github.repository

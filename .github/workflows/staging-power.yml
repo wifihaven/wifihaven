@@ -1,0 +1,43 @@
+name: Staging power (suspend when idle)
+
+# #2960: wifihaven-api-staging is suspended between deploys. Every workflow
+# that uses staging resumes it first (`scripts/render-staging-power.sh resume`
+# in master-api-ui.yml and the Gate 3a / 3b workflows). This workflow puts it
+# back to sleep once nothing that needs it is running.
+#
+# The sweep itself (check, suspend, re-check, and its race handling) lives in
+# scripts/render-staging-power.sh so it is covered by render-staging-power.test.sh.
+# It fails closed: if the in-flight check can't be read, staging stays up and the
+# job goes red.
+#
+# Manual use: `gh workflow run staging-power.yml -f action=resume` to wake
+# staging for hands-on testing. The next hourly sweep suspends it again.
+
+on:
+  schedule:
+    - cron: "17 * * * *"
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "sweep (suspend if idle), resume, or suspend"
+        type: choice
+        options: [sweep, resume, suspend]
+        default: sweep
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  power:
+    name: Staging power — ${{ inputs.action || 'sweep' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Resume / suspend / sweep
+        env:
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          GH_TOKEN: ${{ github.token }}
+          ACTION: ${{ inputs.action || 'sweep' }}
+        run: scripts/render-staging-power.sh "$ACTION"
