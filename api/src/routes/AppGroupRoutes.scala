@@ -66,6 +66,38 @@ object AppGroupRoutes {
     else if (weekly.exists(_ <= 0)) ZIO.fail(ApiError.BadRequest("weeklyMinutes must be > 0"))
     else ZIO.unit
 
+  /**
+   * #2981 (design §17.6): the mode a PUT writes, so the stored row always satisfies V94's CHECK (an
+   * Allowed or Blocked attachment has no limit). `existing` is the row's current effective mode, if
+   * the group is already attached.
+   *   - mode given: TimeLimited needs a limit; Allowed or Blocked with a limit is rejected (D21).
+   *   - no mode, a limit: TimeLimited (D21: setting a limit makes it TimeLimited).
+   *   - no mode, no limit: Blocked if the row is Blocked, otherwise Allowed (D23). That is how
+   *     #2973's "No limit" body, which sends no mode, lands as an Allowed group.
+   */
+  private[routes] def resolveMode(
+      requested: Option[AppMode],
+      daily: Option[Int],
+      weekly: Option[Int],
+      existing: Option[AppMode],
+  ): IO[ApiError, AppMode] = {
+    val hasLimit = daily.isDefined || weekly.isDefined
+    requested match {
+      case Some(AppMode.TimeLimited) if !hasLimit                    =>
+        ZIO.fail(ApiError.BadRequest("a time-limited group needs dailyMinutes or weeklyMinutes"))
+      case Some(m @ (AppMode.Allowed | AppMode.Blocked)) if hasLimit =>
+        ZIO.fail(
+          ApiError.BadRequest(
+            s"a group in mode ${AppMode.asString(m)} takes no limit; send mode time_limited to set one",
+          ),
+        )
+      case Some(m)                                                   => ZIO.succeed(m)
+      case None if hasLimit                           => ZIO.succeed(AppMode.TimeLimited)
+      case None if existing.contains(AppMode.Blocked) => ZIO.succeed(AppMode.Blocked)
+      case None                                       => ZIO.succeed(AppMode.Allowed)
+    }
+  }
+
   // Meter one write: `ok` when it succeeds, `rejected` when it fails with a typed API error.
   private def metered[A](op: String)(eff: IO[ApiError, A]): IO[ApiError, A] =
     eff.tapBoth(
@@ -171,6 +203,16 @@ object AppGroupRoutes {
                 .fromEither(body.fromJson[UpsertProfileAppGroupRequest])
                 .mapError(ApiError.DecodeFailure(_))
               _        <- validLimits(ar.dailyMinutes, ar.weeklyMinutes)
+              existing <- groupRepo
+                .listAttachments(claims.hh, pid)
+                .mapError(ApiError.Db(_))
+                .map(_.find(_.groupId == gid))
+              mode     <- resolveMode(
+                ar.mode,
+                ar.dailyMinutes,
+                ar.weeklyMinutes,
+                existing.map(_.mode),
+              )
               attached <- groupRepo
                 .upsertAttachment(
                   claims.hh,
@@ -180,10 +222,11 @@ object AppGroupRoutes {
                   ar.weeklyMinutes,
                   // Same default as a per-app assignment (D5): exempt unless the client says it counts.
                   ar.exemptFromDaily.getOrElse(true),
-                  // TODO(#2981): resolve the mode and keep the row's toggle. Until then every write
-                  // is TimeLimited, which a limitless body makes Allowed on read (D23).
-                  AppMode.TimeLimited,
-                  allowedDuringScheduleBlock = true,
+                  mode,
+                  // #2981: an absent toggle keeps the row's, or the #1679 default on create.
+                  ar.allowedDuringScheduleBlock
+                    .orElse(existing.map(_.allowedDuringScheduleBlock))
+                    .getOrElse(true),
                 )
                 .mapError(ApiError.Db(_))
                 .flatMap(ZIO.fromEither(_).mapError(toApiError))

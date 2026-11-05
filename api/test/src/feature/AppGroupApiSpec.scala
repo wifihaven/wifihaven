@@ -764,5 +764,102 @@ object AppGroupApiSpec
         cc == ((1, 1, 1, 1)),
       )
     },
+    // #2981 (design §17.6): an attachment's mode and #1679 toggle on the wire. The resolution rules
+    // keep every stored row inside V94's CHECK (an Allowed or Blocked row has no limit).
+    test("mode: Blocked and Allowed carry no limit; TimeLimited needs one (§17.6)") {
+      for {
+        _              <- cleanDb
+        two            <- TestLayers.seedTwoHouseholds(macA, macB)
+        r              <- rig
+        auth           <- makeAuth
+        tok            <- login(auth, two.adminA, two.password)
+        (roblox, _, _) <- newApps
+        g              <- createGroup(r.groups, tok, "Games", List(roblox)).flatMap(decodeGroup)
+        put = (b: String) => attach(r.groups, tok, two.profileA, g.id, b)
+        now = attachments(r.groups, tok, two.profileA).map(_.head)
+        blocked      <- put("""{"mode":"blocked"}""")
+        b            <- now
+        allowedLimit <- put("""{"mode":"allowed","dailyMinutes":30}""")
+        blockedLimit <- put("""{"mode":"blocked","weeklyMinutes":300}""")
+        tlNoLimit    <- put("""{"mode":"time_limited"}""")
+        afterBad     <- now
+        tl           <- put("""{"mode":"time_limited","weeklyMinutes":300}""")
+        t            <- now
+        allowed      <- put("""{"mode":"allowed","allowedDuringScheduleBlock":false}""")
+        a            <- now
+      } yield assertTrue(
+        blocked.status.isSuccess,
+        b.mode == AppMode.Blocked,
+        b.dailyMinutes.isEmpty && b.weeklyMinutes.isEmpty,
+        allowedLimit.status == Status.BadRequest,
+        blockedLimit.status == Status.BadRequest,
+        tlNoLimit.status == Status.BadRequest,
+        // A rejected write leaves the row as it was.
+        afterBad.mode == AppMode.Blocked,
+        tl.status.isSuccess,
+        (t.mode, t.weeklyMinutes) == ((AppMode.TimeLimited, Some(300))),
+        allowed.status.isSuccess,
+        (a.mode, a.allowedDuringScheduleBlock, a.weeklyMinutes) == ((AppMode.Allowed, false, None)),
+      )
+    },
+    test(
+      "mode absent: a limit means TimeLimited; no limit keeps Blocked, else Allowed (D21, D23)",
+    ) {
+      for {
+        _              <- cleanDb
+        two            <- TestLayers.seedTwoHouseholds(macA, macB)
+        r              <- rig
+        auth           <- makeAuth
+        tok            <- login(auth, two.adminA, two.password)
+        (roblox, _, _) <- newApps
+        g              <- createGroup(r.groups, tok, "Games", List(roblox)).flatMap(decodeGroup)
+        put = (b: String) => attach(r.groups, tok, two.profileA, g.id, b)
+        now = attachments(r.groups, tok, two.profileA).map(_.head)
+        _            <- put("{}")
+        fresh        <- now
+        _            <- put("""{"dailyMinutes":45}""")
+        limited      <- now
+        _            <- put("{}")
+        cleared      <- now
+        _            <- put("""{"mode":"blocked"}""")
+        _            <- put("""{"exemptFromDaily":false}""")
+        stillBlocked <- now
+        _            <- put("""{"dailyMinutes":45}""")
+        relimited    <- now
+      } yield assertTrue(
+        // #2973's "No limit" body, which sends no mode, lands as an Allowed group (D23).
+        (fresh.mode, fresh.allowedDuringScheduleBlock) == ((AppMode.Allowed, true)),
+        (limited.mode, limited.dailyMinutes) == ((AppMode.TimeLimited, Some(45))),
+        // Clearing both limits makes it Allowed (D21).
+        (cleared.mode, cleared.dailyMinutes) == ((AppMode.Allowed, None)),
+        // An edit with no mode and no limit leaves a Blocked group Blocked.
+        stillBlocked.mode == AppMode.Blocked,
+        !stillBlocked.exemptFromDaily,
+        // Setting a limit makes it TimeLimited, as for apps (D21).
+        (relimited.mode, relimited.dailyMinutes) == ((AppMode.TimeLimited, Some(45))),
+      )
+    },
+    test("the #1679 toggle is unchanged by an edit that leaves it out") {
+      for {
+        _              <- cleanDb
+        two            <- TestLayers.seedTwoHouseholds(macA, macB)
+        r              <- rig
+        auth           <- makeAuth
+        tok            <- login(auth, two.adminA, two.password)
+        (roblox, _, _) <- newApps
+        g              <- createGroup(r.groups, tok, "Games", List(roblox)).flatMap(decodeGroup)
+        put = (b: String) => attach(r.groups, tok, two.profileA, g.id, b)
+        now = attachments(r.groups, tok, two.profileA).map(_.head)
+        _       <- put("""{"mode":"allowed","allowedDuringScheduleBlock":false}""")
+        _       <- put("""{"exemptFromDaily":false}""")
+        kept    <- now
+        _       <- put("""{"allowedDuringScheduleBlock":true}""")
+        flipped <- now
+      } yield assertTrue(
+        (kept.mode, kept.allowedDuringScheduleBlock, kept.exemptFromDaily) ==
+          ((AppMode.Allowed, false, false)),
+        (flipped.mode, flipped.allowedDuringScheduleBlock) == ((AppMode.Allowed, true)),
+      )
+    },
   ) @@ TestAspect.sequential
 }

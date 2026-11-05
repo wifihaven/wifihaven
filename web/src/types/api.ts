@@ -1163,12 +1163,21 @@ export interface ProfileAppGroup {
   dailyMinutes: number | null
   weeklyMinutes: number | null
   exemptFromDaily: boolean
+  // #2981 (design §17): the attachment's effective mode. A TimeLimited one has a limit; an Allowed
+  // or Blocked one has none (a limitless attachment is Allowed, D23).
+  mode: AppMode
+  // #1679 toggle for an Allowed attachment: reachable during scheduled downtime.
+  allowedDuringScheduleBlock: boolean
 }
 
 export interface UpsertProfileAppGroupRequest {
   dailyMinutes?: number | null
   weeklyMinutes?: number | null
   exemptFromDaily?: boolean
+  // #2981 (design §17.6): absent mode resolves from the limits and the existing row (D21, D23);
+  // absent toggle keeps the row's.
+  mode?: AppMode
+  allowedDuringScheduleBlock?: boolean
 }
 
 // #1983 — one app host that is a member of one or more shipped category
