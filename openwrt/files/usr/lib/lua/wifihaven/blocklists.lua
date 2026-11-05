@@ -857,7 +857,9 @@ function M.render_outputs(snapshot, fs, cache_dir, shard_dir, index_path, max_by
   main_specs = main_specs or {}
   local list_key = M.render_key(snapshot, max_bytes, global_blocklist_ids)
   local present = outputs_present(snapshot, fs, shard_dir, index_path)
-  if state.key == list_key and present then
+  -- state.checked / state.overlap / state.overlap_key are written together
+  -- with state.key, so a matching key means they describe these lists.
+  if state.key == list_key and present and state.checked then
     local all_checked = true
     for host in pairs(main_specs) do
       if not state.checked[host] then all_checked = false; break end

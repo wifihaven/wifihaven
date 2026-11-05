@@ -1369,6 +1369,33 @@ describe("blocklists no-op refresh and render (#2893)", function()
     assert.truthy(fs._files[SHARDS .. "/wifihaven-blocklist-ads.conf"]:find("ea_ad_example", 1, true))
   end)
 
+  it("re-renders when a host above a list member changes its specs (#2995)", function()
+    local fs = stream_fs(); seed(fs)
+    local state = {}
+    render_main(lists(), fs, state, { example = { "4#inet#wifihaven#ea_example" } })
+    assert.is_true(render_main(lists(), fs, state,
+                               { example = { "4#inet#wifihaven#eb_example" } }).rendered)
+    local shard = fs._files[SHARDS .. "/wifihaven-blocklist-ads.conf"]
+    assert.truthy(shard:find("nftset=/ad.example/4#inet#wifihaven#bl_ads,6#inet#wifihaven#bl6_ads,4#inet#wifihaven#eb_example\n", 1, true))
+    assert.is_nil(shard:find("ea_example", 1, true))
+  end)
+
+  it("keeps the bl_ specs of a host below a list member that leaves and comes back (#2995)", function()
+    local fs = stream_fs(); seed(fs)
+    local state = {}
+    -- x.ad.example leaves in the same apply that changes another overlapping
+    -- host, so that render drops its entry; coming back must render again.
+    local x = { "4#inet#wifihaven#ea_x_ad_example" }
+    render_main(lists(), fs, state, main({ "4#inet#wifihaven#ea_ad_example" }))
+    local with_x = main({ "4#inet#wifihaven#ea_ad_example" }); with_x["x.ad.example"] = x
+    render_main(lists(), fs, state, with_x)
+    render_main(lists(), fs, state, main({ "4#inet#wifihaven#eb_ad_example" }))
+    with_x = main({ "4#inet#wifihaven#eb_ad_example" }); with_x["x.ad.example"] = x
+    render_main(lists(), fs, state, with_x)
+    assert.same({ "4#inet#wifihaven#bl_ads", "6#inet#wifihaven#bl6_ads" },
+                state.main_bl_specs["x.ad.example"])
+  end)
+
   it("re-renders for a new host below a list member (#2995)", function()
     local fs = stream_fs(); seed(fs)
     local state = {}
