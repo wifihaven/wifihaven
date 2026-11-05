@@ -590,6 +590,9 @@ grows taller when collapsed.
   and leaves the group coverage in place.
 - Picker (D15): "+ Allow app" / "+ Block app" mark covered apps "In
   *Games*". Picking one still works and lands with the overlap warning.
+- *Superseded by §17.6 (#2982): a group is now a row in the Allowed or Blocked
+  list that matches its mode, added from the "+ Allow app" / "+ Block app"
+  pickers; the Groups sub-list and "+ Add group" below are gone.*
 - Groups on a profile: a compact "Groups" sub-list at the top of the allowed
   list. Each attached group is one collapsed row: name, member icons, remaining
   time. Its expander holds the profile's daily and weekly inputs and the

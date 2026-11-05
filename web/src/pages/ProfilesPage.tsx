@@ -1762,6 +1762,9 @@ function AppsSection({ profileId, isNew, apps, onChanged, testIdPrefix = 'apps-s
   // #2982 — "New group…" in a picker: the name being typed, and the group write in flight.
   const [newGroupName, setNewGroupName] = useState<string | null>(null)
   const [addingGroupId, setAddingGroupId] = useState<number | 'new' | null>(null)
+  // #2964 — guards re-entry synchronously (Enter then click); `addingGroupId` is the same fact for
+  // rendering.
+  const addingGroup = useRef(false)
   // #2964 — the picked app's save in flight, and the last save's failure.
   const [addingAppId, setAddingAppId] = useState<number | null>(null)
   const [pickerError, setPickerError] = useState<string | null>(null)
@@ -1819,7 +1822,8 @@ function AppsSection({ profileId, isNew, apps, onChanged, testIdPrefix = 'apps-s
   // #2982 — a group picked from "+ Allow app" / "+ Block app" lands in that list with no limit
   // (an Allowed group, D23, or a Blocked one) and opens on its members.
   async function addGroup(groupId: number | 'new', mode: 'allowed' | 'blocked') {
-    if (profileId == null || addingGroupId != null) return
+    if (profileId == null || addingGroup.current || addingAppId != null) return
+    addingGroup.current = true
     setAddingGroupId(groupId)
     setPickerError(null)
     try {
@@ -1836,12 +1840,13 @@ function AppsSection({ profileId, isNew, apps, onChanged, testIdPrefix = 'apps-s
     } catch (e) {
       setPickerError(`Couldn’t add the group: ${errMsg(e, 'save failed')}`)
     } finally {
+      addingGroup.current = false
       setAddingGroupId(null)
     }
   }
 
   async function addApp(app: AppDetail, mode: 'allowed' | 'blocked') {
-    if (profileId == null || addingAppId != null) return
+    if (profileId == null || addingAppId != null || addingGroup.current) return
     setAddingAppId(app.app.id)
     setPickerError(null)
     try {
@@ -1904,9 +1909,18 @@ function AppsSection({ profileId, isNew, apps, onChanged, testIdPrefix = 'apps-s
           <span className="text-[11px] font-bold uppercase tracking-wider text-brand-ink">
             {list === 'allowed' ? 'Allowed' : 'Blocked'}
           </span>
-          <span className="text-[11px] font-mono text-brand-text-muted" data-testid={`${testIdPrefix}-${list}-count`}>
-            {rows.length + groupRows.length}
-          </span>
+          {groupsStatus === 'success' ? (
+            <span className="text-[11px] font-mono text-brand-text-muted" data-testid={`${testIdPrefix}-${list}-count`}>
+              {rows.length + groupRows.length}
+            </span>
+          ) : (
+            // Until the groups are known the count is not either (AGENTS.md#loading-states).
+            <span
+              data-testid={`${testIdPrefix}-${list}-count-loading`}
+              aria-label="Loading count"
+              className="inline-block w-4 h-2 rounded-full bg-brand-alt animate-pulse"
+            />
+          )}
           <span className="ml-auto text-[11px] text-brand-text-muted">
             {list === 'allowed'
               // Deliberately "its own limit": a plain Allowed app outlives the
@@ -1938,7 +1952,7 @@ function AppsSection({ profileId, isNew, apps, onChanged, testIdPrefix = 'apps-s
             />
           ))}
           {rows.length === 0 ? (
-            groupRows.length > 0 ? null :
+            groupRows.length > 0 || groupsStatus !== 'success' ? null :
             <p className="text-xs text-brand-text-muted italic py-1" data-testid={`${testIdPrefix}-${list}-empty`}>
               {list === 'allowed' ? 'No allowed apps.' : 'No blocked apps.'}
             </p>
@@ -2041,6 +2055,15 @@ function AppsSection({ profileId, isNew, apps, onChanged, testIdPrefix = 'apps-s
               {pickerError && (
                 <p className="text-xs text-red-700" data-testid={`${testIdPrefix}-picker-error`}>{pickerError}</p>
               )}
+              {groupsStatus === 'pending' && (
+                <Skeleton className="h-8 w-full rounded-lg" testId={`${testIdPrefix}-picker-groups-loading`} />
+              )}
+              {groupsStatus === 'error' && (
+                <p className="text-xs text-red-700" data-testid={`${testIdPrefix}-picker-groups-error`}>
+                  Couldn't load groups, so none can be added right now.
+                </p>
+              )}
+              {groupsStatus === 'success' && (
               <div className="space-y-1" data-testid={`${testIdPrefix}-picker-groups`}>
                 {groupMatches.map(g => (
                   <button
@@ -2085,6 +2108,7 @@ function AppsSection({ profileId, isNew, apps, onChanged, testIdPrefix = 'apps-s
                   />
                 )}
               </div>
+              )}
               {pickerMatches.length === 0 ? (
                 <p className="text-xs text-brand-text-muted" data-testid={`${testIdPrefix}-picker-empty`}>
                   {unassigned.length === 0
