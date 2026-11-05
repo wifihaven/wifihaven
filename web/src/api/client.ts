@@ -24,8 +24,6 @@ import type {
   UpsertAppAssignmentRequest, UpsertDeviceRequest, UpsertProfileRequest, GrantExtensionRequest,
   UsageSeriesBatchResponse, UsageSeriesResponse, User,
   BillingStatusResponse, BillingRedirect,
-  SupportIdentityResponse,
-  PressMessage,
 } from '@/types/api'
 
 // VITE_API_BASE_URL is empty by default (relative path — SPA served from the
@@ -328,14 +326,6 @@ export const api = {
       req<ApproveBetaResponse>('POST', `/operator/beta-requests/${id}/approve`),
     reject: (id: number) =>
       req<void>('POST', `/operator/beta-requests/${id}/reject`),
-  },
-
-  // ── Press correspondence log (#2296 SPA over the #2296 API) ──────────────
-  press: {
-    // Operator-only (household-1 admin) read of the recorded press correspondence,
-    // newest-first. The API 404s any other household (the log's existence is not
-    // disclosed across the tenant boundary) and 403s a non-admin.
-    messages: () => req<PressMessage[]>('GET', '/press/messages'),
   },
 
   // ── Users ──────────────────────────────────────────────────────────────
@@ -721,17 +711,6 @@ export const api = {
     status: () => req<BillingStatusResponse>('GET', '/billing'),
     checkout: () => req<BillingRedirect>('POST', '/billing/checkout', {}),
     portal: () => req<BillingRedirect>('GET', '/billing/portal'),
-  },
-
-  // ── Support (#2199): server-signed Plain widget identity (admin) ─────────
-  support: {
-    identity: () => req<SupportIdentityResponse>('GET', '/support/identity'),
-    // #2419: redeem (or withdraw) the signed consent link the server posted into a support thread.
-    // Authenticated — the household is taken from the caller's session, never from this request —
-    // and it is the ONLY writer of data-access consent: the support agent can ask for consent but
-    // can never grant itself any.
-    consent: (grant: string, allow: boolean) =>
-      req<{ status: string }>('POST', '/support/consent', { grant, allow }),
   },
 
   // ── Routers (admin) ────────────────────────────────────────────────────

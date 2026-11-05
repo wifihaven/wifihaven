@@ -75,99 +75,10 @@ set -euo pipefail
 : "${WIFIHAVEN_EMAIL_ENABLED:=false}"
 : "${WIFIHAVEN_EMAIL_RESEND_API_KEY:=}"
 : "${WIFIHAVEN_EMAIL_FROM_ADDRESS:=}"
-# #2437: the OPERATOR mailbox every support/press escalation notice is emailed to. REQUIRED when
-# email is enabled AND a responder is on (AppConfig.validateRequired) — an escalation with nowhere to
-# go is a silent drop, so boot fails rather than degrading.
-: "${WIFIHAVEN_EMAIL_OPERATOR_ADDRESS:=}"
 # #2250: derive the "review in dashboard" link host from the shared SPA origin (own override still
 # honored). Before #2250 this had an env binding but no staging value, so staging alert/email links
 # pointed at the prod SPA.
 : "${WIFIHAVEN_EMAIL_APP_BASE_URL:=${WIFIHAVEN_APP_BASE_URL}}"
-# #2199: Plain helpdesk integration (#2197). Two independent gates, now EXPLICIT flags (#2266, no
-# dark-by-default): the WIDGET (WIDGET_ENABLED) needs BOTH APP_ID + IDENTITY_SECRET; the WRITE API
-# (WRITE_ENABLED) needs API_KEY. A true flag with a missing secret FAILS BOOT
-# (AppConfig.validateRequired). Default false = off (widget renders nothing / write is a no-op),
-# observable at boot + on /api/debug/config. Secrets NEVER committed.
-: "${WIFIHAVEN_SUPPORT_WIDGET_ENABLED:=false}"
-: "${WIFIHAVEN_SUPPORT_WRITE_ENABLED:=false}"
-: "${WIFIHAVEN_SUPPORT_PLAIN_API_KEY:=}"
-: "${WIFIHAVEN_SUPPORT_PLAIN_WEBHOOK_SECRET:=}"
-: "${WIFIHAVEN_SUPPORT_PLAIN_IDENTITY_SECRET:=}"
-: "${WIFIHAVEN_SUPPORT_PLAIN_APP_ID:=}"
-# #2437: the Plain label TYPE id applied to a thread when the support agent escalates, so the
-# operator can filter the inbox for "waiting on a human". Required when the support responder is
-# enabled (SupportConfig.missingRequiredKeys); the key also needs Plain's `label:create` permission.
-: "${WIFIHAVEN_SUPPORT_PLAIN_ESCALATION_LABEL_TYPE_ID:=}"
-# #2200: the Claude support responder (cloud-agent dispatch per UI-originated Plain message, #2241
-# access model). DARK unless the WHOLE responder chain is set: WEBHOOK_SECRET (above) + the
-# Anthropic session-create triple (API key + pre-provisioned agent id + environment id, see
-# deploy/support-agent/) + the AGENT_TOKEN_SECRET (HMAC for the per-session thread-/household-bound
-# token — generate ≥32 random chars). GITHUB token is the fine-grained Issues-ONLY support-bot
-# credential — read+write, since #2458's duplicate check LISTS open issues before filing (issue
-# filing dark without it; no-PR stays structural via the absence of contents/pull_requests).
-# AGENT_API_BASE is the public URL the cloud agent calls back to.
-# #2265: EXPLICIT enable flags — no dark-by-default. false (the default) = feature deliberately
-# off, logged at boot + visible on /api/health. true REQUIRES the full config chain: boot fails
-# loudly listing every missing key. Flip via render.yaml PR at go-live, AFTER the secrets are set
-# (config precedes code).
-: "${WIFIHAVEN_SUPPORT_RESPONDER_ENABLED:=false}"
-: "${WIFIHAVEN_SUPPORT_ISSUE_FILING_ENABLED:=false}"
-# #2300: which cloud-agent transport the responder dispatches through — EXPLICIT named value
-# (managed-agents = Anthropic Managed Agents session, API-credit billed; claude-code-cloud = a
-# Claude Code Cloud routine fired per message, Claude-subscription billed). Only the SELECTED
-# transport's config chain is required at boot; an unknown value fails boot loudly.
-: "${WIFIHAVEN_SUPPORT_DISPATCHER:=managed-agents}"
-: "${WIFIHAVEN_SUPPORT_ANTHROPIC_API_KEY:=}"
-: "${WIFIHAVEN_SUPPORT_CLAUDE_AGENT_ID:=}"
-: "${WIFIHAVEN_SUPPORT_CLAUDE_ENVIRONMENT_ID:=}"
-# #2300: claude-code-cloud transport — the pre-provisioned routine id + its per-routine bearer token
-# (from the routine's "API trigger" in the Claude Code web UI). Required only when dispatcher =
-# claude-code-cloud.
-: "${WIFIHAVEN_SUPPORT_CLAUDE_CODE_ROUTINE_ID:=}"
-: "${WIFIHAVEN_SUPPORT_CLAUDE_CODE_ROUTINE_TOKEN:=}"
-: "${WIFIHAVEN_SUPPORT_AGENT_TOKEN_SECRET:=}"
-: "${WIFIHAVEN_SUPPORT_AGENT_API_BASE:=https://api.wifihaven.net}"
-# Which deployment this API is (staging | prod — a per-service literal in render.yaml, empty on
-# self-hosted). Rides in every agent kickoff so the session knows whether it serves a real
-# customer (prod) or an operator test (staging).
-: "${WIFIHAVEN_SUPPORT_DEPLOYMENT_ENV:=}"
-: "${WIFIHAVEN_SUPPORT_GITHUB_BOT_TOKEN:=}"
-# #2429: the customer-facing support inbox this deployment publishes in the SPA
-# (support@wifihaven.net on prod, support@staging.wifihaven.net on staging — both Cloudflare Email
-# Routing rules into Plain). A per-service literal, not a secret. Empty = self-hosted, no hosted
-# support desk (the SPA then shows no support line); REQUIRED when the Plain widget is enabled.
-: "${WIFIHAVEN_SUPPORT_EMAIL_ADDRESS:=}"
-# #2203: the Claude PRESS/PR responder (cloud-agent reply per inbound PUBLIC press email). Press
-# arrives at press@wifihaven.net via Cloudflare Email Routing → an Email Worker (deploy/press-worker/)
-# that HMAC-signs + POSTs to /api/press/inbound; the reply is EMAILED back to the sender via the #578
-# Resend transport (destination locked into the session token). A SEPARATE Managed Agent persona
-# from support, and — press being public — NO household data path. DARK unless the WHOLE press chain
-# is set: the WEBHOOK_SECRET (shared with the Worker) + the Anthropic session-create triple
-# (deploy/press-agent/) + the AGENT_TOKEN_SECRET (HMAC, ≥32 random chars); outbound email
-# (WIFIHAVEN_EMAIL_*) must ALSO be configured (the reply can't send without it — enforced at boot).
-# #2265: RESPONDER_ENABLED is an EXPLICIT flag — false (default) = off, logged at boot + visible on
-# /api/health; true REQUIRES the full chain or boot fails loudly. Flip via render.yaml PR at go-live,
-# AFTER the secrets are set (config precedes code).
-: "${WIFIHAVEN_PRESS_RESPONDER_ENABLED:=false}"
-# #2327: which cloud-agent transport the press responder dispatches through — EXPLICIT named value
-# (managed-agents = Anthropic Managed Agents session, API-credit billed; claude-code-cloud = a
-# Claude Code Cloud routine fired per message, Claude-subscription billed). Only the SELECTED
-# transport's config chain is required at boot; an unknown value fails boot loudly.
-: "${WIFIHAVEN_PRESS_DISPATCHER:=managed-agents}"
-: "${WIFIHAVEN_PRESS_WEBHOOK_SECRET:=}"
-: "${WIFIHAVEN_PRESS_ANTHROPIC_API_KEY:=}"
-: "${WIFIHAVEN_PRESS_CLAUDE_AGENT_ID:=}"
-: "${WIFIHAVEN_PRESS_CLAUDE_ENVIRONMENT_ID:=}"
-# #2327: claude-code-cloud transport — the pre-provisioned press routine id + its per-routine bearer
-# token (from the routine's "API trigger" in the Claude Code web UI). Required only when dispatcher =
-# claude-code-cloud.
-: "${WIFIHAVEN_PRESS_CLAUDE_CODE_ROUTINE_ID:=}"
-: "${WIFIHAVEN_PRESS_CLAUDE_CODE_ROUTINE_TOKEN:=}"
-: "${WIFIHAVEN_PRESS_AGENT_TOKEN_SECRET:=}"
-: "${WIFIHAVEN_PRESS_AGENT_API_BASE:=https://api.wifihaven.net}"
-: "${WIFIHAVEN_PRESS_DEPLOYMENT_ENV:=}"
-: "${WIFIHAVEN_PRESS_FROM_ADDRESS:=}"
-: "${WIFIHAVEN_PRESS_REPLY_TO_ADDRESS:=}"
 
 export WIFIHAVEN_LOG_LEVEL WIFIHAVEN_DEBUG
 
@@ -223,7 +134,6 @@ wifihaven {
     enabled      = ${WIFIHAVEN_EMAIL_ENABLED}
     resendApiKey = "${WIFIHAVEN_EMAIL_RESEND_API_KEY}"
     fromAddress  = "${WIFIHAVEN_EMAIL_FROM_ADDRESS}"
-    operatorAddress = "${WIFIHAVEN_EMAIL_OPERATOR_ADDRESS}"
     appBaseUrl   = "${WIFIHAVEN_EMAIL_APP_BASE_URL}"
   }
   beta {
@@ -233,45 +143,6 @@ wifihaven {
     thresholdHouseholds = ${WIFIHAVEN_FLIP_THRESHOLD_HOUSEHOLDS}
     windowDays          = ${WIFIHAVEN_FLIP_WINDOW_DAYS}
     activeLookbackDays  = ${WIFIHAVEN_FLIP_ACTIVE_LOOKBACK_DAYS}
-  }
-  support {
-    plain {
-      widgetEnabled  = ${WIFIHAVEN_SUPPORT_WIDGET_ENABLED}
-      writeEnabled   = ${WIFIHAVEN_SUPPORT_WRITE_ENABLED}
-      apiKey         = "${WIFIHAVEN_SUPPORT_PLAIN_API_KEY}"
-      webhookSecret  = "${WIFIHAVEN_SUPPORT_PLAIN_WEBHOOK_SECRET}"
-      identitySecret = "${WIFIHAVEN_SUPPORT_PLAIN_IDENTITY_SECRET}"
-      appId          = "${WIFIHAVEN_SUPPORT_PLAIN_APP_ID}"
-      escalationLabelTypeId = "${WIFIHAVEN_SUPPORT_PLAIN_ESCALATION_LABEL_TYPE_ID}"
-    }
-    responderEnabled       = ${WIFIHAVEN_SUPPORT_RESPONDER_ENABLED}
-    issueFilingEnabled     = ${WIFIHAVEN_SUPPORT_ISSUE_FILING_ENABLED}
-    dispatcher             = "${WIFIHAVEN_SUPPORT_DISPATCHER}"
-    anthropicApiKey        = "${WIFIHAVEN_SUPPORT_ANTHROPIC_API_KEY}"
-    claudeAgentId          = "${WIFIHAVEN_SUPPORT_CLAUDE_AGENT_ID}"
-    claudeEnvironmentId    = "${WIFIHAVEN_SUPPORT_CLAUDE_ENVIRONMENT_ID}"
-    claudeCodeRoutineId    = "${WIFIHAVEN_SUPPORT_CLAUDE_CODE_ROUTINE_ID}"
-    claudeCodeRoutineToken = "${WIFIHAVEN_SUPPORT_CLAUDE_CODE_ROUTINE_TOKEN}"
-    agentTokenSecret       = "${WIFIHAVEN_SUPPORT_AGENT_TOKEN_SECRET}"
-    agentApiBase          = "${WIFIHAVEN_SUPPORT_AGENT_API_BASE}"
-    deploymentEnv         = "${WIFIHAVEN_SUPPORT_DEPLOYMENT_ENV}"
-    githubSupportBotToken = "${WIFIHAVEN_SUPPORT_GITHUB_BOT_TOKEN}"
-    emailAddress          = "${WIFIHAVEN_SUPPORT_EMAIL_ADDRESS}"
-  }
-  press {
-    responderEnabled       = ${WIFIHAVEN_PRESS_RESPONDER_ENABLED}
-    dispatcher             = "${WIFIHAVEN_PRESS_DISPATCHER}"
-    webhookSecret          = "${WIFIHAVEN_PRESS_WEBHOOK_SECRET}"
-    anthropicApiKey        = "${WIFIHAVEN_PRESS_ANTHROPIC_API_KEY}"
-    claudeAgentId          = "${WIFIHAVEN_PRESS_CLAUDE_AGENT_ID}"
-    claudeEnvironmentId    = "${WIFIHAVEN_PRESS_CLAUDE_ENVIRONMENT_ID}"
-    claudeCodeRoutineId    = "${WIFIHAVEN_PRESS_CLAUDE_CODE_ROUTINE_ID}"
-    claudeCodeRoutineToken = "${WIFIHAVEN_PRESS_CLAUDE_CODE_ROUTINE_TOKEN}"
-    agentTokenSecret       = "${WIFIHAVEN_PRESS_AGENT_TOKEN_SECRET}"
-    agentApiBase           = "${WIFIHAVEN_PRESS_AGENT_API_BASE}"
-    deploymentEnv          = "${WIFIHAVEN_PRESS_DEPLOYMENT_ENV}"
-    fromAddress            = "${WIFIHAVEN_PRESS_FROM_ADDRESS}"
-    replyToAddress         = "${WIFIHAVEN_PRESS_REPLY_TO_ADDRESS}"
   }
 }
 EOF

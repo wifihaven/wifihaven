@@ -275,6 +275,11 @@ stated alongside.
 
 ### 7.2 `warning` — notify, look today
 
+> **Removed in [#2954](https://github.com/wifihaven/wifihaven/issues/2954):** W6, W7, W8, W11, W12 and
+> W13 below watched the Claude support/press responders and the Plain integration, which no longer
+> exist; their rules, series and dashboards are gone. The entries are kept as the record of why they
+> existed, and the W-numbers are not reused.
+
 **W1. Rollup failures**
 - Query: `increase(wifihaven_rollup_runs_total{status="error",env="prod"}[1h])`
 - Fire when `> 0` **for 10m**.
@@ -366,7 +371,7 @@ stated alongside.
   it, so the customer got nothing. The likely cause is a workspace with email
   sending switched off — Settings → Channels → Email, section 3 "Sending emails"
   left unverified or section 4 "Enable email" never clicked
-  ([`docs/ops/plain-setup.md` §3.1](../ops/plain-setup.md#31-email-sending--a-required-go-live-gate-per-workspace)),
+  (`docs/ops/plain-setup.md` §3.1, removed in #2954),
   which stays broken until a human finishes provisioning.
   A deliberate off-state is **not** this:
   `plain.writeEnabled=false` labels `disabled`, so our own flag cannot light the

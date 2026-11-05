@@ -73,156 +73,16 @@ object StartupConfigSpec extends ZIOSpecDefault {
         bootValidate(hocon(goodSecret)).exit.map(ex => assertTrue(ex.isSuccess))
       },
       test(
-        "#2265: support.responderEnabled=true with the chain missing crashes boot, naming EVERY gap",
+        "#2954: leftover support/press HOCON blocks (removed features) are ignored, not required",
       ) {
-        // The load-bearing junction: an explicitly-enabled support responder makes its whole config
-        // chain required, and those gaps flow into the CANONICAL accumulator (not a bespoke one) so
-        // boot fails loudly listing them all. A regression dropping the support hook from
-        // validateRequired makes this test fail — the silent-no-op class #2265 exists to kill.
-        val cfg = loadVia(
-          hocon(
-            goodSecret,
-            """  support { responderEnabled = true }
-                                              |""".stripMargin,
-          ),
-        )
-        cfg.flatMap { c =>
-          val errs = AppConfig.validateRequired(c)
-          bootValidate(
-            hocon(
-              goodSecret,
-              """  support { responderEnabled = true }
-                                           |""".stripMargin,
-            ),
-          ).exit.map { ex =>
-            val bootMsg = ex match {
-              case Exit.Failure(cause) => cause.failureOption.map(_.getMessage).getOrElse("")
-              case Exit.Success(_)     => ""
-            }
-            assertTrue(
-              // The gaps accumulate (jwt is valid here, so ONLY the support keys appear).
-              errs.exists(_.contains("support.plain.apiKey")),
-              errs.exists(_.contains("support.anthropicApiKey")),
-              errs.exists(_.contains("support.claudeAgentId")),
-              errs.exists(_.contains("support.claudeEnvironmentId")),
-              errs.exists(_.contains("support.agentTokenSecret")),
-              errs.exists(_.contains("support.deploymentEnv")),
-              // #2437: the escalation label is part of that chain — without it an escalated thread is
-              // indistinguishable from an AI-resolved one in the Plain inbox, so it must fail boot
-              // rather than degrade to an invisible handoff.
-              errs.exists(_.contains("support.plain.escalationLabelTypeId")),
-              // …and boot actually CRASHES with them (not just a pure-list check).
-              ex.isFailure,
-              bootMsg.contains("support.claudeAgentId"),
-            )
-          }
-        }
-      },
-      test("#2265: support.responderEnabled=false requires no support keys — boot succeeds") {
-        // Off is the default posture; a disabled responder must never make any support key required.
-        bootValidate(
-          hocon(
-            goodSecret,
-            """  support { responderEnabled = false }
-                                         |""".stripMargin,
-          ),
-        ).exit.map(ex => assertTrue(ex.isSuccess))
-      },
-      test("#2265: support.responderEnabled=true with the FULL chain set boots clean") {
-        val full =
-          """  support {
-            |    responderEnabled = true
-            |    plain { apiKey = "k", webhookSecret = "w", escalationLabelTypeId = "lt_x" }
-            |    anthropicApiKey = "sk"
-            |    claudeAgentId = "agent_x", claudeEnvironmentId = "env_x"
-            |    agentTokenSecret = "secret-at-least-32-chars-long!!x", deploymentEnv = "staging"
-            |  }
+        // Render keeps the WIFIHAVEN_SUPPORT_* / WIFIHAVEN_PRESS_* env vars set until the deploy-config
+        // PR removes them, and an old config file may still carry the blocks. They must be inert: no
+        // validation, no boot failure, even with a responder flag still true.
+        val legacy =
+          """  support { responderEnabled = true, plain { widgetEnabled = true } }
+            |  press { responderEnabled = true }
             |""".stripMargin
-        bootValidate(hocon(goodSecret, full)).exit.map(ex => assertTrue(ex.isSuccess))
-      },
-      test("#2429: the Plain widget on without support.emailAddress crashes boot, naming the key") {
-        // A deployment that ships the chat widget has a hosted support desk, so it MUST publish the
-        // inbox the SPA renders (#2429). Missing ⇒ fail loud, not a silently-absent support line.
-        val widgetNoEmail =
-          """  support {
-            |    plain { widgetEnabled = true, appId = "app_x", identitySecret = "s" }
-            |  }
-            |""".stripMargin
-        for {
-          c  <- loadVia(hocon(goodSecret, widgetNoEmail))
-          ex <- bootValidate(hocon(goodSecret, widgetNoEmail)).exit
-          errs = AppConfig.validateRequired(c)
-        } yield assertTrue(
-          errs.exists(_.contains("wifihaven.support.emailAddress")),
-          // The message must name the flag that ACTUALLY required the key — the responder /
-          // issue-filing wording would send an operator to the wrong switch.
-          errs.exists(_.contains("wifihaven.support.plain.widgetEnabled=true")),
-          !errs.exists(e =>
-            e.contains("emailAddress") && e.contains("support responder / issue filing"),
-          ),
-          ex.isFailure,
-        )
-      },
-      test("#2429: the Plain widget on WITH support.emailAddress boots clean") {
-        val widgetWithEmail =
-          """  support {
-            |    plain { widgetEnabled = true, appId = "app_x", identitySecret = "s" }
-            |    emailAddress = "support@staging.wifihaven.net"
-            |  }
-            |""".stripMargin
-        bootValidate(hocon(goodSecret, widgetWithEmail)).exit.map(ex => assertTrue(ex.isSuccess))
-      },
-      test("#2429: with the widget off, support.emailAddress is not required (self-hosted)") {
-        bootValidate(
-          hocon(
-            goodSecret,
-            """  support { plain { widgetEnabled = false } }
-              |""".stripMargin,
-          ),
-        ).exit.map(ex => assertTrue(ex.isSuccess))
-      },
-      test("#2437: email on + a responder on with NO operator mailbox crashes boot") {
-        // The escalation notice is emailed to ONE operator mailbox. With the transport enabled and a
-        // responder live, an unset mailbox would silently drop every escalation — the exact failure
-        // #2437 fixes — so it is a REQUIRED key, not a degrade-to-nothing.
-        val noOperator =
-          """  email { enabled = true, resendApiKey = "re_x", fromAddress = "alerts@x.test" }
-            |  support {
-            |    responderEnabled = true
-            |    plain { apiKey = "k", webhookSecret = "w", escalationLabelTypeId = "lt_x" }
-            |    anthropicApiKey = "sk"
-            |    claudeAgentId = "agent_x", claudeEnvironmentId = "env_x"
-            |    agentTokenSecret = "secret-at-least-32-chars-long!!x", deploymentEnv = "staging"
-            |  }
-            |""".stripMargin
-        for {
-          errs <- loadVia(hocon(goodSecret, noOperator)).map(AppConfig.validateRequired)
-          ex   <- bootValidate(hocon(goodSecret, noOperator)).exit
-          withOperator = noOperator.replace(
-            """fromAddress = "alerts@x.test" }""",
-            """fromAddress = "alerts@x.test", operatorAddress = "ops@x.test" }""",
-          )
-          okEx <- bootValidate(hocon(goodSecret, withOperator)).exit
-        } yield assertTrue(
-          errs.exists(_.contains("wifihaven.email.operatorAddress")),
-          ex.isFailure,
-          // …and setting the mailbox is all that was missing.
-          okEx.isSuccess,
-        )
-      },
-      test("#2437: with the email transport explicitly OFF no operator mailbox is required") {
-        // A self-hosted install that sends no email cannot misaddress a notice; that disabled state is
-        // named + reported by StartupFeatureReport rather than being an unlabelled silent branch.
-        val emailOff =
-          """  support {
-            |    responderEnabled = true
-            |    plain { apiKey = "k", webhookSecret = "w", escalationLabelTypeId = "lt_x" }
-            |    anthropicApiKey = "sk"
-            |    claudeAgentId = "agent_x", claudeEnvironmentId = "env_x"
-            |    agentTokenSecret = "secret-at-least-32-chars-long!!x", deploymentEnv = "staging"
-            |  }
-            |""".stripMargin
-        bootValidate(hocon(goodSecret, emailOff)).exit.map(ex => assertTrue(ex.isSuccess))
+        bootValidate(hocon(goodSecret, legacy)).exit.map(ex => assertTrue(ex.isSuccess))
       },
     ),
     suite("optional features are observable — enabled/disabled + reason (rule 3)")(
@@ -265,50 +125,6 @@ object StartupConfigSpec extends ZIOSpecDefault {
           assertTrue(!soff.enabled, soff.detail.contains("enabled=false"), son.enabled)
         }
       },
-      test("support widget + write API + responder + issue-filing each reported independently") {
-        loadVia(hocon(goodSecret)).map { c =>
-          val states = StartupFeatureReport.states(c)
-          assertTrue(
-            states.exists(s => s.name == "support-widget" && !s.enabled),
-            states.exists(s => s.name == "support-write-api" && !s.enabled),
-            // #2265: the explicit-flag features report their (default-off) state too.
-            states.exists(s => s.name == "support-responder" && !s.enabled),
-            states.exists(s => s.name == "support-issue-filing" && !s.enabled),
-          )
-        }
-      },
-      test("#2429: the support address reports its state — unset names the key + the consequence") {
-        // Rule 3: "no support line in the SPA" must be an OBSERVABLE off state, not an unlabeled
-        // silent branch derived from an empty string.
-        for {
-          off <- loadVia(hocon(goodSecret))
-          on  <- loadVia(
-            hocon(
-              goodSecret,
-              """  support { emailAddress = "support@staging.wifihaven.net" }
-                |""".stripMargin,
-            ),
-          )
-          offState = StartupFeatureReport.states(off).find(_.name == "support-email")
-          onState  = StartupFeatureReport.states(on).find(_.name == "support-email")
-        } yield assertTrue(
-          offState.exists(s => !s.enabled && s.detail.contains("wifihaven.support.emailAddress")),
-          offState.exists(_.detail.contains("no support line")),
-          onState.exists(s => s.enabled && s.detail.contains("support@staging.wifihaven.net")),
-        )
-      },
-      test("support responder/issue-filing report ENABLED when their #2265 flags are true") {
-        val on =
-          """  support { responderEnabled = true, issueFilingEnabled = true }
-            |""".stripMargin
-        loadVia(hocon(goodSecret, on)).map { c =>
-          val states = StartupFeatureReport.states(c)
-          assertTrue(
-            states.exists(s => s.name == "support-responder" && s.enabled),
-            states.exists(s => s.name == "support-issue-filing" && s.enabled),
-          )
-        }
-      },
       test("every optional feature the audit named has a state entry") {
         loadVia(hocon(goodSecret)).map { c =>
           val names = StartupFeatureReport.states(c).map(_.name).toSet
@@ -316,15 +132,6 @@ object StartupConfigSpec extends ZIOSpecDefault {
             Set(
               "email-notifications",
               "stripe-billing",
-              "support-widget",
-              "support-email",
-              "support-write-api",
-              "support-responder",
-              // #2437: the escalation NOTICE channel is its own reported state — with the email
-              // transport off a support escalation still labels the Plain thread but emails nobody,
-              // and that degraded shape must be named rather than inferred from two other flags.
-              "escalation-notices",
-              "support-issue-filing",
               "metrics-endpoint",
               "metrics-scrape-token",
               "cors",
@@ -528,90 +335,6 @@ object StartupConfigSpec extends ZIOSpecDefault {
           // the gate that guarantees it (StripeConfig.validate).
           on.find(_.name == "stripe-billing").get.detail.contains("secretKey"),
           on.find(_.name == "stripe-billing").get.detail.contains("webhookSecret"),
-        )
-      },
-    ),
-    suite("#2266 support.plain widget/write — explicit flags (nested PlainConfig)")(
-      test("widgetEnabled=true requires appId + identitySecret; names each gap") {
-        val errs = PlainConfig.validate(PlainConfig(widgetEnabled = true))
-        assertTrue(
-          errs.exists(_.contains("wifihaven.support.plain.appId")),
-          errs.exists(_.contains("wifihaven.support.plain.identitySecret")),
-          errs.length == 2,
-        )
-      },
-      test("widgetEnabled=true with both set → no error") {
-        assertTrue(
-          PlainConfig
-            .validate(PlainConfig(widgetEnabled = true, appId = "app", identitySecret = "sec"))
-            .isEmpty,
-        )
-      },
-      test("writeEnabled=true requires apiKey; enabled=false never does") {
-        assertTrue(
-          PlainConfig
-            .validate(PlainConfig(writeEnabled = true))
-            .exists(
-              _.contains("wifihaven.support.plain.apiKey"),
-            ),
-          PlainConfig.validate(PlainConfig(writeEnabled = true, apiKey = "k")).isEmpty,
-          PlainConfig.validate(PlainConfig(writeEnabled = false)).isEmpty,
-        )
-      },
-      test("widgetEnabled/writeEnabled are EXPLICIT flags, not derived from secret presence") {
-        // secrets present but flags false → OFF (the point of the conversion).
-        val off = PlainConfig(
-          widgetEnabled = false,
-          writeEnabled = false,
-          apiKey = "k",
-          appId = "app",
-          identitySecret = "sec",
-        )
-        assertTrue(!off.widgetEnabled, !off.writeEnabled)
-      },
-      test("validateRequired accumulates support.plain gaps alongside a bad jwt (rule 4)") {
-        val cfg  = AppConfig(
-          db = DbConfig("localhost", 5432, "wifihaven", "wifihaven", "changeme", 5),
-          http = HttpConfig("0.0.0.0", 8080, "web/dist", serveSpa = true),
-          jwt = JwtConfig("short", 24),
-          cors = CorsConfig(""),
-          support = SupportConfig(plain = PlainConfig(widgetEnabled = true, writeEnabled = true)),
-        )
-        val errs = AppConfig.validateRequired(cfg)
-        assertTrue(
-          errs.exists(_.contains("wifihaven.jwt.secret")),
-          errs.exists(_.contains("wifihaven.support.plain.appId")),
-          errs.exists(_.contains("wifihaven.support.plain.apiKey")),
-        )
-      },
-      test("feature report reflects the explicit plain flags") {
-        def rep(plain: PlainConfig) =
-          StartupFeatureReport
-            .states(
-              AppConfig(
-                db = DbConfig("localhost", 5432, "wifihaven", "wifihaven", "changeme", 5),
-                http = HttpConfig("0.0.0.0", 8080, "web/dist", serveSpa = true),
-                jwt = JwtConfig(goodSecret, 24),
-                cors = CorsConfig(""),
-                support = SupportConfig(plain = plain),
-              ),
-            )
-        val on                      = rep(
-          PlainConfig(
-            widgetEnabled = true,
-            writeEnabled = true,
-            apiKey = "k",
-            appId = "app",
-            identitySecret = "sec",
-          ),
-        )
-        val off                     = rep(PlainConfig())
-        assertTrue(
-          on.find(_.name == "support-widget").get.enabled,
-          on.find(_.name == "support-write-api").get.enabled,
-          !off.find(_.name == "support-widget").get.enabled,
-          !off.find(_.name == "support-write-api").get.enabled,
-          off.find(_.name == "support-widget").get.detail.contains("widgetEnabled=false"),
         )
       },
     ),

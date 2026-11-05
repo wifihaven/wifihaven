@@ -1145,50 +1145,6 @@ case class UserSummary(
     role: UserRole,
     profileIds: List[ProfileId],
 ) derives JsonCodec
-// #2199 (support intake B, epic #2197) — the SERVER-SIGNED identity the authenticated admin SPA
-// feeds Plain's identified chat widget (design/umbrella #2206 §2). The API computes the HMAC-SHA256
-// email hash server-side (never trusting a client-supplied email/household) so household A can never
-// obtain household B's widget identity — the household-gating boundary. Everything is `Option` so
-// the DARK case (Plain widget unconfigured, OR the caller has no email to identify) returns
-// `{configured:false}` with every other field absent and the SPA renders nothing.
-case class SupportIdentityResponse(
-    // Whether the identified widget should render: the Plain widget config is present AND the caller
-    // is identifiable (has an email). When false, the SPA renders no widget (feature dark).
-    configured: Boolean,
-    // Plain chat/widget app id (public) — the SPA needs it to boot the widget SDK.
-    appId: Option[String] = None,
-    // The authenticated caller's own email (resolved server-side from their JWT, not client-supplied).
-    email: Option[String] = None,
-    // HMAC-SHA256(identitySecret, lowercased-email) hex — Plain "chat authentication". Signed
-    // server-side; this is what prevents impersonation of another user/household.
-    emailHash: Option[String] = None,
-    // Plain's native tenant field = the caller's household id (household-gating). String on the wire
-    // because Plain's tenantIdentifier is a string.
-    tenantIdentifier: Option[String] = None,
-    // Bounded account context surfaced to Plain as customer attributes for the operator / responder.
-    fullName: Option[String] = None,
-    // Subscription state (beta / active / lapsed, from #2135 household_billing) — intake context,
-    // never a gate on reading replies.
-    plan: Option[String] = None,
-    founding: Option[Boolean] = None,
-    // #2429: the environment-correct support inbox (`support.emailAddress` —
-    // support@wifihaven.net on prod, support@staging.wifihaven.net on staging; both are live
-    // Cloudflare Email Routing rules into the same Plain workspace). The API is the SINGLE SOURCE
-    // OF TRUTH for it so the SPA never duplicates environment logic. Unlike every other field it is
-    // present on the DARK response TOO: when the chat widget is off (or the caller is not
-    // identifiable) email is still a working support path, so the SPA degrades its affordance to
-    // email-only rather than hiding it. `None` = no hosted support desk (the self-hosted posture)
-    // ⇒ the SPA shows no support line at all.
-    supportEmail: Option[String] = None,
-) derives JsonCodec
-
-object SupportIdentityResponse {
-  // The dark response: widget unconfigured, or the caller is not identifiable. The SPA renders no
-  // widget on `configured=false` — but still renders the email-only support line when
-  // `supportEmail` is set (#2429).
-  def disabled(supportEmail: Option[String] = None): SupportIdentityResponse =
-    SupportIdentityResponse(configured = false, supportEmail = supportEmail)
-}
 
 case class MeResponse(
     username: String,

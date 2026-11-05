@@ -28,9 +28,7 @@ import { BetaRequestPage } from '@/pages/BetaRequestPage'
 import { WelcomePage } from '@/pages/WelcomePage'
 import { ForgotPasswordPage } from '@/pages/ForgotPasswordPage'
 import { ResetPasswordPage } from '@/pages/ResetPasswordPage'
-import { SupportConsentPage } from '@/pages/SupportConsentPage'
 import { BetaRequestsPage } from '@/pages/BetaRequestsPage'
-import { PressPage } from '@/pages/PressPage'
 import { useMe } from '@/api/queries'
 import { ACCOUNT_PATH, loginUrlReturningTo } from '@/routes'
 
@@ -90,12 +88,6 @@ function AppRoutes() {
       <Route path="/forgot-password" element={<ForgotPasswordPage />} />
       <Route path="/reset-password"  element={<ResetPasswordPage />} />
       {/* #2133: unauthenticated beta signup + invite acceptance (design §3). */}
-      {/*
-        #2419: the support data-access consent link the server posts into a thread. Public so the
-        link never 404s; the POST behind it is session-authenticated, and signed out the page says
-        so rather than losing the link to a login redirect.
-      */}
-      <Route path="/support/consent" element={<SupportConsentPage />} />
       <Route path="/beta"    element={<BetaRequestPage />} />
       <Route path="/welcome" element={<WelcomePage />} />
       {/*
@@ -131,8 +123,6 @@ function AppRoutes() {
         <Route path="admin"     element={<RequirePwChanged><RequireWriter><AdminPage /></RequireWriter></RequirePwChanged>} />
         {/* #2133: operator-only beta-request review queue (gated on the isOperator API signal). */}
         <Route path="beta-requests" element={<RequirePwChanged><RequireOperator><BetaRequestsPage /></RequireOperator></RequirePwChanged>} />
-        {/* #2296: operator-only press correspondence log (same isOperator gate; API 404s others). */}
-        <Route path="press" element={<RequirePwChanged><RequireOperator><PressPage /></RequireOperator></RequirePwChanged>} />
       </Route>
     </Routes>
   )

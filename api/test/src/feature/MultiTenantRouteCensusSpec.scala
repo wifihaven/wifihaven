@@ -95,9 +95,6 @@ object MultiTenantRouteCensusSpec extends ZIOSpecDefault {
     /** Authenticated by a router bearer token; the household comes from `routers.household_id`. */
     case RouterToken(reason: String)
 
-    /** Authenticated by a per-session agent/consent token that itself carries the household. */
-    case AgentToken(reason: String)
-
     /**
      * Deliberately unauthenticated. `reason` must say how the household is derived, or that it is
      * not.
@@ -273,18 +270,6 @@ object MultiTenantRouteCensusSpec extends ZIOSpecDefault {
       "household derived from the token's user row",
     ),
 
-    // ── Press ──────────────────────────────────────────────────────────────────────────────────
-    "POST /api/press/inbound"        -> Unauthenticated(
-      "CF Email Worker shared secret; press has no household dimension",
-    ),
-    "POST /api/press/agent/reply"    -> AgentToken(
-      "signed PressToken; press has no household dimension",
-    ),
-    "POST /api/press/agent/escalate" -> AgentToken(
-      "signed PressToken; press has no household dimension",
-    ),
-    "GET /api/press/messages"        -> Operator("operator-only press inbox (admin AND hh1)"),
-
     // ── RollupAdminRoutes ──────────────────────────────────────────────────────────────────────
     "GET /api/admin/rollup-status" -> NoTenancy(
       "install-wide job telemetry (rollup_runs); carries no household rows",
@@ -390,22 +375,6 @@ object MultiTenantRouteCensusSpec extends ZIOSpecDefault {
 
     // ── SpaWsRoutes ────────────────────────────────────────────────────────────────────────────
     "GET /api/ws" -> Scoped,
-
-    // ── Support ────────────────────────────────────────────────────────────────────────────────
-    "POST /api/support/webhook"      -> Unauthenticated(
-      "Plain HMAC IS the auth; household resolved from the thread's customer",
-    ),
-    "POST /api/support/agent/reply"  -> AgentToken("ConsentToken is thread- AND household-bound"),
-    "POST /api/support/agent/issues" -> AgentToken("ConsentToken is thread- AND household-bound"),
-    "POST /api/support/agent/request-consent" -> AgentToken(
-      "ConsentToken is thread- AND household-bound",
-    ),
-    "POST /api/support/agent/escalate" -> AgentToken("ConsentToken is thread- AND household-bound"),
-    "GET /api/support/agent/household" -> AgentToken(
-      "the consented single-household read; scope from the token, #2419",
-    ),
-    "POST /api/support/consent"        -> Scoped,
-    "GET /api/support/identity"        -> Scoped,
 
     // ── UsageRoutes ────────────────────────────────────────────────────────────────────────────
     "GET /api/usage/config"                 -> NoTenancy(
@@ -513,7 +482,6 @@ object MultiTenantRouteCensusSpec extends ZIOSpecDefault {
     case Tenancy.InstallWide(r)     => Some(r)
     case Tenancy.Operator(r)        => Some(r)
     case Tenancy.RouterToken(r)     => Some(r)
-    case Tenancy.AgentToken(r)      => Some(r)
     case Tenancy.Unauthenticated(r) => Some(r)
     case Tenancy.NoTenancy(r)       => Some(r)
     case _                          => None
@@ -636,7 +604,7 @@ object MultiTenantRouteCensusSpec extends ZIOSpecDefault {
       assertTrue(stampOnly.nonEmpty)
     },
     test("6 — every exemption from the choke-point invariant states a real reason") {
-      // `InstallWide` / `Operator` / `RouterToken` / `AgentToken` / `Unauthenticated` / `NoTenancy`
+      // `InstallWide` / `Operator` / `RouterToken` / `Unauthenticated` / `NoTenancy`
       // are entirely exempt from test 2. That is correct by design, but it makes them the escape
       // hatch: a future author can silence a genuine finding by declaring `InstallWide("")` and CI
       // stays green. The reason is the whole audit trail for that decision, so it has to say

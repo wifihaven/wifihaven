@@ -21,41 +21,20 @@ import zio.http.*
  * script/style further is a defense-in-depth follow-up, not required to close the audit finding.
  */
 object SecurityHeaders {
-  // #2240: Plain support chat-widget hosts. The widget (web/src/components/SupportWidget.tsx)
-  // injects https://chat.cdn-plain.com/index.js; the SDK then loads Google-Fonts CSS, workspace
-  // logo / attachment images from Plain-owned S3 buckets + Gravatar avatars, and connects to
-  // Plain's UK region + the attachment-upload S3 bucket. These are exactly Plain's documented
-  // chat-widget CSP (https://help.plain.com/article/chat); the UK hosts match the API's
-  // core-api.uk.plain.com default (SupportConfig.apiBase). Plain documents NO iframe, so no
-  // frame-src host is added. Kept in sync with the Cloudflare Pages copy in web/public/_headers.
-  private val PlainScriptSrc  = "https://chat.cdn-plain.com"
-  private val PlainConnectSrc =
-    "https://chat.uk.plain.com " +
-      "https://prod-uk-services-attachm-attachmentsuploadbucket2-1l2e4906o2asm.s3.eu-west-2.amazonaws.com"
-  private val PlainStyleSrc   = "https://fonts.googleapis.com"
-  // #2418: static-assets.plain.com is NOT in Plain's documented list but the SDK hard-depends on it
-  // for machine-user/AI-agent avatars: an agent message's `actor.avatarUrl` for an API_USER machine
-  // user is https://static-assets.plain.com/email-images/machine-user.png (verified live against the
-  // staging workspace via chat.uk.plain.com/chat/getMessages), and the SDK bundle also hard-codes
-  // https://static-assets.plain.com/avatars/ari-avatar.svg for AI_AGENT machine users. Without this
-  // host every AI reply renders a broken-image placeholder instead of the support avatar.
-  private val PlainImgSrc     =
-    "https://prod-uk-services-workspac-workspacefilespublicbuck-vs4gjqpqjkh6.s3.amazonaws.com " +
-      "https://prod-uk-services-attachm-attachmentsbucket28b3ccf-uwfssb4vt2us.s3.eu-west-2.amazonaws.com " +
-      "https://static-assets.plain.com " +
-      "https://i0.wp.com"
+  // Google Fonts *stylesheet* host: web/index.html loads Inter from it. Kept in sync with the
+  // Cloudflare Pages copy in web/public/_headers.
+  private val GoogleFontsStyleSrc = "https://fonts.googleapis.com"
 
   // #2468: font-src was absent from both copies of this policy, so it fell back to
   // `default-src 'self'` and every Google-Fonts woff2 was blocked. style-src allows the Google
   // Fonts *stylesheet* host (fonts.googleapis.com) but the font FILES are served from a different
   // host, fonts.gstatic.com, which was allowlisted nowhere — so the SPA (web/index.html loads
   // Inter) rendered in the system fallback font in every environment from #2082 until this
-  // directive landed. Plain's documented widget CSP has no font-src either, but its SDK pulls the
-  // same Google Fonts CSS, so this one host covers our font and the widget's.
+  // directive landed.
   private val GoogleFontsFileSrc = "https://fonts.gstatic.com"
 
   val ContentSecurityPolicy: String =
-    s"default-src 'self'; script-src 'self' $PlainScriptSrc; style-src 'self' 'unsafe-inline' $PlainStyleSrc; " +
+    s"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' $GoogleFontsStyleSrc; " +
       s"font-src 'self' $GoogleFontsFileSrc; " +
       // connect-src explicitly lists ws:/wss: alongside 'self': the SPA-websocket
       // upgrade (GET /api/ws, web/src/api/wsClient.ts) is same-origin in the
@@ -72,11 +51,10 @@ object SecurityHeaders {
       // beacon Cloudflare Pages injects — #2468 — which has no counterpart here
       // because the self-hosted deploy has no Cloudflare in front of
       // it). The shared directives that must agree — default-src
-      // 'self', font-src (#2468), img-src icon host, frame-ancestors 'none', and
-      // the Plain hosts — are pinned on this side by SecurityHeadersSpec and on
+      // 'self', font-src (#2468), img-src icon host and frame-ancestors 'none' — are pinned on this side by SecurityHeadersSpec and on
       // the _headers side by web/src/security-headers.test.ts, so neither can
       // silently drop them.
-      s"img-src 'self' data: https://icons.duckduckgo.com $PlainImgSrc; connect-src 'self' ws: wss: $PlainConnectSrc; " +
+      s"img-src 'self' data: https://icons.duckduckgo.com; connect-src 'self' ws: wss:; " +
       "frame-ancestors 'none'; base-uri 'self'; object-src 'none'"
 
   def wrap[Env, Err](routes: Routes[Env, Err]): Routes[Env, Err] =
