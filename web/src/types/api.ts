@@ -1152,7 +1152,8 @@ export interface UpdateAppGroupRequest {
   memberAppIds?: number[]
 }
 
-// #2934 — a profile's attachment of a group. At least one limit is required. `exemptFromDaily`
+// #2934 — a profile's attachment of a group. Either limit, both or neither: with neither it is a
+// bundle with no shared budget (#2973). `exemptFromDaily`
 // is the inverse of the "Counts toward daily limit" checkbox, as for per-app limits.
 export interface ProfileAppGroup {
   profileId: number

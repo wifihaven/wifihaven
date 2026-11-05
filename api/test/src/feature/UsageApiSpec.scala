@@ -2487,6 +2487,38 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
           resp <- routes.runZIO(req)
         } yield assertTrue(resp.status == Status.NotFound)
       },
+      // #2965: the read materialises every raw presence row in the range, so a 30-day range on a
+      // busy profile (~1.8M rows on prod) exhausted the heap and took the API down. The range is
+      // capped at `maxRangeDays`; one day past it is a 400, the cap itself still answers.
+      test("#2965: a range longer than maxRangeDays is a 400; exactly maxRangeDays is a 200") {
+        val to      = TestClock.schoolDayAfternoon.toLocalDate
+        val atCap   = to.minusDays(UsageRoutes.UsageByAppMaxRangeDays.toLong - 1)
+        val pastCap = atCap.minusDays(1)
+        for {
+          _           <- cleanDb
+          profileRepo <- ZIO.service[ProfileRepo]
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo)
+          rb          <- buildRoutes
+          (routes, auth) = rb
+          token <- auth.login("admin", "changeme").map(_.token.value)
+          get = (from: LocalDate) =>
+            routes.runZIO(
+              Request
+                .get(
+                  URL
+                    .decode(s"/api/profiles/${kidsId.value}/usage-by-app?from=$from&to=$to")
+                    .toOption
+                    .get,
+                )
+                .addHeader(Header.Authorization.Bearer(token)),
+            )
+          over  <- get(pastCap)
+          body  <- over.body.asString
+          atMax <- get(atCap)
+        } yield assertTrue(over.status == Status.BadRequest) &&
+          assertTrue(body.contains("range")) &&
+          assertTrue(atMax.status == Status.Ok)
+      },
       test("401 without token") {
         for {
           rb <- buildRoutes

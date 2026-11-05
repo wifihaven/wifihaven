@@ -1,0 +1,81 @@
+slug: codehs
+name: CodeHS
+icon: "https://icons.duckduckgo.com/ip3/codehs.com.ico"
+icon_type: url
+# #2955 (2026-11-02 orphan-driven pass): CodeHS, a K-12 computer-science
+# curriculum platform (title-confirmed: "The Top Coding and Computer Science
+# Platform for K-12 Schools | CodeHS"). A prior pass (#2943, 2026-10-26) saw
+# only `scalinghub.codehs.com` (a 403-answering backend host) and called it a
+# skip "without a content-facing sibling" — this pass found that sibling:
+# `codehs.com` itself serves the real site, and three distinct per-exercise
+# sandbox subdomains on `codehs.me` (Vigenere cipher, Caesar cipher
+# encryption, letter-frequency) confirm actual coursework being done, not a
+# beacon.
+#
+# Bare `codehs.com` is deliberately EXCLUDED, same reasoning `canva.yml`
+# gives for excluding bare `canva.com`: render.lua emits `nftset=/<host>/`
+# verbatim per host and dnsmasq matches by pure suffix, so an apex entry
+# would sweep every third-party-hosted child along with it (dig-verified,
+# 2026-11-02):
+#   blog.codehs.com     CNAMEs to codehs.wpengine.com — WP Engine's shared pool
+#   status.codehs.com   CNAMEs to a Statuspage.io shared pool
+#   help.codehs.com     resolves into CloudFront's shared 99.84.118.x pool —
+#                        the SAME pool `codehs.me` sits on (below) and the
+#                        exact one `arduino.yml`/`instructables.yml` already
+#                        document as collateral risk and exclude their own
+#                        bare apexes over.
+# Residual: real traffic directly to bare `codehs.com` (the single largest
+# orphan host this pass, ~18 proportional min/30d) goes unattributed to this
+# app and keeps showing as an orphan — same accepted residual `canva.yml`
+# documents for bare `canva.com`.
+#
+# Also EXCLUDED for the same reason: `codehs.me`, the per-exercise sandbox
+# domain. Every observed child (`vigenere-<id>`, `caesar-cipher-
+# encryption-<id>`, `letter-frequency-<id>`) is a randomized-per-exercise
+# label with no fixed set to enumerate, so only the bare apex could cover it
+# — but the apex itself resolves into that same shared CloudFront
+# 99.84.118.x pool (dig-verified), which `arduino.yml`/`instructables.yml`
+# exclude their own apexes over, not accept. It is its own Route53-delegated
+# zone (`dig +short NS codehs.me` differs from `codehs.com`'s NS set) — the
+# `scratch.mit.edu` delegation argument doesn't rescue it here, since that
+# precedent turns on the delegated zone pointing at DEDICATED infra, and this
+# one points at the generic shared edge instead. Residual: the per-exercise
+# sandbox sessions (~2.3 proportional min/30d, three distinct exercises) go
+# unattributed; revisit only if CodeHS ever serves these off dedicated infra.
+#
+# Kept hosts and their collateral check (dig-verified 2026-11-02). CDN
+# resolver answers vary by vantage point and steer between edges over
+# time — treat any single `dig` as a sample, not the host's IP set, same
+# caution `amazon.yml` documents for its own CDN-fronted hosts. Specific
+# octets are deliberately omitted below so this comment doesn't go stale:
+#   static.codehs.com     own CloudFront distribution
+#   static1.codehs.com    own CloudFront distribution (second shard, same app)
+#   cdn.codehs.com         own CloudFront distribution; one sampled IP landed
+#                          in the same /24 as `matlab.yml`'s `matlab.
+#                          mathworks.com`, but the specific 4-tuple differed
+#                          (the #2915 "diff the 4-tuple, not the /24" check)
+#   uploads.codehs.com    own CloudFront distribution; same /24-overlap-but-
+#                          different-4-tuple relationship to `instructables.
+#                          yml`'s `content.instructables.com`
+#   video.codehs.com      CNAMEs to `videos.codehsstatic.com`, Cloudflare-
+#                          fronted — standard accepted Class-2 edge sharing,
+#                          same pool `coddy.yml` uses
+#   scalinghub.codehs.com backend/API edge the lesson UI calls (403 to a
+#                          plain GET — not a page). Resolves to AWS EC2
+#                          addresses, not a recognized CDN/multi-tenant pool;
+#                          carries the same recycled-address residual
+#                          `amazon-telemetry.yml` documents for its own
+#                          non-CDN AWS hosts (bounded by the `eb_` 1h ageing
+#                          window, not a present-tense collision)
+#
+# `codehsstatic.s3-us-west-2.amazonaws.com` (a direct S3 bucket, ~10s/30d)
+# was dropped: it sits on S3's shared regional IP pool (every us-west-2
+# bucket answers on the same addresses), and the branded CDN hosts above
+# already carry the app's static assets, so nothing is lost.
+hosts:
+  - static.codehs.com
+  - static1.codehs.com
+  - cdn.codehs.com
+  - uploads.codehs.com
+  - video.codehs.com
+  - scalinghub.codehs.com

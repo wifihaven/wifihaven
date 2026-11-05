@@ -200,7 +200,7 @@ CREATE TABLE profile_app_groups (
   created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   FOREIGN KEY (profile_id, household_id) REFERENCES profiles(id, household_id) ON DELETE CASCADE,
   FOREIGN KEY (group_id, household_id)   REFERENCES app_groups(id, household_id) ON DELETE CASCADE,
-  CHECK (daily_minutes IS NOT NULL OR weekly_minutes IS NOT NULL),   -- D4
+  CHECK (daily_minutes IS NOT NULL OR weekly_minutes IS NOT NULL),   -- D4; dropped by V93 (#2973)
   UNIQUE (profile_id, group_id)
 );
 CREATE INDEX idx_profile_app_groups_group ON profile_app_groups(group_id);
@@ -564,7 +564,10 @@ All changes are additive. Each route follows `docs/process/api-route-checklist.m
 - `/api/time/status/...` responses gain the §6.5 fields.
 
 Validation:
-- an attachment needs at least one of daily or weekly;
+- an attachment may carry a daily limit, a weekly limit, both, or neither
+  (D4, revised 2026-11-03, #2973). With neither it is a bundle with no shared
+  budget and is never exhausted. V93 drops the schema CHECK; the route accepts
+  a limitless body from #2973's code PR on;
 - an app already in another group of the household is rejected with a message
   that names that group (D2);
 - daily > weekly is accepted, and the SPA shows a hint (D11).
@@ -597,10 +600,24 @@ grows taller when collapsed.
   from the field, as
   today (AGENTS.md#exempt-from-daily). "+ Add group" lists the household's
   groups and a "New group…" entry.
-- Editing members happens in the group's expander. Because the group is
-  household-wide, the expander says which other profiles use it ("Also used by:
-  Sam"). Adding a member that a profile already lists on its own shows the
-  overlap warning on that profile.
+- No limit (#2973): "+ Add group" offers "No limit" beside the minutes box, and
+  the limits drawer has a "No limit" control. No limit is only ever that
+  explicit choice: clearing both inputs asks for a limit or No limit instead
+  of saving. Such a row's chip reads "No limit", with no usage loading state
+  since it shows no usage figure. The collapsed row carries a "Counts" / "Not
+  counted" toggle, so a group's effect on the daily total is visible without
+  opening the drawer.
+- Members are edited from their own control on the group row, beside the
+  limit chip and separate from it (#2974): "N apps ▾", or "No apps yet. Add
+  apps" for an empty group. It opens a searchable picker shaped like "Allow an
+  app". An app already in another group stays listed but disabled, labelled
+  "In *Games*" (D2). The row opens on its members right after "+ Add group"
+  attaches it. Because the group is household-wide, the members panel says
+  which other profiles use it ("Also used by: Sam"). The Manage apps page has
+  a Groups section with the same member editor and "+ New group" (#2974).
+  Member edits are optimistic and serialized per group, so several apps can
+  be added in a row. Adding a member that a profile already lists on its own
+  shows the overlap warning on that profile.
 - Loading: week-to-date bars use the same three states as #2764 (pending
   skeleton, error, value). The `UsageStatus` prop is required and threaded the
   same way.
@@ -764,8 +781,16 @@ Slices 2 and 3 are separate so the counting can be checked on prod, by reading
   assignment (D14).
 - **D3 Scope.** Groups are defined per household (name and members). Each
   profile attaches a group with its own limits.
-- **D4 Group limits.** Daily and weekly are both optional on an attachment, and
-  at least one is required.
+- **D4 Group limits.** Daily and weekly are both optional on an attachment.
+  *(Revised 2026-11-03, #2973: neither is also allowed; it replaces "at least
+  one is required".)* An attachment with no limit is a bundle with no shared
+  budget: it is never exhausted, as a NULL `daily_minutes` means no cap
+  (#1627). A member that also has its own per-app limit keeps it (D14,
+  stricter wins), so "blocked when over any budget that contains it" (#2933)
+  is unchanged. Not counted toward the daily total is the attach default
+  (D5), and its reach is D16's: a not-counted member under every budget stays
+  reachable through bedtime, a soft pause and the daily total, with no new
+  wire field.
 - **D5 Counts toward daily.** The flag lives on the attachment and overrides
   members' own flags while they are in the group. The default is not counted
   (exempt), matching the per-app default.
@@ -814,20 +839,24 @@ Operator request: "groups are in their own section, you should be able to block
 a group or allow a group", refined the same day to "the groups that are
 blocked should be in the blocked section, allowed should be in the allowed
 section". Product calls were confirmed by the operator on 2026-11-03 and are
-recorded as D18–D22 below.
+recorded as D18–D22 below; D23 followed on 2026-11-04.
 
 ### 17.1 What changes
 
-Today an attachment (`profile_app_groups`) can only carry limits. V92's
-`profile_app_groups_has_limit` CHECK requires a daily or weekly one (D4). With
-this addendum an attachment has a **mode**, the same three an app assignment
-has:
+Before this addendum an attachment (`profile_app_groups`) could only carry
+limits. V93 (#2973) dropped V92's at-least-one-limit CHECK, so a limitless
+attachment became a bundle that is never exhausted (D4, revised). With this
+addendum an attachment has a **mode**, the same three an app assignment has:
 
 | Attachment mode | Effect on every member app on this profile |
 |---|---|
 | `blocked` | Blocked. Its distinctive hosts go to `extraBlocked` (#1899). |
 | `allowed` | Allowed. Its full host-set goes to `extraAllowed`, the plain Allowed carve an Allowed app gets today. |
-| `time_limited` | Today's behaviour: one group budget with a daily and/or weekly limit (§6, §7). |
+| `time_limited` | One group budget with a daily and/or weekly limit (§6, §7). |
+
+An attachment with no limit is Allowed (D23). #2973's "No limit" choice and
+an Allowed group are the same thing. The attach flow #2973 added stays as it
+is; a request with no limit now resolves to Allowed.
 
 The household group is still a name and a member list. The mode is the
 profile's, like the limits, so it adds no policy tier (#1452).
@@ -840,36 +869,48 @@ ALTER TABLE profile_app_groups
   ADD COLUMN allowed_during_schedule_block BOOLEAN NOT NULL DEFAULT TRUE,
   ADD CONSTRAINT profile_app_groups_mode_check
     CHECK (mode IN ('blocked', 'allowed', 'time_limited')),
-  DROP CONSTRAINT profile_app_groups_has_limit,
-  ADD CONSTRAINT profile_app_groups_limit_iff_time_limited
-    CHECK ((mode = 'time_limited') = (daily_minutes IS NOT NULL OR weekly_minutes IS NOT NULL));
+  ADD CONSTRAINT profile_app_groups_limit_only_if_time_limited
+    CHECK (mode = 'time_limited' OR (daily_minutes IS NULL AND weekly_minutes IS NULL));
 ```
+
+V94, after #2973's V93.
 
 - `mode` is TEXT with a CHECK, as `app_policy_assignments.mode` is (V28). The
   default keeps every existing row, and every INSERT from image N-1, TimeLimited.
-- The new CHECK replaces D4's: a TimeLimited attachment still needs a limit,
-  and an Allowed or Blocked one carries none. Setting a limit means TimeLimited,
-  and clearing both means Allowed, as for apps (§5.2, D21). No stale limit can
-  sit on an Allowed row.
+- An Allowed or Blocked attachment carries no limit, so no stale limit can sit
+  on one. Setting a limit means TimeLimited, and clearing both means Allowed,
+  as for apps (§5.2, D21).
+- The CHECK does not require a TimeLimited row to have a limit. Image N-1
+  (#2973's code) writes limitless rows without a `mode`, so they arrive as
+  `time_limited`, and a stricter CHECK would fail those writes. The fold reads
+  a TimeLimited attachment with no limit as Allowed (§17.3, D23), so such a row
+  behaves the same whichever image wrote it. There is deliberately no backfill
+  to `allowed`: until #2980 deploys, #2973's image keeps a limits drawer on a
+  "No limit" row, and its upsert never writes `mode`, so setting a limit on a
+  backfilled row would fail the CHECK with a 500. The fold mapping covers the
+  existing rows instead.
 - `allowed_during_schedule_block` is the attachment's #1679 toggle (D19). It is
   read only for an Allowed attachment.
-- Cost: two metadata-only ADD COLUMNs on a table with one row per attachment,
-  and CHECK validation over the same few rows.
+- Cost: two metadata-only ADD COLUMNs and CHECK validation, on a table with
+  one row per attachment.
 - Rollback to image N-1 after Allowed or Blocked rows exist: N-1 reads every
-  row as TimeLimited. An Allowed row has no limits, so its group budget is never
-  exhausted and its members stay reachable (close to Allowed). A Blocked row
-  stops blocking. That loss is bounded to the rollback window, and is why
-  enforcement ships before the API write surface (§17.7). Writes degrade too:
-  N-1's upsert does not write `mode`, so setting a limit on an Allowed or
-  Blocked row violates the new CHECK and fails with a 500 until the image rolls
-  forward. Every image from #2980 on writes `mode` in the upsert's
-  `DO UPDATE SET`, so the CHECK can only fail on N-1.
+  row as TimeLimited. An Allowed row has no limits, so N-1 reads it as #2973's
+  never-exhausted bundle: a not-counted one is still reachable through bedtime,
+  a soft pause and the daily total, and a counted one goes off with the daily
+  total. A Blocked row stops blocking. That loss is bounded to the rollback
+  window, and is why enforcement ships before the API write surface (§17.7).
+  Writes degrade too: N-1's upsert does not write `mode`, so setting a limit on
+  an Allowed or Blocked row violates the new CHECK and fails with a 500 until
+  the image rolls forward. Every image from #2980 on writes `mode` in the
+  upsert's `DO UPDATE SET`, so the CHECK can only fail on N-1.
 
 ### 17.3 Fold (`ProfileAppDispositions.from`)
 
-`GroupCoverage` gains `mode` and `allowedDuringScheduleBlock`. The fold keeps
-one disposition per member and picks its mode by **stricter wins** (D20),
-extending D14: `Blocked > TimeLimited > Allowed`.
+`GroupCoverage` gains `mode` and `allowedDuringScheduleBlock`. The fold first
+reads a TimeLimited attachment with no limit as Allowed (D23); that is the one
+place the mapping lives. It then keeps one disposition per member and picks its
+mode by **stricter wins** (D20), extending D14: `Blocked > TimeLimited >
+Allowed`.
 
 | Attachment | Member's own row | Disposition |
 |---|---|---|
@@ -924,10 +965,10 @@ mode (#2747):
   - `mode` present: TimeLimited needs a limit, and Allowed or Blocked with a
     limit is rejected with a 400. Both cases follow D21.
   - `mode` absent and a limit present: TimeLimited (D21: setting a limit makes
-    it TimeLimited). This is also what every pre-#2981 caller sends, since they
-    always send a limit.
-  - `mode` absent and no limit: the existing row's mode if it is Allowed or
-    Blocked, otherwise a 400 that asks for a limit (today's rule).
+    it TimeLimited).
+  - `mode` absent and no limit: Blocked if the existing row is Blocked,
+    otherwise Allowed (D23). This is how #2973's "No limit" body, which sends
+    no `mode`, lands as an Allowed group.
 
   The repo always writes the resolved `mode` and toggle, `DO UPDATE SET`
   included. All additive.
@@ -976,3 +1017,14 @@ mode (#2747):
   attachment TimeLimited, and clearing both makes it Allowed.
 - **D22 Exempt by mode.** Budget only for an Allowed group; hidden and inert
   for a Blocked one.
+- **D23 No limit is Allowed (2026-11-04).** #2973's "attach with no limit"
+  and an Allowed group are the same thing. A limitless attachment is Allowed:
+  the API resolves a limitless request to Allowed, and the fold reads a
+  limitless TimeLimited row, such as one #2973's code wrote, as Allowed.
+  #2973's attach flow and request body are unchanged. One consequence differs
+  from #2973 as designed: a no-limit group that counts toward the daily total
+  stays reachable after the daily total runs out, as an Allowed app does
+  (#2747), instead of going off with it. A not-counted one behaves the same
+  either way. Revisit if a counted no-limit group should still stop with the
+  daily total; the API default and the fold mapping (§17.3) are the two places
+  that would change.

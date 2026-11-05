@@ -130,6 +130,9 @@ PW=$(grep -oE 'is `[^`]+`' ~/.claude/projects/*wifihaven*/memory/prod_api_admin_
 TOKEN=$(curl -sS -X POST https://api.wifihaven.net/api/auth/login -H 'Content-Type: application/json' \
   -d "{\"username\":\"admin\",\"password\":\"$PW\"}" | jq -r '.token')
 MACS=$(curl -sS -H "Authorization: Bearer $TOKEN" https://api.wifihaven.net/api/devices | jq -r '.[].mac')
+# SEQUENTIAL on purpose (#2965): never `&` / `xargs -P` this loop. Each call holds one of the prod
+# API's 12 DB connections (shared with /api/health) for up to 30s; a parallel sweep exhausted the
+# pool on 2026-11-03.
 for mac in $MACS; do
   curl -sS -H "Authorization: Bearer $TOKEN" \
     "https://api.wifihaven.net/api/devices/$mac/recent-apexes?windowDays=30&limit=500" > /tmp/apex_$mac.json
@@ -311,6 +314,35 @@ that edit in the same PR.** If a step above is now wrong, fix the step too.
 
 ## Learnings log (newest first)
 
+- **2026-11-03** (#2957) — **A customer's own dedicated AWS Application Load
+  Balancer (`*.elb.amazonaws.com`) is the same "dedicated compute, not a
+  shared product frontend" class as the GCP customer-LB precedent (#2836),
+  and clears the #2823 rule on the OBSERVED host — but still needs the
+  unobserved-sibling check (#2952) run anyway.** `playablefactory.app`'s only
+  observed host, `logger2.playablefactory.app`, resolves via a dedicated ALB;
+  that alone would have looked clear. Digging the unobserved usual siblings
+  per the #2952 lesson found `cdn.playablefactory.app` CNAMEing straight to
+  CloudFront — so the entry still needed a RESIDUAL RISK note, exactly the
+  shape #2952 already established for `bttrack.com`/`stickyadstv.com`. Two
+  takeaways: (1) a dedicated-LB clearance on the observed host is not a
+  shortcut past the sibling check — run it every time, regardless of how
+  clean the observed host looks; (2) the SAME company can split across two
+  TLD apexes with opposite outcomes — the sibling `playablefactory.com`'s
+  *observed* host (`play.`) was directly Cloudflare-fronted, an unconditional
+  skip, while `.app`'s observed host was clean. Check each apex independently
+  even when they're obviously the same vendor.
+- **2026-11-03** (#2957) — **A domain that never appears in `/api/logs` at
+  all (zero hits, even with `hours` uncapped over 90 days) but does appear in
+  `recent-apexes` is usually either dead/non-resolving infra
+  (`ads-pubsfusion.com`, `brand-display.com` this pass) or a vendor whose
+  marketing/API subdomains don't match what the device actually hit
+  (`gamepix.com`, `panxo.ai`) — in both cases, resolve the bare apex and `www.`
+  directly rather than waiting for `/api/logs` to produce an "observed host."**
+  When nothing is observed, the CDN check has to run against the apex and its
+  usual siblings directly (same move the #2918 `carbonads.com`/
+  `servedby-buysellads.com` entries already established for zero-hit
+  candidates) — it is not a reason to skip the check, and it is not evidence
+  the domain is safe.
 - **2026-10-27** (#2952, independent review) — **Clearing the OBSERVED host
   on the CDN check does not excuse the mandatory unobserved-sibling check
   (Step 3, "dig the unobserved usual siblings") — this PR's first draft

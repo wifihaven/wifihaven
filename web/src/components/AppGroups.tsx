@@ -1,8 +1,10 @@
 // #2935 — household app groups on a profile (design §10). A group is one shared time budget over
 // several apps; this profile's attachment of it carries the limits. Everything here autosaves.
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import { api } from '@/api/client'
 import { useGroupAttachmentsOf, useInvalidators, useProfiles } from '@/api/queries'
+import { qk } from '@/api/queryKeys'
 import { AppIcon } from '@/components/AppIcon'
 import { Skeleton } from '@/components/Skeleton'
 import { tighterLeft } from '@/lib/budget'
@@ -38,9 +40,13 @@ export { UsageBar }
 export const EXEMPT_HINT =
   'Not counted: while under its limits, this group stays reachable during bedtime and a soft pause.'
 
+// #2973 — EXEMPT_HINT's "while under its limits" for a group that has none.
+export const NO_LIMIT_EXEMPT_HINT =
+  'Not counted: with no limit, this group stays reachable during bedtime and a soft pause.'
+
 const chipBase = 'inline-flex items-center gap-1 h-6 px-2 rounded-lg border text-[11px] font-medium tabular-nums disabled:opacity-50'
 
-function errMsg(e: unknown, fallback: string): string {
+export function errMsg(e: unknown, fallback: string): string {
   return e instanceof Error ? e.message : fallback
 }
 
@@ -65,12 +71,14 @@ function useGroupWrites(profileId: number, onChanged: () => void | Promise<void>
   }
 }
 
-export function AddGroupMenu({ profileId, testIdPrefix, groups, attached, onChanged }: {
+export function AddGroupMenu({ profileId, testIdPrefix, groups, attached, onChanged, onAttached }: {
   profileId: number
   testIdPrefix: string
   groups: AppGroup[]
   attached: ProfileAppGroup[]
   onChanged: () => void | Promise<void>
+  // #2974 — told which group was just attached, so its row can open on the member picker.
+  onAttached?: (groupId: number) => void
 }) {
   const [open, setOpen] = useState(false)
   const [naming, setNaming] = useState(false)
@@ -103,16 +111,24 @@ export function AddGroupMenu({ profileId, testIdPrefix, groups, attached, onChan
     } catch (e) { setError(errMsg(e, 'Failed to create group')) } finally { working.current = false; setSaving(false) }
   }
 
-  async function attachChosen() {
+  // #2973 — `noLimit` attaches the group as a bundle with no shared budget. Otherwise the typed
+  // minutes are the daily limit; an empty box writes nothing (blur on the way to "No limit").
+  async function attachChosen(noLimit = false, fromBlur = false) {
     if (!chosen || working.current) return
     const n = Number(minutes.trim())
-    if (minutes.trim() === '') { setError(`Enter a daily limit to add ${chosen.name}`); return }
-    if (!Number.isFinite(n) || n <= 0) { setError('Enter minutes > 0'); return }
+    if (!noLimit && minutes.trim() === '') {
+      if (!fromBlur) setError(`Enter minutes per day, or choose No limit, to add ${chosen.name}`)
+      return
+    }
+    if (!noLimit && (!Number.isFinite(n) || n <= 0)) { setError('Enter minutes > 0'); return }
     working.current = true
     setSaving(true)
     setError(null)
     try {
-      await w.attach(chosen.id, { dailyMinutes: Math.round(n), exemptFromDaily: true })
+      await w.attach(chosen.id, noLimit
+        ? { dailyMinutes: null, weeklyMinutes: null, exemptFromDaily: true }
+        : { dailyMinutes: Math.round(n), exemptFromDaily: true })
+      onAttached?.(chosen.id)
       reset()
     } catch (e) { setError(errMsg(e, 'Failed to add group')) } finally { working.current = false; setSaving(false) }
   }
@@ -137,12 +153,21 @@ export function AddGroupMenu({ profileId, testIdPrefix, groups, attached, onChan
                 value={minutes}
                 onChange={e => setMinutes(e.target.value)}
                 disabled={saving}
-                onBlur={attachChosen}
+                onBlur={() => void attachChosen(false, true)}
                 onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); void attachChosen() } }}
                 placeholder="min"
                 data-testid={`${testIdPrefix}-add-group-minutes`}
                 className="mt-1 w-full bg-white border border-brand-border-strong rounded-lg px-2 py-1 text-xs text-brand-ink"
               />
+              <button
+                type="button"
+                disabled={saving}
+                // Keep focus in the minutes box so its blur does not save typed minutes first.
+                onMouseDown={e => e.preventDefault()}
+                onClick={() => void attachChosen(true)}
+                data-testid={`${testIdPrefix}-add-group-no-limit`}
+                className="mt-1.5 w-full text-left text-xs px-2 py-1.5 rounded-lg border border-brand-border-strong hover:bg-brand-alt text-brand-ink disabled:opacity-50"
+              >No limit <span className="text-brand-text-muted">· just group the apps</span></button>
             </label>
           ) : (<>
             {options.map(g => (
@@ -187,7 +212,7 @@ export function AddGroupMenu({ profileId, testIdPrefix, groups, attached, onChan
   )
 }
 
-export function GroupsSubList({ profileId, testIdPrefix, status, attached, groups, apps, budget, onChanged }: {
+export function GroupsSubList({ profileId, testIdPrefix, status, attached, groups, apps, budget, onChanged, openMembersFor }: {
   profileId: number
   testIdPrefix: string
   status: 'pending' | 'error' | 'success'
@@ -196,6 +221,8 @@ export function GroupsSubList({ profileId, testIdPrefix, status, attached, group
   apps: AppDetail[]
   budget: BudgetUsage
   onChanged: () => void | Promise<void>
+  // #2974 — the group just attached from the add menu; its row opens on its members.
+  openMembersFor?: number | null
 }) {
   if (status === 'success' && attached.length === 0) return null
   return (
@@ -218,13 +245,14 @@ export function GroupsSubList({ profileId, testIdPrefix, status, attached, group
           groups={groups}
           budget={budget}
           onChanged={onChanged}
+          autoOpenMembers={openMembersFor === a.groupId}
         />
       ))}
     </div>
   )
 }
 
-function GroupRow({ profileId, attachment, group, apps, groups, budget, onChanged }: {
+function GroupRow({ profileId, attachment, group, apps, groups, budget, onChanged, autoOpenMembers }: {
   profileId: number
   attachment: ProfileAppGroup
   group: AppGroup | undefined
@@ -232,13 +260,20 @@ function GroupRow({ profileId, attachment, group, apps, groups, budget, onChange
   groups: AppGroup[]
   budget: BudgetUsage
   onChanged: () => void | Promise<void>
+  autoOpenMembers: boolean
 }) {
   const tid = `group-row-${attachment.groupId}`
   const w = useGroupWrites(profileId, onChanged)
   const [open, setOpen] = useState(false)
+  // #2974 — members have their own expander beside the limit chip, so neither hides the other.
+  const [membersOpen, setMembersOpen] = useState(autoOpenMembers)
+  useEffect(() => { if (autoOpenMembers) setMembersOpen(true) }, [autoOpenMembers])
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [daily, setDaily] = useState(attachment.dailyMinutes != null ? String(attachment.dailyMinutes) : '')
+  // Set while "No limit" saves: the emptied box it leaves focused may blur before the saved
+  // attachment arrives, and that blur is not a parent clearing the limits.
+  const choosingNoLimit = useRef(false)
   const [weekly, setWeekly] = useState(attachment.weeklyMinutes != null ? String(attachment.weeklyMinutes) : '')
   // Re-seed the inputs when the saved attachment changes (a failed save leaves the old values).
   useEffect(() => {
@@ -249,18 +284,16 @@ function GroupRow({ profileId, attachment, group, apps, groups, budget, onChange
   const members = memberIds
     .map(id => apps.find(a => a.app.id === id))
     .filter((a): a is AppDetail => a != null)
-  const inOtherGroup = new Set(groups.filter(g => g.id !== attachment.groupId).flatMap(g => g.memberAppIds))
-  const addable = apps.filter(a => !memberIds.includes(a.app.id) && !inOtherGroup.has(a.app.id))
 
-  // Other profiles that attach this group — only fetched once the row is open.
+  // Other profiles that attach this group — only fetched once the members are open.
   const { data: profiles = [] } = useProfiles()
   const others = profiles.filter(p => p.profile.id !== profileId)
-  const otherAttachments = useGroupAttachmentsOf(others.map(p => p.profile.id), open)
+  const otherAttachments = useGroupAttachmentsOf(others.map(p => p.profile.id), membersOpen)
   const usedBy = useMemo(
     () => others.filter((_, i) => otherAttachments[i]?.data?.some(a => a.groupId === attachment.groupId)),
     [others, otherAttachments, attachment.groupId],
   )
-  const usedByLoading = open && otherAttachments.some(q => q.isPending)
+  const usedByLoading = membersOpen && otherAttachments.some(q => q.isPending)
 
   async function run(fn: () => Promise<void>, fallback: string) {
     setBusy(true); setError(null)
@@ -277,8 +310,12 @@ function GroupRow({ profileId, attachment, group, apps, groups, budget, onChange
   async function commitLimits() {
     const d = parse(daily), wk = parse(weekly)
     if (d === 'bad' || wk === 'bad') { setError('Enter minutes > 0'); return }
-    if (d == null && wk == null) {
-      setError('Set a daily or weekly limit')
+    // #2973: "No limit" is an explicit choice, never an emptied box. A parent clearing the only limit
+    // on the way to typing another would otherwise save a limitless (and, not counted, bedtime-
+    // reachable) group on the blur in between.
+    if (d == null && wk == null && !noLimit) {
+      if (choosingNoLimit.current) return
+      setError('Enter a daily or weekly limit, or choose No limit')
       setDaily(attachment.dailyMinutes != null ? String(attachment.dailyMinutes) : '')
       setWeekly(attachment.weeklyMinutes != null ? String(attachment.weeklyMinutes) : '')
       return
@@ -289,6 +326,16 @@ function GroupRow({ profileId, attachment, group, apps, groups, budget, onChange
     }), 'Failed to update')
   }
 
+  async function setNoLimit() {
+    choosingNoLimit.current = true
+    setDaily(''); setWeekly('')
+    // `run` resolves after the refetch (`w.attach` awaits it), so the inputs are re-seeded by then.
+    await run(() => w.attach(attachment.groupId, {
+      dailyMinutes: null, weeklyMinutes: null, exemptFromDaily: attachment.exemptFromDaily,
+    }), 'Failed to update')
+    choosingNoLimit.current = false
+  }
+
   async function setCounts(counts: boolean) {
     await run(() => w.attach(attachment.groupId, {
       dailyMinutes: attachment.dailyMinutes, weeklyMinutes: attachment.weeklyMinutes,
@@ -297,12 +344,7 @@ function GroupRow({ profileId, attachment, group, apps, groups, budget, onChange
     }), 'Failed to update')
   }
 
-  async function setMembers(next: number[]) {
-    await run(async () => {
-      await api.appGroups.update(attachment.groupId, { memberAppIds: next })
-      await w.done()
-    }, 'Failed to update members')
-  }
+  const memberWrites = useGroupMemberWrites(attachment.groupId, onChanged, attachment.memberAppIds)
 
   const dGtW = attachment.dailyMinutes != null && attachment.weeklyMinutes != null
     && attachment.dailyMinutes > attachment.weeklyMinutes
@@ -312,6 +354,7 @@ function GroupRow({ profileId, attachment, group, apps, groups, budget, onChange
   ].filter(Boolean).join(' · ')
   // The collapsed chip: the tighter remaining figure once usage is in, the limits until then (a
   // limit is real data; a remaining figure is not, so it waits behind a skeleton instead).
+  const noLimit = attachment.dailyMinutes == null && attachment.weeklyMinutes == null
   const gu = budget.groupById.get(attachment.groupId)
   const left = budget.status === 'success' && gu != null && gu.weekUsedMins != null
     // Limits and usage both come from the one status body, so the figure cannot mix two reads.
@@ -333,11 +376,24 @@ function GroupRow({ profileId, attachment, group, apps, groups, budget, onChange
         </span>
         <div className="flex-1 min-w-[6rem] overflow-hidden flex items-baseline gap-2">
           <p className="text-[13px] text-brand-ink font-medium truncate">{attachment.name}</p>
-          <span className="text-[11px] text-brand-text-muted font-mono shrink-0">
-            {members.length} app{members.length === 1 ? '' : 's'}
-          </span>
+          <MembersToggle tid={tid} count={memberIds.length} open={membersOpen} onClick={() => setMembersOpen(v => !v)} />
         </div>
         <div className="flex items-center gap-1.5 shrink-0 ml-auto">
+          <button
+            type="button"
+            // #2973: "Counts toward daily limit" on the row itself, so a limit-free group's daily
+            // effect is visible without opening the limits. Inverted, as everywhere.
+            data-testid={`${tid}-counts-chip`}
+            aria-pressed={!attachment.exemptFromDaily}
+            disabled={busy}
+            title={attachment.exemptFromDaily
+              ? `${noLimit ? NO_LIMIT_EXEMPT_HINT : EXEMPT_HINT} Click to count it toward the daily limit.`
+              : 'Counts toward the daily limit. Click to stop counting it.'}
+            onClick={() => setCounts(attachment.exemptFromDaily)}
+            className={`${chipBase} ${attachment.exemptFromDaily
+              ? 'bg-white border-brand-border-strong text-brand-text-muted'
+              : 'bg-brand-accent/10 border-brand-accent/40 text-brand-accent'}`}
+          >{attachment.exemptFromDaily ? 'Not counted' : 'Counts'}</button>
           <button
             type="button"
             data-testid={`${tid}-toggle`}
@@ -346,7 +402,11 @@ function GroupRow({ profileId, attachment, group, apps, groups, budget, onChange
             onClick={() => setOpen(v => !v)}
             className={`${chipBase} bg-amber-500/15 border-amber-500/40 text-amber-800`}
           >
-            {budget.status === 'pending' ? (
+            {noLimit ? (
+              // A limit-free group has no remaining figure; this is config, not usage, so it needs
+              // no loading state.
+              <span data-testid={`${tid}-no-limit-label`}>No limit</span>
+            ) : budget.status === 'pending' ? (
               <span
                 data-testid={`${tid}-budget-loading`}
                 aria-label="Loading usage"
@@ -395,7 +455,22 @@ function GroupRow({ profileId, attachment, group, apps, groups, budget, onChange
               ),
             )}
           </div>
-          {budget.status === 'pending' && (
+          {noLimit ? (
+            <p data-testid={`${tid}-no-limit-hint`} className="text-[11px] text-brand-text-muted">
+              No limit: these apps are only grouped. Type minutes to give them a shared budget.
+            </p>
+          ) : (
+            <button
+              type="button"
+              data-testid={`${tid}-no-limit`}
+              disabled={busy}
+              // Keep focus in a limit box so its blur does not save an edited value first.
+              onMouseDown={e => e.preventDefault()}
+              onClick={setNoLimit}
+              className="text-[11px] text-brand-accent hover:underline disabled:opacity-50"
+            >No limit</button>
+          )}
+          {!noLimit && budget.status === 'pending' && (
             <div className="h-1 rounded-full bg-brand-alt animate-pulse" data-testid={`${tid}-usage-loading`} />
           )}
           {budget.status === 'success' && gu != null && gu.weekUsedMins != null && (
@@ -431,36 +506,20 @@ function GroupRow({ profileId, attachment, group, apps, groups, budget, onChange
             </span>
           </label>
 
-          <p className="text-[10.5px] font-bold uppercase tracking-wider text-brand-text-muted pt-2 border-t border-dashed border-brand-border">
-            Apps in {attachment.name}
-          </p>
-          <div data-testid={`${tid}-members`} className="flex flex-wrap gap-1.5">
-            {members.map(m => (
-              <span key={m.app.id} className="inline-flex items-center gap-1 h-6 pl-1.5 pr-1 rounded-lg border border-brand-border-strong bg-white text-[11px] text-brand-ink">
-                <AppIcon icon={m.app.icon} iconType={m.app.iconType} size="sm" />
-                {m.app.name}
-                <button
-                  type="button"
-                  data-testid={`${tid}-member-remove-${m.app.id}`}
-                  aria-label={`Remove ${m.app.name} from ${attachment.name}`}
-                  disabled={busy}
-                  onClick={() => setMembers(memberIds.filter(id => id !== m.app.id))}
-                  className="px-1 text-brand-text-muted hover:text-red-700"
-                >×</button>
-              </span>
-            ))}
-            <select
-              value=""
-              disabled={busy || addable.length === 0}
-              onChange={e => { if (e.target.value) void setMembers([...memberIds, Number(e.target.value)]) }}
-              aria-label={`Add an app to ${attachment.name}`}
-              data-testid={`${tid}-member-add`}
-              className="h-6 rounded-lg border border-dashed border-brand-border-strong bg-white text-[11px] text-brand-text-muted px-1"
-            >
-              <option value="">+ app</option>
-              {addable.map(a => <option key={a.app.id} value={a.app.id}>{a.app.name}</option>)}
-            </select>
-          </div>
+        </div>
+      )}
+      {membersOpen && (
+        <div data-testid={`${tid}-members-panel`} className="border-t border-brand-border px-3 py-2.5 bg-brand-surface rounded-b-xl space-y-2">
+          <p className="text-[10.5px] font-bold uppercase tracking-wider text-brand-text-muted">Apps in {attachment.name}</p>
+          <GroupMembersEditor
+            tid={tid}
+            groupId={attachment.groupId}
+            groupName={attachment.name}
+            memberIds={memberIds}
+            apps={apps}
+            groups={groups}
+            writes={memberWrites}
+          />
           <p data-testid={`${tid}-also-used-by`} className="text-[11px] text-brand-text-muted">
             {usedByLoading
               ? 'Checking which other profiles use this group…'
@@ -470,7 +529,243 @@ function GroupRow({ profileId, attachment, group, apps, groups, budget, onChange
           </p>
         </div>
       )}
-      {error && <p className="text-xs text-red-700 px-3 pb-2" data-testid={`${tid}-error`}>{error}</p>}
+      {(error ?? memberWrites.error) && (
+        <p className="text-xs text-red-700 px-3 pb-2" data-testid={`${tid}-error`}>{error ?? memberWrites.error}</p>
+      )}
+    </div>
+  )
+}
+
+// #2974 — member writes for one group, shared by a profile's group row and Manage apps. A write
+// used to hold the whole row disabled until the update AND every refetch it triggered (groups,
+// profiles, time status) had finished, so "+ app" went dead for seconds after each add. Now:
+// - the member list in the `qk.appGroups()` cache changes at once (optimistic), and only the app
+//   being written is disabled;
+// - writes to one group run one after another. `memberAppIds` REPLACES the list, so each write
+//   sends the cached list with every unsettled change to that group re-applied on top. A refetch
+//   that lands mid-chain (from any source) therefore cannot make a write drop an app still queued
+//   or in flight;
+// - the background refetch waits until no member write is in flight for any group, so our own
+//   writes never refetch the list under one another;
+// - a failed write takes its own change back out of the cache and says why.
+interface MemberOp { appId: number; add: boolean }
+const memberWriteChains = new Map<number, Promise<void>>()
+const unsettledOps = new Map<number, MemberOp[]>()
+let memberWritesInFlight = 0
+
+function applyOps(ids: number[], ops: MemberOp[]): number[] {
+  return ops.reduce(
+    (acc, op) => (op.add ? (acc.includes(op.appId) ? acc : [...acc, op.appId]) : acc.filter(id => id !== op.appId)),
+    ids,
+  )
+}
+
+export interface GroupMemberWrites {
+  pending: ReadonlySet<number>
+  error: string | null
+  add: (appId: number) => void
+  remove: (appId: number) => void
+}
+
+// `fallbackMemberIds` is the list to start from if the groups query has no entry for this group
+// (it errored, or has not loaded): a profile row passes its attachment's members.
+export function useGroupMemberWrites(
+  groupId: number,
+  onChanged?: () => void | Promise<void>,
+  fallbackMemberIds?: number[],
+): GroupMemberWrites {
+  const qc = useQueryClient()
+  const invalidators = useInvalidators()
+  const [pending, setPending] = useState<ReadonlySet<number>>(new Set())
+  const [error, setError] = useState<string | null>(null)
+  const fallback = useRef(fallbackMemberIds)
+  fallback.current = fallbackMemberIds
+
+  function cached(): number[] | undefined {
+    return qc.getQueryData<AppGroup[]>(qk.appGroups())?.find(g => g.id === groupId)?.memberAppIds
+  }
+  function setCached(ids: number[]) {
+    qc.setQueryData<AppGroup[]>(qk.appGroups(), gs =>
+      gs?.map(g => (g.id === groupId ? { ...g, memberAppIds: ids } : g)))
+  }
+
+  function change(appId: number, add: boolean) {
+    const op: MemberOp = { appId, add }
+    setError(null)
+    setPending(p => new Set(p).add(appId))
+    unsettledOps.set(groupId, [...(unsettledOps.get(groupId) ?? []), op])
+    memberWritesInFlight += 1
+    // A refetch already under way would land on top of the optimistic list.
+    void qc.cancelQueries({ queryKey: qk.appGroups(), exact: true })
+    const now = cached()
+    if (now != null) setCached(applyOps(now, [op]))
+    const run = async () => {
+      try {
+        const base = cached() ?? fallback.current
+        if (base == null) throw new Error('Groups are not loaded yet')
+        const next = applyOps(base, unsettledOps.get(groupId) ?? [])
+        setCached(next)
+        await api.appGroups.update(groupId, { memberAppIds: next })
+      } catch (e) {
+        const now = cached()
+        if (now != null) setCached(applyOps(now, [{ appId, add: !add }]))
+        setError(errMsg(e, 'Failed to update members'))
+      } finally {
+        unsettledOps.set(groupId, (unsettledOps.get(groupId) ?? []).filter(o => o !== op))
+        setPending(p => { const n = new Set(p); n.delete(appId); return n })
+        memberWritesInFlight -= 1
+        if (memberWritesInFlight === 0) {
+          void invalidators.appGroups()
+          void onChanged?.()
+        }
+      }
+    }
+    const next = (memberWriteChains.get(groupId) ?? Promise.resolve()).then(run)
+    memberWriteChains.set(groupId, next)
+  }
+
+  return { pending, error, add: id => change(id, true), remove: id => change(id, false) }
+}
+
+// #2974 — the row's member control. A group with no apps asks for some instead of reading "0 apps",
+// which is what made the editor (then behind the limit chip) look absent.
+export function MembersToggle({ tid, count, open, onClick }: {
+  tid: string
+  count: number
+  open: boolean
+  onClick: () => void
+}) {
+  return (
+    <button
+      type="button"
+      data-testid={`${tid}-members-toggle`}
+      aria-expanded={open}
+      onClick={onClick}
+      className={`text-[11px] shrink-0 inline-flex items-center gap-1 rounded-md px-1 hover:bg-brand-alt ${
+        count === 0 ? 'text-brand-accent font-medium' : 'text-brand-text-muted font-mono'
+      }`}
+    >
+      {count === 0 ? 'No apps yet. Add apps' : `${count} app${count === 1 ? '' : 's'}`}
+      <span className="text-[8px] opacity-60">{open ? '▲' : '▼'}</span>
+    </button>
+  )
+}
+
+// #2974 — a group's members with remove buttons, and the picker that adds more. Shared by a
+// profile's group row and the Manage apps page. The picker is the profile's "Allow an app" picker
+// in shape: a filter and a list. An app in another group stays listed but disabled with that
+// group's name, so the one-group-per-app rule (D2) explains itself rather than hiding the app.
+export function GroupMembersEditor({ tid, groupId, groupName, memberIds, apps, groups, writes }: {
+  tid: string
+  groupId: number
+  groupName: string
+  memberIds: number[]
+  apps: AppDetail[]
+  groups: AppGroup[]
+  writes: GroupMemberWrites
+}) {
+  // An empty group opens straight onto the picker; otherwise it waits behind "+ Add apps".
+  const [adding, setAdding] = useState(false)
+  const [filter, setFilter] = useState('')
+  const members = memberIds
+    .map(id => apps.find(a => a.app.id === id))
+    .filter((a): a is AppDetail => a != null)
+  const otherGroupOf = useMemo(() => {
+    const m = new Map<number, string>()
+    for (const g of groups) if (g.id !== groupId) for (const id of g.memberAppIds) m.set(id, g.name)
+    return m
+  }, [groups, groupId])
+  const candidates = apps.filter(a => !memberIds.includes(a.app.id))
+  const q = filter.trim().toLowerCase()
+  const matches = q ? candidates.filter(a => a.app.name.toLowerCase().includes(q)) : candidates
+  const pickerOpen = adding || memberIds.length === 0
+
+  return (
+    <div className="space-y-2">
+      {members.length > 0 && (
+        <div data-testid={`${tid}-members`} className="flex flex-wrap gap-1.5">
+          {members.map(m => (
+            <span key={m.app.id} className="inline-flex items-center gap-1 h-6 pl-1.5 pr-1 rounded-lg border border-brand-border-strong bg-white text-[11px] text-brand-ink">
+              <AppIcon icon={m.app.icon} iconType={m.app.iconType} size="sm" />
+              {m.app.name}
+              <button
+                type="button"
+                data-testid={`${tid}-member-remove-${m.app.id}`}
+                aria-label={`Remove ${m.app.name} from ${groupName}`}
+                disabled={writes.pending.has(m.app.id)}
+                onClick={() => writes.remove(m.app.id)}
+                className="px-1 text-brand-text-muted hover:text-red-700"
+              >×</button>
+            </span>
+          ))}
+          {!pickerOpen && (
+            <button
+              type="button"
+              data-testid={`${tid}-member-add`}
+              onClick={() => setAdding(true)}
+              className="h-6 rounded-lg border border-dashed border-brand-accent/50 bg-white text-[11px] text-brand-accent px-2 hover:bg-brand-accent/10"
+            >+ Add apps</button>
+          )}
+        </div>
+      )}
+      {pickerOpen && (
+        <div data-testid={`${tid}-member-picker`} className="bg-white border border-brand-accent/50 rounded-xl p-2 space-y-1.5">
+          <div className="flex items-center gap-2">
+            <p className="text-[11px] font-semibold uppercase tracking-wider text-brand-accent flex-1">
+              Add apps to {groupName}
+            </p>
+            {memberIds.length > 0 && (
+              <button
+                type="button"
+                data-testid={`${tid}-member-picker-close`}
+                onClick={() => { setAdding(false); setFilter('') }}
+                className="text-[11px] text-brand-text-muted hover:text-brand-ink"
+              >Done</button>
+            )}
+          </div>
+          <input
+            type="text"
+            value={filter}
+            onChange={e => setFilter(e.target.value)}
+            placeholder="Filter apps…"
+            aria-label={`Filter apps to add to ${groupName}`}
+            data-testid={`${tid}-member-filter`}
+            className="w-full bg-white border border-brand-border-strong rounded-lg px-2 py-1 text-brand-ink text-xs"
+          />
+          {matches.length === 0 ? (
+            <p className="text-xs text-brand-text-muted" data-testid={`${tid}-member-picker-empty`}>
+              {apps.length === 0
+                ? 'No apps in the library yet.'
+                : candidates.length === 0 ? `Every app is already in ${groupName}.` : 'No apps match that filter.'}
+            </p>
+          ) : (
+            <div className="space-y-1 max-h-56 overflow-y-auto">
+              {matches.map(a => {
+                const other = otherGroupOf.get(a.app.id)
+                return (
+                  <button
+                    key={a.app.id}
+                    type="button"
+                    data-testid={`${tid}-member-pick-${a.app.id}`}
+                    disabled={writes.pending.has(a.app.id) || other != null}
+                    title={other != null ? `An app can be in only one group. ${a.app.name} is in ${other}.` : undefined}
+                    onClick={() => { setAdding(true); writes.add(a.app.id) }}
+                    className="w-full flex items-center gap-2 px-2 py-1 rounded-lg bg-white hover:bg-brand-alt border border-brand-border-strong text-left disabled:opacity-50 disabled:hover:bg-white"
+                  >
+                    <AppIcon icon={a.app.icon} iconType={a.app.iconType} size="sm" className="w-5 text-center" />
+                    <span className="text-xs text-brand-ink flex-1 truncate">{a.app.name}</span>
+                    {other != null && (
+                      <span className="text-[10.5px] font-semibold px-1.5 rounded-full bg-amber-500/15 border border-amber-500/40 text-amber-800 shrink-0">
+                        In {other}
+                      </span>
+                    )}
+                  </button>
+                )
+              })}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   )
 }

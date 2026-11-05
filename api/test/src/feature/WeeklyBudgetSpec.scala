@@ -883,6 +883,40 @@ object WeeklyBudgetSpec
           ga.map(_.usedMins).contains(15),
         )
       },
+      test("#2973: a no-limit group shows its usage with no limits and is never exhausted") {
+        for {
+          r     <- rig()
+          pr    <- ZIO.service[ProfileRepo]
+          a     <- pr.create("A", Nil)
+          kh    <- app1("khan.org")
+          g     <- group("Homework", kh)
+          _     <- attach(a, g, daily = None, weekly = None, exempt = true)
+          _     <- device(macA, a)
+          _     <- traffic(r, macA, "khan.org", at(tue, 10), 25)
+          _     <- traffic(r, macA, "khan.org", at(thu, 10), 15)
+          // The settle pass refills the past days of a limitless budget like any other.
+          _     <- tick(nowThu)
+          rows  <- rowCount("app_group_used_daily", a)
+          s     <- states(r, nowThu)
+          shown <- getJson[List[ProfileTimeStatus]](
+            s"/api/time/status?profileId=${a.value}",
+            nowThu,
+          )
+          ga = shown.head.groupUsage.find(_.groupId == g)
+        } yield assertTrue(
+          // Monday to Wednesday settled by the tick, plus today's rolled row.
+          rows == 4,
+          groupWeek(s(a), g).contains(40),
+          PolicyService.exhaustedBudgets(s(a)).isEmpty,
+          PolicyService.appsOverBudget(s(a)).isEmpty,
+          ga.exists(_.limitMins.isEmpty),
+          ga.exists(_.weeklyLimitMins.isEmpty),
+          ga.exists(_.remainingMins.isEmpty),
+          ga.map(_.usedMins).contains(15),
+          ga.flatMap(_.weekUsedMins).contains(40),
+          ga.exists(_.exemptFromDaily),
+        )
+      },
     ),
     suite("settling (design §6.4, tests 17-19)")(
       test("17: a cold week refills each past day once; the next read is all hits") {

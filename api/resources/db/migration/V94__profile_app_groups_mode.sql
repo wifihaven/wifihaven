@@ -1,5 +1,5 @@
--- V93__profile_app_groups_mode.sql
--- Group modes (epic #2930, design docs/design/weekly-limits-and-app-groups.md §17).
+-- V94__profile_app_groups_mode.sql
+-- Group modes (#2979, epic #2930, design docs/design/weekly-limits-and-app-groups.md §17).
 --
 -- ── What this adds ───────────────────────────────────────────────────────────
 -- 1. `profile_app_groups.mode`: a profile's attachment of a group has the same
@@ -9,28 +9,33 @@
 -- 2. `profile_app_groups.allowed_during_schedule_block`: the attachment's #1679
 --    toggle, read for an Allowed attachment only (design D19). Default TRUE, as
 --    on `app_policy_assignments` (V56).
--- 3. `profile_app_groups_has_limit` (V92, D4) is replaced by "a limit if and
---    only if time_limited": a TimeLimited attachment still needs a daily or
---    weekly limit, and an Allowed or Blocked one carries none (D21).
+-- 3. An Allowed or Blocked attachment carries no limit (D21). A TimeLimited one
+--    may still have none: image N-1 (#2973) writes limitless rows without a
+--    `mode`, so they arrive as 'time_limited', and a stricter CHECK would fail
+--    those writes. The adopting code reads a limitless TimeLimited row as
+--    Allowed (D23: a limitless attachment is an Allowed one).
+--
+-- No backfill moves today's limitless rows to 'allowed'. Until the adopting
+-- code deploys, image N-1 offers a limits drawer on those rows and its upsert
+-- never writes `mode`, so setting a limit on a backfilled row would fail the
+-- CHECK. The adopting code's reading covers them instead.
 --
 -- ── Inert until the adoption PRs ────────────────────────────────────────────
--- Schema only (docs/process/migrations.md#migrations-back-compat). Every
--- existing row, and every INSERT from image N-1 (which omits both columns),
--- gets 'time_limited' and TRUE. N-1 always writes a limit (D4), so its rows
--- satisfy the new CHECK. Nothing reads the new columns until the enforcement
--- slice, so no behaviour changes.
+-- Schema only (docs/process/migrations.md#migrations-back-compat). Image N-1
+-- reads neither column, and its INSERTs and upserts (which omit both columns)
+-- leave 'time_limited' and TRUE, which pass both CHECKs whatever limits they
+-- carry.
 --
 -- ── Cost ─────────────────────────────────────────────────────────────────────
 -- Both ADD COLUMNs add a constant default, which Postgres stores without a
--- table rewrite. The two CHECKs validate by scanning `profile_app_groups`, one
--- row per (profile, attached group). No growth table is scanned, rewritten or
--- re-indexed.
+-- table rewrite. The two CHECKs validate by scanning only `profile_app_groups`,
+-- one row per (profile, attached group). No growth table is scanned, rewritten
+-- or re-indexed.
 
 ALTER TABLE profile_app_groups
   ADD COLUMN mode TEXT NOT NULL DEFAULT 'time_limited',
   ADD COLUMN allowed_during_schedule_block BOOLEAN NOT NULL DEFAULT TRUE,
   ADD CONSTRAINT profile_app_groups_mode_check
     CHECK (mode IN ('blocked', 'allowed', 'time_limited')),
-  DROP CONSTRAINT profile_app_groups_has_limit,
-  ADD CONSTRAINT profile_app_groups_limit_iff_time_limited
-    CHECK ((mode = 'time_limited') = (daily_minutes IS NOT NULL OR weekly_minutes IS NOT NULL));
+  ADD CONSTRAINT profile_app_groups_limit_only_if_time_limited
+    CHECK (mode = 'time_limited' OR (daily_minutes IS NULL AND weekly_minutes IS NULL));

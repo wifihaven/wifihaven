@@ -360,6 +360,14 @@ object MetricGuard {
     // nothing is looking" trap). `kept` carrying a plausible host count is what
     // distinguishes them — it is the liveness anchor.
     "blocklist_ingest_hosts"                      -> Set("blocklist_id", "outcome"),
+    // #2978 — one count per upstream fetch of a bundled remote blocklist, by outcome.
+    // `blocklist_id` is bounded by the bundled set; `outcome` is the fixed enum
+    // ok | gone | error. `gone` is a 4xx the upstream will not recover from (404/410/401/403:
+    // the URL was retired or now needs credentials), which is a misconfiguration, so W20
+    // alerts on it; `error` is everything else (network, 5xx, 408/429, parse) and is the
+    // flaky-upstream case the WARN + keep-existing-rows path already handles. Written on
+    // every attempt, so the series exists from the first fetch after a restart.
+    "blocklist_fetch_total"                       -> Set("blocklist_id", "outcome"),
     "enforcement_drops_total"                     -> Set("reason", "router_id", "installation_id"),
     // #1658 — eb_/bl_ ipset re-resolve heartbeat. Each fire of the agent's
     // eb_refresh timer re-resolves the inventory of (extraBlocked, blocklist)
@@ -1046,6 +1054,12 @@ object AppMetrics {
         Map("blocklist_id" -> id.value, "outcome" -> "excluded"),
         excluded.toDouble,
       )
+
+  def recordBlocklistFetch(id: BlocklistId, outcome: String): UIO[Unit] =
+    MetricGuard.counter(
+      "blocklist_fetch_total",
+      Map("blocklist_id" -> id.value, "outcome" -> outcome),
+    )
 
   // ── DB query timing (#1204) ──────────────────────────────────────────────────
   // Emitted from DbMetrics.timed around the Doobie transact of hot repo methods.

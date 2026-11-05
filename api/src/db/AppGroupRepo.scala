@@ -77,9 +77,11 @@ trait AppGroupRepo {
   def listAttachments(household: HouseholdId, profile: ProfileId): Task[List[ProfileAppGroup]]
 
   /**
-   * Create or replace the attachment. The caller resolves `mode` (design §17.6) and checks "a limit
-   * if and only if TimeLimited", which V93 also CHECKs. The default is the pre-#2981 caller's
-   * TimeLimited, which always sends a limit.
+   * Create or replace the attachment. The caller resolves `mode` (design §17.6). An Allowed or
+   * Blocked attachment carries no limit, which V94 CHECKs. A TimeLimited one may carry either
+   * limit, both or neither (#2973; V93 dropped V92's at-least-one CHECK), and one with neither is
+   * read as Allowed (D23, [[ProfileAppGroup.effectiveMode]]). Each set limit must be > 0, which the
+   * caller checks and V92 CHECKs. The default mode is the pre-#2981 caller's TimeLimited.
    */
   def upsertAttachment(
       household: HouseholdId,
@@ -317,7 +319,7 @@ class AppGroupRepoLive(xa: Transactor[Task], clock: Clock) extends AppGroupRepo 
         d,
         w,
         e,
-        AppMode.parse(m).getOrElse(AppMode.TimeLimited),
+        ProfileAppGroup.effectiveMode(AppMode.parse(m).getOrElse(AppMode.TimeLimited), d, w),
         ads,
       ),
     )

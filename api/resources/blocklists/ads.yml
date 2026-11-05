@@ -976,3 +976,91 @@ hosts:
   - stickyadstv.com
   - fout.jp
   - appier.net
+  #
+  # traffic-driven additions (#2957): 30-day prod recent-apexes sweep across
+  # all 30 devices plus a serial /api/logs keyword sweep, 2026-11-03.
+  # Observed hosts resolved same day.
+  #
+  # buysellads.net is BuySellAds' own advertising-marketplace domain
+  # (Boston-based ad network/marketplace confirmed via its own site,
+  # Crunchbase, Dealroom; operates the Carbon Ads product). Its only
+  # observed host, cdn4.buysellads.net, CNAMEs to srv.buysellads.com, which
+  # answers on three dedicated DigitalOcean addresses (159.203.151.34,
+  # 24.144.70.77, 157.230.69.73 — all confirmed DigitalOcean, LLC via
+  # whois), not a shared CDN pool. No other subdomain (bare apex, www,
+  # cdn/cdn1-3, ads.) resolves. Distinct from the already-held-out
+  # servedby-buysellads.com
+  # and carbonads.com, both of which are CDN-fronted on their serving hosts
+  # (#2918) — same company family, different apex, different outcome.
+  #
+  # playablefactory.app is Playable Factory's event-logging domain (a
+  # Turkey-based ad-tech company, confirmed via its own site/PR coverage,
+  # that builds interactive "playable" mini-game ads for mobile app/game
+  # publishers — an ad format, not real game content, so no games.yml
+  # content-collateral concern). Its only observed host,
+  # logger2.playablefactory.app, resolves via a dedicated AWS ALB
+  # (raw-event-alb-*.eu-central-1.elb.amazonaws.com, a customer's own
+  # load balancer, not a shared CDN product — same distinction as the
+  # nexverse.ai GCP-LB precedent, #2836). Checked the unobserved usual
+  # siblings too: the bare apex (104.248.102.66/209.38.176.70/68.183.243.4,
+  # all DigitalOcean) and api. (a second dedicated company ALB,
+  # playable-factory-alb-*.eu-central-1.elb.amazonaws.com) are both clean.
+  # RESIDUAL RISK: cdn.playablefactory.app CNAMEs onto CloudFront
+  # (d1zyemcopc5d66.cloudfront.net). It has not been observed, but this
+  # apex entry suffix-matches it, so a device that ever resolves it would
+  # put CloudFront edges into bl_ads. If it shows up in traffic, remove
+  # this entry and pin its absence (the ebayadservices.com precedent,
+  # #2816). The sibling apex playablefactory.com (same company, different
+  # TLD) is a DIFFERENT entry and was held out instead: its own observed
+  # host, play.playablefactory.com, answers directly on Cloudflare
+  # (104.26.x/172.67.x) — an unconditional #2823 skip, not a residual-risk
+  # case, because the CDN answer is on the OBSERVED host itself.
+  #
+  # Held out this pass (CDN-fronted on the observed host, #2823/#2918 rule
+  # — pinned absent in BundledBlocklistsSpec):
+  # gamepix.com (confirmed: GamePix, a Rome-based HTML5/WebGL browser-game
+  # distribution platform, acquired by Xsolla — a games.yml-shaped
+  # candidate) is CDN-fronted on both resolving hosts — its bare apex
+  # (18.160.143.x) is CloudFront, and www. is Cloudflare (explicit
+  # *.cdn.cloudflare.net CNAME); never observed in /api/logs, only in
+  # recent-apexes.
+  # xboxlive.com (confirmed: Microsoft's Xbox Live gaming-services backend
+  # — another games.yml-shaped candidate, xbox.com is already curated) has
+  # seven observed subdomains; four (accounts./title.mgt./userpresence./
+  # xapprove.) resolve via Azure GTM steering onto Microsoft's own
+  # addresses (akadns.net only, no edge hop — not a shared pool, same as
+  # the appier.net GTM precedent, #2952), but three (peoplehub./sisu./
+  # titlehub.) CNAME through edgekey.net onto shared Akamai EdgeSuite edge
+  # IPs (184.27.144.51, 23.37.96.49) — Akamai's actual caching product, the
+  # ebayadservices.com class. Per the skmads.com rule, one CDN-fronted
+  # observed host disqualifies the whole apex regardless of the others.
+  # mgln.ai (confirmed: Magellan AI, a podcast-advertising-analytics
+  # company — an ai.yml-TLD trap, same class as axon.ai/trygravity.ai) and
+  # panxo.ai (confirmed: Panxo, an AI-referred-traffic ad-monetization
+  # layer for publishers — same TLD-trap class) are both Cloudflare-fronted
+  # on every resolving subdomain (104.26.x/172.67.x).
+  # megaplay.buzz (20MB/1,471 hits, no confirmed owner — a security scanner
+  # flags it low-trust with hidden WHOIS) and ygametime.com (no confirmed
+  # owner) are both Cloudflare-fronted (104.21.x/172.67.x and 172.66.x
+  # respectively) with no identity strong enough to outweigh the CDN skip
+  # either way.
+  # brand-display.com (489B/2 hits, never observed in /api/logs, no
+  # confirmed owner) is CloudFront-fronted (18.238.136.x).
+  #
+  # False positives / out of scope, no action: skypixel.com (DJI's drone
+  # photography community — "pixel" substring, unrelated to ads),
+  # saasexch.com (a SaaS-business marketplace — "sex" substring inside the
+  # name, not adult content), heapanalytics.com (Heap/Contentsquare
+  # first-party product analytics, same dual-use class as
+  # google-analytics.com), hsadspixel.net (HubSpot's shared pixel-hosting
+  # mechanism for external ad networks — dual-use infra shared across
+  # thousands of unrelated HubSpot customers, same class as hs-analytics.net),
+  # crisp.chat / livechatinc.com (dual-use customer-support live-chat
+  # widgets, the gorgias.chat class), eightfold.ai (confirmed B2B HR-tech
+  # talent-intelligence platform, out of ai.yml's consumer-product scope),
+  # yofi.ai (B2B ecommerce fraud/risk-intelligence tool, now rebranded
+  # Wyllo), anagram.ai (B2B AI product-data/agent-tooling SaaS),
+  # idsequoia.ai (no confirmed identity, low traffic, unverified),
+  # ads-pubsfusion.com (does not currently resolve; no /api/logs hits).
+  - buysellads.net
+  - playablefactory.app
