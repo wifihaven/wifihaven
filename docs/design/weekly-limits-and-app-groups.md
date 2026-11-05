@@ -906,11 +906,12 @@ V94, after #2973's V93.
 
 ### 17.3 Fold (`ProfileAppDispositions.from`)
 
-`GroupCoverage` gains `mode` and `allowedDuringScheduleBlock`. The fold first
-reads a TimeLimited attachment with no limit as Allowed (D23); that is the one
-place the mapping lives. It then keeps one disposition per member and picks its
-mode by **stricter wins** (D20), extending D14: `Blocked > TimeLimited >
-Allowed`.
+`GroupCoverage` gains `mode` and `allowedDuringScheduleBlock`. A TimeLimited
+attachment with no limit is read as Allowed (D23). That mapping is one function,
+`ProfileAppGroup.effectiveMode`, applied wherever the repos read
+`profile_app_groups.mode`, so the fold and the API response see the same mode.
+The fold keeps one disposition per member and picks its mode by **stricter
+wins** (D20), extending D14: `Blocked > TimeLimited > Allowed`.
 
 | Attachment | Member's own row | Disposition |
 |---|---|---|

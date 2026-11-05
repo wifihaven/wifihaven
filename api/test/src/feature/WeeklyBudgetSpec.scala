@@ -883,7 +883,7 @@ object WeeklyBudgetSpec
           ga.map(_.usedMins).contains(15),
         )
       },
-      test("#2973: a no-limit group shows its usage with no limits and is never exhausted") {
+      test("#2973 + D23: a no-limit group is Allowed, so it is no budget and never exhausted") {
         for {
           r     <- rig()
           pr    <- ZIO.service[ProfileRepo]
@@ -894,7 +894,6 @@ object WeeklyBudgetSpec
           _     <- device(macA, a)
           _     <- traffic(r, macA, "khan.org", at(tue, 10), 25)
           _     <- traffic(r, macA, "khan.org", at(thu, 10), 15)
-          // The settle pass refills the past days of a limitless budget like any other.
           _     <- tick(nowThu)
           rows  <- rowCount("app_group_used_daily", a)
           s     <- states(r, nowThu)
@@ -902,19 +901,14 @@ object WeeklyBudgetSpec
             s"/api/time/status?profileId=${a.value}",
             nowThu,
           )
-          ga = shown.head.groupUsage.find(_.groupId == g)
         } yield assertTrue(
-          // Monday to Wednesday settled by the tick, plus today's rolled row.
-          rows == 4,
-          groupWeek(s(a), g).contains(40),
+          // #2980 (design §17.3): only a TimeLimited attachment is a budget, and a limitless one
+          // is Allowed (D23), so nothing is settled or shown for it as a group budget.
+          rows == 0,
+          groupWeek(s(a), g).isEmpty,
           PolicyService.exhaustedBudgets(s(a)).isEmpty,
           PolicyService.appsOverBudget(s(a)).isEmpty,
-          ga.exists(_.limitMins.isEmpty),
-          ga.exists(_.weeklyLimitMins.isEmpty),
-          ga.exists(_.remainingMins.isEmpty),
-          ga.map(_.usedMins).contains(15),
-          ga.flatMap(_.weekUsedMins).contains(40),
-          ga.exists(_.exemptFromDaily),
+          !shown.head.groupUsage.exists(_.groupId == g),
         )
       },
     ),

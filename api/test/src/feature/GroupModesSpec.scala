@@ -480,6 +480,40 @@ object GroupModesSpec
         )
       },
     ),
+    suite("a limitless TimeLimited row is Allowed (D23)")(
+      test("as #2973's image writes it: Allowed in the API read and in enforcement") {
+        for {
+          r      <- rig
+          a      <- kid("A", macA)
+          tlr    <- ZIO.service[TimeLimitRepo]
+          kh     <- app("Khan", "khan.org")
+          z      <- app("Counted", "counted.com")
+          g      <- group("Homework", kh)
+          // #2973's upsert writes no `mode`, so the row stores 'time_limited' with no limit.
+          _      <- ZIO.serviceWithZIO[Transactor[Task]](xa => sql"""INSERT INTO profile_app_groups
+                    (household_id, profile_id, group_id, daily_minutes, weekly_minutes,
+                     exempt_from_daily)
+                  VALUES ($hh, $a, $g, NULL, NULL, FALSE)""".update.run.transact(xa).unit)
+          stored <- ZIO.serviceWithZIO[Transactor[Task]](xa =>
+            sql"SELECT mode FROM profile_app_groups WHERE profile_id = $a"
+              .query[String]
+              .unique
+              .transact(xa),
+          )
+          ls     <- appGroupRepoAt(nowThu).flatMap(_.listAttachments(hh, a))
+          // Counted, and the daily total is spent: an Allowed member outlives it (#2747).
+          _      <- tlr.upsert(a, 30) *> assign(z, a)
+          _      <- traffic(r, macA, "khan.org", at(thu, 9), 40)
+          svc    <- policyAt(nowThu)
+          v      <- verdicts(svc, a, macA, List("khan.org", "counted.com"))
+        } yield assertTrue(
+          stored == "time_limited",
+          ls.map(_.mode) == List(AppMode.Allowed),
+          reachable(v, "khan.org"),
+          blocked(v, "counted.com"),
+        )
+      },
+    ),
     suite("repo round-trip and the app_group_attachments gauge")(
       test("mode and the toggle round-trip; changing mode keeps the row valid") {
         for {

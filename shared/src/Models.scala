@@ -476,6 +476,20 @@ case class ProfileAppGroup(
     allowedDuringScheduleBlock: Boolean = true,
 ) derives JsonCodec
 
+object ProfileAppGroup {
+
+  /**
+   * #2980 (design §17.3, D23): the mode an attachment HAS, from the mode it stores. A TimeLimited
+   * attachment with no limit is Allowed: #2973's "No limit" attachment and an Allowed group are the
+   * same thing, and #2973's image writes such rows without a `mode` (so they store 'time_limited').
+   * Every read of `profile_app_groups.mode` goes through this, so enforcement ([[GroupCoverage]])
+   * and the API ([[ProfileAppGroup]]) cannot disagree on a row's mode.
+   */
+  def effectiveMode(stored: AppMode, daily: Option[Int], weekly: Option[Int]): AppMode =
+    if (stored == AppMode.TimeLimited && daily.isEmpty && weekly.isEmpty) AppMode.Allowed
+    else stored
+}
+
 case class UpsertProfileAppGroupRequest(
     dailyMinutes: Option[Int] = None,
     weeklyMinutes: Option[Int] = None,
