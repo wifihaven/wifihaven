@@ -3328,6 +3328,37 @@ describe('ProfilesPage — weekly limits and app groups (#2935)', () => {
       expect(api.appGroups.attach).toHaveBeenCalledWith(1, 7, { dailyMinutes: null, weeklyMinutes: null, exemptFromDaily: false }))
   })
 
+  // #2982 review — while this profile's attachments are unknown, a group already on it could be
+  // offered and re-attached with no limits; and a loading list must not look like a real one.
+  it('offers no groups in a picker, and shows no real-looking counts, while attachments load', async () => {
+    fn(api.apps.list).mockResolvedValue([app(50, 'YouTube', { mode: 'allowed' })])
+    fn(api.appGroups.list).mockResolvedValue([games])
+    fn(api.appGroups.forProfile).mockReturnValue(new Promise(() => {}))
+    const user = userEvent.setup()
+    await openApps(user)
+    expect(await screen.findByTestId('profile-1-apps-section-allowed-groups-loading')).toBeInTheDocument()
+    expect(screen.getByTestId('profile-1-apps-section-blocked-groups-loading')).toBeInTheDocument()
+    expect(screen.getByTestId('profile-1-apps-section-allowed-count-loading')).toBeInTheDocument()
+    expect(screen.queryByTestId('profile-1-apps-section-blocked-empty')).not.toBeInTheDocument()
+    await user.click(screen.getByTestId('profile-1-apps-section-add-allowed'))
+    expect(await screen.findByTestId('profile-1-apps-section-picker-groups-loading')).toBeInTheDocument()
+    expect(screen.queryByTestId('profile-1-apps-section-picker-group-7')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('profile-1-apps-section-picker-new-group')).not.toBeInTheDocument()
+  })
+
+  it('says groups could not load, in the lists and the picker, and offers none', async () => {
+    fn(api.apps.list).mockResolvedValue([app(50, 'YouTube', { mode: 'allowed' })])
+    fn(api.appGroups.list).mockResolvedValue([games])
+    fn(api.appGroups.forProfile).mockRejectedValue(new Error('boom'))
+    const user = userEvent.setup()
+    await openApps(user)
+    expect(await screen.findByTestId('profile-1-apps-section-allowed-groups-error')).toBeInTheDocument()
+    expect(screen.queryByTestId('profile-1-apps-section-blocked-empty')).not.toBeInTheDocument()
+    await user.click(screen.getByTestId('profile-1-apps-section-add-blocked'))
+    expect(await screen.findByTestId('profile-1-apps-section-picker-groups-error')).toBeInTheDocument()
+    expect(screen.queryByTestId('profile-1-apps-section-picker-group-7')).not.toBeInTheDocument()
+  })
+
   it('creates a new group from a picker and adds it to that list', async () => {
     fn(api.apps.list).mockResolvedValue([app(50, 'YouTube', { mode: 'allowed' })])
     const user = userEvent.setup()
