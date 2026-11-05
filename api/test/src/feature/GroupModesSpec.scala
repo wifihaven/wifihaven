@@ -2,6 +2,7 @@ package wifihaven.api.feature
 
 import doobie.*
 import doobie.implicits.*
+import doobie.postgres.implicits.*
 import cats.implicits.*
 import wifihaven.api.db.*
 import wifihaven.api.db.TypeMeta.given
@@ -532,6 +533,39 @@ object GroupModesSpec
           bl.mode == AppMode.Blocked,
           ls.map(_.mode) == List(AppMode.Blocked),
         )
+      },
+      test("an effective-mode change drops the settled week; a limit-only edit does not") {
+        val tue                                  = mon.plusDays(1)
+        def seedRow(a: ProfileId, g: AppGroupId) =
+          ZIO.serviceWithZIO[Transactor[Task]](xa =>
+            sql"""INSERT INTO app_group_used_daily
+                    (household_id, profile_id, group_id, date, engaged_seconds, rolled_through)
+                  VALUES ($hh, $a, $g, $tue, 600, NOW()) ON CONFLICT DO NOTHING""".update.run
+              .transact(xa)
+              .unit,
+          )
+        def rows(a: ProfileId)                   =
+          ZIO.serviceWithZIO[Transactor[Task]](xa =>
+            sql"SELECT count(*) FROM app_group_used_daily WHERE profile_id = $a AND date = $tue"
+              .query[Int]
+              .unique
+              .transact(xa),
+          )
+        for {
+          _       <- rig
+          a       <- kid("A", macA)
+          rb      <- app("Roblox", "roblox.com")
+          g       <- group("Games", rb)
+          _       <- attach(a, g, AppMode.TimeLimited, daily = Some(60))
+          _       <- seedRow(a, g)
+          // A limit edit keeps the group TimeLimited: nothing settled changes.
+          _       <- attach(a, g, AppMode.TimeLimited, daily = Some(90))
+          kept    <- rows(a)
+          // #2973's "No limit" before #2981: the row stays 'time_limited' but is now Allowed
+          // (D23), so it is no longer a budget and its settled week must go.
+          _       <- attach(a, g, AppMode.TimeLimited)
+          dropped <- rows(a)
+        } yield assertTrue(kept == 1, dropped == 0)
       },
       test("one gauge series per mode, set on the reevaluate tick, zero when none") {
         def gauge(mode: String) =
