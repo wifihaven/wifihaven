@@ -1315,4 +1315,54 @@ describe("blocklists no-op refresh and render (#2893)", function()
     assert.same(fresh(lists()), outputs(fs))
   end)
 
+  -- #2995: the shards carry the main-conf specs of overlapping hosts, so a
+  -- main-conf change re-renders them; the member index only follows the lists.
+  local function main(specs)
+    return { ["ad.example"] = specs or { "4#inet#wifihaven#ea_ad_example" } }
+  end
+  local function render_main(s, fs, state, main_specs)
+    return blocklists.render_outputs(s, fs, CACHE, SHARDS, INDEX, 1000000, {}, state, main_specs)
+  end
+
+  it("re-renders the shards but not the index when the main-conf specs change (#2995)", function()
+    local fs = stream_fs(); seed(fs)
+    local state = {}
+    render_main(lists(), fs, state, main())
+    assert.is_false(render_main(lists(), fs, state, main()).rendered)
+    local out = render_main(lists(), fs, state,
+                            main({ "4#inet#wifihaven#eb_ad_example" }))
+    assert.is_true(out.rendered)
+    assert.is_nil(out.index, "the member index must not be rewritten for a main-conf change")
+    assert.truthy(fs._files[SHARDS .. "/wifihaven-blocklist-ads.conf"]:find(
+      "nftset=/ad.example/4#inet#wifihaven#bl_ads,6#inet#wifihaven#bl6_ads,4#inet#wifihaven#eb_ad_example\n",
+      1, true))
+    assert.is_false(render_main(lists(), fs, state,
+                                main({ "4#inet#wifihaven#eb_ad_example" })).rendered)
+  end)
+
+  it("keeps the main-conf bl_ specs in state across a skip (#2995)", function()
+    local fs = stream_fs(); seed(fs)
+    local state = {}
+    render_main(lists(), fs, state, main())
+    local want = { ["ad.example"] = { "4#inet#wifihaven#bl_ads", "6#inet#wifihaven#bl6_ads" } }
+    assert.same(want, state.main_bl_specs)
+    assert.is_false(render_main(lists(), fs, state, main()).rendered)
+    assert.same(want, state.main_bl_specs)
+  end)
+
+  it("keeps an overlapping shard line within dnsmasq's 1024-byte limit (#2995)", function()
+    local fs = stream_fs()
+    local host = string.rep("a", 60) .. ".example"
+    fs._files[CACHE .. "/ads-a1.txt"] = host .. "\n"
+    local long = {}
+    for i = 1, 30 do long[i] = "4#inet#wifihaven#ea_" .. host:gsub("%.", "_") .. i end
+    local s = snap({ ads = { version = "a1", url = "/api/blocklists/ads" } })
+    render_main(s, fs, {}, { [host] = long })
+    local shard = fs._files[SHARDS .. "/wifihaven-blocklist-ads.conf"]
+    for line in shard:gmatch("[^\n]+") do
+      assert.is_true(#line <= 1024, "shard line over 1024 bytes: " .. #line)
+    end
+    assert.truthy(shard:find("nftset=/" .. host .. "/4#inet#wifihaven#bl_ads,6#inet#wifihaven#bl6_ads\n", 1, true))
+  end)
+
 end)

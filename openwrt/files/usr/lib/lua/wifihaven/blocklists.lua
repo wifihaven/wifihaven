@@ -359,7 +359,7 @@ end
 
 -- ---------------------------------------------------------------------------
 -- M.render_shards(snapshot, fs, cache_dir, shard_dir, max_bytes,
---                 global_blocklist_ids)
+--                 global_blocklist_ids, main_specs)
 -- ---------------------------------------------------------------------------
 -- Streams per-blocklist shard files to <shard_dir>/wifihaven-blocklist-<id>.conf,
 -- one file per blocklist in snapshot.blocklists. Each line in the shard is:
@@ -369,6 +369,16 @@ end
 -- When global_blocklist_ids[id] is truthy, each line also appends:
 --   ,4#inet#wifihaven#global_block,6#inet#wifihaven#global_block6
 -- before the newline.
+--
+-- #2995: dnsmasq fires ONE nftset= directive per reply (longest suffix match,
+-- first-parsed on a tie; see render.nftset_host_specs), so a member line must
+-- also carry the main-conf specs of every host at or above that member, and a
+-- main-conf host at or below a member must carry the member's list specs. Both
+-- directions are settled here, while the list streams past:
+--   * a member at or below a main_specs host gets that host's specs appended;
+--   * a member at or above a main_specs host records the list's specs in
+--     result.main_bl_specs[host], which render.dnsmasq appends to that host's
+--     line (via render_outputs' state).
 --
 -- Reads from the on-disk cache file line-by-line (via fs.open_read) so the
 -- full host list is NEVER accumulated in a Lua table — the #1412 OOM source.
@@ -386,19 +396,57 @@ end
 --   global_blocklist_ids — optional { [id] = true } set; ids in this set
 --                          have global_block/global_block6 appended to each
 --                          shard line
+--   main_specs         — optional { [host] = { spec, ... } }, the main-conf
+--                        specs from render.nftset_host_specs (#2995)
 --
 -- Returns:
 --   { rendered = { [id] = bytes }, skipped = { ids }, cap_hit = { ids },
---     errors = { strings } }
+--     errors = { strings }, main_bl_specs = { [host] = { spec, ... } } }
 --   cap_hit ⊆ skipped — the subset whose render stopped because max_bytes was
 --   exceeded (the #1434 oversize signal the agent emits as
 --   blocklist_render_skipped_total{id}, #1785). Other skipped ids (absent
 --   cache file) are NOT in cap_hit — those are surfaced via
 --   blocklist_fetch_failures_total instead.
-function M.render_shards(snapshot, fs, cache_dir, shard_dir, max_bytes, global_blocklist_ids)
+-- Calls fn(name) for `host` and each parent domain: a.b.c, b.c, c. These are
+-- the directive domains dnsmasq's suffix match would accept for `host`.
+local function each_suffix(host, fn)
+  local name = host
+  while name and name ~= "" do
+    fn(name)
+    local dot = name:find(".", 1, true)
+    if not dot then return end
+    name = name:sub(dot + 1)
+  end
+end
+
+local function append_unique(list, seen, specs)
+  for _, spec in ipairs(specs) do
+    if not seen[spec] then
+      seen[spec] = true
+      list[#list + 1] = spec
+    end
+  end
+end
+
+function M.render_shards(snapshot, fs, cache_dir, shard_dir, max_bytes, global_blocklist_ids,
+                         main_specs)
   cache_dir  = cache_dir  or "/etc/wifihaven/blocklists"
   shard_dir  = shard_dir  or "/tmp"
   global_blocklist_ids = global_blocklist_ids or {}
+  main_specs = main_specs or {}
+
+  -- #2995: below[name] lists the main-conf hosts at or below `name`. A member
+  -- whose name is in it is an ancestor-or-equal of those hosts, so its list
+  -- specs belong on their main-conf lines. Small: main hosts x their labels.
+  local below = {}
+  for host in pairs(main_specs) do
+    each_suffix(host, function(name)
+      below[name] = below[name] or {}
+      below[name][#below[name] + 1] = host
+    end)
+  end
+  local has_main = next(main_specs) ~= nil
+  local main_bl_specs, main_bl_seen = {}, {}
 
   -- Require render.bl_sanitize for set-name normalization so there is
   -- one source of truth (see get_render() at the top of this module).
@@ -443,7 +491,8 @@ function M.render_shards(snapshot, fs, cache_dir, shard_dir, max_bytes, global_b
   -- `skipped` ids whose cache file was simply absent (transient fetch failure,
   -- covered separately by blocklist_fetch_failures_total). The agent emits
   -- blocklist_render_skipped_total{id} off this list (#1785).
-  local result = { rendered = {}, skipped = {}, cap_hit = {}, errors = {} }
+  local result = { rendered = {}, skipped = {}, cap_hit = {}, errors = {},
+                   main_bl_specs = main_bl_specs }
   local bls    = snapshot and snapshot.blocklists or {}
 
   for id, bl in pairs(bls) do
@@ -459,10 +508,12 @@ function M.render_shards(snapshot, fs, cache_dir, shard_dir, max_bytes, global_b
     else
       -- Build the per-host spec suffix for this id.
       local san    = bl_sanitize(id)
-      local spec   = "4#inet#wifihaven#bl_" .. san .. ",6#inet#wifihaven#bl6_" .. san
+      local list_specs = { "4#inet#wifihaven#bl_" .. san, "6#inet#wifihaven#bl6_" .. san }
       if global_blocklist_ids[id] then
-        spec = spec .. ",4#inet#wifihaven#global_block,6#inet#wifihaven#global_block6"
+        list_specs[3] = "4#inet#wifihaven#global_block"
+        list_specs[4] = "6#inet#wifihaven#global_block6"
       end
+      local spec = table.concat(list_specs, ",")
 
       local wf, werr = open_write_fn(shard_tmp)
       if not wf then
@@ -479,7 +530,34 @@ function M.render_shards(snapshot, fs, cache_dir, shard_dir, max_bytes, global_b
           -- Trim whitespace; skip blank and comment lines.
           line = line:match("^%s*(.-)%s*$")
           if line ~= "" and line:sub(1, 1) ~= "#" then
-            local directive = "nftset=/" .. line .. "/" .. spec .. "\n"
+            local directive
+            if has_main then
+              -- #2995: union in the specs of main-conf hosts at or above this
+              -- member, and record this list's specs for main-conf hosts at
+              -- or below it.
+              local specs, seen
+              each_suffix(line, function(name)
+                local extra = main_specs[name]
+                if extra then
+                  if not specs then
+                    specs, seen = {}, {}
+                    append_unique(specs, seen, list_specs)
+                  end
+                  append_unique(specs, seen, extra)
+                end
+              end)
+              for _, host in ipairs(below[line] or {}) do
+                if not main_bl_specs[host] then
+                  main_bl_specs[host], main_bl_seen[host] = {}, {}
+                end
+                append_unique(main_bl_specs[host], main_bl_seen[host], list_specs)
+              end
+              if specs then
+                local merged, note = get_render().nftset_directive(line, specs)
+                directive = (note and (note .. "\n") or "") .. (merged and (merged .. "\n") or "")
+              end
+            end
+            directive = directive or ("nftset=/" .. line .. "/" .. spec .. "\n")
             -- Check byte cap BEFORE writing.
             if max_bytes and (bytes_written + #directive) > max_bytes then
               cap_hit = true
@@ -699,7 +777,7 @@ end
 
 -- ---------------------------------------------------------------------------
 -- M.render_outputs(snapshot, fs, cache_dir, shard_dir, index_path, max_bytes,
---                  global_blocklist_ids, state)
+--                  global_blocklist_ids, state, main_specs)
 -- ---------------------------------------------------------------------------
 -- render_shards → gc_shards → render_member_index, skipped when nothing they
 -- read has changed since the last clean render (#2893). Their inputs are the
@@ -710,6 +788,15 @@ end
 -- `state` is a table the caller keeps across calls; state.key is set only after
 -- a render with no error and no skipped id, so a list whose cache file has not
 -- arrived yet is re-rendered on every call until it has.
+--
+-- #2995: the shards also carry the main-conf specs (`main_specs`, from
+-- render.nftset_host_specs), so those are part of the shard key: an
+-- extraAllowed / extraBlocked / global host change re-renders the shards. That
+-- change also rewrites wifihaven.conf, so dnsmasq restarts and reads them. The
+-- member index depends on the lists alone and keeps its own key
+-- (state.index_key). state.main_bl_specs holds the last render's
+-- render_shards().main_bl_specs for render.dnsmasq; a skip leaves it in place,
+-- since the same key renders the same specs.
 --
 -- Returns { rendered = false } on a skip, otherwise
 -- { rendered = true, shards = <render_shards result>, index = <render_member_index result> }.
@@ -746,20 +833,39 @@ local function outputs_present(snapshot, fs, shard_dir, index_path)
   return true
 end
 
+-- The main-conf half of the shard key: every host with its specs, sorted.
+local function main_specs_key(main_specs)
+  local hosts = {}
+  for host in pairs(main_specs or {}) do hosts[#hosts + 1] = host end
+  table.sort(hosts)
+  local parts = {}
+  for i, host in ipairs(hosts) do
+    parts[i] = host .. "=" .. table.concat(main_specs[host], ",")
+  end
+  return table.concat(parts, ";")
+end
+
 function M.render_outputs(snapshot, fs, cache_dir, shard_dir, index_path, max_bytes,
-                          global_blocklist_ids, state)
+                          global_blocklist_ids, state, main_specs)
   state = state or {}
-  local key = M.render_key(snapshot, max_bytes, global_blocklist_ids)
-  if state.key == key and outputs_present(snapshot, fs, shard_dir, index_path) then
+  local list_key = M.render_key(snapshot, max_bytes, global_blocklist_ids)
+  local key = list_key .. "|" .. main_specs_key(main_specs)
+  local present = outputs_present(snapshot, fs, shard_dir, index_path)
+  if state.key == key and present then
     return { rendered = false }
   end
-  state.key = nil
+  local index_current = state.index_key == list_key and present
+  state.key, state.index_key = nil, nil
   local shards = M.render_shards(snapshot, fs, cache_dir, shard_dir, max_bytes,
-                                 global_blocklist_ids)
+                                 global_blocklist_ids, main_specs)
+  state.main_bl_specs = shards.main_bl_specs
   M.gc_shards(snapshot, fs, shard_dir)
-  local index = M.render_member_index(snapshot, fs, cache_dir, index_path)
+  local index
+  if not index_current then
+    index = M.render_member_index(snapshot, fs, cache_dir, index_path)
+  end
   if #shards.errors == 0 and #shards.skipped == 0 and not (index and index.error) then
-    state.key = key
+    state.key, state.index_key = key, list_key
   end
   return { rendered = true, shards = shards, index = index }
 end
