@@ -1340,6 +1340,43 @@ describe("blocklists no-op refresh and render (#2893)", function()
                                 main({ "4#inet#wifihaven#eb_ad_example" })).rendered)
   end)
 
+  -- Only a host that overlaps a list member changes a shard, so a host that
+  -- overlaps nothing must not cost the #2893 rewrite (schedule and daily-cap
+  -- edges add and drop extraAllowed hosts all day).
+  it("skips when only a host that overlaps no list member changes (#2995)", function()
+    local fs = stream_fs(); seed(fs)
+    local state = {}
+    local other = { "4#inet#wifihaven#ea_other_example" }
+    render_main(lists(), fs, state, main())
+    local with_other = main(); with_other["other.example"] = other
+    local writes = fs._counts.open_write
+    assert.is_false(render_main(lists(), fs, state, with_other).rendered)
+    assert.is_false(render_main(lists(), fs, state, main()).rendered)
+    with_other["other.example"] = { "4#inet#wifihaven#eb_other_example" }
+    assert.is_false(render_main(lists(), fs, state, with_other).rendered)
+    assert.equal(writes, fs._counts.open_write)
+  end)
+
+  it("re-renders when an overlapping host leaves and when it comes back (#2995)", function()
+    local fs = stream_fs(); seed(fs)
+    local state = {}
+    render_main(lists(), fs, state, main())
+    assert.is_true(render_main(lists(), fs, state, {}).rendered)
+    assert.is_nil(fs._files[SHARDS .. "/wifihaven-blocklist-ads.conf"]:find("ea_ad_example", 1, true))
+    assert.is_true(render_main(lists(), fs, state, main()).rendered)
+    assert.truthy(fs._files[SHARDS .. "/wifihaven-blocklist-ads.conf"]:find("ea_ad_example", 1, true))
+  end)
+
+  it("re-renders for a new host below a list member (#2995)", function()
+    local fs = stream_fs(); seed(fs)
+    local state = {}
+    render_main(lists(), fs, state, main())
+    local m = main(); m["x.ad.example"] = { "4#inet#wifihaven#ea_x_ad_example" }
+    assert.is_true(render_main(lists(), fs, state, m).rendered)
+    assert.same({ "4#inet#wifihaven#bl_ads", "6#inet#wifihaven#bl6_ads" },
+                state.main_bl_specs["x.ad.example"])
+  end)
+
   it("keeps the main-conf bl_ specs in state across a skip (#2995)", function()
     local fs = stream_fs(); seed(fs)
     local state = {}
