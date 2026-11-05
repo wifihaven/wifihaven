@@ -494,6 +494,10 @@ case class UpsertProfileAppGroupRequest(
     dailyMinutes: Option[Int] = None,
     weeklyMinutes: Option[Int] = None,
     exemptFromDaily: Option[Boolean] = None,
+    // #2981 (design §17.6): both optional. An absent mode is resolved from the limits and the
+    // existing row (D21, D23); an absent toggle keeps the existing row's, or true on create.
+    mode: Option[AppMode] = None,
+    allowedDuringScheduleBlock: Option[Boolean] = None,
 ) derives JsonCodec
 
 // #1798: the app *definition* mutator endpoints (create / update name+icon /
