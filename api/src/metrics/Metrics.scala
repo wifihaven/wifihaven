@@ -3,6 +3,7 @@ package wifihaven.api.metrics
 import com.zaxxer.hikari.HikariDataSource
 import wifihaven.api.db.RouterRepo
 import wifihaven.api.support.DispatchTracker
+import wifihaven.shared.AppMode
 import wifihaven.shared.types.BlocklistId
 import zio.*
 import zio.metrics.*
@@ -237,6 +238,9 @@ object MetricGuard {
     // #2933 (design §11): count of exhausted budgets, set once per reevaluate tick, summed across
     // households. `kind` ∈ {app, group}, `window` ∈ {day, week}: both code-bounded enums.
     "app_budget_exhausted"                        -> Set("kind", "window"),
+    // #2980 (design §17.7): count of profile group attachments by mode, set once per reevaluate
+    // tick, summed across households. `mode` ∈ {blocked, allowed, time_limited}: `AppMode`.
+    "app_group_attachments"                       -> Set("mode"),
     // #2932: presence rows ingested for a household-day that was already settled, so not counted
     // toward weekly budgets (design §6.4). Unlabelled: the rate is the measurement.
     "budget_late_presence_rows_total"             -> Set.empty[String],
@@ -1649,6 +1653,20 @@ object AppMetrics {
         "app_budget_exhausted",
         Map("kind" -> k, "window" -> w),
         counts.getOrElse((k, w), 0).toDouble,
+      )
+    }
+
+  /**
+   * #2980 (design §17.7): the `app_group_attachments{mode}` gauge: how many profile attachments of
+   * a group there are in each mode across all households. Set once per reevaluate tick, like
+   * [[setBudgetsExhausted]], and every mode every tick, so a mode nobody uses reads 0.
+   */
+  def setGroupAttachments(counts: Map[AppMode, Int]): UIO[Unit] =
+    ZIO.foreachDiscard(AppMode.values.toList) { m =>
+      MetricGuard.gauge(
+        "app_group_attachments",
+        Map("mode" -> AppMode.asString(m)),
+        counts.getOrElse(m, 0).toDouble,
       )
     }
 

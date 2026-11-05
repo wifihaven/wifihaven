@@ -466,6 +466,11 @@ class PolicyServiceLive(
   private val budgetCounts: AtomicReference[Map[HouseholdId, Map[(String, String), Int]]] =
     new AtomicReference(Map.empty)
 
+  // #2980 (design §17.7): each household's group attachments by mode, from its LAST build, summed
+  // into the `app_group_attachments` gauge once per tick for the same reason as `budgetCounts`.
+  private val attachmentCounts: AtomicReference[Map[HouseholdId, Map[AppMode, Int]]] =
+    new AtomicReference(Map.empty)
+
   // #1069/#1482: per-host /decision fallback must see the same schedule downtime as the snapshot —
   // the windows of every block-mode named schedule attached to the profile (as synthetic
   // DbSchedules so `scheduleActiveAt` applies unchanged). Named schedules are the sole source.
@@ -642,7 +647,11 @@ class PolicyServiceLive(
       val summed      = households.toList
         .flatMap(h => byHousehold.getOrElse(h, Map.empty).toList)
         .groupMapReduce(_._1)(_._2)(_ + _)
-      AppMetrics.setBudgetsExhausted(summed)
+      val attached    = attachmentCounts.get()
+      val byMode      = households.toList
+        .flatMap(h => attached.getOrElse(h, Map.empty).toList)
+        .groupMapReduce(_._1)(_._2)(_ + _)
+      AppMetrics.setBudgetsExhausted(summed) *> AppMetrics.setGroupAttachments(byMode)
     }
 
   // #2843: repair device-assignment drift BEFORE the build, so a repair that changes
@@ -769,6 +778,7 @@ class PolicyServiceLive(
       val snap = PolicyService.permissiveSnapshot(now)
       // No policy is enforced, so no budget is.
       budgetCounts.updateAndGet(_.updated(household, Map.empty))
+      attachmentCounts.updateAndGet(_.updated(household, Map.empty))
       AppMetrics
         .setGlobalPolicy(snap.global.extraAllowed.size, 0)
         .zipRight(logSnapshotChanged(household, snap))
@@ -819,6 +829,11 @@ class PolicyServiceLive(
       )
       appLimitsMap = appLimitsByProfile.toMap
       appSchedMap = appSched.toMap
+      _ <- ZIO.succeed(
+        attachmentCounts.updateAndGet(
+          _.updated(household, PolicyService.attachmentsByMode(appLimitsMap.values.flatten)),
+        ),
+      )
     } yield {
       // #1771: resolve the global sentinel's rules via the SAME [[computeBlockRules]] path the
       // per-profile policies use (AGENTS.md §single-source-of-truth — no parallel global-rule
@@ -1777,6 +1792,17 @@ object PolicyService {
         ),
       )
   }
+
+  /**
+   * #2980 (design §17.7): profile attachments of a group, counted by mode, from the coverage the
+   * `AppTimeLimitRepo` rows carry. Each attachment is counted once however many member rows it
+   * covers.
+   */
+  def attachmentsByMode(rows: Iterable[AppTimeLimit]): Map[AppMode, Int] =
+    rows
+      .flatMap(r => r.coverage.map(c => (r.profileId, c.groupId, c.mode)))
+      .toSet
+      .groupMapReduce(_._3)(_ => 1)(_ + _)
 
   /** #2933: [[exhaustedBudgets]] of several profile-days, counted by (kind, window) wire name. */
   def exhaustedCounts(states: Iterable[ProfileDayState]): Map[(String, String), Int] =

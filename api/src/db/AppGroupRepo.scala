@@ -289,7 +289,7 @@ class AppGroupRepoLive(xa: Transactor[Task], clock: Clock) extends AppGroupRepo 
       } yield out
     })
 
-  private type AttRow = (AppGroupId, String, Option[Int], Option[Int], Boolean)
+  private type AttRow = (AppGroupId, String, Option[Int], Option[Int], Boolean, String, Boolean)
 
   private def attachmentsCio(
       household: HouseholdId,
@@ -298,7 +298,8 @@ class AppGroupRepoLive(xa: Transactor[Task], clock: Clock) extends AppGroupRepo 
   ): ConnectionIO[List[ProfileAppGroup]] = {
     val one = only.map(_.value).getOrElse(-1L)
     for {
-      rows <- sql"""SELECT g.id, g.name, p.daily_minutes, p.weekly_minutes, p.exempt_from_daily
+      rows <- sql"""SELECT g.id, g.name, p.daily_minutes, p.weekly_minutes, p.exempt_from_daily,
+                           p.mode, p.allowed_during_schedule_block
                       FROM profile_app_groups p
                       JOIN app_groups g ON g.id = p.group_id AND g.household_id = p.household_id
                      WHERE p.household_id = $household AND p.profile_id = $profile
@@ -307,8 +308,18 @@ class AppGroupRepoLive(xa: Transactor[Task], clock: Clock) extends AppGroupRepo 
         .query[AttRow]
         .to[List]
       ms   <- membersOf(rows.map(_._1.value))
-    } yield rows.map((gid, n, d, w, e) =>
-      ProfileAppGroup(profile, gid, n, ms.getOrElse(gid.value, Nil), d, w, e),
+    } yield rows.map((gid, n, d, w, e, m, ads) =>
+      ProfileAppGroup(
+        profile,
+        gid,
+        n,
+        ms.getOrElse(gid.value, Nil),
+        d,
+        w,
+        e,
+        AppMode.parse(m).getOrElse(AppMode.TimeLimited),
+        ads,
+      ),
     )
   }
 
@@ -334,36 +345,44 @@ class AppGroupRepoLive(xa: Transactor[Task], clock: Clock) extends AppGroupRepo 
           sql"SELECT EXISTS (SELECT 1 FROM profiles WHERE id = $profile AND household_id = $household)"
             .query[Boolean]
             .unique
-        prior <- sql"""SELECT exempt_from_daily FROM profile_app_groups
+        prior <- sql"""SELECT exempt_from_daily, mode FROM profile_app_groups
                         WHERE profile_id = $profile AND group_id = $group"""
-          .query[Boolean]
+          .query[(Boolean, String)]
           .option
-        out   <-
+        modeStr = AppMode.asString(mode)
+        out <-
           if (grp.isEmpty) fail[ProfileAppGroup](GroupNotFound)
           else if (!prof) fail[ProfileAppGroup](ProfileNotFound)
           else
             for {
               _   <- sql"""INSERT INTO profile_app_groups
                              (household_id, profile_id, group_id, daily_minutes, weekly_minutes,
-                              exempt_from_daily)
+                              exempt_from_daily, mode, allowed_during_schedule_block)
                            VALUES ($household, $profile, $group, $dailyMinutes, $weeklyMinutes,
-                                   $exemptFromDaily)
+                                   $exemptFromDaily, $modeStr, $allowedDuringScheduleBlock)
                            ON CONFLICT (profile_id, group_id) DO UPDATE SET
                              daily_minutes = EXCLUDED.daily_minutes,
                              weekly_minutes = EXCLUDED.weekly_minutes,
-                             exempt_from_daily = EXCLUDED.exempt_from_daily""".update.run
+                             exempt_from_daily = EXCLUDED.exempt_from_daily,
+                             mode = EXCLUDED.mode,
+                             allowed_during_schedule_block =
+                               EXCLUDED.allowed_during_schedule_block""".update.run
               // Design §6.4: a new attachment changes the profile's dispositions (drop all three
-              // kinds); an exempt-flag edit moves only the profile daily total; limits move nothing.
+              // kinds), and so does a mode change (§17.3: only a TimeLimited attachment is a
+              // budget, and a member's mode follows the attachment's); an exempt-flag edit moves
+              // only the profile daily total; limits and the #1679 toggle move nothing.
               _   <- prior match {
-                case None                                =>
+                case None                                     =>
                   SettledUsage.invalidateCurrentWeek(List(profile), SettledUsage.Kinds.All, now)
-                case Some(was) if was != exemptFromDaily =>
+                case Some((_, wasMode)) if wasMode != modeStr =>
+                  SettledUsage.invalidateCurrentWeek(List(profile), SettledUsage.Kinds.All, now)
+                case Some((was, _)) if was != exemptFromDaily =>
                   SettledUsage.invalidateCurrentWeek(
                     List(profile),
                     SettledUsage.Kinds.ProfileTotalOnly,
                     now,
                   )
-                case Some(_)                             => doobie.free.connection.pure(0)
+                case Some(_)                                  => doobie.free.connection.pure(0)
               }
               row <- attachmentsCio(household, profile, Some(group))
             } yield row.headOption.toRight(GroupNotFound: AppGroupError)

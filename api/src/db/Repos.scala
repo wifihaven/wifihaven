@@ -2221,6 +2221,8 @@ class AppTimeLimitRepoLive(xa: Transactor[Task]) extends AppTimeLimitRepo {
   // attached to this profile that covers the app (`g` / `pag`, NULL when none), and whether the row
   // is a COVERED-ONLY row: one for a member of an attached group that has no assignment on the
   // profile (D6). Coverage rides the same read so no consumer of these rows can miss it.
+  // #2980 (design §17): the attachment's `mode` and #1679 toggle ride along too (NULL when no
+  // group covers the app).
   private type R =
     (
         ProfileId,
@@ -2241,6 +2243,8 @@ class AppTimeLimitRepoLive(xa: Transactor[Task]) extends AppTimeLimitRepo {
         Option[Boolean],
         Boolean,
         String,
+        Option[String],
+        Option[Boolean],
     )
   private def toS(r: R) =
     AppTimeLimit(
@@ -2257,7 +2261,15 @@ class AppTimeLimitRepoLive(xa: Transactor[Task]) extends AppTimeLimitRepo {
       r._10,
       weeklyMinutes = r._11,
       coverage = (r._12, r._13, r._16).mapN((g, name, exempt) =>
-        GroupCoverage(g, name, r._14, r._15, exempt),
+        GroupCoverage(
+          g,
+          name,
+          r._14,
+          r._15,
+          exempt,
+          r._19.flatMap(AppMode.parse).getOrElse(AppMode.TimeLimited),
+          r._20.getOrElse(true),
+        ),
       ),
       coveredOnly = r._17,
       appName = r._18,
@@ -2272,7 +2284,7 @@ class AppTimeLimitRepoLive(xa: Transactor[Task]) extends AppTimeLimitRepo {
                 apa.exempt_from_daily, a.id, apa.id, apa.mode::text,
                 apa.allowed_during_schedule_block, ah.shared, apa.weekly_minutes,
                 g.id, g.name, pag.daily_minutes, pag.weekly_minutes, pag.exempt_from_daily,
-                FALSE, a.name
+                FALSE, a.name, pag.mode, pag.allowed_during_schedule_block
            FROM app_policy_assignments apa
            JOIN apps a       ON a.id = apa.app_id
            JOIN app_hosts ah ON ah.app_id = apa.app_id
@@ -2290,7 +2302,7 @@ class AppTimeLimitRepoLive(xa: Transactor[Task]) extends AppTimeLimitRepo {
                 pag.exempt_from_daily, a.id, 0::bigint, 'time_limited',
                 TRUE, ah.shared, NULL::int,
                 g.id, g.name, pag.daily_minutes, pag.weekly_minutes, pag.exempt_from_daily,
-                TRUE, a.name
+                TRUE, a.name, pag.mode, pag.allowed_during_schedule_block
            FROM profile_app_groups pag
            JOIN app_groups g        ON g.id = pag.group_id
            JOIN app_group_members m ON m.group_id = pag.group_id
