@@ -77,8 +77,8 @@ trait AppGroupRepo {
   def listAttachments(household: HouseholdId, profile: ProfileId): Task[List[ProfileAppGroup]]
 
   /**
-   * Create or replace the attachment. "At least one limit" is the caller's check (V92 CHECKs it
-   * too).
+   * Create or replace the attachment. Either limit, both or neither (#2973; V93 dropped V92's
+   * at-least-one CHECK); each set limit must be > 0, which the caller checks and V92 CHECKs.
    */
   def upsertAttachment(
       household: HouseholdId,

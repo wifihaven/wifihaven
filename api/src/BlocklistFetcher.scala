@@ -31,6 +31,16 @@ trait BlocklistFetcher {
 
 object BlocklistFetcher {
 
+  /**
+   * Upstream answered with a non-2xx status. `permanent` is true for a 4xx that retrying will not
+   * fix (404/410/401/403...): a source that is gone is a misconfiguration, not a flake (#2978). 408
+   * and 429 are 4xx but transient. The message keeps the old `HTTP <n> fetching <url>` text.
+   */
+  final class UpstreamRejected(val status: Int, val url: String)
+      extends RuntimeException(s"HTTP $status fetching $url") {
+    def permanent: Boolean = status / 100 == 4 && status != 408 && status != 429
+  }
+
   /** The User-Agent we send when fetching upstream lists. */
   val UserAgent: String = "wifihaven-api/1 (+https://wifihaven.net)"
 
@@ -55,7 +65,7 @@ object BlocklistFetcher {
           .build()
         val resp = client.send(req, HttpResponse.BodyHandlers.ofString())
         if (resp.statusCode() / 100 != 2)
-          throw new RuntimeException(s"HTTP ${resp.statusCode()} fetching $url")
+          throw new UpstreamRejected(resp.statusCode(), url)
         Parser.parse(resp.body(), format)
       }
   }

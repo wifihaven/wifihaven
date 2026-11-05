@@ -43,6 +43,15 @@ object QueryTimeout {
   val RawAggregateWindow: Duration = Duration.ofSeconds(30)
 
   /**
+   * #2965: bound for the per-device apex aggregate behind `GET /api/devices/{mac}/recent-apexes`
+   * ([[TrafficReportRepoLive.listFqdnHostAggregatesForDevice]]). The busiest prod device's 30-day
+   * window (the route's max) measured 20.7s alone (1.03M rows, EXPLAIN ANALYZE 2026-11-03), so 30s
+   * keeps that legitimate read working while capping how long one call can hold a pool connection.
+   * Without it a parallel sweep of these calls held all 12 connections for up to 2 minutes.
+   */
+  val RecentApexesWindow: Duration = Duration.ofSeconds(30)
+
+  /**
    * Run `c` inside a transaction with a `SET LOCAL statement_timeout`, so the bound auto-releases
    * when the tx commits/rolls back and never leaks onto a pooled connection. A Postgres cancel
    * (SQLSTATE 57014) is remapped to [[QueryTimeoutException]]; all other failures pass through

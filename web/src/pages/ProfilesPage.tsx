@@ -1756,6 +1756,9 @@ function AppsSection({ profileId, isNew, apps, onChanged, testIdPrefix = 'apps-s
   // and "+ Block app" land the picked app directly in the list you asked for.
   const [pickerMode, setPickerMode] = useState<'allowed' | 'blocked' | null>(null)
   const [pickerFilter, setPickerFilter] = useState('')
+  // #2974 — the group just attached from "+ Add group": its row opens on its members, since filling
+  // the group is what the parent wants to do next.
+  const [justAttachedGroup, setJustAttachedGroup] = useState<number | null>(null)
   // #2964 — the picked app's save in flight, and the last save's failure.
   const [addingAppId, setAddingAppId] = useState<number | null>(null)
   const [pickerError, setPickerError] = useState<string | null>(null)
@@ -1842,6 +1845,7 @@ function AppsSection({ profileId, isNew, apps, onChanged, testIdPrefix = 'apps-s
         groups={groupsQ.data ?? []}
         attached={attached}
         onChanged={onChanged}
+        onAttached={setJustAttachedGroup}
       />
       <button
         type="button"
@@ -1968,6 +1972,7 @@ function AppsSection({ profileId, isNew, apps, onChanged, testIdPrefix = 'apps-s
             apps={apps}
             budget={budget}
             onChanged={onChanged}
+            openMembersFor={justAttachedGroup}
           />
           {assigned.length > 0 && renderList('allowed', allowedApps)}
           {assigned.length > 0 && renderList('blocked', blockedApps)}
@@ -2761,8 +2766,8 @@ function AppRow({ app, profileId, onChanged, usedMins, usageStatus, budget, bloc
         <div data-testid={`${tid}-overlap-drawer`} className="border-t border-brand-border px-3 py-2.5 bg-brand-surface rounded-b-xl">
           <p className="text-[11px] leading-relaxed text-amber-800">
             {isAllowedList
-              ? `${app.app.name} is also in the ${coveredBy.name} group on this profile. Both budgets apply, and whichever runs out first blocks it.`
-              : `${app.app.name} is blocked on this profile and also in the ${coveredBy.name} group. Removing it from this profile lifts that block. ${app.app.name} then follows the ${coveredBy.name} group's limits.`}
+              ? `${app.app.name} is also in the ${coveredBy.name} group on this profile. Both apply: it is blocked as soon as its own limit or the group's runs out. A group with No limit adds no limit of its own.`
+              : `${app.app.name} is blocked on this profile and also in the ${coveredBy.name} group. Removing it from this profile lifts that block. ${app.app.name} then follows the ${coveredBy.name} group's settings.`}
           </p>
           <button
             type="button"

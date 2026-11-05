@@ -51,6 +51,7 @@ Then pull **per-apex bytes per device** over a recent window. The
 
 ```bash
 # focus on the kid devices (the app catalog is about kid-facing apps)
+# SEQUENTIAL on purpose (#2965): a parallel sweep exhausts the prod DB pool.
 for mac in <kid-macs>; do
   curl -sS -H "Authorization: Bearer $TOKEN" \
     "https://api.wifihaven.net/api/devices/$mac/recent-apexes?windowDays=30&limit=500" \
@@ -82,6 +83,15 @@ rm -f /tmp/wh_token.txt   # don't leave creds on disk
 returns `apps[]` — what IS attributed — and `orphanHosts[]`, every host carrying
 real time that no app covers, each with `proportionalSeconds`/`presenceSeconds`.
 That is already time-weighted, which the raw byte table is not.
+
+> **One day per request, one request at a time (#2965).** The route answers at
+> most `UsageRoutes.UsageByAppMaxRangeDays` (1) day: `from` must equal `to`,
+> anything wider is a 400. It loads every raw row in the range onto the API's
+> heap, and on 2026-11-03 parallel 30-day calls for six profiles ran prod out of
+> memory. For a multi-day view, loop over the days **sequentially** and merge
+> client-side. Never background (`&`) or `xargs -P` these calls, or the
+> `recent-apexes` sweep above: each holds a DB connection from a 12-connection
+> pool shared with `/api/health`.
 
 Two cautions before you treat an orphan as a gap:
 
@@ -288,7 +298,94 @@ above is now wrong, fix the step too — don't just log around it.
   Savvas and ClassLink help-center articles are JavaScript-rendered and
   can't be fetched; mark anything sourced from search summaries as
   unverified in the evidence file.
-
+- **2026-11-02 (#2955)** — **A prior pass's "skip, no content-facing
+  sibling" verdict can flip the very next time a brand's usage grows —
+  re-check every recent skip against this run's orphan list before assuming
+  it still holds.** #2943 (2026-10-26) skipped CodeHS for exactly that
+  reason, seeing only `scalinghub.codehs.com` (403, backend-looking). This
+  pass's orphan sweep found `codehs.com` itself serving the real,
+  title-confirmed site, plus three distinct per-exercise `codehs.me`
+  sandbox subdomains (Vigenere cipher, Caesar cipher, letter frequency) —
+  a real curriculum sequence. Templated as `codehs.yml` — though the
+  authoring draft wrongly listed the bare `codehs.com` apex and `codehs.me`
+  as hosts; both turned out to be shared-pool collateral (see the next two
+  entries) and were dropped before merge. The six remaining CDN/backend
+  subdomains still carry ~24 real minutes/30d, enough to justify the
+  template on their own.
+- **2026-11-02 (#2955)** — **A Cloudflare-bot-challenged candidate that
+  can't be title-confirmed by `curl` is not permanently stuck — corroborate
+  its purpose via independent THIRD-PARTY sources (company profiles,
+  review sites) instead of the site's own claims, which you can't reach.**
+  `coddy.tech` was left a watch-item at #2915 (2026-10-19) for exactly this
+  reason. This pass confirmed it's Coddy, a real gamified coding-practice
+  platform (4M+ learners per independent company profiles), and templated
+  it as `coddy.yml` — the challenge page blocks automated verification, not
+  the kid's real browser, so it's not itself a reason to keep deferring once
+  purpose is otherwise confirmed.
+- **2026-11-02 (#2955)** — **GOT THIS WRONG IN THE FIRST DRAFT, caught by
+  independent review: a delegated zone (its own NS set, distinct from its
+  parent brand's) is NOT automatically safe to list bare — the delegation
+  argument from the `scratch.mit.edu` precedent (#2833) only holds when the
+  delegated zone points at DEDICATED infra. `codehs.me` (CodeHS's
+  per-exercise sandbox domain, `<slug>-<id>.codehs.me`, unenumerable) *is*
+  its own Route53-delegated zone, but `dig +short codehs.me` resolves it
+  into CloudFront's shared 99.84.118.x pool — the EXACT pool
+  `arduino.yml`/`instructables.yml` EXCLUDE their own bare apexes over, not
+  "accept" as the first draft of this entry claimed. Re-read those two
+  files' own comments before citing them as precedent for a pool being
+  safe — both say the opposite. When a candidate's only coverage path is a
+  bare apex with no enumerable children, `dig` the apex's own A records
+  before writing anything about its safety, delegation or no.
+- **2026-11-02 (#2955)** — **An already-blocklisted brand can still have an
+  un-blocked SIBLING apex (not a subdomain) that reaches its real content —
+  check a blocklisted brand's own CDN/embed domain, not just its main
+  apex.** `itch.io` has been in `games.yml` since early on, but `itch.zone`
+  (itch.io's CDN/embed domain, confirmed via matching Cloudflare
+  nameservers) is a different apex entirely, so the existing block doesn't
+  suffix-match it — a kid could still load an embedded itch.io game's
+  actual playable content via a direct `itch.zone` URL. Added `itch.zone`
+  to `games.yml` alongside `itch.io`. When gap-checking, don't stop at
+  "is the brand's main domain blocked" — check its CDN/embed sibling
+  domains too, the same way an app template's host-set check does.
+- **2026-11-02 (#2955)** — **Before listing a bare apex as a host, `dig`
+  its own likely top-level subdomains (`blog.`, `status.`, `help.`,
+  `support.`, `careers.`) — a suffix match sweeps them in regardless of
+  whether you ever intended to cover them, and a brand's own blog/status
+  page is routinely hosted on a wholly different third party than its main
+  site.** The first draft of `codehs.yml` listed bare `codehs.com`; review
+  caught that `blog.codehs.com` is WP Engine, `status.codehs.com` is
+  Statuspage.io, and `help.codehs.com` sits on the same shared CloudFront
+  pool as the already-excluded `codehs.me`. All three would have ridden
+  into the drop set under the apex. Fixed by excluding the bare apex
+  entirely (same move `canva.yml` makes for `canva.com`) and accepting the
+  residual: real traffic to the literal apex — which was this app's single
+  largest orphan host — goes unattributed. Add this `dig` check as a
+  standing step whenever a candidate's content genuinely lives on its bare
+  apex (most don't — most templates already list only specific
+  subdomains, which is why this trap is rare in the existing catalog).
+- **2026-11-02 (#2955)** — **A project-specific hostname is not the same
+  thing as a dedicated IP — don't use "this subdomain name is unique to the
+  vendor" as a substitute for actually resolving it.** The first draft of
+  `coddy.yml` kept `us-central1-coddy-15505.cloudfunctions.net`, reasoning
+  that the project id in the hostname made it dedicated, by analogy to
+  `amazon-telemetry.yml`'s `unagi.amazon.com`. Review `dig`'d it:
+  216.239.36.54, inside Google's shared 216.239.32.0/19 range —
+  `canva.yml`'s own documented collateral risk for `ct.canva.com`. The
+  amazon analogy doesn't transfer: `unagi.amazon.com` is distinctive
+  because Amazon's own infra answers it on Amazon's own IPs; a Cloud
+  Functions / Lambda / Cloud Run hostname is a vendor-platform tenant
+  slot — the project id disambiguates the TENANT, not the IP pool
+  underneath it, which the hosting platform still shares across all its
+  tenants in the region. Treat any `*.cloudfunctions.net`,
+  `*.run.app`, `*.lambda-url.*.on.aws`, or similar managed-platform
+  hostname as Class-1 shared-pool risk by default, and `dig` it before
+  trusting a specific-looking name.
+- **2026-11-02 (#2955)** — A single play session (one game, ~6 min, no
+  repeat) reads as below the engagement bar even for a well-known, genuinely
+  popular free browser game (PolyTrack / `kodub.com`) — don't let "this is a
+  real, non-sketchy indie game" substitute for the recurring-engagement
+  check the Scholastic Book Clubs precedent (#2740) established. Left as a
+  watch-item; revisit if traffic recurs.
 - **2026-10-26 (#2943)** — **A thin cluster can be a real app rather than a
   beacon when it spans two DIFFERENT apexes of one vendor — don't require
   all hosts to share one apex before trusting the shape, but don't rest the
