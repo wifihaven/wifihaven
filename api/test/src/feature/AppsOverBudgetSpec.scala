@@ -676,8 +676,8 @@ object AppsOverBudgetSpec
       },
     ),
     // #2973 (D4 revised 2026-11-03): an attachment with neither limit is a bundle with no shared
-    // budget. It is never exhausted, so every carve treats its members as under budget; a member's
-    // own limit still applies (D14).
+    // budget. #2980 (D23, 2026-11-04): such an attachment IS an Allowed group, so its members take
+    // the plain Allowed carve; a member's own limit still applies (D14, D20).
     suite("no-limit group (#2973)")(
       test("not counted: members stay reachable through the daily total and bedtime") {
         for {
@@ -712,7 +712,7 @@ object AppsOverBudgetSpec
           blocked(vb, "counted.com"),
         )
       },
-      test("counted: members' time goes into the daily total, and the total's block applies") {
+      test("counted: members' time goes into the daily total, and they outlive its block (D23)") {
         for {
           r    <- rig
           a    <- kid("A", macA)
@@ -731,9 +731,10 @@ object AppsOverBudgetSpec
           vb   <- verdicts(svc, b, macB, "khan.org")
           snap <- svc.snapshot
         } yield assertTrue(
-          // 40 counted minutes against 30: the whole-MAC block, no carve.
+          // 40 counted minutes against 30: the whole-MAC block applies, but an Allowed group's
+          // members are carved through it as an Allowed app is (D23, #2747).
           snap.profiles(a).rules.blocked,
-          blocked(va, "khan.org"),
+          reachable(va, "khan.org"),
           // The same 40 against 120: reachable.
           !snap.profiles(b).rules.blocked,
           reachable(vb, "khan.org"),

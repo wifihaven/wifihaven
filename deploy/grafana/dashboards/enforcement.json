@@ -561,6 +561,64 @@
           "refId": "A"
         }
       ]
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "title": "Group attachments by mode (#2980)",
+      "description": "max by (mode) (app_group_attachments) \u2014 how many profile attachments of an app group there are in each mode, across all households, counting attachments whose group has at least one member app with hosts (an empty group is not counted): blocked (every member blocked), allowed (every member carved into extraAllowed) and time_limited (a shared daily/weekly budget). A GAUGE, so a LEVEL, not a rate: it is set once per policy reevaluate tick from that tick's per-household builds, summed, and every mode is set every tick including 0. It moves only when a parent attaches, detaches or switches a group's mode. A blocked or allowed series above 0 means those attachments are live and their members' hosts are in each affected profile's extraBlocked / extraAllowed. Design docs/design/weekly-limits-and-app-groups.md \u00a717.",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 65
+      },
+      "id": 17,
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "stepAfter",
+            "fillOpacity": 15,
+            "showPoints": "never",
+            "lineWidth": 1
+          },
+          "min": 0,
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max by (mode) (app_group_attachments{env=\"$env\"})",
+          "legendFormat": "{{mode}}",
+          "refId": "A"
+        }
+      ]
     }
   ],
   "refresh": "30s",

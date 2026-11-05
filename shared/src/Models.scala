@@ -332,6 +332,10 @@ case class GroupCoverage(
     dailyMinutes: Option[Int],
     weeklyMinutes: Option[Int],
     exemptFromDaily: Boolean,
+    // #2980 (design §17): the attachment's mode, V93 `profile_app_groups.mode`, and its #1679
+    // toggle, read for an Allowed attachment only.
+    mode: AppMode = AppMode.TimeLimited,
+    allowedDuringScheduleBlock: Boolean = true,
 ) derives JsonCodec
 
 // #761: app concept. An App is a household-scoped named bundle of host
@@ -456,7 +460,8 @@ case class UpdateAppGroupRequest(
 /**
  * A profile's attachment of a household group (`profile_app_groups`, V92): the profile's own limits
  * on the group and its "counts toward daily limit" choice (inverted in the SPA label, as for apps —
- * AGENTS.md#exempt-from-daily). At least one limit is required (D4).
+ * AGENTS.md#exempt-from-daily). A TimeLimited attachment has a limit and an Allowed or Blocked one
+ * has none (V93, design §17).
  */
 case class ProfileAppGroup(
     profileId: ProfileId,
@@ -466,7 +471,28 @@ case class ProfileAppGroup(
     dailyMinutes: Option[Int],
     weeklyMinutes: Option[Int],
     exemptFromDaily: Boolean,
+    // #2980 (design §17): V93's mode and #1679 toggle. Defaults are what a pre-V93 row reads as.
+    mode: AppMode = AppMode.TimeLimited,
+    allowedDuringScheduleBlock: Boolean = true,
 ) derives JsonCodec
+
+object ProfileAppGroup {
+
+  /**
+   * #2980 (design §17.3, D23): the mode an attachment HAS, from the mode it stores. A TimeLimited
+   * attachment with no limit is Allowed: #2973's "No limit" attachment and an Allowed group are the
+   * same thing, and #2973's image writes such rows without a `mode` (so they store 'time_limited').
+   * Every read of `profile_app_groups.mode` goes through this, so enforcement ([[GroupCoverage]])
+   * and the API ([[ProfileAppGroup]]) cannot disagree on a row's mode.
+   */
+  def effectiveMode(stored: AppMode, daily: Option[Int], weekly: Option[Int]): AppMode =
+    if (stored == AppMode.TimeLimited && daily.isEmpty && weekly.isEmpty) AppMode.Allowed
+    else stored
+
+  /** [[effectiveMode]] of the `profile_app_groups.mode` column as read (unknown = TimeLimited). */
+  def effectiveMode(stored: String, daily: Option[Int], weekly: Option[Int]): AppMode =
+    effectiveMode(AppMode.parse(stored).getOrElse(AppMode.TimeLimited), daily, weekly)
+}
 
 case class UpsertProfileAppGroupRequest(
     dailyMinutes: Option[Int] = None,

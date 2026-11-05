@@ -6,7 +6,7 @@ import doobie.postgres.implicits.*
 import cats.syntax.all.*
 import wifihaven.api.db.TypeMeta.given
 import wifihaven.api.metrics.DbMetrics
-import wifihaven.shared.{AppGroup, AppGroupRef, Clock, ProfileAppGroup}
+import wifihaven.shared.{AppGroup, AppGroupRef, AppMode, Clock, ProfileAppGroup}
 import wifihaven.shared.types.*
 import zio.*
 import zio.interop.catz.*
@@ -77,8 +77,11 @@ trait AppGroupRepo {
   def listAttachments(household: HouseholdId, profile: ProfileId): Task[List[ProfileAppGroup]]
 
   /**
-   * Create or replace the attachment. Either limit, both or neither (#2973; V93 dropped V92's
-   * at-least-one CHECK); each set limit must be > 0, which the caller checks and V92 CHECKs.
+   * Create or replace the attachment. The caller resolves `mode` (design §17.6). An Allowed or
+   * Blocked attachment carries no limit, which V94 CHECKs. A TimeLimited one may carry either
+   * limit, both or neither (#2973; V93 dropped V92's at-least-one CHECK), and one with neither is
+   * read as Allowed (D23, [[ProfileAppGroup.effectiveMode]]). Each set limit must be > 0, which the
+   * caller checks and V92 CHECKs. The default mode is the pre-#2981 caller's TimeLimited.
    */
   def upsertAttachment(
       household: HouseholdId,
@@ -87,6 +90,8 @@ trait AppGroupRepo {
       dailyMinutes: Option[Int],
       weeklyMinutes: Option[Int],
       exemptFromDaily: Boolean,
+      mode: AppMode,
+      allowedDuringScheduleBlock: Boolean,
   ): Task[Either[AppGroupError, ProfileAppGroup]]
 
   /** True if an attachment existed. */
@@ -286,7 +291,7 @@ class AppGroupRepoLive(xa: Transactor[Task], clock: Clock) extends AppGroupRepo 
       } yield out
     })
 
-  private type AttRow = (AppGroupId, String, Option[Int], Option[Int], Boolean)
+  private type AttRow = (AppGroupId, String, Option[Int], Option[Int], Boolean, String, Boolean)
 
   private def attachmentsCio(
       household: HouseholdId,
@@ -295,7 +300,8 @@ class AppGroupRepoLive(xa: Transactor[Task], clock: Clock) extends AppGroupRepo 
   ): ConnectionIO[List[ProfileAppGroup]] = {
     val one = only.map(_.value).getOrElse(-1L)
     for {
-      rows <- sql"""SELECT g.id, g.name, p.daily_minutes, p.weekly_minutes, p.exempt_from_daily
+      rows <- sql"""SELECT g.id, g.name, p.daily_minutes, p.weekly_minutes, p.exempt_from_daily,
+                           p.mode, p.allowed_during_schedule_block
                       FROM profile_app_groups p
                       JOIN app_groups g ON g.id = p.group_id AND g.household_id = p.household_id
                      WHERE p.household_id = $household AND p.profile_id = $profile
@@ -304,8 +310,18 @@ class AppGroupRepoLive(xa: Transactor[Task], clock: Clock) extends AppGroupRepo 
         .query[AttRow]
         .to[List]
       ms   <- membersOf(rows.map(_._1.value))
-    } yield rows.map((gid, n, d, w, e) =>
-      ProfileAppGroup(profile, gid, n, ms.getOrElse(gid.value, Nil), d, w, e),
+    } yield rows.map((gid, n, d, w, e, m, ads) =>
+      ProfileAppGroup(
+        profile,
+        gid,
+        n,
+        ms.getOrElse(gid.value, Nil),
+        d,
+        w,
+        e,
+        ProfileAppGroup.effectiveMode(m, d, w),
+        ads,
+      ),
     )
   }
 
@@ -321,6 +337,8 @@ class AppGroupRepoLive(xa: Transactor[Task], clock: Clock) extends AppGroupRepo 
       dailyMinutes: Option[Int],
       weeklyMinutes: Option[Int],
       exemptFromDaily: Boolean,
+      mode: AppMode,
+      allowedDuringScheduleBlock: Boolean,
   ) =
     DbMetrics.timed("appGroup.upsertAttachment")(txn[ProfileAppGroup] { now =>
       for {
@@ -329,36 +347,48 @@ class AppGroupRepoLive(xa: Transactor[Task], clock: Clock) extends AppGroupRepo 
           sql"SELECT EXISTS (SELECT 1 FROM profiles WHERE id = $profile AND household_id = $household)"
             .query[Boolean]
             .unique
-        prior <- sql"""SELECT exempt_from_daily FROM profile_app_groups
+        prior <- sql"""SELECT exempt_from_daily, mode, daily_minutes, weekly_minutes
+                         FROM profile_app_groups
                         WHERE profile_id = $profile AND group_id = $group"""
-          .query[Boolean]
+          .query[(Boolean, String, Option[Int], Option[Int])]
           .option
-        out   <-
+        modeStr      = AppMode.asString(mode)
+        // #2980 (D23): compare the modes the row HAS, not the strings it stores: a limitless edit of
+        // a TimeLimited row keeps 'time_limited' stored but makes it Allowed, and no longer a budget.
+        newEffective = ProfileAppGroup.effectiveMode(mode, dailyMinutes, weeklyMinutes)
+        out <-
           if (grp.isEmpty) fail[ProfileAppGroup](GroupNotFound)
           else if (!prof) fail[ProfileAppGroup](ProfileNotFound)
           else
             for {
               _   <- sql"""INSERT INTO profile_app_groups
                              (household_id, profile_id, group_id, daily_minutes, weekly_minutes,
-                              exempt_from_daily)
+                              exempt_from_daily, mode, allowed_during_schedule_block)
                            VALUES ($household, $profile, $group, $dailyMinutes, $weeklyMinutes,
-                                   $exemptFromDaily)
+                                   $exemptFromDaily, $modeStr, $allowedDuringScheduleBlock)
                            ON CONFLICT (profile_id, group_id) DO UPDATE SET
                              daily_minutes = EXCLUDED.daily_minutes,
                              weekly_minutes = EXCLUDED.weekly_minutes,
-                             exempt_from_daily = EXCLUDED.exempt_from_daily""".update.run
+                             exempt_from_daily = EXCLUDED.exempt_from_daily,
+                             mode = EXCLUDED.mode,
+                             allowed_during_schedule_block =
+                               EXCLUDED.allowed_during_schedule_block""".update.run
               // Design §6.4: a new attachment changes the profile's dispositions (drop all three
-              // kinds); an exempt-flag edit moves only the profile daily total; limits move nothing.
+              // kinds), and so does an effective-mode change (§17.3: only a TimeLimited attachment is a
+              // budget, and a member's mode follows the attachment's); an exempt-flag edit moves
+              // only the profile daily total; limits and the #1679 toggle move nothing.
               _   <- prior match {
-                case None                                =>
+                case None                                                                         =>
                   SettledUsage.invalidateCurrentWeek(List(profile), SettledUsage.Kinds.All, now)
-                case Some(was) if was != exemptFromDaily =>
+                case Some((_, m, d, w)) if ProfileAppGroup.effectiveMode(m, d, w) != newEffective =>
+                  SettledUsage.invalidateCurrentWeek(List(profile), SettledUsage.Kinds.All, now)
+                case Some((was, _, _, _)) if was != exemptFromDaily                               =>
                   SettledUsage.invalidateCurrentWeek(
                     List(profile),
                     SettledUsage.Kinds.ProfileTotalOnly,
                     now,
                   )
-                case Some(_)                             => doobie.free.connection.pure(0)
+                case Some(_) => doobie.free.connection.pure(0)
               }
               row <- attachmentsCio(household, profile, Some(group))
             } yield row.headOption.toRight(GroupNotFound: AppGroupError)

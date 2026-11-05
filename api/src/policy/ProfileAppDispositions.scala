@@ -81,8 +81,10 @@ final case class ProfileAppDispositions(
         exemptFromDaily = d.exemptFromDaily,
       )
     }
+    // #2980 (design §17.3): only a TimeLimited attachment is a budget. An Allowed or Blocked
+    // group limits no time, so it never reaches `perGroup`, `exhaustedBudgets` or the gauge.
     val groupBudgets = perApp
-      .flatMap(d => d.coverage.map(_ -> d))
+      .flatMap(d => d.coverage.filter(_.mode == AppMode.TimeLimited).map(_ -> d))
       .groupMap(_._1.groupId)(identity)
       .toList
       .map { case (gid, pairs) =>
@@ -187,8 +189,9 @@ final case class ProfileAppDispositions(
    * #2933 (D17): the AllowedDuring carve is also withheld for an app in `overBudget`, so a window
    * no longer keeps an app reachable past its own daily cap, its weekly limit or its group's. The
    * plain `AppMode.Allowed` carve is unchanged: an Allowed row has no budget, and a covered app's
-   * Allowed row was already turned into a TimeLimited disposition by
-   * [[ProfileAppDispositions.from]].
+   * Allowed row under a TimeLimited group was already turned into a TimeLimited disposition by
+   * [[ProfileAppDispositions.from]]. #2980: a member of an Allowed group is an Allowed disposition
+   * and takes this carve; a member of a Blocked group is a Blocked one.
    */
   def enforcement(
       schedWindows: Map[AppPolicyAssignmentId, List[(AppScheduleMode, ScheduleWindow)]],
@@ -221,7 +224,12 @@ final case class ProfileAppDispositions(
       // #1679: suppress extraAllowed carve for this app if we're in a Schedule block and the
       // assignment opts out of the "allowed during bedtime" behaviour.
       val suppressedByScheduleToggle = isScheduleBlock && !d.allowedDuringScheduleBlock
-      if (allowedActive) {
+      // #2980 (D20): a Blocked group blocks its members whatever their own rows say, and that
+      // includes a member's own `allowed_during` window: stricter wins.
+      val groupBlocked               = d.coverage.exists(_.mode == AppMode.Blocked)
+      if (groupBlocked) {
+        blocked ++= distinctive
+      } else if (allowedActive) {
         if (
           !(capExhausted && !d.exemptFromDaily) && !suppressedByScheduleToggle &&
           !overBudget.contains(d.appId)
@@ -361,17 +369,37 @@ object ProfileAppDispositions {
           // limits. Its "counts toward daily" flag is the ATTACHMENT's, replacing the member's own
           // (D5, design test 8): `exemptPatterns` and every carve read it, so a group is never half
           // counted and half exempt.
+          //
+          // #2980 (design §17.3, D20): the attachment has a mode too, and the stricter of the
+          // attachment and the member's own row wins, Blocked > TimeLimited > Allowed. A Blocked
+          // attachment blocks every member. An Allowed one leaves a member Allowed unless its own
+          // row is stricter; an own TimeLimited row keeps its own limits. A TimeLimited attachment
+          // is the §6.1 case above, where an own Allowed row turns TimeLimited.
           case Some(c) =>
-            val ownLimits = !first.coveredOnly && first.mode == AppMode.TimeLimited
+            val own       = if first.coveredOnly then None else Some(first.mode)
+            val mode      = c.mode match {
+              case AppMode.Blocked     => AppMode.Blocked
+              case AppMode.TimeLimited =>
+                if own.contains(AppMode.Blocked) then AppMode.Blocked else AppMode.TimeLimited
+              case AppMode.Allowed     => own.getOrElse(AppMode.Allowed)
+            }
+            val ownLimits = own.contains(AppMode.TimeLimited) && mode == AppMode.TimeLimited
+            // #1679: an Allowed attachment carries its own toggle; with an own row as well, the
+            // carve is suppressed if either says so (stricter wins). A TimeLimited member's carve
+            // is not the plain Allowed one, so the toggle stays the own row's, as before.
+            val toggle    = (c.mode, own) match {
+              case (AppMode.Allowed, None)    => c.allowedDuringScheduleBlock
+              case (AppMode.Allowed, Some(_)) =>
+                c.allowedDuringScheduleBlock && first.allowedDuringScheduleBlock
+              case (_, None)                  => true
+              case (_, Some(_))               => first.allowedDuringScheduleBlock
+            }
             base.copy(
-              mode =
-                if first.mode == AppMode.Blocked && !first.coveredOnly then AppMode.Blocked
-                else AppMode.TimeLimited,
+              mode = mode,
               exemptFromDaily = c.exemptFromDaily,
               dailyMinutes = if ownLimits then first.dailyMinutes else None,
               weeklyMinutes = if ownLimits then first.weeklyMinutes else None,
-              allowedDuringScheduleBlock =
-                if first.coveredOnly then true else first.allowedDuringScheduleBlock,
+              allowedDuringScheduleBlock = toggle,
               coverage = Some(c),
               coveredOnly = first.coveredOnly,
             )

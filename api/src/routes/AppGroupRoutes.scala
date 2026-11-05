@@ -180,6 +180,10 @@ object AppGroupRoutes {
                   ar.weeklyMinutes,
                   // Same default as a per-app assignment (D5): exempt unless the client says it counts.
                   ar.exemptFromDaily.getOrElse(true),
+                  // TODO(#2981): resolve the mode and keep the row's toggle. Until then every write
+                  // is TimeLimited, which a limitless body makes Allowed on read (D23).
+                  AppMode.TimeLimited,
+                  allowedDuringScheduleBlock = true,
                 )
                 .mapError(ApiError.Db(_))
                 .flatMap(ZIO.fromEither(_).mapError(toApiError))
