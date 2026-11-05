@@ -407,25 +407,12 @@ end
 --   blocklist_render_skipped_total{id}, #1785). Other skipped ids (absent
 --   cache file) are NOT in cap_hit — those are surfaced via
 --   blocklist_fetch_failures_total instead.
--- Calls fn(name) for `host` and each parent domain: a.b.c, b.c, c. These are
--- the directive domains dnsmasq's suffix match would accept for `host`.
-local function each_suffix(host, fn)
-  local name = host
-  while name and name ~= "" do
-    fn(name)
-    local dot = name:find(".", 1, true)
-    if not dot then return end
-    name = name:sub(dot + 1)
-  end
-end
-
-local function append_unique(list, seen, specs)
-  for _, spec in ipairs(specs) do
-    if not seen[spec] then
-      seen[spec] = true
-      list[#list + 1] = spec
-    end
-  end
+-- The parent domain of `name` (a.b.c -> b.c), or nil at the last label.
+-- Walking it from a host visits every directive domain dnsmasq's suffix match
+-- would accept for that host.
+local function parent_domain(name)
+  local dot = name:find(".", 1, true)
+  return dot and name:sub(dot + 1) or nil
 end
 
 function M.render_shards(snapshot, fs, cache_dir, shard_dir, max_bytes, global_blocklist_ids,
@@ -440,13 +427,19 @@ function M.render_shards(snapshot, fs, cache_dir, shard_dir, max_bytes, global_b
   -- specs belong on their main-conf lines. Small: main hosts x their labels.
   local below = {}
   for host in pairs(main_specs) do
-    each_suffix(host, function(name)
+    local name = host
+    while name do
       below[name] = below[name] or {}
       below[name][#below[name] + 1] = host
-    end)
+      name = parent_domain(name)
+    end
   end
   local has_main = next(main_specs) ~= nil
+  local append_unique = get_render().append_unique
   local main_bl_specs, main_bl_seen = {}, {}
+  -- Main-conf hosts at, above or below some member: the only hosts whose
+  -- specs reach a shard (render_outputs keys the shards on them).
+  local overlap = {}
 
   -- Require render.bl_sanitize for set-name normalization so there is
   -- one source of truth (see get_render() at the top of this module).
@@ -492,7 +485,7 @@ function M.render_shards(snapshot, fs, cache_dir, shard_dir, max_bytes, global_b
   -- covered separately by blocklist_fetch_failures_total). The agent emits
   -- blocklist_render_skipped_total{id} off this list (#1785).
   local result = { rendered = {}, skipped = {}, cap_hit = {}, errors = {},
-                   main_bl_specs = main_bl_specs }
+                   main_bl_specs = main_bl_specs, overlap = overlap }
   local bls    = snapshot and snapshot.blocklists or {}
 
   for id, bl in pairs(bls) do
@@ -536,7 +529,8 @@ function M.render_shards(snapshot, fs, cache_dir, shard_dir, max_bytes, global_b
               -- member, and record this list's specs for main-conf hosts at
               -- or below it.
               local specs, seen
-              each_suffix(line, function(name)
+              local name = line
+              while name do
                 local extra = main_specs[name]
                 if extra then
                   if not specs then
@@ -544,13 +538,16 @@ function M.render_shards(snapshot, fs, cache_dir, shard_dir, max_bytes, global_b
                     append_unique(specs, seen, list_specs)
                   end
                   append_unique(specs, seen, extra)
+                  overlap[name] = true
                 end
-              end)
+                name = parent_domain(name)
+              end
               for _, host in ipairs(below[line] or {}) do
                 if not main_bl_specs[host] then
                   main_bl_specs[host], main_bl_seen[host] = {}, {}
                 end
                 append_unique(main_bl_specs[host], main_bl_seen[host], list_specs)
+                overlap[host] = true
               end
               if specs then
                 local merged, note = get_render().nftset_directive(line, specs)
@@ -790,13 +787,19 @@ end
 -- arrived yet is re-rendered on every call until it has.
 --
 -- #2995: the shards also carry the main-conf specs (`main_specs`, from
--- render.nftset_host_specs), so those are part of the shard key: an
--- extraAllowed / extraBlocked / global host change re-renders the shards. That
--- change also rewrites wifihaven.conf, so dnsmasq restarts and reads them. The
--- member index depends on the lists alone and keeps its own key
+-- render.nftset_host_specs) of the hosts that overlap a list member, so a
+-- change to one of THOSE hosts re-renders the shards. Whether a host overlaps
+-- depends on the lists alone, so state remembers every host already checked
+-- against the current lists (state.checked) and which of them overlap
+-- (state.overlap). A host that overlaps nothing never touches a shard: adding,
+-- dropping or re-speccing it skips the rewrite, which matters because schedule
+-- and daily-cap edges move extraAllowed hosts all day and this runs before
+-- `nft -f`. A host not yet checked forces one render to find out.
+--
+-- The member index depends on the lists alone and keeps its own key
 -- (state.index_key). state.main_bl_specs holds the last render's
 -- render_shards().main_bl_specs for render.dnsmasq; a skip leaves it in place,
--- since the same key renders the same specs.
+-- since only overlapping hosts have entries and their specs are unchanged.
 --
 -- Returns { rendered = false } on a skip, otherwise
 -- { rendered = true, shards = <render_shards result>, index = <render_member_index result> }.
@@ -833,10 +836,13 @@ local function outputs_present(snapshot, fs, shard_dir, index_path)
   return true
 end
 
--- The main-conf half of the shard key: every host with its specs, sorted.
-local function main_specs_key(main_specs)
+-- The main-conf half of the shard key: every overlapping host present in
+-- main_specs, with its specs, sorted.
+local function main_specs_key(main_specs, overlap)
   local hosts = {}
-  for host in pairs(main_specs or {}) do hosts[#hosts + 1] = host end
+  for host in pairs(overlap) do
+    if main_specs[host] then hosts[#hosts + 1] = host end
+  end
   table.sort(hosts)
   local parts = {}
   for i, host in ipairs(hosts) do
@@ -848,11 +854,23 @@ end
 function M.render_outputs(snapshot, fs, cache_dir, shard_dir, index_path, max_bytes,
                           global_blocklist_ids, state, main_specs)
   state = state or {}
+  main_specs = main_specs or {}
   local list_key = M.render_key(snapshot, max_bytes, global_blocklist_ids)
-  local key = list_key .. "|" .. main_specs_key(main_specs)
   local present = outputs_present(snapshot, fs, shard_dir, index_path)
-  if state.key == key and present then
-    return { rendered = false }
+  if state.key == list_key and present then
+    local all_checked = true
+    for host in pairs(main_specs) do
+      if not state.checked[host] then all_checked = false; break end
+    end
+    if all_checked and main_specs_key(main_specs, state.overlap) == state.overlap_key then
+      return { rendered = false }
+    end
+  end
+  -- What we already know about which hosts overlap stays true while the lists
+  -- are unchanged; a list change starts over.
+  local checked, overlap = {}, {}
+  if state.key == list_key then
+    checked, overlap = state.checked, state.overlap
   end
   local index_current = state.index_key == list_key and present
   state.key, state.index_key = nil, nil
@@ -865,7 +883,11 @@ function M.render_outputs(snapshot, fs, cache_dir, shard_dir, index_path, max_by
     index = M.render_member_index(snapshot, fs, cache_dir, index_path)
   end
   if #shards.errors == 0 and #shards.skipped == 0 and not (index and index.error) then
-    state.key, state.index_key = key, list_key
+    for host in pairs(main_specs) do checked[host] = true end
+    for host in pairs(shards.overlap) do overlap[host] = true end
+    state.key, state.index_key = list_key, list_key
+    state.checked, state.overlap = checked, overlap
+    state.overlap_key = main_specs_key(main_specs, overlap)
   end
   return { rendered = true, shards = shards, index = index }
 end

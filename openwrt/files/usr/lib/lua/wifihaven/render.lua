@@ -435,6 +435,17 @@ local function global_block_ip_only(snapshot)
   return (g and g.blockIpOnly) and true or false
 end
 
+-- Appends each spec in `specs` not yet in `seen` to `list`, keeping order.
+-- Shared by render.dnsmasq and blocklists.render_shards (#2995).
+function M.append_unique(list, seen, specs)
+  for _, spec in ipairs(specs) do
+    if not seen[spec] then
+      seen[spec] = true
+      list[#list + 1] = spec
+    end
+  end
+end
+
 -- ---------------------------------------------------------------------------
 -- render.nftset_host_specs(snapshot) → host_order, host_specs
 -- ---------------------------------------------------------------------------
@@ -686,15 +697,9 @@ function M.dnsmasq(snapshot, opts)
     for _, host in ipairs(host_order) do
       local specs = host_specs[host]
       if bl_specs_by_host[host] then
-        local seen, merged = {}, {}
-        for _, list in ipairs({ specs, bl_specs_by_host[host] }) do
-          for _, s in ipairs(list) do
-            if not seen[s] then
-              seen[s] = true
-              merged[#merged + 1] = s
-            end
-          end
-        end
+        local merged, seen = {}, {}
+        M.append_unique(merged, seen, specs)
+        M.append_unique(merged, seen, bl_specs_by_host[host])
         specs = merged
       end
       local line, note = M.nftset_directive(host, specs)

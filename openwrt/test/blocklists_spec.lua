@@ -1349,6 +1349,8 @@ describe("blocklists no-op refresh and render (#2893)", function()
     local other = { "4#inet#wifihaven#ea_other_example" }
     render_main(lists(), fs, state, main())
     local with_other = main(); with_other["other.example"] = other
+    -- A host never checked against these lists costs one render to find out.
+    assert.is_true(render_main(lists(), fs, state, with_other).rendered)
     local writes = fs._counts.open_write
     assert.is_false(render_main(lists(), fs, state, with_other).rendered)
     assert.is_false(render_main(lists(), fs, state, main()).rendered)
