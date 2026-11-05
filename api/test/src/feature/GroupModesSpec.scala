@@ -177,6 +177,15 @@ object GroupModesSpec
       _   <- nsr.setProfileBlockSchedules(p, List(sid))
     } yield ()
 
+  // An `allowed_during` window, active now, on an assignment.
+  private def allowedDuring(assignment: AppPolicyAssignmentId, name: String) =
+    for {
+      nsr <- ZIO.service[NamedScheduleRepo]
+      ar  <- ZIO.service[AppRepo]
+      sid <- nsr.create(name, None, List(activeWindow))
+      _   <- ar.setScheduleRules(assignment, List((sid, AppScheduleMode.AllowedDuring)))
+    } yield ()
+
   private def policyAt(now: Instant, cacheEnabled: Boolean = false) =
     for {
       pr  <- ZIO.service[ProfileRepo]
@@ -273,6 +282,28 @@ object GroupModesSpec
           // A per-host drop, never a whole-MAC one.
           !rules.blocked,
           !rules.extraAllowed.exists(_.value == "minecraft.net"),
+        )
+      },
+      test("17 (window): an own allowed_during window does not carve through a Blocked group") {
+        for {
+          _   <- rig
+          a   <- kid("A", macA)
+          rb  <- app("Roblox", "roblox.com")
+          mc  <- app("Minecraft", "minecraft.net")
+          ed  <- app("Edu", "edu.org")
+          // Minecraft's own row is allowed during a window active now; Edu, outside any group,
+          // has the same window as the control that the window does carve.
+          mca <- assign(mc, a, mode = AppMode.Blocked)
+          eda <- assign(ed, a, mode = AppMode.Blocked)
+          _   <- allowedDuring(mca, "MC window") *> allowedDuring(eda, "Edu window")
+          g   <- group("Games", rb, mc)
+          _   <- attach(a, g, AppMode.Blocked)
+          svc <- policyAt(nowThu)
+          v   <- verdicts(svc, a, macA, List("minecraft.net", "roblox.com", "edu.org"))
+        } yield assertTrue(
+          blocked(v, "minecraft.net"),
+          blocked(v, "roblox.com"),
+          reachable(v, "edu.org"),
         )
       },
       test("25: a host also on an unrelated Allowed app stays reachable (allow beats block)") {

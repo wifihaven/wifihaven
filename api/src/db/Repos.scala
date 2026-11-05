@@ -2267,11 +2267,7 @@ class AppTimeLimitRepoLive(xa: Transactor[Task]) extends AppTimeLimitRepo {
           r._14,
           r._15,
           exempt,
-          ProfileAppGroup.effectiveMode(
-            r._19.flatMap(AppMode.parse).getOrElse(AppMode.TimeLimited),
-            r._14,
-            r._15,
-          ),
+          ProfileAppGroup.effectiveMode(r._19.getOrElse("time_limited"), r._14, r._15),
           r._20.getOrElse(true),
         ),
       ),

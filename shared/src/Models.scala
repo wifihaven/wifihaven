@@ -488,6 +488,10 @@ object ProfileAppGroup {
   def effectiveMode(stored: AppMode, daily: Option[Int], weekly: Option[Int]): AppMode =
     if (stored == AppMode.TimeLimited && daily.isEmpty && weekly.isEmpty) AppMode.Allowed
     else stored
+
+  /** [[effectiveMode]] of the `profile_app_groups.mode` column as read (unknown = TimeLimited). */
+  def effectiveMode(stored: String, daily: Option[Int], weekly: Option[Int]): AppMode =
+    effectiveMode(AppMode.parse(stored).getOrElse(AppMode.TimeLimited), daily, weekly)
 }
 
 case class UpsertProfileAppGroupRequest(
