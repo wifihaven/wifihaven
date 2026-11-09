@@ -122,6 +122,11 @@ throughout the catalog.
   gap.
 - `gd.games` (GameDistribution) — already a deliberate blocklist-only
   classification per the existing comment in `games.yml`; not an app.
+  **CORRECTED by #2998 (2026-11-09): this was wrong.** A direct fetch of
+  the live page shows zero "gamedistribution"/"azerion" occurrences and
+  450+ "gdevelop" occurrences; title and meta both name GDevelop directly.
+  It's GDevelop's own community game portal and is now templated into
+  `gdevelop.yml`'s hosts. See `evidence/classification-2998.md`.
 - Top-of-list orphans (`*.google.com`, `*.gstatic.com`, `*.apple.com`,
   ad-tech/RTB domains, `*.doubleclick.net`, `*.criteo.com`,
   `*.googlesyndication.com`, etc.) are platform infra / ad-tech, the usual

@@ -262,6 +262,52 @@ above is now wrong, fix the step too — don't just log around it.
 
 ## Learnings log (newest first)
 
+- **2026-11-09 (#2998)** — **A brand's game-hosting apex can be a THIRD,
+  independently-named apex distinct from its editor and its CDN — check the
+  page's own title/meta description before assuming an unfamiliar short
+  domain is unrelated.** `gd.games` read like a generic multi-game portal
+  name (same shape as `crazygames`/`poki`), but its meta description reads
+  "Play multiple web games on gd.games! Discover and play games created
+  with GDevelop" — it's GDevelop's own community game-hosting portal, a
+  direct host-set gap in the already-templated `gdevelop.yml` (which only
+  had the editor `gdevelop.io` and its asset CDN `gdevelop-app.com`). One
+  `curl` of the homepage settled it; don't skip that check just because a
+  domain name doesn't obviously match the brand. **This OVERTURNS #2952
+  (2026-10-27) and #2955 (2026-11-02), which both classified `gd.games` as
+  "confirmed GameDistribution (Azerion)" and held it out of the catalog as
+  a deliberate blocklist-only skip** — a direct fetch this pass found zero
+  "gamedistribution"/"azerion" anywhere on the page and 450+ "gdevelop"
+  occurrences, with the title and meta description both naming GDevelop.
+  Corrected the stale comments in `games.yml`, `ads.yml`, and
+  `evidence/classification-2955.md`. **Don't treat a prior pass's
+  "confirmed X" as settled without re-checking it yourself** when your own
+  pass's traffic surfaces the same host again — a brand identity call from
+  a prior pass can simply be wrong (or the domain's content can have
+  changed since, per the `scratchfoundation.org` timestamp lesson), and
+  nothing here pins down which.
+- **2026-11-09 (#2998)** — **A broad generic-cloud `whois` CIDR (a /14 or
+  /17, not a specific CDN distribution) is still disqualifying collateral,
+  even when it isn't the AWS Global Accelerator range the catalog has
+  flagged before.** `account.jetbrains.com` resolved to
+  13.248.188.196/76.223.63.197; `whois` showed `13.244.0.0/14`/
+  `13.248.0.0/14` (OrgName "Amazon Technologies Inc.") and
+  `76.223.0.0/17`/`76.223.128.0/19` (OrgName "Amazon.com, Inc.") — generic
+  Amazon address space with no CloudFront/distribution-specific signature,
+  unlike the other JetBrains hosts (which are each their own CloudFront
+  distribution, the ordinary accepted Class 2 risk). Excluded it; it's
+  sign-in/account management, not needed to download or run the IDE itself.
+- **2026-11-09 (#2998)** — Reconfirmed the `sgtm.<apex>` = server-side
+  Google Tag Manager tracking-relay pattern (first seen on Arduino, #2754)
+  on a second, unrelated brand (`sgtm.jetbrains.com`, resolving to a single
+  GCP IP) — worth grepping for on every pass: any `sgtm.` subdomain of an
+  app's own apex is a tracking relay, not app content, regardless of brand.
+- **2026-11-09 (#2998)** — A device with `profileId: null` in `GET
+  /api/devices` (here "Kid Laptop") can still be the single biggest source
+  of real app traffic in the sample (1.5 GB of JetBrains IDE downloads, the
+  pass's main finding) — don't restrict the traffic pull to devices with a
+  non-null kid `profileId`; a device's *name* ("Kid Laptop") is as good a
+  signal as its current profile assignment, which can lapse or be
+  mid-reassignment without the traffic stopping.
 - **2026-11-03 (#2962)** — **This pass caused a prod incident. Never fan out
   the Step 0/1 pulls in parallel, and keep `usage-by-app` off the adult
   profiles over long ranges.** About 30 concurrent
