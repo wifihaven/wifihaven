@@ -73,8 +73,12 @@ household's own traffic.
 `codev5.vex.com` is VEX's own browser-based VEXcode V5 IDE (web-confirmed
 via VEX's knowledge-base articles: "Launch web-based VEXcode V5 by
 navigating to codev5.vex.com," runs on Chromebook/Mac/Windows, no install
-needed — matches the household's Quintus Chromebook). Same educational
-robotics/coding category as the already-templated `arduino`.
+needed). The traffic itself was observed on the devices named "Arduino
+Nano R4"/"Arduino UNO R4" (profile 5, Quintus), not the Quintus Chromebook
+— a browser-based IDE running on one of those boards' host machine is an
+inference from VEX's documented requirements, not something directly
+observed in this traffic. Same educational robotics/coding category as the
+already-templated `arduino`.
 
 `www.vex.com` and `codev5.vex.com` both answer a Cloudflare bot-challenge
 ("Just a moment...", HTTP 403) to a plain curl — inconclusive from a direct
@@ -82,7 +86,7 @@ fetch, not evidence the site is dead, same disposition as the
 `coddy`/`rebrickable` precedent. Purpose confirmed independently via VEX's
 own published support documentation instead.
 
-`dig +short` on all three observed hosts (`codev5`, `api`, `www`,
+`dig +short` on all four checked hosts (`codev5`, `api`, `www`,
 `education.vex.com`) returned the identical Cloudflare pair
 (104.18.39.158 / 172.64.148.98) — standard accepted Class-2 shared-edge
 risk already present throughout this catalog, no new collateral class.
@@ -91,7 +95,20 @@ Hosts: `codev5.vex.com`, `api.vex.com`, `education.vex.com` (the last at
 520 bytes/2 hits — kept for completeness since it's the same official
 ecosystem on the same pool, adding no incremental IP risk).
 
-## GDevelop host-set gap: `gd.games`
+## GDevelop host-set gap: `gd.games` (corrects #2952/#2955's "GameDistribution" call)
+
+**#2952 (2026-10-27) and #2955 (2026-11-02) both classified `gd.games` as
+"confirmed GameDistribution (Azerion-owned HTML5 game-syndication
+network)" and held it out as a deliberate blocklist-only skip.** That was
+wrong. A direct fetch of the live page (2026-11-09) shows zero occurrences
+of "gamedistribution" or "azerion" anywhere in the HTML, and 450+
+occurrences of "gdevelop"; the `<title>` and meta description both name
+GDevelop directly ("Play multiple web games on gd.games! Discover and play
+games created with GDevelop"). Corrected the stale comments in
+`games.yml`, `ads.yml`, and `evidence/classification-2955.md`, and the
+skill's learnings log. Either the prior passes misread the page or the
+domain's content changed since 2026-10-27 — this doc doesn't speculate
+further than what's directly checkable today.
 
 `recent-apexes`, 30d:
 

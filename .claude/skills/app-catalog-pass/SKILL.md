@@ -272,7 +272,19 @@ above is now wrong, fix the step too — don't just log around it.
   direct host-set gap in the already-templated `gdevelop.yml` (which only
   had the editor `gdevelop.io` and its asset CDN `gdevelop-app.com`). One
   `curl` of the homepage settled it; don't skip that check just because a
-  domain name doesn't obviously match the brand.
+  domain name doesn't obviously match the brand. **This OVERTURNS #2952
+  (2026-10-27) and #2955 (2026-11-02), which both classified `gd.games` as
+  "confirmed GameDistribution (Azerion)" and held it out of the catalog as
+  a deliberate blocklist-only skip** — a direct fetch this pass found zero
+  "gamedistribution"/"azerion" anywhere on the page and 450+ "gdevelop"
+  occurrences, with the title and meta description both naming GDevelop.
+  Corrected the stale comments in `games.yml`, `ads.yml`, and
+  `evidence/classification-2955.md`. **Don't treat a prior pass's
+  "confirmed X" as settled without re-checking it yourself** when your own
+  pass's traffic surfaces the same host again — a brand identity call from
+  a prior pass can simply be wrong (or the domain's content can have
+  changed since, per the `scratchfoundation.org` timestamp lesson), and
+  nothing here pins down which.
 - **2026-11-09 (#2998)** — **A broad generic-cloud `whois` CIDR (a /14 or
   /17, not a specific CDN distribution) is still disqualifying collateral,
   even when it isn't the AWS Global Accelerator range the catalog has

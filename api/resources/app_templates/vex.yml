@@ -7,8 +7,10 @@ icon_type: url
 # robots (web-confirmed via VEX's own knowledge-base articles: "Launch
 # web-based VEXcode V5 by navigating to codev5.vex.com", runs on
 # Chromebook/Mac/Windows, no install needed). 12.5 MB / 17 hits over a 30d
-# window on the kid Chromebook/Arduino-adjacent profile — same educational
-# robotics/coding category as `arduino`.
+# window, observed on the devices named "Arduino Nano R4"/"Arduino UNO R4"
+# (profile 5, Quintus) — same educational robotics/coding category as
+# `arduino`. See evidence/classification-2998.md for the per-device
+# byte/hit table.
 #
 #   codev5.vex.com     VEXcode V5 browser IDE (the actual coding surface)
 #   api.vex.com        VEXcode V5 backend

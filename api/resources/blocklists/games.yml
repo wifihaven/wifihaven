@@ -181,10 +181,14 @@ hosts:
   #
   # traffic-driven pass (#2952): 30-day prod recent-apexes sweep across all
   # 30 devices, 2026-10-27. No additions this pass.
-  #   gd.games        confirmed GameDistribution (Azerion-owned HTML5 game-
-  #                   syndication network) — but its only observed host,
-  #                   gd.games itself, is Cloudflare-fronted (104.26.x/
-  #                   172.67.x), an unconditional #2823 shared-CDN skip.
+  #   gd.games        CORRECTED by #2998 (2026-11-09): this pass's "confirmed
+  #                   GameDistribution (Azerion)" was wrong — a direct fetch
+  #                   of the live page (2026-11-09) shows zero occurrences of
+  #                   "gamedistribution"/"azerion" and 450+ of "gdevelop";
+  #                   title/meta both name GDevelop directly. It's the
+  #                   GDevelop community game portal, templated into
+  #                   gdevelop.yml's hosts, not a blocklist candidate. See
+  #                   evidence/classification-2998.md.
   #   gamerhunk.com   no confirmed identity (8 hits); held out unverified.
   #   gameanalytics.com   re-confirmed standing dual-use skip (#2759) — a
   #                   first-party SDK game developers embed in their own

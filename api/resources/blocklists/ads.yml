@@ -959,9 +959,11 @@ hosts:
   # its observed host here, sync.dxtech.ai, is a distinct cookie-sync
   # pattern, but it is Cloudflare-fronted (104.21.x/172.67.x), an
   # unconditional #2823 skip independent of the identity question.
-  # gd.games (confirmed: GameDistribution, Azerion's HTML5 game-syndication
-  # network — a games.yml-shaped candidate, not ads) is Cloudflare-fronted
-  # (104.26.x/172.67.x) on its only observed host; held out of games.yml too.
+  # gd.games — CORRECTED by #2998 (2026-11-09): this pass's "confirmed
+  # GameDistribution (Azerion)" was wrong. It's GDevelop's own community game
+  # portal (direct fetch, 2026-11-09: zero "gamedistribution"/"azerion" hits,
+  # 450+ "gdevelop" hits, title/meta both name GDevelop), now templated into
+  # gdevelop.yml's hosts. Not a blocklist candidate either way.
   # suno.ai (confirmed: a well-known consumer AI music generator — an
   # ai.yml-shaped candidate) is CloudFront-fronted on its only observed host,
   # cdn2.suno.ai (CNAME to a cloudfront.net distribution whose edge IPs,

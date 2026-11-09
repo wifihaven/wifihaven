@@ -19,8 +19,8 @@ icon_type: url
 #   frameworks.jetbrains.com                static site assets (JS/CSS)
 #
 # Deliberately EXCLUDED, none essential to installing/running the IDE itself:
-#   account.jetbrains.com   dig-verified (2026-11-09) into 76.223.0.0/17 and
-#                           13.248.0.0/14 — broad, generic AWS address space,
+#   account.jetbrains.com   whois-verified (2026-11-09) into 76.223.0.0/17
+#                           and 13.248.0.0/14 — broad, generic AWS address space,
 #                           not a JetBrains-dedicated distribution. Sign-in /
 #                           account management only.
 #   data.services.jetbrains.com   backend config/telemetry endpoint (404 on a
