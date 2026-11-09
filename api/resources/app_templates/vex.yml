@@ -1,0 +1,32 @@
+slug: vex
+name: VEX Robotics
+icon: "https://icons.duckduckgo.com/ip3/vex.com.ico"
+icon_type: url
+# #2998 (2026-11-09 weekly pass): VEX Robotics — VEXcode V5, the
+# browser-based block/text coding IDE for programming VEX V5 competition
+# robots (web-confirmed via VEX's own knowledge-base articles: "Launch
+# web-based VEXcode V5 by navigating to codev5.vex.com", runs on
+# Chromebook/Mac/Windows, no install needed). 12.5 MB / 17 hits over a 30d
+# window on the kid Chromebook/Arduino-adjacent profile — same educational
+# robotics/coding category as `arduino`.
+#
+#   codev5.vex.com     VEXcode V5 browser IDE (the actual coding surface)
+#   api.vex.com        VEXcode V5 backend
+#   education.vex.com  VEX Robotics Education portal (curricula/resources);
+#                      only 520 bytes/2 hits observed, kept for completeness
+#                      since it's the same official ecosystem and adds no
+#                      incremental IP risk (same Cloudflare pool as the other
+#                      two)
+#
+# `www.vex.com`/`codev5.vex.com` answer a Cloudflare bot-challenge ("Just a
+# moment...") to a plain curl, same as the `coddy`/`rebrickable` precedent —
+# inconclusive from a direct fetch, not evidence the site is dead; purpose
+# confirmed independently via VEX's own published documentation instead.
+#
+# All three hosts resolve to the same Cloudflare pair (104.18.39.158 /
+# 172.64.148.98, dig-verified 2026-11-09) — standard accepted Class-2
+# shared-edge risk already present throughout this catalog.
+hosts:
+  - codev5.vex.com
+  - api.vex.com
+  - education.vex.com

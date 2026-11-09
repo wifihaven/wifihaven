@@ -1,0 +1,45 @@
+slug: jetbrains
+name: JetBrains
+icon: "https://icons.duckduckgo.com/ip3/jetbrains.com.ico"
+icon_type: url
+# #2998 (2026-11-09 weekly pass): JetBrains — maker of IntelliJ IDEA, PyCharm,
+# CLion, WebStorm and other desktop IDEs. 1.5 GB / 130 hits over a 30d window,
+# all on one kid device (`recent-apexes`), across download, marketplace and
+# website hosts — the shape of installing/updating an IDE and its plugins,
+# not a stray link click. Title-confirmed (`www.jetbrains.com`, not blocked).
+# This is a coding tool a kid actually uses, same class as `codehs`/`coddy`/
+# `scratch`/`arduino` — real engagement, not display-cleanup.
+#
+#   www.jetbrains.com                       homepage / product pages
+#   download.jetbrains.com                  IDE installer downloads
+#   download-cdn.jetbrains.com              IDE installer downloads (dedicated IP)
+#   downloads.marketplace.jetbrains.com     plugin downloads
+#   plugins.jetbrains.com                   plugin marketplace browse/API
+#   resources.jetbrains.com                 static site assets
+#   frameworks.jetbrains.com                static site assets (JS/CSS)
+#
+# Deliberately EXCLUDED, none essential to installing/running the IDE itself:
+#   account.jetbrains.com   dig-verified (2026-11-09) into 76.223.0.0/17 and
+#                           13.248.0.0/14 — broad, generic AWS address space,
+#                           not a JetBrains-dedicated distribution. Sign-in /
+#                           account management only.
+#   data.services.jetbrains.com   backend config/telemetry endpoint (404 on a
+#                           bare GET); not page-serving.
+#   ea-report.jetbrains.com       Early Access Program crash/usage telemetry
+#                           (404 on a bare GET); not page-serving.
+#   sgtm.jetbrains.com      server-side Google Tag Manager — a tracking
+#                           relay, not app content, same disposition as
+#                           `ct.canva.com` in canva.yml.
+#
+# The kept download/marketplace hosts are each their own CloudFront
+# distribution (dig-verified 2026-11-09) — standard accepted Class-2
+# shared-edge risk already present throughout this catalog, not a
+# demonstrated collision with any other templated host's specific IPs.
+hosts:
+  - www.jetbrains.com
+  - download.jetbrains.com
+  - download-cdn.jetbrains.com
+  - downloads.marketplace.jetbrains.com
+  - plugins.jetbrains.com
+  - resources.jetbrains.com
+  - frameworks.jetbrains.com

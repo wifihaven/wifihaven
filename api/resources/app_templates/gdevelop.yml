@@ -37,6 +37,19 @@ icon_type: url
 # app rather than a beacon is the SHAPE — three distinct hosts across two
 # apexes (editor site + two separate asset CDNs), not a single tracking
 # pixel.
+#
+# #2998 (2026-11-09 weekly pass): host-set gap found via orphanHosts —
+# `gd.games` is GDevelop's own community game-hosting portal, a THIRD apex
+# of the same vendor, distinct from the editor (`gdevelop.io`) and its asset
+# CDN (`gdevelop-app.com`). Title-confirmed directly, not inferred from the
+# name: its own meta description reads "Play multiple web games on
+# gd.games! Discover and play games created with GDevelop, the free and
+# easy game-making app," and its H1 reads "Free online games, made by the
+# GDevelop community." 3.7 MB / 60 hits across two kid devices over 30d —
+# genuine recurring play, not a one-off. Same Cloudflare 104.26.x/172.67.x
+# edge as the other two hosts (dig-verified 2026-11-09) — no new collateral
+# class, same accepted Class-2 risk already documented above.
 hosts:
   - gdevelop.io
   - gdevelop-app.com
+  - gd.games
