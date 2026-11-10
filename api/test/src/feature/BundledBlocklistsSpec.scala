@@ -195,6 +195,8 @@ object BundledBlocklistsSpec
         // traffic-driven additions pinned for presence (#2957)
         assertTrue(ads.contains(Hostname.unsafe("buysellads.net"))) &&
         assertTrue(ads.contains(Hostname.unsafe("playablefactory.app"))) &&
+        // traffic-driven addition pinned for presence (#3000)
+        assertTrue(ads.contains(Hostname.unsafe("ads-pubsfusion.com"))) &&
         assertTrue(meta.isDefined) &&
         assertTrue(meta.exists(m => m.bundled && m.name == "Ads & Trackers"))
     },
@@ -547,6 +549,42 @@ object BundledBlocklistsSpec
     // CloudFront CNAME, so blocking it would arm shared edge addresses rather
     // than its own dedicated apex. See
     // evidence/adult-classification-2823.md and #2377.
+    test("#3000: CDN-fronted blocklist-pass candidates stay out of every inline list") {
+      // Each read as genuine ad-tech (customads.co's cdn1./cdn2./trk.
+      // subdomain shape) or a genuine games companion apex (xboxservices.com,
+      // alongside the already-held-out xboxlive.com, #2957), but the host
+      // that actually appears in traffic is CDN-fronted (CloudFront for
+      // customads.co, Azure Front Door for xboxservices.com) on the only
+      // observed host, so neither can be an IP-layer enforcement target
+      // without taking unrelated tenants with it. See ads.yml's #3000
+      // comment and evidence/multi-category-classification-3000.md for
+      // per-host resolution detail.
+      val heldOut = List(
+        "customads.co",
+        "xboxservices.com",
+      ).map(Hostname.unsafe)
+      for {
+        inlineLists <- loadInlineOnly
+        offenders = inlineLists.flatMap { bl =>
+          val hosts = bl.content match {
+            case BundledBlocklistContent.Inline(hs) => hs
+            case _                                  => Nil
+          }
+          hosts
+            .filter { x =>
+              val xv = x.value.toLowerCase
+              heldOut.exists { h =>
+                val hv = h.value.toLowerCase
+                xv == hv || xv.endsWith("." + hv)
+              }
+            }
+            .map(x => s"${bl.id.value}:${x.value}")
+        }
+      } yield
+      // liveness anchor: the ads list loaded, so the absence check is not vacuous
+      assertTrue(inlineHostsOf(inlineLists, "ads").contains(Hostname.unsafe("mgid.com"))) &&
+        assertTrue(offenders.isEmpty)
+    },
     test("#2823: CAM4-chain hops on dedicated hosting are curated in ads") {
       for {
         bundled <- BundledBlocklists.loadAll()

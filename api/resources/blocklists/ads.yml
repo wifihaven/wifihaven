@@ -1062,7 +1062,43 @@ hosts:
   # talent-intelligence platform, out of ai.yml's consumer-product scope),
   # yofi.ai (B2B ecommerce fraud/risk-intelligence tool, now rebranded
   # Wyllo), anagram.ai (B2B AI product-data/agent-tooling SaaS),
-  # idsequoia.ai (no confirmed identity, low traffic, unverified),
-  # ads-pubsfusion.com (does not currently resolve; no /api/logs hits).
+  # idsequoia.ai (no confirmed identity, low traffic, unverified).
   - buysellads.net
   - playablefactory.app
+  #
+  # traffic-driven addition (#3000): observed but unblocked ads infra.
+  # ads-pubsfusion.com was noted here last pass (#2957) as "does not
+  # currently resolve" — this pass it does: the observed host
+  # (tracker-b.ads-pubsfusion.com) CNAMEs to tracker-b-use.ortb.net
+  # (ortb.net is IAB Tech Lab's OpenRTB-protocol brand name, used
+  # white-label by programmatic ad-serving resellers) and resolves to a
+  # dedicated Server.com address (188.42.82.3/41), not a shared CDN. The
+  # bare apex resolves to the same pair; www./cdn. do not resolve at all,
+  # so there's no CDN-fronted sibling risk. Absent from ads-extended.
+  - ads-pubsfusion.com
+  #
+  # Held out this pass (CDN-fronted on the observed host, #2823/#2918
+  # rule — pinned absent in BundledBlocklistsSpec): customads.co (self-
+  # descriptive name, classic cdn1./cdn2./trk. ad-tech subdomain shape,
+  # already present in ads-extended under one of those subdomains) is
+  # CloudFront-fronted on cdn1. (CNAME to *.cloudfront.net). xboxservices.com
+  # (Xbox Live's companion API domain, xboxlive.com already held out
+  # #2957, xbox.com already curated) is Azure-Front-Door-fronted on its
+  # only observed host, cms-assets.xboxservices.com (CNAME through
+  # *.azurefd.net) — Front Door is Microsoft's shared multi-tenant edge
+  # product, the same class of risk as Akamai EdgeSuite/Cloudflare/
+  # CloudFront, not the GTM/akadns.net steering that cleared appier.net
+  # (#2952) and part of xboxlive.com's own subdomain set.
+  #
+  # False positives / out of scope, no action: btttag.com, regulatedtags.monster,
+  # insiad.com, mradx.net, liftyad.xyz, foisonad.com, gamerhunk.com (all
+  # low-traffic, no confirmed company identity — carried forward
+  # unverified rather than guessed from the name), learnings.ai (confirmed
+  # by #2957, still unidentified), grok-sandbox.com (xAI's own sandboxed
+  # "computer use" agent infra for the Grok consumer product — observed
+  # host *.grok-computer-wild.hades-www.grok-sandbox.com is Cloudflare-
+  # fronted, 104.18.x), nrich.ai (already held out of ai.yml as B2B
+  # marketing/ABM per #2957; this pass's traffic shows dsp./j./tag.
+  # subdomains — ad-tech-shaped, but tag.nrich.ai CNAMEs onto CloudFront,
+  # so it would fail the ads.yml CDN check too even though dsp./j. resolve
+  # to dedicated OVH addresses).

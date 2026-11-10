@@ -314,6 +314,42 @@ that edit in the same PR.** If a step above is now wrong, fix the step too.
 
 ## Learnings log (newest first)
 
+- **2026-11-10** (#3000) — **Azure Front Door (`*.azurefd.net`) is a shared
+  multi-tenant edge CDN product, the same risk class as Akamai EdgeSuite/
+  Cloudflare/CloudFront — add it to the Step 2.3 CDN-skip list.** It is
+  distinct from Azure Traffic Manager/GTM-style DNS steering
+  (`*.akadns.net`), which the #2952 `appier.net` precedent already cleared
+  as "returns the customer's own backend IPs, not a shared cache."
+  `xboxservices.com`'s only observed host, `cms-assets.xboxservices.com`,
+  CNAMEs through `*.azurefd.net` while three of the companion
+  `xboxlive.com`'s subdomains CNAME through `akadns.net` straight to
+  Microsoft's own addresses — same vendor, two different Azure products,
+  only one of which is a shared edge. Resolve the CNAME chain, don't just
+  classify by `*.azure*` substring.
+- **2026-11-10** (#3000) — **A candidate explicitly held out last pass as
+  "does not currently resolve" is worth re-checking the following week —
+  it can come back online.** `ads-pubsfusion.com` was dead in #2957's pull;
+  one week later its observed host resolves to dedicated hosting with a
+  self-descriptive OpenRTB-branded CNAME target (`*.ortb.net`) and was
+  added. The Step 2.4 residual-risk re-check already covers the mirror
+  case (a RESIDUAL RISK entry whose sibling has now appeared); this is the
+  same discipline applied to a candidate that didn't resolve at all, not
+  just one with a CDN-fronted sibling.
+- **2026-11-10** (#3000) — **Before researching any candidate from scratch,
+  grep `ai.yml`'s comment history and every category's held-out pins in
+  `BundledBlocklistsSpec` for the exact apex — a surprisingly large
+  fraction of a week's "new" candidates (`learnings.ai`, `grok-sandbox.com`'s
+  family, `mgln.ai`, `panxo.ai`, `nrich.ai`, `ivy.ai`, `wandb.ai`,
+  `modernintelligence.ai`, `eightfold.ai`, `yofi.ai`, `anagram.ai`,
+  `idsequoia.ai`, `hsadspixel.net`, `heapanalytics.com`, `skypixel.com`,
+  `saasexch.com`, `xboxlive.com`, `ygametime.com` — seventeen apexes this
+  pass alone) were already fully triaged by the immediately-prior pass.**
+  Re-deriving the same CDN/identity conclusion independently is a useful
+  cross-check the first time, but burns a lot of effort that a grep up
+  front would have saved; this is the ads.yml/ai.yml-comment-history
+  version of the #2756 "check evidence/*.md before re-researching" lesson,
+  generalized to apply even when the apex isn't in the currently-curated
+  list at all.
 - **2026-11-03** (#2957) — **A customer's own dedicated AWS Application Load
   Balancer (`*.elb.amazonaws.com`) is the same "dedicated compute, not a
   shared product frontend" class as the GCP customer-LB precedent (#2836),
