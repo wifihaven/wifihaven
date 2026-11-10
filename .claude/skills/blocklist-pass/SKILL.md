@@ -246,8 +246,9 @@ Before adding apex `X` to category `C`, confirm it isn't already blocked:
    `https://www.cloudflare.com/ips-v4`; the common ones are `104.16.0.0/13`,
    `104.24.0.0/14`, `172.64.0.0/13`), CloudFront, Akamai's shared EdgeSuite
    CDN (`*.edgesuite.net`/`*.akamai.net` — the actual edge-cache product),
-   Fastly, or Google's shared GFE pool, do not add the apex. Akamai's GTM/DNS
-   traffic-steering product (`*.akadns.net`) is a DIFFERENT thing — it returns
+   Azure Front Door (`*.azurefd.net` — Microsoft's shared multi-tenant edge
+   product, #3000), Fastly, or Google's shared GFE pool, do not add the apex.
+   Akamai's GTM/DNS traffic-steering product (`*.akadns.net`) is a DIFFERENT thing — it returns
    the customer's own backend IPs for failover/load-balancing, not a shared
    cache, so a GTM-routed host that resolves onto the customer's own dedicated
    cloud compute does NOT trigger this skip on its own; resolve the actual
@@ -338,12 +339,14 @@ that edit in the same PR.** If a step above is now wrong, fix the step too.
 - **2026-11-10** (#3000) — **Before researching any candidate from scratch,
   grep `ai.yml`'s comment history and every category's held-out pins in
   `BundledBlocklistsSpec` for the exact apex — a surprisingly large
-  fraction of a week's "new" candidates (`learnings.ai`, `grok-sandbox.com`'s
-  family, `mgln.ai`, `panxo.ai`, `nrich.ai`, `ivy.ai`, `wandb.ai`,
-  `modernintelligence.ai`, `eightfold.ai`, `yofi.ai`, `anagram.ai`,
-  `idsequoia.ai`, `hsadspixel.net`, `heapanalytics.com`, `skypixel.com`,
-  `saasexch.com`, `xboxlive.com`, `ygametime.com` — seventeen apexes this
-  pass alone) were already fully triaged by the immediately-prior pass.**
+  fraction of a week's "new" candidates (`learnings.ai`, `mgln.ai`,
+  `panxo.ai`, `nrich.ai`, `ivy.ai`, `wandb.ai`, `modernintelligence.ai`,
+  `eightfold.ai`, `yofi.ai`, `anagram.ai`, `idsequoia.ai`, `hsadspixel.net`,
+  `heapanalytics.com`, `skypixel.com`, `saasexch.com`, `xboxlive.com`,
+  `ygametime.com` — seventeen apexes this pass alone) were already fully
+  triaged by the immediately-prior pass. (`grok-sandbox.com` was a genuinely
+  new find this same pass, not a re-triage — don't lump a fresh discovery
+  into this count just because it also got held out.)
   Re-deriving the same CDN/identity conclusion independently is a useful
   cross-check the first time, but burns a lot of effort that a grep up
   front would have saved; this is the ads.yml/ai.yml-comment-history

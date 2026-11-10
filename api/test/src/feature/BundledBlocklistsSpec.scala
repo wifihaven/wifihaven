@@ -549,6 +549,21 @@ object BundledBlocklistsSpec
     // CloudFront CNAME, so blocking it would arm shared edge addresses rather
     // than its own dedicated apex. See
     // evidence/adult-classification-2823.md and #2377.
+    test("#2823: CAM4-chain hops on dedicated hosting are curated in ads") {
+      for {
+        bundled <- BundledBlocklists.loadAll()
+        ads   = inlineHostsOf(bundled, "ads")
+        adult = inlineHostsOf(bundled, "adult")
+      } yield
+      // liveness anchors: these lists loaded and are non-empty
+      assertTrue(ads.contains(Hostname.unsafe("mgid.com"))) &&
+        assertTrue(adult.contains(Hostname.unsafe("cam4.com"))) &&
+        // the two dedicated-hosting hops, classified `ads` not `adult`
+        assertTrue(ads.contains(Hostname.unsafe("unhappyweakness.com"))) &&
+        assertTrue(ads.contains(Hostname.unsafe("realizationnewestfangs.com"))) &&
+        assertTrue(!adult.contains(Hostname.unsafe("unhappyweakness.com"))) &&
+        assertTrue(!adult.contains(Hostname.unsafe("realizationnewestfangs.com")))
+    },
     test("#3000: CDN-fronted blocklist-pass candidates stay out of every inline list") {
       // Each read as genuine ad-tech (customads.co's cdn1./cdn2./trk.
       // subdomain shape) or a genuine games companion apex (xboxservices.com,
@@ -584,21 +599,6 @@ object BundledBlocklistsSpec
       // liveness anchor: the ads list loaded, so the absence check is not vacuous
       assertTrue(inlineHostsOf(inlineLists, "ads").contains(Hostname.unsafe("mgid.com"))) &&
         assertTrue(offenders.isEmpty)
-    },
-    test("#2823: CAM4-chain hops on dedicated hosting are curated in ads") {
-      for {
-        bundled <- BundledBlocklists.loadAll()
-        ads   = inlineHostsOf(bundled, "ads")
-        adult = inlineHostsOf(bundled, "adult")
-      } yield
-      // liveness anchors: these lists loaded and are non-empty
-      assertTrue(ads.contains(Hostname.unsafe("mgid.com"))) &&
-        assertTrue(adult.contains(Hostname.unsafe("cam4.com"))) &&
-        // the two dedicated-hosting hops, classified `ads` not `adult`
-        assertTrue(ads.contains(Hostname.unsafe("unhappyweakness.com"))) &&
-        assertTrue(ads.contains(Hostname.unsafe("realizationnewestfangs.com"))) &&
-        assertTrue(!adult.contains(Hostname.unsafe("unhappyweakness.com"))) &&
-        assertTrue(!adult.contains(Hostname.unsafe("realizationnewestfangs.com")))
     },
     // #2816: eBay's ad-services apex and its `www.` resolve onto shared Akamai
     // edges (`andes.ebay.com.edgekey.net`, same /24 as `pages.ebay.com`), so an

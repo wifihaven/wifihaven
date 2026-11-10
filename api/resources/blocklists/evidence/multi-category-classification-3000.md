@@ -25,15 +25,17 @@ this pass too — no `/api/logs` hits over the window checked). No removals.
 - **`ads-pubsfusion.com`** — last week's pass (#2957) noted this apex "does
   not currently resolve; no /api/logs hits" and held it out. This pass it
   resolves: the one observed host, `tracker-b.ads-pubsfusion.com` (2 hits,
-  14.8KB, Rachel iPhone), CNAMEs to `tracker-b-use.ortb.net`. `ortb.net` is
-  IAB Tech Lab's OpenRTB-protocol brand domain, used white-label by
-  programmatic ad-serving resellers — a strong self-descriptive-name +
-  infra-branding combination (same bar as the `inhousedsp.com` precedent,
-  #2212). Resolves to `188.42.82.3`/`188.42.82.41` (Server.com dedicated
-  hosting, confirmed via whois netname `SERVERS-COM-WAS4`), not a shared CDN.
-  Checked unobserved siblings: the bare apex resolves to the same pair
-  (consistent dedicated hosting); `www.` and `cdn.` do not resolve at all. No
-  residual-risk siblings found. Absent from `ads-extended`.
+  14.8KB, one household iOS device), CNAMEs to `tracker-b-use.ortb.net` —
+  `ortb.net` is already curated in `ads.yml` as a confirmed RTB exchange/
+  bidder apex (one of the existing "RTB exchanges / bidders / DSPs" group),
+  so this CNAME lands on infra this list already treats as verified
+  ad-tech, not a fresh unsourced ownership claim. The CNAME target
+  resolves to `188.42.82.3`/`188.42.82.41` (Server.com dedicated hosting,
+  confirmed via whois netname `SERVERS-COM-WAS4`), not a shared CDN.
+  Checked unobserved siblings: the bare apex and `www.`/`cdn.` all return
+  NOERROR with no A record (do not resolve at all) — no CDN-fronted
+  sibling risk observed, but also no corroborating resolution beyond the
+  one observed host. Absent from `ads-extended`.
 
 ## Held out (CDN-fronted on the observed host — pinned absent, #3000)
 
@@ -65,7 +67,7 @@ other strong-looking candidate from this week's sweep was already fully
 triaged last week (#2957) with the same conclusion this pass independently
 re-derived:
 
-- `learnings.ai` (129MB/4,848 hits, Rachel iPhone; `api.`/`api-abtest-cdn.`/
+- `learnings.ai` (129MB/4,848 hits, one household iOS device; `api.`/`api-abtest-cdn.`/
   `hermes-api.` subdomains) — still unidentified; #2957 already held it out
   unverified with the same observed-subdomain set. Carried forward again
   rather than guessed from the name.

@@ -1069,12 +1069,15 @@ hosts:
   # traffic-driven addition (#3000): observed but unblocked ads infra.
   # ads-pubsfusion.com was noted here last pass (#2957) as "does not
   # currently resolve" — this pass it does: the observed host
-  # (tracker-b.ads-pubsfusion.com) CNAMEs to tracker-b-use.ortb.net
-  # (ortb.net is IAB Tech Lab's OpenRTB-protocol brand name, used
-  # white-label by programmatic ad-serving resellers) and resolves to a
-  # dedicated Server.com address (188.42.82.3/41), not a shared CDN. The
-  # bare apex resolves to the same pair; www./cdn. do not resolve at all,
-  # so there's no CDN-fronted sibling risk. Absent from ads-extended.
+  # (tracker-b.ads-pubsfusion.com) CNAMEs to tracker-b-use.ortb.net —
+  # ortb.net is already curated above as a confirmed RTB exchange/bidder
+  # apex, so this is a CNAME onto already-verified ad-tech infra, not a
+  # fresh ownership claim. The CNAME target resolves to a dedicated
+  # Server.com address (188.42.82.3/41, whois netname SERVERS-COM-WAS4),
+  # not a shared CDN. The bare apex and www./cdn. do not resolve at all
+  # (NOERROR, no A record) — no CDN-fronted sibling risk observed, but
+  # also no corroborating resolution beyond the one observed host.
+  # Absent from ads-extended.
   - ads-pubsfusion.com
   #
   # Held out this pass (CDN-fronted on the observed host, #2823/#2918
