@@ -71,12 +71,13 @@ re-derived:
   `hermes-api.` subdomains) — still unidentified; #2957 already held it out
   unverified with the same observed-subdomain set. Carried forward again
   rather than guessed from the name.
-- `grok-sandbox.com` (9.2MB/1,058 hits) — xAI's own sandboxed "computer use"
-  agent infra for the Grok product (`hds-*.grok-computer-wild.hades-www.
-  grok-sandbox.com`); CloudFlare-fronted (`104.18.26.226`/`104.18.27.226`).
-  Even setting the CDN skip aside, it is Grok's own backend infra, not a
-  separate product a household would target — `grok.com`/`grokusercontent.com`
-  already cover the product.
+- `grok-sandbox.com` (9.2MB/1,058 hits) — **not pre-triaged; a new find this
+  pass**, investigated fresh and immediately disqualified. xAI's own
+  sandboxed "computer use" agent infra for the Grok product
+  (`hds-*.grok-computer-wild.hades-www.grok-sandbox.com`); CloudFlare-fronted
+  (`104.18.26.226`/`104.18.27.226`). Even setting the CDN skip aside, it is
+  Grok's own backend infra, not a separate product a household would target
+  — `grok.com`/`grokusercontent.com` already cover the product.
 - `mgln.ai` (Magellan AI, podcast-ad analytics) and `panxo.ai` (Panxo,
   publisher ad-monetization) — both Cloudflare-fronted, already pinned
   absent by #2957.

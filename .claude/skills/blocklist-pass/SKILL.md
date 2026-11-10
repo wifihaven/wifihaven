@@ -248,10 +248,11 @@ Before adding apex `X` to category `C`, confirm it isn't already blocked:
    CDN (`*.edgesuite.net`/`*.akamai.net` — the actual edge-cache product),
    Azure Front Door (`*.azurefd.net` — Microsoft's shared multi-tenant edge
    product, #3000), Fastly, or Google's shared GFE pool, do not add the apex.
-   Akamai's GTM/DNS traffic-steering product (`*.akadns.net`) is a DIFFERENT thing — it returns
-   the customer's own backend IPs for failover/load-balancing, not a shared
-   cache, so a GTM-routed host that resolves onto the customer's own dedicated
-   cloud compute does NOT trigger this skip on its own; resolve the actual
+   Akamai's GTM/DNS traffic-steering product (`*.akadns.net`) is a DIFFERENT
+   thing — it returns the customer's own backend IPs for failover/
+   load-balancing, not a shared cache, so a GTM-routed host that resolves
+   onto the customer's own dedicated cloud compute does NOT trigger this
+   skip on its own; resolve the actual
    returned IPs and check their ownership (#2952). When the skip does apply,
    pin its absence in `BundledBlocklistsSpec` instead. Then `dig` the
    *unobserved* usual siblings (bare apex, `cdn.`, `video.`, `static.`). A CDN
