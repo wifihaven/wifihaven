@@ -1315,4 +1315,120 @@ describe("blocklists no-op refresh and render (#2893)", function()
     assert.same(fresh(lists()), outputs(fs))
   end)
 
+  -- #2995: the shards carry the main-conf specs of overlapping hosts, so a
+  -- main-conf change re-renders them; the member index only follows the lists.
+  local function main(specs)
+    return { ["ad.example"] = specs or { "4#inet#wifihaven#ea_ad_example" } }
+  end
+  local function render_main(s, fs, state, main_specs)
+    return blocklists.render_outputs(s, fs, CACHE, SHARDS, INDEX, 1000000, {}, state, main_specs)
+  end
+
+  it("re-renders the shards but not the index when the main-conf specs change (#2995)", function()
+    local fs = stream_fs(); seed(fs)
+    local state = {}
+    render_main(lists(), fs, state, main())
+    assert.is_false(render_main(lists(), fs, state, main()).rendered)
+    local out = render_main(lists(), fs, state,
+                            main({ "4#inet#wifihaven#eb_ad_example" }))
+    assert.is_true(out.rendered)
+    assert.is_nil(out.index, "the member index must not be rewritten for a main-conf change")
+    assert.truthy(fs._files[SHARDS .. "/wifihaven-blocklist-ads.conf"]:find(
+      "nftset=/ad.example/4#inet#wifihaven#bl_ads,6#inet#wifihaven#bl6_ads,4#inet#wifihaven#eb_ad_example\n",
+      1, true))
+    assert.is_false(render_main(lists(), fs, state,
+                                main({ "4#inet#wifihaven#eb_ad_example" })).rendered)
+  end)
+
+  -- Only a host that overlaps a list member changes a shard, so a host that
+  -- overlaps nothing must not cost the #2893 rewrite (schedule and daily-cap
+  -- edges add and drop extraAllowed hosts all day).
+  it("skips when only a host that overlaps no list member changes (#2995)", function()
+    local fs = stream_fs(); seed(fs)
+    local state = {}
+    local other = { "4#inet#wifihaven#ea_other_example" }
+    render_main(lists(), fs, state, main())
+    local with_other = main(); with_other["other.example"] = other
+    -- A host never checked against these lists costs one render to find out.
+    assert.is_true(render_main(lists(), fs, state, with_other).rendered)
+    local writes = fs._counts.open_write
+    assert.is_false(render_main(lists(), fs, state, with_other).rendered)
+    assert.is_false(render_main(lists(), fs, state, main()).rendered)
+    with_other["other.example"] = { "4#inet#wifihaven#eb_other_example" }
+    assert.is_false(render_main(lists(), fs, state, with_other).rendered)
+    assert.equal(writes, fs._counts.open_write)
+  end)
+
+  it("re-renders when an overlapping host leaves and when it comes back (#2995)", function()
+    local fs = stream_fs(); seed(fs)
+    local state = {}
+    render_main(lists(), fs, state, main())
+    assert.is_true(render_main(lists(), fs, state, {}).rendered)
+    assert.is_nil(fs._files[SHARDS .. "/wifihaven-blocklist-ads.conf"]:find("ea_ad_example", 1, true))
+    assert.is_true(render_main(lists(), fs, state, main()).rendered)
+    assert.truthy(fs._files[SHARDS .. "/wifihaven-blocklist-ads.conf"]:find("ea_ad_example", 1, true))
+  end)
+
+  it("re-renders when a host above a list member changes its specs (#2995)", function()
+    local fs = stream_fs(); seed(fs)
+    local state = {}
+    render_main(lists(), fs, state, { example = { "4#inet#wifihaven#ea_example" } })
+    assert.is_true(render_main(lists(), fs, state,
+                               { example = { "4#inet#wifihaven#eb_example" } }).rendered)
+    local shard = fs._files[SHARDS .. "/wifihaven-blocklist-ads.conf"]
+    assert.truthy(shard:find("nftset=/ad.example/4#inet#wifihaven#bl_ads,6#inet#wifihaven#bl6_ads,4#inet#wifihaven#eb_example\n", 1, true))
+    assert.is_nil(shard:find("ea_example", 1, true))
+  end)
+
+  it("keeps the bl_ specs of a host below a list member that leaves and comes back (#2995)", function()
+    local fs = stream_fs(); seed(fs)
+    local state = {}
+    -- x.ad.example leaves in the same apply that changes another overlapping
+    -- host, so that render drops its entry; coming back must render again.
+    local x = { "4#inet#wifihaven#ea_x_ad_example" }
+    render_main(lists(), fs, state, main({ "4#inet#wifihaven#ea_ad_example" }))
+    local with_x = main({ "4#inet#wifihaven#ea_ad_example" }); with_x["x.ad.example"] = x
+    render_main(lists(), fs, state, with_x)
+    render_main(lists(), fs, state, main({ "4#inet#wifihaven#eb_ad_example" }))
+    with_x = main({ "4#inet#wifihaven#eb_ad_example" }); with_x["x.ad.example"] = x
+    render_main(lists(), fs, state, with_x)
+    assert.same({ "4#inet#wifihaven#bl_ads", "6#inet#wifihaven#bl6_ads" },
+                state.main_bl_specs["x.ad.example"])
+  end)
+
+  it("re-renders for a new host below a list member (#2995)", function()
+    local fs = stream_fs(); seed(fs)
+    local state = {}
+    render_main(lists(), fs, state, main())
+    local m = main(); m["x.ad.example"] = { "4#inet#wifihaven#ea_x_ad_example" }
+    assert.is_true(render_main(lists(), fs, state, m).rendered)
+    assert.same({ "4#inet#wifihaven#bl_ads", "6#inet#wifihaven#bl6_ads" },
+                state.main_bl_specs["x.ad.example"])
+  end)
+
+  it("keeps the main-conf bl_ specs in state across a skip (#2995)", function()
+    local fs = stream_fs(); seed(fs)
+    local state = {}
+    render_main(lists(), fs, state, main())
+    local want = { ["ad.example"] = { "4#inet#wifihaven#bl_ads", "6#inet#wifihaven#bl6_ads" } }
+    assert.same(want, state.main_bl_specs)
+    assert.is_false(render_main(lists(), fs, state, main()).rendered)
+    assert.same(want, state.main_bl_specs)
+  end)
+
+  it("keeps an overlapping shard line within dnsmasq's 1024-byte limit (#2995)", function()
+    local fs = stream_fs()
+    local host = string.rep("a", 60) .. ".example"
+    fs._files[CACHE .. "/ads-a1.txt"] = host .. "\n"
+    local long = {}
+    for i = 1, 30 do long[i] = "4#inet#wifihaven#ea_" .. host:gsub("%.", "_") .. i end
+    local s = snap({ ads = { version = "a1", url = "/api/blocklists/ads" } })
+    render_main(s, fs, {}, { [host] = long })
+    local shard = fs._files[SHARDS .. "/wifihaven-blocklist-ads.conf"]
+    for line in shard:gmatch("[^\n]+") do
+      assert.is_true(#line <= 1024, "shard line over 1024 bytes: " .. #line)
+    end
+    assert.truthy(shard:find("nftset=/" .. host .. "/4#inet#wifihaven#bl_ads,6#inet#wifihaven#bl6_ads\n", 1, true))
+  end)
+
 end)

@@ -471,7 +471,7 @@ case class ProfileAppGroup(
     dailyMinutes: Option[Int],
     weeklyMinutes: Option[Int],
     exemptFromDaily: Boolean,
-    // #2980 (design §17): V93's mode and #1679 toggle. Defaults are what a pre-V93 row reads as.
+    // #2980 (design §17): V94's mode and #1679 toggle. Defaults are what a pre-V94 row reads as.
     mode: AppMode = AppMode.TimeLimited,
     allowedDuringScheduleBlock: Boolean = true,
 ) derives JsonCodec
@@ -498,6 +498,12 @@ case class UpsertProfileAppGroupRequest(
     dailyMinutes: Option[Int] = None,
     weeklyMinutes: Option[Int] = None,
     exemptFromDaily: Option[Boolean] = None,
+    // #2981 (design §17.6): both optional. An absent mode is resolved from the limits and the
+    // existing row (D21, D23); an absent toggle keeps the existing row's, or true on create. Unlike
+    // the toggle, an absent `exemptFromDaily` means true on every PUT (D5), and absent limits mean
+    // none, so a client sends the full limits and flag on each write.
+    mode: Option[AppMode] = None,
+    allowedDuringScheduleBlock: Option[Boolean] = None,
 ) derives JsonCodec
 
 // #1798: the app *definition* mutator endpoints (create / update name+icon /

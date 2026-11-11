@@ -219,6 +219,9 @@ object AppTemplatesSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
           "coddy",
           // #2962: operator-named pass — i-Ready (Curriculum Associates)
           "iready",
+          // #2998: weekly app-catalog pass — JetBrains + VEX Robotics
+          "jetbrains",
+          "vex",
         )
         val slugs    = templates.map(_.slug.value).toSet
         assertTrue(slugs == expected) &&

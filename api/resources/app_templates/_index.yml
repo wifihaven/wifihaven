@@ -116,3 +116,9 @@ slugs:
   # i-Ready (Curriculum Associates), a school math/reading lesson platform.
   # enVision Math is covered by savvas-realize (no hosts of its own).
   - iready
+  # #2998: weekly app-catalog pass (see evidence/classification-2998.md) —
+  # JetBrains (IDE/plugin downloads) and VEX Robotics (VEXcode V5 browser
+  # IDE), two coding-education platforms. gdevelop.yml also gained a
+  # host-set gap (gd.games, the vendor's own community game portal).
+  - jetbrains
+  - vex

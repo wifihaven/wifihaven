@@ -956,9 +956,13 @@ local function refresh_blocklists(snap)
     end
   end
 
+  -- #2995: the shards also carry the main-conf specs of any host that overlaps
+  -- a list member; bl_render_state.main_bl_specs carries the reverse to
+  -- render.dnsmasq (apply_and_publish).
+  local _, main_specs = render.nftset_host_specs(snap)
   local out = blocklists.render_outputs(
     snap, nil, BLOCKLIST_CACHE_DIR, BLOCKLIST_SHARD_DIR, paths.bl_member_index,
-    blocklist_max_bytes, global_bl_ids, bl_render_state)
+    blocklist_max_bytes, global_bl_ids, bl_render_state, main_specs)
   if not out.rendered then return end
 
   local shard_res = out.shards
@@ -1213,7 +1217,8 @@ local function apply_and_publish(snap, reason)
   local applied = policy.apply(snap, write_file, run_cmd, log,
                                { on_apply = record_apply(reason),
                                  phase_timer = apply_phase_timer,
-                                 enforcement_disabled = enf_disabled })
+                                 enforcement_disabled = enf_disabled,
+                                 bl_specs_by_host = bl_render_state.main_bl_specs })
   metrics.observe(mreg, "policy_apply_duration_seconds", {},
                   clock.monotonic_seconds() - at0)
   if applied then
@@ -1248,6 +1253,9 @@ end
 -- Guarded by test/lua_compile_spec.sh (luac5.1 -p).
 local ts = {
   current_etag       = nil,
+  -- #2995: the shard render state, so the failover re-render hands
+  -- render.dnsmasq the same bl_specs_by_host as apply_and_publish does.
+  bl_render_state    = bl_render_state,
   -- #331: tracks the most recently applied snapshot so we can re-render with
   -- failover opts on the first failed poll (#422 — without a fresh fetch we
   -- have no other snapshot to render from).
@@ -1374,7 +1382,8 @@ do
     local applied = policy.apply(cached, write_file, run_cmd, log,
                                  { on_apply = record_apply("boot"),
                                    phase_timer = apply_phase_timer,
-                                   enforcement_disabled = enf_boot })
+                                   enforcement_disabled = enf_boot,
+                                   bl_specs_by_host = bl_render_state.main_bl_specs })
     metrics.observe(mreg, "policy_apply_duration_seconds", {},
                     clock.monotonic_seconds() - t0)
     if applied then
@@ -1811,6 +1820,7 @@ conntrack.watch({
           -- effect and there is nothing useful to render.
           fo_opts.on_apply    = record_apply("policy_change")
           fo_opts.phase_timer = apply_phase_timer
+          fo_opts.bl_specs_by_host = ts.bl_render_state.main_bl_specs
           -- #1325: same pre-reset capture as the main apply path.
           fold_enforcement_drops()
           local ft0 = clock.monotonic_seconds()

@@ -29,7 +29,7 @@ ambiguous allocations.
 - `adinplay.com` (1,135,987B/5 hits) — confirmed Venatus-owned HTML5/browser-game ad network (own site + CBInsights); only observed host `api.adinplay.com` is Cloudflare-fronted (104.26.x/172.67.x), unconditional #2823 skip.
 - `loopme.me` (—) — confirmed LoopMe, a London AdTech company that acquired the already-curated Chartboost in Dec 2024. One observed host (`csync.loopme.me`) is on dedicated GCP infra, but a second (`i.loopme.me`) CNAMEs onto Akamai's shared EdgeSuite CDN (`edgesuite.net`/`akamai.net`) — per the skmads.com rule (#2918), any CDN-fronted observed host disqualifies the whole apex.
 - `dxtech.ai` (653,032B/76 hits) — previously held out of `ai.yml` as B2B IT-consulting (#2792). Its cookie-sync-shaped observed host here, `sync.dxtech.ai`, is independently Cloudflare-fronted (104.21.x/172.67.x) — an unconditional #2823 skip regardless of the identity question.
-- `gd.games` (2,737,696B/19 hits) — confirmed GameDistribution, Azerion's HTML5 game-syndication network (a games.yml-shaped candidate, not ads). Cloudflare-fronted (104.26.x/172.67.x) on its only observed host; held out of games.yml too.
+- `gd.games` (2,737,696B/19 hits) — **CORRECTED by #2998 (2026-11-09): this pass's "confirmed GameDistribution (Azerion)" was wrong.** A direct fetch of the live page found zero "gamedistribution"/"azerion" occurrences and 450+ "gdevelop" occurrences, with the title and meta description both naming GDevelop directly. It's GDevelop's own community game portal, now templated into `gdevelop.yml`'s hosts — not a blocklist candidate either way. See `api/resources/app_templates/evidence/classification-2998.md`.
 - `suno.ai` (877,301B/1 hit) — confirmed, well-known consumer AI music generator (an ai.yml-shaped candidate). CloudFront-fronted on its only observed host, `cdn2.suno.ai` (CNAME to a `cloudfront.net` distribution whose edge IPs, 99.84.118.x, are shared with other tenants); held out of ai.yml despite the strong, unambiguous identity.
 - `smilewanted.com`, `rmbl.ws`, `cognitivlabs.com` — no confirmed identity. A plausible name-match to Rumble (`rmbl.ws`) and to Cognitiv (`cognitivlabs.com`) could not be confirmed; these read as different companies/domains on inspection, not the same entity.
 - `samplicio.us` — reads as Dynata-style survey-sample routing infra; Dynata frames itself as a market-research/first-party-data company, not an ad-serving network — closer to a dual-use case than a confirmed ads apex. Only 1 hit.
@@ -94,7 +94,7 @@ High-traffic `.ai`-TLD sweep (all uncovered `.ai` apexes in the ranked list):
 
 ## games.yml — 0 additions
 
-- `gd.games` — see the ads.yml held-out note above (Cloudflare-fronted).
+- `gd.games` — CORRECTED by #2998 (2026-11-09); see the ads.yml held-out note above. Not GameDistribution — it's GDevelop's own game portal, templated into `gdevelop.yml`.
 - `gamerhunk.com` (6,583,979B/8 hits) — no confirmed identity; websearch
   surfaced only unrelated similarly-named gaming-content sites. Held out
   unverified.

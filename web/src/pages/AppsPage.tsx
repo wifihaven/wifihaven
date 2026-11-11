@@ -166,7 +166,7 @@ function GroupsSection({ apps, appsFailed }: { apps: AppDetail[]; appsFailed: bo
   const [name, setName] = useState('')
   const [creating, setCreating] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  // As in AddGroupMenu (#2964): `working` guards re-entry synchronously (Enter then blur), and
+  // #2964: `working` guards re-entry synchronously (Enter then blur), and
   // `creating` is the same fact for rendering.
   const working = useRef(false)
   const groups = groupsQ.data ?? []

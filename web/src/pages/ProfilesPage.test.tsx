@@ -3001,10 +3001,14 @@ describe('ProfilesPage — weekly limits and app groups (#2935)', () => {
     }
   }
   const games = { id: 7, name: 'Games', memberAppIds: [60, 61] }
-  const attachment = (over: Record<string, unknown> = {}) => ({
-    profileId: 1, groupId: 7, name: 'Games', memberAppIds: [60, 61],
-    dailyMinutes: 60, weeklyMinutes: 300, exemptFromDaily: true, ...over,
-  })
+  // #2982 — the server sends the effective mode: a limitless attachment is Allowed (D23).
+  const attachment = (over: Record<string, unknown> = {}) => {
+    const a: Record<string, unknown> = {
+      profileId: 1, groupId: 7, name: 'Games', memberAppIds: [60, 61],
+      dailyMinutes: 60, weeklyMinutes: 300, exemptFromDaily: true, allowedDuringScheduleBlock: true, ...over,
+    }
+    return { mode: a.dailyMinutes == null && a.weeklyMinutes == null ? 'allowed' : 'time_limited', ...a }
+  }
 
   async function openApps(user: ReturnType<typeof userEvent.setup>) {
     renderPage()
@@ -3088,19 +3092,39 @@ describe('ProfilesPage — weekly limits and app groups (#2935)', () => {
       })))
   })
 
-  it('asks for a daily limit before attaching an existing household group', async () => {
+  // #2982 (D18) — groups are added from the same pickers as apps, straight into that list.
+  it('adds an existing group from "+ Allow app" as an Allowed group and opens its members', async () => {
+    fn(api.apps.list).mockResolvedValue([app(50, 'YouTube', { mode: 'allowed' }), app(60, 'Roblox', null), app(61, 'Minecraft', null)])
+    let attached = false
+    fn(api.appGroups.attach).mockImplementation(async () => { attached = true })
+    fn(api.appGroups.list).mockResolvedValue([games])
+    fn(api.appGroups.forProfile).mockImplementation(async () =>
+      attached ? [attachment({ dailyMinutes: null, weeklyMinutes: null })] : [])
+    const user = userEvent.setup()
+    await openApps(user)
+    await user.click(await screen.findByTestId('profile-1-apps-section-add-allowed'))
+    const option = await screen.findByTestId('profile-1-apps-section-picker-group-7')
+    expect(option).toHaveTextContent('Group')
+    expect(option).toHaveTextContent('Roblox, Minecraft')
+    await user.click(option)
+    await waitFor(() => expect(api.appGroups.attach).toHaveBeenCalledWith(1, 7, {
+      mode: 'allowed', dailyMinutes: null, weeklyMinutes: null, exemptFromDaily: true,
+    }))
+    const allowedList = await screen.findByTestId('profile-1-apps-section-allowed-list')
+    expect(await within(allowedList).findByTestId('group-row-7')).toBeInTheDocument()
+    expect(await screen.findByTestId('group-row-7-members-panel')).toBeInTheDocument()
+  })
+
+  it('adds a group from "+ Block app" as a Blocked group', async () => {
     fn(api.apps.list).mockResolvedValue([app(50, 'YouTube', { mode: 'allowed' })])
     fn(api.appGroups.list).mockResolvedValue([games])
     const user = userEvent.setup()
     await openApps(user)
-    await user.click(await screen.findByTestId('profile-1-apps-section-add-group'))
-    expect(screen.getByTestId('profile-1-apps-section-add-group-new')).toBeInTheDocument()
-    await user.click(screen.getByTestId('profile-1-apps-section-add-group-option-7'))
-    // Nothing is written until the parent has typed a limit: no invented default.
-    expect(api.appGroups.attach).not.toHaveBeenCalled()
-    await user.type(await screen.findByTestId('profile-1-apps-section-add-group-minutes'), '90{Enter}')
-    await waitFor(() =>
-      expect(api.appGroups.attach).toHaveBeenCalledWith(1, 7, { dailyMinutes: 90, exemptFromDaily: true }))
+    await user.click(await screen.findByTestId('profile-1-apps-section-add-blocked'))
+    await user.click(await screen.findByTestId('profile-1-apps-section-picker-group-7'))
+    await waitFor(() => expect(api.appGroups.attach).toHaveBeenCalledWith(1, 7, {
+      mode: 'blocked', dailyMinutes: null, weeklyMinutes: null, exemptFromDaily: true,
+    }))
   })
 
   // #2964 — on prod the attach hung on a dead API and the menu showed nothing until the
@@ -3112,31 +3136,106 @@ describe('ProfilesPage — weekly limits and app groups (#2935)', () => {
     fn(api.appGroups.attach).mockImplementationOnce(() => new Promise((_, rej) => { rejectAttach = rej }))
     const user = userEvent.setup()
     await openApps(user)
-    await user.click(await screen.findByTestId('profile-1-apps-section-add-group'))
-    await user.click(screen.getByTestId('profile-1-apps-section-add-group-option-7'))
-    const minutes = await screen.findByTestId('profile-1-apps-section-add-group-minutes')
-    await user.type(minutes, '90{Enter}')
-    expect(await screen.findByTestId('profile-1-apps-section-add-group-saving')).toHaveTextContent('Saving…')
-    expect(minutes).toBeDisabled()
+    await user.click(await screen.findByTestId('profile-1-apps-section-add-allowed'))
+    const option = await screen.findByTestId('profile-1-apps-section-picker-group-7')
+    await user.click(option)
+    expect(option).toHaveTextContent('Adding…')
+    expect(option).toBeDisabled()
     await act(async () => { rejectAttach(new NoResponseError('network')) })
-    expect(await screen.findByTestId('profile-1-apps-section-add-group-error')).toHaveTextContent(
+    expect(await screen.findByTestId('profile-1-apps-section-picker-error')).toHaveTextContent(
       'The server didn’t respond. Try again in a moment.',
     )
-    expect(screen.queryByTestId('profile-1-apps-section-add-group-saving')).not.toBeInTheDocument()
-    expect(minutes).not.toBeDisabled()
+    expect(screen.getByTestId('profile-1-apps-section-picker-group-7')).not.toBeDisabled()
   })
 
-  // #2973 — "No limit" is an explicit choice: a group can be a plain bundle with no shared budget.
-  it('attaches a group with No limit, not counted toward the daily limit', async () => {
-    fn(api.apps.list).mockResolvedValue([app(50, 'YouTube', { mode: 'allowed' })])
-    fn(api.appGroups.list).mockResolvedValue([games])
+  // #2982 (D18) — group rows sit in the list that matches their mode, ahead of the apps.
+  it('puts a Blocked group in the Blocked list and an Allowed one first in the Allowed list', async () => {
+    fn(api.apps.list).mockResolvedValue([app(50, 'Aardvark', { mode: 'allowed' }), app(51, 'Zebra', { mode: 'blocked' })])
+    fn(api.appGroups.list).mockResolvedValue([games, { id: 8, name: 'Homework', memberAppIds: [62] }])
+    fn(api.appGroups.forProfile).mockResolvedValue([
+      attachment({ mode: 'blocked', dailyMinutes: null, weeklyMinutes: null }),
+      attachment({ groupId: 8, name: 'Homework', memberAppIds: [62], dailyMinutes: null, weeklyMinutes: null }),
+    ])
     const user = userEvent.setup()
     await openApps(user)
-    await user.click(await screen.findByTestId('profile-1-apps-section-add-group'))
-    await user.click(screen.getByTestId('profile-1-apps-section-add-group-option-7'))
-    await user.click(await screen.findByTestId('profile-1-apps-section-add-group-no-limit'))
-    await waitFor(() =>
-      expect(api.appGroups.attach).toHaveBeenCalledWith(1, 7, { dailyMinutes: null, weeklyMinutes: null, exemptFromDaily: true }))
+    const blockedList = await screen.findByTestId('profile-1-apps-section-blocked-list')
+    const allowedList = screen.getByTestId('profile-1-apps-section-allowed-list')
+    expect(await within(blockedList).findByTestId('group-row-7')).toBeInTheDocument()
+    expect(within(allowedList).getByTestId('group-row-8')).toBeInTheDocument()
+    expect(within(allowedList).queryByTestId('group-row-7')).not.toBeInTheDocument()
+    // Groups first: the group row precedes the alphabetically-earlier app.
+    const first = allowedList.querySelector('[data-testid^="group-row-"], [data-testid^="app-row-"]')
+    expect(first).toHaveAttribute('data-testid', 'group-row-8')
+    expect(screen.getByTestId('profile-1-apps-section-allowed-count')).toHaveTextContent('2')
+    expect(screen.getByTestId('profile-1-apps-section-blocked-count')).toHaveTextContent('2')
+    expect(screen.queryByTestId('profile-1-apps-section-groups-list')).not.toBeInTheDocument()
+  })
+
+  it('shows a Blocked group with no limit or counts controls, and Allow moves it', async () => {
+    fn(api.apps.list).mockResolvedValue([app(50, 'YouTube', { mode: 'allowed' })])
+    fn(api.appGroups.list).mockResolvedValue([games])
+    fn(api.appGroups.forProfile).mockResolvedValue([attachment({ mode: 'blocked', dailyMinutes: null, weeklyMinutes: null })])
+    const user = userEvent.setup()
+    await openApps(user)
+    const row = await screen.findByTestId('group-row-7')
+    expect(within(row).queryByTestId('group-row-7-toggle')).not.toBeInTheDocument()
+    expect(within(row).queryByTestId('group-row-7-counts-chip')).not.toBeInTheDocument()
+    expect(within(row).getByTestId('group-row-7-group-tag')).toHaveTextContent('Group')
+    const move = within(row).getByTestId('group-row-7-move')
+    expect(move).toHaveTextContent('Allow')
+    await user.click(move)
+    await waitFor(() => expect(api.appGroups.attach).toHaveBeenCalledWith(1, 7, {
+      mode: 'allowed', dailyMinutes: null, weeklyMinutes: null, exemptFromDaily: true,
+    }))
+  })
+
+  it('Block on an Allowed group moves it to the Blocked list, dropping its limits', async () => {
+    fn(api.apps.list).mockResolvedValue([app(50, 'YouTube', { mode: 'allowed' })])
+    fn(api.appGroups.list).mockResolvedValue([games])
+    fn(api.appGroups.forProfile).mockResolvedValue([attachment({ dailyMinutes: 60, weeklyMinutes: null })])
+    const user = userEvent.setup()
+    await openApps(user)
+    const move = await screen.findByTestId('group-row-7-move')
+    expect(move).toHaveTextContent('Block')
+    await user.click(move)
+    await waitFor(() => expect(api.appGroups.attach).toHaveBeenCalledWith(1, 7, {
+      mode: 'blocked', dailyMinutes: null, weeklyMinutes: null, exemptFromDaily: true,
+    }))
+  })
+
+  // #2982 (D19) — an Allowed group carries the #1679 toggle; a time-limited one does not show it.
+  it('turns off Reachable during scheduled downtime on an Allowed group', async () => {
+    fn(api.apps.list).mockResolvedValue([app(50, 'YouTube', { mode: 'allowed' })])
+    fn(api.appGroups.list).mockResolvedValue([games, { id: 8, name: 'Homework', memberAppIds: [62] }])
+    fn(api.appGroups.forProfile).mockResolvedValue([
+      attachment({ dailyMinutes: null, weeklyMinutes: null }),
+      attachment({ groupId: 8, name: 'Homework', memberAppIds: [62] }),
+    ])
+    const user = userEvent.setup()
+    await openApps(user)
+    await user.click(await screen.findByTestId('group-row-8-toggle'))
+    expect(screen.queryByTestId('group-row-8-reachable-in-downtime')).not.toBeInTheDocument()
+    await user.click(await screen.findByTestId('group-row-7-toggle'))
+    const box = await screen.findByTestId('group-row-7-reachable-in-downtime')
+    expect(box).toBeChecked()
+    await user.click(box)
+    await waitFor(() => expect(api.appGroups.attach).toHaveBeenCalledWith(1, 7, {
+      dailyMinutes: null, weeklyMinutes: null, exemptFromDaily: true, allowedDuringScheduleBlock: false,
+    }))
+  })
+
+  // #2747 — an Allowed group outlives the daily limit whether or not it counts, so the hint claims
+  // only the budget effect.
+  it('shows the budget-only hint on an Allowed group that is not counted', async () => {
+    fn(api.apps.list).mockResolvedValue([app(50, 'YouTube', { mode: 'allowed' })])
+    fn(api.appGroups.list).mockResolvedValue([games])
+    fn(api.appGroups.forProfile).mockResolvedValue([attachment({ dailyMinutes: null, weeklyMinutes: null })])
+    const user = userEvent.setup()
+    await openApps(user)
+    await user.click(await screen.findByTestId('group-row-7-toggle'))
+    expect(await screen.findByTestId('group-row-7-exempt-hint')).toHaveTextContent(
+      'Not counted: its time is left out of the daily limit.',
+    )
   })
 
   it('shows "No limit" on the row of a limitless group, even before usage loads', async () => {
@@ -3160,7 +3259,7 @@ describe('ProfilesPage — weekly limits and app groups (#2935)', () => {
     await user.click(await screen.findByTestId('group-row-7-toggle'))
     await user.click(await screen.findByTestId('group-row-7-no-limit'))
     await waitFor(() =>
-      expect(api.appGroups.attach).toHaveBeenCalledWith(1, 7, { dailyMinutes: null, weeklyMinutes: null, exemptFromDaily: true }))
+      expect(api.appGroups.attach).toHaveBeenCalledWith(1, 7, { mode: 'allowed', dailyMinutes: null, weeklyMinutes: null, exemptFromDaily: true }))
   })
 
   // "No limit" is an explicit choice (#2973): clearing the only limit on the way to typing another
@@ -3229,17 +3328,48 @@ describe('ProfilesPage — weekly limits and app groups (#2935)', () => {
       expect(api.appGroups.attach).toHaveBeenCalledWith(1, 7, { dailyMinutes: null, weeklyMinutes: null, exemptFromDaily: false }))
   })
 
-  it('creates a new group, then asks for its limit', async () => {
+  // #2982 review — while this profile's attachments are unknown, a group already on it could be
+  // offered and re-attached with no limits; and a loading list must not look like a real one.
+  it('offers no groups in a picker, and shows no real-looking counts, while attachments load', async () => {
+    fn(api.apps.list).mockResolvedValue([app(50, 'YouTube', { mode: 'allowed' })])
+    fn(api.appGroups.list).mockResolvedValue([games])
+    fn(api.appGroups.forProfile).mockReturnValue(new Promise(() => {}))
+    const user = userEvent.setup()
+    await openApps(user)
+    expect(await screen.findByTestId('profile-1-apps-section-allowed-groups-loading')).toBeInTheDocument()
+    expect(screen.getByTestId('profile-1-apps-section-blocked-groups-loading')).toBeInTheDocument()
+    expect(screen.getByTestId('profile-1-apps-section-allowed-count-loading')).toBeInTheDocument()
+    expect(screen.queryByTestId('profile-1-apps-section-blocked-empty')).not.toBeInTheDocument()
+    await user.click(screen.getByTestId('profile-1-apps-section-add-allowed'))
+    expect(await screen.findByTestId('profile-1-apps-section-picker-groups-loading')).toBeInTheDocument()
+    expect(screen.queryByTestId('profile-1-apps-section-picker-group-7')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('profile-1-apps-section-picker-new-group')).not.toBeInTheDocument()
+  })
+
+  it('says groups could not load, in the lists and the picker, and offers none', async () => {
+    fn(api.apps.list).mockResolvedValue([app(50, 'YouTube', { mode: 'allowed' })])
+    fn(api.appGroups.list).mockResolvedValue([games])
+    fn(api.appGroups.forProfile).mockRejectedValue(new Error('boom'))
+    const user = userEvent.setup()
+    await openApps(user)
+    expect(await screen.findByTestId('profile-1-apps-section-allowed-groups-error')).toBeInTheDocument()
+    expect(screen.queryByTestId('profile-1-apps-section-blocked-empty')).not.toBeInTheDocument()
+    await user.click(screen.getByTestId('profile-1-apps-section-add-blocked'))
+    expect(await screen.findByTestId('profile-1-apps-section-picker-groups-error')).toBeInTheDocument()
+    expect(screen.queryByTestId('profile-1-apps-section-picker-group-7')).not.toBeInTheDocument()
+  })
+
+  it('creates a new group from a picker and adds it to that list', async () => {
     fn(api.apps.list).mockResolvedValue([app(50, 'YouTube', { mode: 'allowed' })])
     const user = userEvent.setup()
     await openApps(user)
-    await user.click(await screen.findByTestId('profile-1-apps-section-add-group'))
-    await user.click(screen.getByTestId('profile-1-apps-section-add-group-new'))
-    await user.type(screen.getByTestId('profile-1-apps-section-add-group-name'), 'Screens{Enter}')
+    await user.click(await screen.findByTestId('profile-1-apps-section-add-allowed'))
+    await user.click(await screen.findByTestId('profile-1-apps-section-picker-new-group'))
+    await user.type(screen.getByTestId('profile-1-apps-section-picker-new-group-name'), 'Screens{Enter}')
     await waitFor(() => expect(api.appGroups.create).toHaveBeenCalledWith({ name: 'Screens' }))
-    await user.type(await screen.findByTestId('profile-1-apps-section-add-group-minutes'), '45{Enter}')
-    await waitFor(() =>
-      expect(api.appGroups.attach).toHaveBeenCalledWith(1, 9, { dailyMinutes: 45, exemptFromDaily: true }))
+    await waitFor(() => expect(api.appGroups.attach).toHaveBeenCalledWith(1, 9, {
+      mode: 'allowed', dailyMinutes: null, weeklyMinutes: null, exemptFromDaily: true,
+    }))
   })
 
   it('says which other profiles use a group when editing its members', async () => {
@@ -3408,10 +3538,9 @@ describe('ProfilesPage — weekly limits and app groups (#2935)', () => {
       attachedNew ? [attachment({ groupId: 9, name: 'Screens', memberAppIds: [] })] : [])
     const user = userEvent.setup()
     await openApps(user)
-    await user.click(await screen.findByTestId('profile-1-apps-section-add-group'))
-    await user.click(screen.getByTestId('profile-1-apps-section-add-group-new'))
-    await user.type(screen.getByTestId('profile-1-apps-section-add-group-name'), 'Screens{Enter}')
-    await user.type(await screen.findByTestId('profile-1-apps-section-add-group-minutes'), '45{Enter}')
+    await user.click(await screen.findByTestId('profile-1-apps-section-add-allowed'))
+    await user.click(await screen.findByTestId('profile-1-apps-section-picker-new-group'))
+    await user.type(screen.getByTestId('profile-1-apps-section-picker-new-group-name'), 'Screens{Enter}')
     expect(await screen.findByTestId('group-row-9-member-picker')).toBeInTheDocument()
     expect(screen.getByTestId('group-row-9-member-pick-62')).toBeInTheDocument()
   })

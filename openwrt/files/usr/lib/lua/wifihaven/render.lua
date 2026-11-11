@@ -435,6 +435,128 @@ local function global_block_ip_only(snapshot)
   return (g and g.blockIpOnly) and true or false
 end
 
+-- Appends each spec in `specs` not yet in `seen` to `list`, keeping order.
+-- Shared by render.dnsmasq and blocklists.render_shards (#2995).
+function M.append_unique(list, seen, specs)
+  for _, spec in ipairs(specs) do
+    if not seen[spec] then
+      seen[spec] = true
+      list[#list + 1] = spec
+    end
+  end
+end
+
+-- ---------------------------------------------------------------------------
+-- render.nftset_host_specs(snapshot) → host_order, host_specs
+-- ---------------------------------------------------------------------------
+-- The main-conf nftset= specs, per host: ea_ (extraAllowed), eb_
+-- (extraBlocked), @global_allow and @global_block. host_specs[host] is the
+-- ordered spec list; host_order is the hosts in first-seen order.
+--
+-- #2995: dnsmasq fires exactly ONE nftset= directive per reply — the longest
+-- suffix match on the query name, and on a tie the directive it parsed first
+-- (domain_find_sets in src/forward.c; src/option.c prepends each directive to
+-- daemon->nftsets). So a name's directive must carry every set the name
+-- belongs in. render.dnsmasq uses this map for its own lines, and
+-- blocklists.render_shards appends it to any shard member at or below one of
+-- these hosts, so a blocklist member that is also allowed or blocked here
+-- fills both sets before dnsmasq answers.
+function M.nftset_host_specs(snapshot)
+  local ea_hosts = extra_allowed_hosts(effective_extra_allowed_by_mac(snapshot))
+  local ga_hosts = global_allow_hosts(snapshot)
+  local gb_hosts = global_block_hosts(snapshot)
+
+  -- host_order preserves first-seen ordering (deterministic by source);
+  -- host_specs accumulates the per-host spec list. Source order:
+  --   1. ea_  (per host, sorted)
+  --   2. eb_  (per-host, in effective_extra_blocked_hosts order)
+  --   3. ga_  (global allow, sorted)
+  --   4. gb_  (global block, sorted)
+  -- bl_ specs are not part of this map: they live in the per-blocklist shard
+  -- files (#1782). Where a host here overlaps a blocklist member, the two
+  -- directives are reconciled by render_shards and render.dnsmasq (#2995).
+  -- Within each source the v4 spec precedes v6. add_spec de-duplicates
+  -- identical specs per host (e.g. the same host listed twice) so the merged
+  -- directive never carries a redundant comma entry.
+  local host_order, host_specs, host_seen = {}, {}, {}
+  local function add_spec(host, spec)
+    if not host_specs[host] then
+      host_specs[host] = {}
+      host_seen[host] = {}
+      host_order[#host_order + 1] = host
+    end
+    if not host_seen[host][spec] then
+      host_seen[host][spec] = true
+      host_specs[host][#host_specs[host] + 1] = spec
+    end
+  end
+
+  -- #1489: a host that is also in global.extraAllowed needs NO ea_ populator.
+  -- @global_allow already carves it out of every drop for every MAC
+  -- (render.nft's ga_suffix), so the ea_ specs are pure redundancy. Skip them;
+  -- enforcement rides on @global_allow, which dns-tail and the apply-time
+  -- backfill fill from live and cached replies (#2923; before that only
+  -- dnsmasq's callback did, and the set sat empty after every apply). This
+  -- mirrors the #1307→#1321 redundancy the global-allow layer retires.
+  local ga_host_set = {}
+  for _, h in ipairs(ga_hosts) do ga_host_set[h] = true end
+
+  for _, host in ipairs(ea_hosts) do
+    if not ga_host_set[host] then
+      add_spec(host, "4#inet#wifihaven#" .. ea_set_name(host))
+      add_spec(host, "6#inet#wifihaven#" .. ea6_set_name(host))
+    end
+  end
+  for _, host in ipairs(effective_extra_blocked_hosts(snapshot)) do
+    add_spec(host, "4#inet#wifihaven#" .. eb_set_name(host))
+    add_spec(host, "6#inet#wifihaven#" .. eb6_set_name(host))
+  end
+  -- bl_ specs removed from here (#1782): they now live in shard files.
+  for _, host in ipairs(ga_hosts) do
+    add_spec(host, "4#inet#wifihaven#" .. GLOBAL_ALLOW4)
+    add_spec(host, "6#inet#wifihaven#" .. GLOBAL_ALLOW6)
+  end
+  for _, host in ipairs(gb_hosts) do
+    add_spec(host, "4#inet#wifihaven#" .. GLOBAL_BLOCK4)
+    add_spec(host, "6#inet#wifihaven#" .. GLOBAL_BLOCK6)
+  end
+
+  return host_order, host_specs
+end
+
+-- ---------------------------------------------------------------------------
+-- render.nftset_directive(host, specs) → line|nil, note|nil
+-- ---------------------------------------------------------------------------
+-- One `nftset=/<host>/<spec>,...` line, kept within dnsmasq's line limit.
+--
+-- dnsmasq reads config lines into a fixed MAXDNAME(1025)-byte buffer with no
+-- line continuation, so a directive over 1024 bytes is truncated and its
+-- remainder is parsed as a bogus option; dnsmasq then refuses to start and :53
+-- returns "connection refused" (#1489). Only one directive per name is
+-- honoured, so a host can't be split across lines. When the line is too long,
+-- drop the ea_/ea6_ specs: dns-tail (#1346) repopulates the ea_ sets from live
+-- replies, so the carve-out is only delayed until the first reply lands, not
+-- lost. Crashing dnsmasq (which takes :53 down for every device) is strictly
+-- worse. `note` is a conf comment recording the drop; line is nil when only
+-- ea_ specs existed. Used for both the main conf and the blocklist shards.
+function M.nftset_directive(host, specs)
+  local line = string.format("nftset=/%s/%s", host, table.concat(specs, ","))
+  if #line <= 1024 then return line, nil end
+  local kept, dropped = {}, 0
+  for _, s in ipairs(specs) do
+    if s:find("#ea_", 1, true) or s:find("#ea6_", 1, true) then
+      dropped = dropped + 1
+    else
+      kept[#kept + 1] = s
+    end
+  end
+  local note = string.format(
+    "# wifihaven: dropped %d ea_ spec(s) for %s to fit dnsmasq's 1024-byte line limit (#1489); dns-tail (#1346) repopulates ea_ sets from live replies",
+    dropped, host)
+  if #kept == 0 then return nil, note end
+  return string.format("nftset=/%s/%s", host, table.concat(kept, ",")), note
+end
+
 -- ---------------------------------------------------------------------------
 -- render.dnsmasq(snapshot) → string
 -- ---------------------------------------------------------------------------
@@ -491,7 +613,6 @@ function M.dnsmasq(snapshot, opts)
   -- emit had no reader (no `tag:profile<N>` directive exists: dnsmasq 2.91
   -- rejects `tag:` in nftset=, #496), so they are gone. blockIpOnly's per-MAC
   -- resolved_ sets are populated by wifihaven-dns-tail (#353/#505).
-  local ea_hosts = extra_allowed_hosts(effective_extra_allowed_by_mac(snapshot))
 
   -- #353/#505: per-MAC resolved-IP set population is NOT done via dnsmasq
   -- `nftset=` — dnsmasq 2.91 rejects the `tag:` prefix needed for per-MAC
@@ -513,10 +634,10 @@ function M.dnsmasq(snapshot, opts)
   -- blocking is the connection layer); these directives only populate the
   -- nft sets that the forward-chain rules consume.
   --
-  -- **One merged directive per host.** dnsmasq matches `nftset=/<host>/...`
-  -- directives by domain, and when multiple separate directives target the
-  -- same domain only ONE wins — the others are silently dropped (resulting
-  -- in empty sets and a silent enforcement gap). Concretely: if profile.
+  -- **One merged directive per host.** dnsmasq fires ONE `nftset=` directive
+  -- per reply: the longest suffix match, first-parsed on a tie (#2995; see
+  -- nftset_host_specs). Every other matching directive is silently ignored
+  -- (resulting in empty sets and a silent enforcement gap). Concretely: if profile.
   -- extraAllowed names a host that global.extraBlocked also names, an
   -- ea_ directive emitted before a global_block directive would leave
   -- @global_block empty and the global block would never fire. The H3
@@ -534,8 +655,8 @@ function M.dnsmasq(snapshot, opts)
   -- host across lines, so the per-host spec count must stay bounded. Since
   -- #2900 every channel contributes at most one v4 + one v6 spec per host (the
   -- ea_ sets used to be per-(MAC, host), one spec pair per device), so only a
-  -- pathologically long hostname can still overflow; the guard in the emit
-  -- loop below stays for that case.
+  -- pathologically long hostname can still overflow; nftset_directive keeps
+  -- the guard for that case.
   -- #1782: per-blocklist shard files are included via conf-file= directives so
   -- dnsmasq loads the nftset= host entries from /tmp/wifihaven-blocklist-<id>.conf
   -- without the agent ever holding the full host list in Lua memory. The shard
@@ -560,109 +681,33 @@ function M.dnsmasq(snapshot, opts)
     emit("")
   end
 
-  local ga_hosts = global_allow_hosts(snapshot)
-  local gb_hosts = global_block_hosts(snapshot)
-
-  -- host_order preserves first-seen ordering (deterministic by source);
-  -- host_specs accumulates the per-host spec list. Source order:
-  --   1. ea_  (per host, sorted)
-  --   2. eb_  (per-host, in effective_extra_blocked_hosts order)
-  --   3. ga_  (global allow, sorted)
-  --   4. gb_  (global block, sorted)
-  -- Note: bl_ specs are NO LONGER emitted here — they live in per-blocklist
-  -- shard files included via conf-file= above (#1782). A host that appears in
-  -- both a blocklist AND in ea_/eb_/global sets will have its bl_ spec in the
-  -- shard file and its other specs in this merged directive — dnsmasq applies
-  -- all matching nftset= directives across config files, so each set is
-  -- populated independently. See PR #1782 body for the rationale.
-  -- Within each source the v4 spec precedes v6. add_spec de-duplicates
-  -- identical specs per host (e.g. the same host listed twice) so the merged
-  -- directive never carries a redundant comma entry.
-  local host_order, host_specs, host_seen = {}, {}, {}
-  local function add_spec(host, spec)
-    if not host_specs[host] then
-      host_specs[host] = {}
-      host_seen[host] = {}
-      host_order[#host_order + 1] = host
-    end
-    if not host_seen[host][spec] then
-      host_seen[host][spec] = true
-      host_specs[host][#host_specs[host] + 1] = spec
-    end
-  end
-
-  -- #1489: a host that is also in global.extraAllowed needs NO ea_ populator.
-  -- @global_allow already carves it out of every drop for every MAC
-  -- (render.nft's ga_suffix), so the ea_ specs are pure redundancy. Skip them;
-  -- enforcement rides on @global_allow, which dns-tail and the apply-time
-  -- backfill fill from live and cached replies (#2923; before that only
-  -- dnsmasq's callback did, and the set sat empty after every apply). This
-  -- mirrors the #1307→#1321 redundancy the global-allow layer retires.
-  local ga_host_set = {}
-  for _, h in ipairs(ga_hosts) do ga_host_set[h] = true end
-
-  for _, host in ipairs(ea_hosts) do
-    if not ga_host_set[host] then
-      add_spec(host, "4#inet#wifihaven#" .. ea_set_name(host))
-      add_spec(host, "6#inet#wifihaven#" .. ea6_set_name(host))
-    end
-  end
-  for _, host in ipairs(effective_extra_blocked_hosts(snapshot)) do
-    add_spec(host, "4#inet#wifihaven#" .. eb_set_name(host))
-    add_spec(host, "6#inet#wifihaven#" .. eb6_set_name(host))
-  end
-  -- bl_ specs removed from here (#1782): they now live in shard files.
-  for _, host in ipairs(ga_hosts) do
-    add_spec(host, "4#inet#wifihaven#" .. GLOBAL_ALLOW4)
-    add_spec(host, "6#inet#wifihaven#" .. GLOBAL_ALLOW6)
-  end
-  for _, host in ipairs(gb_hosts) do
-    add_spec(host, "4#inet#wifihaven#" .. GLOBAL_BLOCK4)
-    add_spec(host, "6#inet#wifihaven#" .. GLOBAL_BLOCK6)
-  end
+  -- #2995: bl_specs_by_host[host] is the bl_ specs of every blocklist with a
+  -- member at or above `host`. blocklists.render_shards collects them while it
+  -- streams the lists (render_outputs keeps them in the agent's render state).
+  -- For a host strictly below a member this line is the longer match, so it is
+  -- the one dnsmasq fires and must carry the bl_ sets. On an exact tie the
+  -- shard's line (parsed first) wins, and render_shards gave it this host's
+  -- specs, so either way the chosen line fills every set.
+  local bl_specs_by_host = opts.bl_specs_by_host or {}
+  local host_order, host_specs = M.nftset_host_specs(snapshot)
 
   if #host_order > 0 then
     emit("# nftset populators — merged per host so dnsmasq fires every set")
-    emit("# (ea+eb+bl+global; see issues 421, 496, 351, 392, 352, 1319 above)")
+    emit("# (ea+eb+bl+global; see issues 421, 496, 351, 392, 352, 1319, 2995 above)")
     for _, host in ipairs(host_order) do
       local specs = host_specs[host]
-      local line  = string.format("nftset=/%s/%s", host, table.concat(specs, ","))
-      -- #1489 follow-up: if a merged line would still overflow dnsmasq's
-      -- 1024-byte config-line buffer (pre-#2900 that was a host in many
-      -- profiles' extraAllowed piling one ea_ spec per device onto the line;
-      -- now only a very long hostname), drop the ea_/ea6_ specs from the
-      -- merged directive: dns-tail (#1346) repopulates the ea_ sets from live
-      -- replies, so the carve-out is only delayed until the first reply lands
-      -- for that host, not lost. Crashing dnsmasq (which takes :53 down for
-      -- every device) is strictly worse.
-      if #line > 1024 then
-        local kept, dropped = {}, 0
-        for _, s in ipairs(specs) do
-          if s:find("#ea_", 1, true) or s:find("#ea6_", 1, true) then
-            dropped = dropped + 1
-          else
-            kept[#kept + 1] = s
-          end
-        end
-        emit(string.format(
-          "# wifihaven: dropped %d ea_ spec(s) for %s to fit dnsmasq's 1024-byte line limit (#1489); dns-tail (#1346) repopulates ea_ sets from live replies",
-          dropped, host))
-        if #kept > 0 then
-          line = string.format("nftset=/%s/%s", host, table.concat(kept, ","))
-        else
-          -- Only ea_ specs existed for this host. With them gone there is
-          -- nothing left to emit; the host carries no surviving nftset=
-          -- directive. dns-tail still populates the ea_ sets from live
-          -- replies, so the (MAC,host) carve-out is recovered after the
-          -- first resolution. Keeping dnsmasq alive is the goal.
-          line = nil
-        end
+      if bl_specs_by_host[host] then
+        local merged, seen = {}, {}
+        M.append_unique(merged, seen, specs)
+        M.append_unique(merged, seen, bl_specs_by_host[host])
+        specs = merged
       end
+      local line, note = M.nftset_directive(host, specs)
+      if note then emit(note) end
       if line then emit(line) end
     end
     emit("")
   end
-
   return table.concat(out, "\n")
 end
 
