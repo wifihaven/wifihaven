@@ -12,41 +12,20 @@ Declarative config for everything Cloudflare-side (#613):
 - SPF TXT record + the `e2e-brand` / `e2e-mid` / `e2e-edge` test-fixture
   CNAME chain (#1351).
 - Resend sending records on `send.wifihaven.net` (DKIM/MX/SPF, #578/#2196).
-- **Plain outbound sending** records (#2247/#2206): per-domain Postmark DKIM
-  (`20260716…pm._domainkey` on the apex and on `staging`) + custom Return-Path
-  CNAMEs (`plain-bounces` and `plain-bounces.staging` → `pm.mtasv.net`) for
-  `support@wifihaven.net` and `support@staging.wifihaven.net`. The per-domain
-  DKIM strict-aligns `d=` under our `adkim=s` DMARC; the custom Return-Path means
-  **no apex SPF include for Postmark is needed** (do not add `spf.mtasv.net`).
-  Apply + let DNS propagate **before** clicking Plain's "Verify DNS and continue".
-- **Email Routing** (#2198): forwards `support@wifihaven.net` **and**
-  `support@staging.wifihaven.net` into WifiHaven's Plain inbox (each to its own
-  Postmark inbound address — prod vs. staging channel). Terraform manages only
-  the parts a scoped CI token can create: two `cloudflare_email_routing_address`
-  (prod + staging Plain destinations) and two `cloudflare_email_routing_rule`
-  (the `to` → forward rules). **Enabling Email Routing on the zone is an
-  operator/dashboard step, not Terraform** — a scoped API token cannot perform
-  the zone "enable" onboarding action even with `Zone → Email Routing Rules →
-  Edit` (it returns `Authentication error (10000)`; verified on #2243). Enabling
-  in the dash also provisions the apex `route1/2/3.mx.cloudflare.net` MX with
-  zone-assigned priorities, which are likewise **not** authored here (same class
-  as the enable; they live outside Terraform state, so no drift). Operator steps:
-  (1) **enable Email Routing on the zone** (Email → Email Routing → Enable), and
-  for the **staging** address also add the `staging` subdomain under Settings →
-  Subdomains — do both **before** the apply, else the rule creates fail;
-  (2) ensure the CI Cloudflare token carries `Account → Email Routing Addresses →
-  Edit` and `Zone → Email Routing Rules → Edit` (needed for the addresses + rules
-  Terraform *does* manage); (3) click the destination-verification link
-  Cloudflare emails to each Plain inbox (prod and staging).
 - **Personal forwarding alias** (#2204): forwards `sameer@wifihaven.net` straight
   to the operator's real external inbox `sameerbrenn@gmail.com` — a plain
-  Cloudflare Email Routing forward (no Plain, no Email Worker, no app/AI). Managed
+  Cloudflare Email Routing forward. Managed
   as one `cloudflare_email_routing_address` (the external destination) + one
-  `cloudflare_email_routing_rule` (`to` → forward). Uses the same already-enabled
-  zone Email Routing and the same apex SPF as support@ — **no SPF change**, and it
-  coexists with support@/press@ (distinct local-part). Operator step: click the
-  one-time Cloudflare destination-verification link emailed to
-  `sameerbrenn@gmail.com` (Terraform cannot complete it).
+  `cloudflare_email_routing_rule` (`to` → forward). **Enabling Email Routing on
+  the zone is an operator/dashboard step, not Terraform**: a scoped API token
+  cannot perform the zone "enable" onboarding action (`Authentication error
+  (10000)`, verified on #2243), and enabling in the dash also provisions the apex
+  `route1/2/3.mx.cloudflare.net` MX, which are likewise not authored here. The CI
+  token needs `Account → Email Routing Addresses → Edit` and `Zone → Email
+  Routing Rules → Edit`. Operator step: click the one-time Cloudflare
+  destination-verification link emailed to `sameerbrenn@gmail.com` (Terraform
+  cannot complete it). support@ and press@ were routed to Plain and the press
+  Email Worker until #2959 removed them; they no longer receive mail.
 
 **Not managed here**: the zone itself (added once via the dash; NS flip at the
 registrar is a one-shot manual step), and the GitHub repo secrets.
@@ -217,14 +196,6 @@ reconcile by adding the resource here, not by applying around it.
 ## Email Address Obfuscation stays ON (2026-08-16)
 
 Cloudflare's Email Address Obfuscation is a zone default and is **deliberately not disabled**,
-so it is not declared in `main.tf`. It rewrites the `mailto:press@wifihaven.net` links on
-`wifihaven.net/press` into `/cdn-cgi/l/email-protection` spans that decode client-side.
-
-Keep it. `press@wifihaven.net` feeds the [#2203](https://github.com/wifihaven/wifihaven/issues/2203)
-press responder, which dispatches a cloud agent for every inbound message — so an address
-harvested off the press page costs API tokens per spam mail, not just inbox clutter. The known
-cost is that a no-JS fetch of the press page renders `[email protected]` rather than the address;
-that was weighed against the spam exposure and accepted.
-
-If a future change needs the literal address in the HTML, solve it without turning obfuscation
-off zone-wide.
+so it is not declared in `main.tf`. It was kept on to stop `press@wifihaven.net` being harvested
+off the press page. #2959 removed that address and its link, so nothing on the site depends on it
+today; leaving the zone default alone costs nothing.
