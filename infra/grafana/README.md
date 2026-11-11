@@ -104,15 +104,10 @@ too:
   group needs a concrete, non-empty folder, so this one is managed in-repo
   (idempotent now that the HCP backend owns its state).
 - **Warning rule group** ([`alerting-rules-warning.tf`](alerting-rules-warning.tf),
-  #1405, #2416, #2488, #2553, #2646) — W1–W10 (§7.2). W5 ships **disabled** (`is_paused`)
+  #1405, #2553, #2646) — W1–W5, W9, W10, W14–W19 (§7.2). W5 ships **disabled** (`is_paused`)
   because its series is router-pushed and not yet trustworthy in prod (§8,
-  #1382). W6–W8 shipped enabled while the support/press responders were still
-  flag-off in prod, so they armed themselves when #2537 flipped those flags — no
-  second flip to forget. The flag is necessary but not sufficient, and the two
-  halves differ: **W7 (press) is live and exercisable** (the Email Worker already
-  posts to the prod API), while **W6/W8 (support) are armed but not yet
-  exercisable** — their series need an inbound Plain webhook, and prod's is
-  unwired (#2543).
+  #1382). W6–W8 and W11–W13 (the support/press responder alerts) were removed
+  in #2954 with the responders; their numbers are not reused.
 - **Critical rule group** ([`alerting-rules-critical.tf`](alerting-rules-critical.tf),
   #1404) — C1–C7 (§7.1).
 

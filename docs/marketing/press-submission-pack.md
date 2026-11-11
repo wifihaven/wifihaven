@@ -3,8 +3,9 @@
 **Every target on the media list is a contact FORM or tip line. None has a publishable
 direct email address.** So the outreach is done by submitting each outlet's form by hand
 on launch day — Monday 2026-08-17 — not by sending email. The API's press-outreach email
-sender was removed for that reason (operator decision, 2026-08-15); the #2203 press
-RESPONDER is untouched and still handles inbound press mail at `press@wifihaven.net`.
+sender was removed for that reason (operator decision, 2026-08-15). The #2203 press
+RESPONDER and the `press@wifihaven.net` address were removed later (#2954); the submissions
+below are historical.
 
 This file is the working sheet for that session. One block per outlet, in send order:
 the form URL, the pitch written for that outlet, and what to paste where. The founder's
@@ -28,7 +29,7 @@ URL field. The mapping:
 | Message / pitch / tip | the outlet's pitch below, verbatim |
 | Link / URL | `https://wifihaven.net/press` |
 | Your name | Sameer Brenn |
-| Your email | `press@wifihaven.net` — replies route to the #2203 responder |
+| Your email | `press@wifihaven.net` (historical: removed in #2954) |
 
 If the form has a hard character limit, cut from the END of the pitch. The first two
 sentences carry the outlet-specific hook and the mechanism; the closing offer is the

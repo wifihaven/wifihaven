@@ -44,8 +44,6 @@ object StartupFeatureReport {
   ): List[FeatureState] = {
     val email   = cfg.email
     val stripe  = cfg.stripe
-    val support = cfg.support
-    val press   = cfg.press
     val metrics = cfg.metrics
 
     List(
@@ -70,93 +68,6 @@ object StartupFeatureReport {
           // Only checkout/portal are gated; GET /api/billing still reports the household's row.
           "wifihaven.stripe.enabled=false — billing off, checkout/portal return " +
             "not-configured (#2135/#2266)",
-      ),
-      FeatureState(
-        "support-widget",
-        support.plain.widgetEnabled,
-        if support.plain.widgetEnabled then
-          "wifihaven.support.plain.widgetEnabled=true — appId + identitySecret required & set"
-        else
-          "wifihaven.support.plain.widgetEnabled=false — identified chat widget renders nothing " +
-            "(#2199/#2266)",
-      ),
-      // #2429/#2266 rule 3: with no address published, the SPA renders NO support line at all —
-      // an off state that must be observable at boot and on /api/debug/config rather than an
-      // unlabeled silent branch. (When the widget is on, the address is REQUIRED and boot fails
-      // without it — AppConfig.validateRequired via SupportConfig.widgetEmailConfigErrors.)
-      FeatureState(
-        "support-email",
-        support.supportEmailOpt.isDefined,
-        support.supportEmailOpt.fold(
-          "wifihaven.support.emailAddress unset — no hosted support desk; the SPA shows no support " +
-            "line (self-hosted posture, #2429)",
-        )(addr => s"wifihaven.support.emailAddress=$addr — published to admins in the SPA (#2429)"),
-      ),
-      FeatureState(
-        "support-write-api",
-        support.plain.writeEnabled,
-        if support.plain.writeEnabled then
-          "wifihaven.support.plain.writeEnabled=true — apiKey required & set, Plain write client live"
-        else
-          "wifihaven.support.plain.writeEnabled=false — Plain write client is a metered no-op " +
-            "(#2199/#2266)",
-      ),
-      // #2200/#2265: the responder and issue filing are EXPLICIT-flag features (rule 3's first leg —
-      // a named `enabled` flag, not inferred from secrets). When a flag is ON, its whole config
-      // chain is REQUIRED and validated at boot (AppConfig.validateRequired); this report makes the
-      // deliberate OFF state observable so it isn't mistaken for a silent no-op.
-      FeatureState(
-        "support-responder",
-        support.responderEnabled,
-        if support.responderEnabled then
-          // #2300: name the active transport so the credit-billed vs subscription-billed path is
-          // observable, not just "enabled".
-          s"wifihaven.support.responderEnabled=true — signed webhook drafts a cloud-agent reply " +
-            s"(dispatcher=${support.dispatcherTrimmed})"
-        else
-          "wifihaven.support.responderEnabled=false — inbound support webhook no-ops, agent " +
-            "endpoints 404 (#2200/#2265)",
-      ),
-      // #2437: an escalation is not complete until a human has been notified — so the state of the
-      // NOTICE channel is reported in its own right, not left to be inferred from `email-enabled`
-      // plus `support-responder`. With the email transport off, a support escalation still labels
-      // the Plain thread (an independent channel), but no operator email goes out; that degraded
-      // shape is NAMED here rather than being an unlabelled silent branch (#2266 rule 3).
-      FeatureState(
-        "escalation-notices",
-        email.enabled && email.operatorAddressTrimmed.nonEmpty,
-        if email.enabled && email.operatorAddressTrimmed.nonEmpty then
-          "wifihaven.email.operatorAddress set — support/press escalations email the operator (#2437)"
-        else if !email.enabled then
-          "wifihaven.email.enabled=false — escalations are LOGGED and (for support) labelled in " +
-            "Plain, but no operator email is sent (#2437)"
-        else
-          "wifihaven.email.operatorAddress unset — escalations reach no operator mailbox; this is " +
-            "a boot failure whenever a responder is enabled (#2437)",
-      ),
-      FeatureState(
-        "support-issue-filing",
-        support.issueFilingEnabled,
-        if support.issueFilingEnabled then
-          "wifihaven.support.issueFilingEnabled=true — support-agent files GitHub issues (bot token)"
-        else
-          "wifihaven.support.issueFilingEnabled=false — the agent cannot file issues (#2241/#2265)",
-      ),
-      // #2203/#2265: the press/PR responder is the same EXPLICIT-flag shape as the support responder
-      // — a named `enabled` flag, not inferred from secrets. When ON, its whole config chain is
-      // required and validated at boot (AppConfig.validateRequired); this makes the deliberate OFF
-      // state observable so it isn't mistaken for a silent no-op.
-      FeatureState(
-        "press-responder",
-        press.responderEnabled,
-        if press.responderEnabled then
-          // #2327: name the active transport so the credit-billed vs subscription-billed path is
-          // observable, not just "enabled".
-          s"wifihaven.press.responderEnabled=true — signed press webhook drafts a cloud-agent reply " +
-            s"(dispatcher=${press.dispatcherTrimmed})"
-        else
-          "wifihaven.press.responderEnabled=false — inbound press webhook no-ops, agent endpoint " +
-            "404 (#2203/#2265)",
       ),
       FeatureState(
         "metrics-endpoint",

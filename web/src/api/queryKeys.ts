@@ -12,12 +12,8 @@ import type { BetaRequestStatus, TrafficUsageBucket, TrafficUsageGroupBy } from 
 // applied to the whole map at once so a new key cannot forget it.
 const unscopedKeys = {
   me: () => ['me'] as const,
-  // #2199 — the server-signed Plain widget identity for the authed admin.
-  supportIdentity: () => ['support', 'identity'] as const,
   // #2133 — operator beta-request queue, keyed on the optional status filter.
   betaRequests: (status?: BetaRequestStatus) => ['beta-requests', status ?? 'pending'] as const,
-  // #2296 — operator press correspondence log.
-  pressMessages: () => ['press', 'messages'] as const,
   profiles: () => ['profiles'] as const,
   devices: () => ['devices'] as const,
   // #2926: the read-only identify view for one device.

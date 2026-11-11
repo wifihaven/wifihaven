@@ -10,7 +10,6 @@ import wifihaven.api.notify.Notifier
 import wifihaven.api.observability.LokiDropMetrics
 import wifihaven.api.policy.*
 import wifihaven.api.routes.*
-import wifihaven.api.support.{PlainClient, PlainPermissionAudit}
 import wifihaven.api.usage.PartitionMaintenanceJob
 import wifihaven.api.usage.RetentionSweepJob
 import wifihaven.api.usage.RollupJobs
@@ -48,39 +47,6 @@ object Main extends ZIOAppDefault {
         // is visible in boot logs — "disabled because nobody set the key" vs "disabled by choice"
         // is diagnosable from a single boot. Also inspectable live at loopback GET /api/debug/config.
         _         <- StartupFeatureReport.log(cfg)
-        // #2452 (no-dark-by-default): audit the Plain machine-user API key's own permission array
-        // against what THIS deployment's enabled features need, reporting EVERY gap at once. It is
-        // the one prerequisite that is not local config — the permission array is Plain-WORKSPACE
-        // state — so `AppConfig.validateRequired` cannot see it, and until this existed a gap was
-        // discoverable only at first write, per call, as a fail-open ERROR that named the wrong
-        // permission. FORKED: a live third-party call must never delay the port bind, and boot must
-        // never die on Plain being down (see `PlainPermissionAudit` for why this is
-        // loud-and-alertable rather than a boot crash).
-        _         <- ZIO
-          .serviceWithZIO[PlainClient](PlainPermissionAudit.run(cfg.support, _))
-          .forkScoped
-        // #2472: the dispatch→completion sweep. Reports every dispatch the cloud agent accepted and
-        // never called back on — before this, such a session was indistinguishable from one that
-        // answered (docs/process/no-dark-by-default.md). Forked only when the responder is ENABLED:
-        // a dark responder dispatches nothing, so there is nothing to sweep. forkScoped (like the
-        // rollup loops, #1247) so it is interrupted on shutdown; it touches no DB, only its own Ref.
-        _         <- ZIO
-          .serviceWithZIO[wifihaven.api.support.DispatchTracker.ForSupport](t =>
-            ZIO.serviceWithZIO[wifihaven.shared.Clock](t.tracker.loop),
-          )
-          .forkScoped
-          .when(cfg.support.responderEnabled)
-        // #2517: the same sweep for the #2203 PRESS responder, on its OWN tracker instance (own
-        // pending map, own `press_dispatch_total` sink). Forked only when the press responder is
-        // ENABLED, for the same reason: a dark responder dispatches nothing, so there is nothing to
-        // sweep. Launch-critical for the beta announcement: a dead press session reads as a
-        // served journalist.
-        _         <- ZIO
-          .serviceWithZIO[wifihaven.api.support.DispatchTracker.ForPress](t =>
-            ZIO.serviceWithZIO[wifihaven.shared.Clock](t.tracker.loop),
-          )
-          .forkScoped
-          .when(cfg.press.responderEnabled)
         _         <- ZIO
           .logWarning(
             "WIFIHAVEN_DEBUG=1 set — /api/debug/* endpoints are MOUNTED (loopback only). " +
@@ -500,38 +466,6 @@ object Main extends ZIOAppDefault {
       // state machine + the Notifier). Reads BetaCohortRepo/HouseholdBillingRepo/HouseholdRepo (from
       // Repos.all), the Notifier, and PolicyService (to rebuild permissive snapshots at flip).
       wifihaven.api.billing.FlipService.layer >+>
-      // #2199 (support intake B): Plain helpdesk integration. The SupportConfig slice + the external
-      // PlainClient (disabled no-op when no Plain API key — self-hosted / unconfigured ships dark) +
-      // the SupportService (household→customer mapping + server-signed widget identity; reads
-      // UserRepo/HouseholdRepo/HouseholdBillingRepo from Repos.all above).
-      ZLayer.fromZIO(ZIO.serviceWith[AppConfig](_.support)) >+>
-      wifihaven.api.support.PlainClient.layer >+>
-      wifihaven.api.support.SupportService.layer >+>
-      // #2200 (support intake C): the Claude responder's external transports — the cloud-agent
-      // dispatcher (Managed Agents session per authenticated-origin inbound message — UI-originated
-      // or a #2307 registered-admin email) and the GitHub issue-filing client (fine-grained
-      // Issues-ONLY bot token; read+write since #2458's duplicate check LISTS).
-      // #2265: each runs iff its EXPLICIT enable flag is true (validated loudly at boot); off is
-      // logged + health-visible.
-      wifihaven.api.support.CloudAgentDispatcher.layer >+>
-      wifihaven.api.support.GithubIssueClient.layer >+>
-      // #2472: the dispatch→completion tracker, shared by the responder (which records an accepted
-      // dispatch and closes it on the agent's terminal callback) and the sweep fiber forked in `run`
-      // (which reports the dispatches nobody ever closed). A LAYER precisely so both hold the SAME
-      // instance — a second one would sweep an empty map and stay silent.
-      wifihaven.api.support.DispatchTracker.supportLayer >+>
-      // #2203 (press intake C): the public press/PR responder's cloud-agent dispatcher (a SEPARATE
-      // Managed Agent persona per inbound press message). Reuses the shared ManagedAgents transport;
-      // runs iff press.responderEnabled (#2265), else the logged no-op. The press reply is emailed
-      // via the already-wired #578 EmailSender (retrieved below); no press-specific transport.
-      ZLayer.fromZIO(ZIO.serviceWith[AppConfig](_.press)) >+>
-      wifihaven.api.press.PressAgentDispatcher.layer >+>
-      // #2517: the press half of the dispatch→completion pairing — a SEPARATE instance from
-      // support's (separate pending map, separate metric series), sharing the one generalized
-      // component so the two audiences cannot drift on completion accounting. Like support's, it is
-      // a LAYER precisely so the responder and the sweep fiber forked in `run` hold the SAME
-      // instance; a second one would sweep an empty map and stay silent.
-      wifihaven.api.support.DispatchTracker.pressLayer >+>
       // #1242: Prometheus publisher + snapshot listener, and JVM metrics collectors.
       MetricsRuntime.prometheus() >+>
       DefaultJvmMetrics.live

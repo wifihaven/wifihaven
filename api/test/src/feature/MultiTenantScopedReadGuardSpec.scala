@@ -290,8 +290,8 @@ object MultiTenantScopedReadGuardSpec extends ZIOSpecDefault {
      * the kind of name-keyed judgement that produced this gap.
      *
      * `Scoped` WINS over this one when the write also takes a required household — the checked
-     * verdict is always preferable to the free-text one, so `SupportConsentRepo.revoke` and
-     * `HouseholdBillingRepo.grantFreeForever` are `Scoped`, not `Write`.
+     * verdict is always preferable to the free-text one, so `HouseholdBillingRepo.grantFreeForever`
+     * is `Scoped`, not `Write`.
      */
     case Write(reason: String)
 
@@ -510,7 +510,6 @@ object MultiTenantScopedReadGuardSpec extends ZIOSpecDefault {
       "users.id is globally unique; ownUser is the route choke point",
     ),
     "UserRepo.findByUsername"           -> Scoped,
-    "UserRepo.emailForUser"             -> Scoped,
     "UserRepo.findAdminForHousehold"    -> Scoped,
     "UserRepo.findByEmail"              -> TenancyKey(
       "users.email is globally unique — uq_users_email, added by V67 (V65 widened only USERNAME to " +
@@ -612,13 +611,10 @@ object MultiTenantScopedReadGuardSpec extends ZIOSpecDefault {
     ),
 
     // ── install-wide catalogs (§0.2) — template-authored, no tenancy dimension ──────────────────
-    "AppRepo.findById"          -> InstallWide("template-authored app catalog, #1798"),
-    "AppRepo.findBySlug"        -> InstallWide("template-authored app catalog, #1798"),
-    "AppRepo.findByTemplateId"  -> InstallWide("template-authored app catalog, #1798"),
-    "BlocklistRepo.findMeta"    -> InstallWide("bundled blocklist catalog metadata, #2535"),
-    "PressMessageRepo.findById" -> InstallWide(
-      "press_messages has no household column at all — press is an install-wide inbox (#2203)",
-    ),
+    "AppRepo.findById"         -> InstallWide("template-authored app catalog, #1798"),
+    "AppRepo.findBySlug"       -> InstallWide("template-authored app catalog, #1798"),
+    "AppRepo.findByTemplateId" -> InstallWide("template-authored app catalog, #1798"),
+    "BlocklistRepo.findMeta"   -> InstallWide("bundled blocklist catalog metadata, #2535"),
 
     // ── maintenance / rollup fibers — install-wide by construction, no caller-supplied key ──────
     "PartitionRepo.ensureFuturePartitions"       -> Write(
@@ -642,18 +638,6 @@ object MultiTenantScopedReadGuardSpec extends ZIOSpecDefault {
     // #2932: the refill's guarded write; its Boolean says whether the household's fingerprint still
     // matched under the household lock. Leads with a required household.
     "SettledUsageRepo.writeSettled"             -> Scoped,
-
-    // ── support ────────────────────────────────────────────────────────────────────────────────
-    "SupportConsentRepo.isGranted"       -> Scoped,
-    "SupportConsentRepo.revoke"          -> Scoped,
-    // #2709's consent-link lifecycle reads. All three lead with a REQUIRED household and filter on
-    // `household_id` in their SQL, so they are plainly Scoped — B2 re-derives that from the
-    // signature rather than taking this line's word for it. They arrived on main while this branch
-    // was in review and B1 caught all three undeclared on the merge commit, which is the census
-    // doing its job: a new single-row read cannot land without someone writing down its tenancy.
-    "SupportConsentRepo.outstandingLink" -> Scoped,
-    "SupportConsentRepo.discardPrompt"   -> Scoped,
-    "SupportConsentRepo.claimExplainer"  -> Scoped,
   )
 
   /** Reads the scan sees that the census does not declare (and vice versa). */

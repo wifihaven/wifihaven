@@ -4,7 +4,7 @@ import wifihaven.api.JwtConfig
 import wifihaven.api.auth.*
 import wifihaven.api.db.*
 import wifihaven.api.db.TypeMeta.given
-import wifihaven.api.notify.{EscalationNotice, Notifier}
+import wifihaven.api.notify.Notifier
 import wifihaven.api.policy.*
 import wifihaven.api.routes.*
 import wifihaven.shared.*
@@ -65,7 +65,6 @@ object BlockPageHouseholdSpec
         daysUntilFlip: Int,
     ): UIO[Unit] = ZIO.unit
     def passwordReset(email: String, resetUrl: String, ttlMinutes: Int): UIO[Unit] = ZIO.unit
-    def escalation(notice: EscalationNotice): UIO[Unit]                            = ZIO.unit
   }
 
   // ── stack ──────────────────────────────────────────────────────────────────

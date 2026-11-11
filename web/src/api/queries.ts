@@ -14,8 +14,6 @@ import type {
   ProfileAppWeeklyUsage,
   ProfileTimeStatusWeek, ProfileTimeSummary, ProfileTimeSummaryWeek, ProfileUsageByApp,
   QueryLog, RouterSummary, UsageConfig, UsageSeriesResponse,
-  SupportIdentityResponse,
-  PressMessage,
   SharedDevice,
 } from '@/types/api'
 
@@ -103,20 +101,6 @@ export function useMe(opts?: QueryOpts<MeResponse>) {
   })
 }
 
-// #2199 (support intake B): the server-signed Plain widget identity for the authed
-// admin. Cached for the session (staleTime: Infinity) — the household + entitlement
-// don't change under a live session, and the widget only needs to boot once. Enabled
-// by the caller only for admins (the API 403s non-admins). When the widget is
-// unconfigured the response is `{configured:false}` and the caller renders nothing.
-export function useSupportIdentity(opts?: QueryOpts<SupportIdentityResponse>) {
-  return useQuery({
-    queryKey: qk.supportIdentity(),
-    queryFn: () => api.support.identity(),
-    staleTime: Infinity,
-    ...opts,
-  })
-}
-
 // #2133 (multi-tenant P5-3): the operator's beta-request review queue. Only a
 // household-1 admin (`isOperator`) can read it — the API 403s everyone else — so
 // the caller enables this query off `useMe().data?.isOperator`.
@@ -127,18 +111,6 @@ export function useBetaRequests(
   return useQuery({
     queryKey: qk.betaRequests(status),
     queryFn: () => api.beta.operatorList(status),
-    staleTime: 30_000,
-    ...opts,
-  })
-}
-
-// #2296 (press correspondence log): the operator's read of the recorded press channel. Only a
-// household-1 admin can read it — the API 404s any other household and 403s a non-admin — so the
-// caller (route/nav) is gated on `useMe().data?.isOperator`, mirroring the beta-request queue.
-export function usePressMessages(opts?: QueryOpts<PressMessage[]>) {
-  return useQuery({
-    queryKey: qk.pressMessages(),
-    queryFn: () => api.press.messages(),
     staleTime: 30_000,
     ...opts,
   })

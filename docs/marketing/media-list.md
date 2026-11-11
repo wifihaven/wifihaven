@@ -12,8 +12,8 @@ UNVERIFIED need a check before sending.
 > (`adam@xda-developers.com`, stated in his XDA author bio). The rest are forms or tip lines — so there
 > is no email send. The working sheet, with each outlet's form URL and the pitch written for it, is
 > [`press-submission-pack.md`](press-submission-pack.md). The API's press-outreach email sender was
-> removed on 2026-08-15 for the same reason; the #2203 press RESPONDER is untouched and still
-> handles inbound press mail at `press@wifihaven.net`.
+> removed on 2026-08-15 for the same reason; the #2203 press RESPONDER and the `press@wifihaven.net`
+> address were later removed too (#2954).
 
 > **The submission pack is authoritative for ROUTES.** This file exists for the *target* rationale —
 > who, why, and what they cover. Where the Contact column and
@@ -97,5 +97,6 @@ carries each outlet's form URL and its own pitch. In short:
 3. Log the outcome in the pack's status table as you go, so a resumed session never
    double-submits.
 4. One follow-up after 4–5 business days, then stop.
-5. If a journalist replies by email, it lands at `press@wifihaven.net` and routes to the
-   #2203 responder.
+5. The `press@wifihaven.net` inbox and its #2203 responder were removed in #2954, so there is
+   no automated reply path any more; the published press page points journalists at the GitHub
+   issue tracker.

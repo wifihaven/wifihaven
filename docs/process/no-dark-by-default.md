@@ -125,28 +125,23 @@ permission, or registering a schema would fix it, it is a config bug and belongs
 in the fail-loud path — not behind a metric. Flakiness cannot be fixed by config,
 so it may be skipped (and metered).
 
-**Worked example — the Plain tenant-entitlement write
-([#2410](https://github.com/wifihaven/wifihaven/issues/2410)).**
-`PlainClient.upsertCustomer` runs `upsertTenantEntitlement` as a best-effort
-step alongside the customer upsert (`api/src/support/PlainClient.scala`): the
-household's `plan` / `founding` tenant fields are written whether or not the
-customer half succeeds, and never flip the customer outcome. (Since
-[#2435](https://github.com/wifihaven/wifihaven/issues/2435) it runs *first* — the
-email-collision reconcile joins the customer to the household's Plain tenant, so
-that tenant has to exist by then.) Today,
-if the machine-user key lacks `tenantField:create` / `tenantField:update`, or the
-`plan` (String) / `founding` (Boolean) tenant-field schemas
-(`docs/ops/plain-setup.md` §7.3) aren't registered, each field write **fails**
-(a 403 for the missing permission, a field error for an unregistered schema),
-the path records `outcome=error` on `support_tenant_upsert_total` (via
-`AppMetrics.supportTenantUpsert`), and the customer upsert still returns success
-while the entitlement fields silently never appear. The metric makes that
-*observable* — but a 403 from an under-permissioned key is a **broken
-credential**, not a flake, so metering-and-continuing is the wrong handling:
-**[#2410](https://github.com/wifihaven/wifihaven/issues/2410) makes that path
-fail** (surfaced at provisioning, where the permission/schema gap is knowable,
-rather than degrading a live write into a metered no-op). A genuine transient
-tenant-write hiccup, by contrast, is fine to skip-and-meter.
+**Worked example (historical) — the Plain tenant-entitlement write
+([#2410](https://github.com/wifihaven/wifihaven/issues/2410)).** The Plain
+helpdesk integration that this example came from was removed in
+[#2954](https://github.com/wifihaven/wifihaven/issues/2954); the rule it
+illustrates stands. A customer-upsert path also wrote the household's `plan` /
+`founding` tenant fields as a best-effort side-write, and never let a failure
+there flip the primary outcome. When the machine-user key lacked the
+`tenantField:*` permissions, or the tenant-field schemas had not been
+registered, each field write **failed** (a 403 for the missing permission, a
+field error for an unregistered schema), was recorded as `outcome=error` on a
+counter, and the primary upsert still returned success while the fields
+silently never appeared. The metric made that *observable* — but a 403 from an
+under-permissioned key is a **broken credential**, not a flake, so
+metering-and-continuing was the wrong handling. #2410 made that path **fail**
+(surfaced at provisioning, where the permission/schema gap is knowable, rather
+than degrading a live write into a metered no-op). A genuine transient
+tenant-write hiccup, by contrast, was fine to skip-and-meter.
 
 ## Anti-patterns — grep for these
 
