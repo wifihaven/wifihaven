@@ -54,8 +54,21 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # #2960: staging is suspended between deploys (staging-power.yml); wake it
+  # before anything talks to it.
+  resume-staging:
+    name: Resume staging (Render)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Resume staging and wait for health
+        env:
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+        run: scripts/render-staging-power.sh resume
+
   e2e-gate3a:
     name: Gate 3a (router-side staging) — ${{ matrix.pkg_format }}
+    needs: [resume-staging]
     # Block fork PRs on the self-hosted runner; same guard as
     # e2e-vm-fake.yml. workflow_call + workflow_dispatch are always allowed.
     if: >-
