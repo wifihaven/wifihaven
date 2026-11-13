@@ -1052,29 +1052,13 @@ rule is active at `now` when any window of its schedule is active, as for apps.
 
 ### 18.2 Schema (one migration, schema only)
 
-```sql
-ALTER TABLE named_schedules
-  ADD CONSTRAINT uq_named_schedules_id_household UNIQUE (id, household_id);
-ALTER TABLE profile_app_groups
-  ADD CONSTRAINT uq_profile_app_groups_id_household UNIQUE (id, household_id);
-
-CREATE TABLE profile_app_group_schedule_rules (
-  id            BIGSERIAL   PRIMARY KEY,
-  household_id  BIGINT      NOT NULL,
-  attachment_id BIGINT      NOT NULL,
-  schedule_id   BIGINT      NOT NULL,
-  mode          TEXT        NOT NULL
-                  CHECK (mode IN ('allowed_during', 'blocked_during')),
-  created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  FOREIGN KEY (attachment_id, household_id)
-    REFERENCES profile_app_groups (id, household_id) ON DELETE CASCADE,
-  FOREIGN KEY (schedule_id, household_id)
-    REFERENCES named_schedules (id, household_id) ON DELETE CASCADE,
-  UNIQUE (attachment_id, schedule_id, mode)
-);
-CREATE INDEX idx_profile_app_group_schedule_rules_schedule
-  ON profile_app_group_schedule_rules (schedule_id);
-```
+`api/resources/db/migration/V96__profile_app_group_schedule_rules.sql` adds
+`profile_app_group_schedule_rules (id, household_id, attachment_id, schedule_id,
+mode, created_at)`, with `mode IN ('allowed_during', 'blocked_during')`,
+`UNIQUE (attachment_id, schedule_id, mode)`, composite FKs to
+`profile_app_groups (id, household_id)` and `named_schedules (id, household_id)`
+(both `ON DELETE CASCADE`), the two `UNIQUE (id, household_id)` constraints those
+FKs need, and an index on `schedule_id`. The migration is authoritative.
 
 - Same shape as V51, keyed to the attachment. The composite FKs make a rule
   that points at another household's schedule or attachment unrepresentable.
@@ -1118,6 +1102,9 @@ Per member, the group's override folds in as follows:
   or true with no own row. The attachment's stored toggle is read only for an
   Allowed attachment (V94), so a stale toggle from an earlier Allowed mode
   cannot suppress a Blocked group's window.
+- The `exemptFromDaily` a carve reads is the attachment's, for every member
+  with or without its own row: the fold already replaces a covered member's flag
+  with the attachment's (D5).
 - Budgets, `exemptPatterns` and attribution are structural and do not read
   rules, as for apps.
 
@@ -1154,13 +1141,14 @@ An unrelated host is untouched in every row.
 
 ### 18.6 Observability
 
-A gauge `app_group_schedule_rules{mode}` (`allowed_during`, `blocked_during`)
-is set on the reevaluate tick beside `app_group_attachments`, with a panel next
-to it on the enforcement dashboard.
+A gauge `app_group_rule_attachments{mode}` (`allowed_during`,
+`blocked_during`) counts the attachments that carry at least one rule of that
+mode, across all households. It is set on the reevaluate tick beside
+`app_group_attachments`, with a panel next to it on the enforcement dashboard.
 
 ### 18.7 Rollout
 
-1. **Schema only**: §18.2. A migration, so the operator merges it.
+1. **Schema only**: §18.2.
 2. **API + enforcement**: repo reads and writes, the §18.3 fold, rows 26–33 as
    feature tests, the request and response fields, the gauge and panel, and the TS
    types.
