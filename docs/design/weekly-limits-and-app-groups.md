@@ -955,9 +955,9 @@ mode (#2747):
 - **Allowed**: budget only. Unchecked ("not counted", the default) removes the
   members' usage from the profile's daily total. It gives no extra reach,
   because the plain Allowed carve already outlives the daily cap (row 23).
-- **Blocked**: no effect, and the SPA hides the checkbox. Groups take no
-  per-app schedule rules, so the `allowed_during` gate that makes the flag
-  matter for a Blocked app cannot arise.
+- **Blocked**: no effect unless the attachment has an `allowed_during` rule,
+  whose carve the flag gates as it does for a Blocked app (§18.5, superseding
+  the original "hidden" call).
 
 ### 17.6 API and SPA
 
@@ -1032,3 +1032,133 @@ mode (#2747):
   either way. Revisit if a counted no-limit group should still stop with the
   daily total; the API default and the fold mapping (§17.3) are the two places
   that would change.
+
+## 18. Schedule rules on a group (addendum, 2026-11-12)
+
+Operator report: "for a blocked app group, i can't create a schedule which it
+is allowed, like i can for regular apps." This was a model gap as well as a
+missing control. A per-app rule (`allowed_during` / `blocked_during` against a
+named schedule, `docs/design/per-app-schedules.md`) lives in
+`app_policy_schedule_rules` (V51), keyed by `app_policy_assignments.id`. An
+attachment (`profile_app_groups`, V92–V94) had no rule table, so
+`PolicyService` had nothing to evaluate and the SPA had nothing to save.
+Product calls are D24 and D25 below.
+
+### 18.1 What changes
+
+An attachment takes the same rules an app assignment does, in every mode (D25):
+any number of `(named schedule, allowed_during | blocked_during)` pairs. A
+rule is active at `now` when any window of its schedule is active, as for apps.
+
+### 18.2 Schema (one migration, schema only)
+
+`api/resources/db/migration/V96__profile_app_group_schedule_rules.sql` adds
+`profile_app_group_schedule_rules (id, household_id, attachment_id, schedule_id,
+mode, created_at)`, with `mode IN ('allowed_during', 'blocked_during')`,
+`UNIQUE (attachment_id, schedule_id, mode)`, composite FKs to
+`profile_app_groups (id, household_id)` and `named_schedules (id, household_id)`
+(both `ON DELETE CASCADE`), the two `UNIQUE (id, household_id)` constraints those
+FKs need, and an index on `schedule_id`. The migration is authoritative.
+
+- Same shape as V51, keyed to the attachment. The composite FKs make a rule
+  that points at another household's schedule or attachment unrepresentable.
+- Detaching a group, or deleting the schedule, drops its rules. Changing the
+  attachment's mode or limits keeps them: the upsert's `ON CONFLICT (profile_id,
+  group_id) DO UPDATE` keeps the row id, as an app's mode change keeps its rules.
+- The unique index leads with `attachment_id`, which serves the per-profile
+  read (joined through `profile_app_groups.profile_id`).
+- Cost: the two new unique constraints build indexes over one row per named
+  schedule and one row per attachment. The new table starts empty. No growth
+  table is touched.
+
+### 18.3 Evaluation: one rule path for apps and groups
+
+`AppRepo.appScheduleWindowsForProfile` is joined by a group counterpart
+returning `Map[AppGroupId, List[(AppScheduleMode, ScheduleWindow)]]`. Both
+callers of `ProfileAppDispositions.enforcement` (the snapshot build and the
+`decide` fallback) pass it in. There is still one fold, and one function that
+decides a rule list's override at `now` (`AllowedDuring` if any allowed window
+is active, else `BlockedDuring` if any blocked window is, else none). It is
+applied to the member's own rules and to its group's rules alike.
+
+Per member, the group's override folds in as follows:
+
+| Group override at `now` | Member's own row | Effect on the member |
+|---|---|---|
+| none | any | Unchanged from §17.3 |
+| `blocked_during` | any | Blocked, as if the attachment were Blocked (stricter wins, D20) |
+| `allowed_during` | none, Allowed or TimeLimited | An active `allowed_during` on the member: the per-app carve with its existing gate (profile daily cap not exhausted unless exempt, not in `appsOverBudget`, the #1679 schedule toggle) |
+| `allowed_during` | Blocked | Blocked: the window lifts the group's block, not the member's own (D24) |
+
+- The gate is the per-app one, unchanged, so budgets bite inside a group
+  window (D17). A TimeLimited group's window never carves a member past the
+  group's or the member's own budget.
+- `blocked_during` and `allowed_during` both active on the same attachment:
+  `allowed_during` wins, as for an app (per-app-schedules §4.1).
+- A member's own `allowed_during` still does not lift a Blocked group, or a
+  group in an active `blocked_during` window (D20, unchanged).
+- The #1679 toggle a carve reads is the member disposition's, as §17.3
+  resolves it. For a Blocked attachment that is the member's own row's toggle,
+  or true with no own row. The attachment's stored toggle is read only for an
+  Allowed attachment (V94), so a stale toggle from an earlier Allowed mode
+  cannot suppress a Blocked group's window.
+- The `exemptFromDaily` a carve reads is the attachment's, for every member
+  with or without its own row: the fold already replaces a covered member's flag
+  with the attachment's (D5).
+- Budgets, `exemptPatterns` and attribution are structural and do not read
+  rules, as for apps.
+
+No wire change: the carve lands in `extraAllowed`, the block in
+`extraBlocked`, and the router is not touched.
+
+### 18.4 Precedence rows (extends §17.4)
+
+| # | Whole-MAC block | Attachment | Group rule active | Member's own row | Outcome |
+|---|---|---|---|---|---|
+| 26 | none | Blocked | `allowed_during` | none | Reachable (`extraAllowed`) |
+| 27 | none | Blocked | none (outside the window) | none | Blocked |
+| 28 | none | Blocked | `allowed_during` | Blocked | Blocked (D24) |
+| 29 | Schedule | Blocked | `allowed_during` | none | Reachable at bedtime, as per-app-schedules §5 row 1 |
+| 30 | TimeLimit | Blocked | `allowed_during` | none, group counts toward daily | Blocked: the carve yields to the daily cap (per-app-schedules row 9b) |
+| 31 | none | Allowed | `blocked_during` | none | Blocked (distinctive hosts) |
+| 32 | none | Allowed | `blocked_during` | own `allowed_during` active | Blocked (D20) |
+| 33 | Schedule | TimeLimited, group over budget | `allowed_during` | none | Blocked (D17) |
+
+An unrelated host is untouched in every row.
+
+### 18.5 API and SPA
+
+- `ProfileAppGroup` gains `scheduleRules: List[AppScheduleRule]` (read), and
+  `UpsertProfileAppGroupRequest` gains an optional `scheduleRules` with
+  replace semantics. Absent means unchanged, so an older client's upsert never
+  wipes rules. A rule naming another household's schedule is a 404.
+- §17.5 said a Blocked group's "Counts toward daily limit" is inert because
+  groups took no rules. With rules it matters for a Blocked group that has an
+  `allowed_during` rule (row 30), exactly as for a Blocked app, so the SPA shows
+  it there the same way the app editor does.
+- The group row's drawer reuses the app row's `ScheduleRuleEditor` in every
+  mode, in whichever list the group sits (D18).
+
+### 18.6 Observability
+
+A gauge `app_group_rule_attachments{mode}` (`allowed_during`,
+`blocked_during`) counts the attachments that carry at least one rule of that
+mode, across all households. It is set on the reevaluate tick beside
+`app_group_attachments`, with a panel next to it on the enforcement dashboard.
+
+### 18.7 Rollout
+
+1. **Schema only**: §18.2.
+2. **API + enforcement**: repo reads and writes, the §18.3 fold, rows 26–33 as
+   feature tests, the request and response fields, the gauge and panel, and the TS
+   types.
+3. **SPA**: §18.5.
+
+### 18.8 Decisions (operator, 2026-11-12)
+
+- **D24 Group window vs member's own Blocked row.** A group's `allowed_during`
+  lifts the group's block only. A member whose own row is Blocked stays
+  blocked. This is the mirror of D20, under which a member's own
+  `allowed_during` does not lift a Blocked group.
+- **D25 Rules in every mode.** Blocked, Allowed and TimeLimited attachments
+  all take rules, as apps do. Budgets still bite inside a window (D17).
