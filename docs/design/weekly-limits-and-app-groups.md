@@ -1181,6 +1181,6 @@ never fire, is not counted. It is set on the reevaluate tick beside
   blocked. This is the mirror of D20, under which a member's own
   `allowed_during` does not lift a Blocked group. A member's own active
   `blocked_during` counts as its own Blocked row here: while both are active,
-  the app's block wins (operator, 2026-11-13).
+  the app's block wins.
 - **D25 Rules in every mode.** Blocked, Allowed and TimeLimited attachments
   all take rules, as apps do. Budgets still bite inside a window (D17).
