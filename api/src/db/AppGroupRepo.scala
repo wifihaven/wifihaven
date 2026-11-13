@@ -6,7 +6,7 @@ import doobie.postgres.implicits.*
 import cats.syntax.all.*
 import wifihaven.api.db.TypeMeta.given
 import wifihaven.api.metrics.DbMetrics
-import wifihaven.shared.{AppGroup, AppGroupRef, AppMode, Clock, ProfileAppGroup}
+import wifihaven.shared.{AppGroup, AppGroupRef, AppMode, AppScheduleMode, Clock, ProfileAppGroup}
 import wifihaven.shared.types.*
 import zio.*
 import zio.interop.catz.*
@@ -93,6 +93,8 @@ trait AppGroupRepo {
       exemptFromDaily: Boolean,
       mode: AppMode,
       allowedDuringScheduleBlock: Boolean,
+      // #3004 (design §18.5): the attachment's full rule set, or `None` to leave it as it is.
+      scheduleRules: Option[List[(NamedScheduleId, AppScheduleMode)]] = None,
   ): Task[Either[AppGroupError, ProfileAppGroup]]
 
   /** True if an attachment existed. */
@@ -340,6 +342,7 @@ class AppGroupRepoLive(xa: Transactor[Task], clock: Clock) extends AppGroupRepo 
       exemptFromDaily: Boolean,
       mode: AppMode,
       allowedDuringScheduleBlock: Boolean,
+      scheduleRules: Option[List[(NamedScheduleId, AppScheduleMode)]],
   ) =
     DbMetrics.timed("appGroup.upsertAttachment")(txn[ProfileAppGroup] { now =>
       for {
