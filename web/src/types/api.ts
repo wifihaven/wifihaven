@@ -1148,6 +1148,8 @@ export interface ProfileAppGroup {
   mode: AppMode
   // #1679 toggle for an Allowed attachment: reachable during scheduled downtime.
   allowedDuringScheduleBlock: boolean
+  // #3004 (design §18): the attachment's named-schedule rules, as on an app assignment.
+  scheduleRules: AppScheduleRule[]
 }
 
 export interface UpsertProfileAppGroupRequest {
@@ -1158,6 +1160,8 @@ export interface UpsertProfileAppGroupRequest {
   // absent toggle keeps the row's.
   mode?: AppMode
   allowedDuringScheduleBlock?: boolean
+  // #3004 (design §18.5): the full rule set, replace semantics; absent keeps the rules.
+  scheduleRules?: AppScheduleRule[]
 }
 
 // #1983 — one app host that is a member of one or more shipped category

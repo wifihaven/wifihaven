@@ -474,6 +474,9 @@ case class ProfileAppGroup(
     // #2980 (design §17): V94's mode and #1679 toggle. Defaults are what a pre-V94 row reads as.
     mode: AppMode = AppMode.TimeLimited,
     allowedDuringScheduleBlock: Boolean = true,
+    // #3004 (design §18): the attachment's named-schedule rules, V96
+    // `profile_app_group_schedule_rules`. Additive with a `Nil` default.
+    scheduleRules: List[AppScheduleRule] = Nil,
 ) derives JsonCodec
 
 object ProfileAppGroup {
@@ -504,6 +507,9 @@ case class UpsertProfileAppGroupRequest(
     // none, so a client sends the full limits and flag on each write.
     mode: Option[AppMode] = None,
     allowedDuringScheduleBlock: Option[Boolean] = None,
+    // #3004 (design §18.5): the attachment's full rule set, replace semantics. Absent means
+    // unchanged, so a client that predates the field never wipes the rules.
+    scheduleRules: Option[List[AppScheduleRule]] = None,
 ) derives JsonCodec
 
 // #1798: the app *definition* mutator endpoints (create / update name+icon /

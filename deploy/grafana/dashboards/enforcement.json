@@ -619,6 +619,64 @@
           "refId": "A"
         }
       ]
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "title": "Group attachments with schedule rules, by rule mode (#3004)",
+      "description": "max by (mode) (app_group_rule_attachments) \u2014 how many profile attachments of an app group carry at least one named-schedule rule of each mode, across all households: allowed_during (inside the schedule the members are carved into extraAllowed, behind the per-app daily-cap / budget / #1679 gate) and blocked_during (inside the schedule the members' distinctive hosts go to extraBlocked). An attachment with several rules of one mode counts once. A GAUGE, so a LEVEL, not a rate: it is set once per policy reevaluate tick from that tick's per-household builds, summed, and both modes are set every tick including 0. It moves only when a parent adds or removes a group's rule, or detaches the group. Design docs/design/weekly-limits-and-app-groups.md \u00a718.",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 65
+      },
+      "id": 18,
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "stepAfter",
+            "fillOpacity": 15,
+            "showPoints": "never",
+            "lineWidth": 1
+          },
+          "min": 0,
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max by (mode) (app_group_rule_attachments{env=\"$env\"})",
+          "legendFormat": "{{mode}}",
+          "refId": "A"
+        }
+      ]
     }
   ],
   "refresh": "30s",

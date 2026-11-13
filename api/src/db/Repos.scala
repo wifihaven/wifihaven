@@ -4769,6 +4769,15 @@ trait AppRepo {
   def appScheduleWindowsForProfile(
       profileId: ProfileId,
   ): Task[Map[AppPolicyAssignmentId, List[(AppScheduleMode, ScheduleWindow)]]]
+
+  /**
+   * #3004 (design weekly-limits-and-app-groups §18.3): the group counterpart of
+   * [[appScheduleWindowsForProfile]]. For every group attached to `profileId`, the flattened (mode,
+   * window) pairs of the attachment's V96 rules. Groups with no rules are absent from the map.
+   */
+  def groupScheduleWindowsForProfile(
+      profileId: ProfileId,
+  ): Task[Map[AppGroupId, List[(AppScheduleMode, ScheduleWindow)]]]
 }
 
 class AppRepoLive(xa: Transactor[Task], clock: wifihaven.shared.Clock) extends AppRepo {
@@ -5178,6 +5187,26 @@ class AppRepoLive(xa: Transactor[Task], clock: wifihaven.shared.Clock) extends A
       .map(_.groupBy(_._1).map { case (aid, rows) =>
         aid -> rows.map(r => (r._2, ScheduleWindow(r._3, r._4, r._5, r._6)))
       })
+
+  // #3004: same shape as `appScheduleWindowsForProfile`, keyed by the attached group. The profile's
+  // attachments come off `uq_profile_app_groups_profile_group` (profile_id leading), their rules
+  // off `uq_profile_app_group_schedule_rules` (attachment_id leading), and the windows off
+  // `idx_schedule_windows_schedule`. Every table is metadata-sized (rows per attachment / schedule).
+  def groupScheduleWindowsForProfile(profileId: ProfileId) =
+    DbMetrics.timed("app.groupScheduleWindowsForProfile")(
+      sql"""SELECT pag.group_id, r.mode, sw.days, sw.start_local, sw.end_local, sw.tz
+              FROM profile_app_groups pag
+              JOIN profile_app_group_schedule_rules r ON r.attachment_id = pag.id
+              JOIN schedule_windows sw                ON sw.schedule_id = r.schedule_id
+             WHERE pag.profile_id = $profileId
+             ORDER BY pag.group_id, r.id, sw.id"""
+        .query[(AppGroupId, AppScheduleMode, List[String], LocalTime, LocalTime, ZoneId)]
+        .to[List]
+        .transact(xa)
+        .map(_.groupBy(_._1).map { case (gid, rows) =>
+          gid -> rows.map(r => (r._2, ScheduleWindow(r._3, r._4, r._5, r._6)))
+        }),
+    )
 }
 
 class NamedScheduleRepoLive(xa: Transactor[Task]) extends NamedScheduleRepo {

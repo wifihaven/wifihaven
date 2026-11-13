@@ -49,6 +49,7 @@ object AppGroupRoutes {
       )
     case AppGroupError.UnknownApp(a)                    =>
       ApiError.BadRequest(s"Unknown app id ${a.value}")
+    case AppGroupError.ScheduleNotFound(_)              => ApiError.NotFound("Schedule not found")
   }
 
   private def validName(raw: String): IO[ApiError, String] = {
@@ -231,6 +232,8 @@ object AppGroupRoutes {
                   ar.allowedDuringScheduleBlock
                     .orElse(existing.map(_.allowedDuringScheduleBlock))
                     .getOrElse(true),
+                  // #3004 (design §18.5): replace semantics; absent keeps the rules.
+                  ar.scheduleRules.map(_.map(r => (r.scheduleId, r.mode))),
                 )
                 .mapError(ApiError.Db(_))
                 .flatMap(ZIO.fromEither(_).mapError(toApiError))
