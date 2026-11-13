@@ -3736,3 +3736,102 @@ describe('ProfilesPage — weekly limits and app groups (#2935)', () => {
     expect(await screen.findByTestId('group-row-7-budget-error')).toBeInTheDocument()
   })
 })
+
+// #3005 (design §18.5) — a group row carries the same schedule-rule editor an app row does, in
+// whichever list the group sits. Unlike an app's, a group's PUT reads an absent `scheduleRules` as
+// "keep", so removing the last rule must send an empty list.
+describe('ProfilesPage — group schedule rules (#3005)', () => {
+  const fn = (f: unknown) => f as ReturnType<typeof vi.fn>
+  const bedtime = { id: 10, name: 'Bedtime', description: null, windows: [] }
+  const homework = { id: 11, name: 'Homework', description: null, windows: [] }
+  const games = { id: 7, name: 'Games', memberAppIds: [60, 61] }
+  const yt = {
+    app: { id: 50, name: 'YouTube', slug: 'youtube', templateId: null, icon: '📺', createdAt: '2026-01-01' },
+    hosts: ['youtube.com'],
+    assignments: [{ id: 2, appId: 50, profileId: 1, mode: 'allowed', dailyMinutes: null, exemptFromDaily: true }],
+  }
+  const attachment = (over: Record<string, unknown> = {}) => ({
+    profileId: 1, groupId: 7, name: 'Games', memberAppIds: [60, 61], dailyMinutes: null, weeklyMinutes: null,
+    exemptFromDaily: true, allowedDuringScheduleBlock: true, mode: 'blocked', scheduleRules: [], ...over,
+  })
+
+  async function openApps(user: ReturnType<typeof userEvent.setup>) {
+    renderPage()
+    await screen.findByTestId('profile-card-1')
+    await expand(1, user)
+    await user.click(screen.getByTestId('profile-apps-toggle-1'))
+  }
+
+  beforeEach(() => {
+    fn(api.apps.list).mockResolvedValue([yt])
+    fn(api.appGroups.list).mockResolvedValue([games])
+    fn(api.schedules.list).mockResolvedValue([bedtime, homework])
+  })
+
+  it('a Blocked group gets "+ schedule"; adding allowed-during sends the rule with the mode kept', async () => {
+    fn(api.appGroups.forProfile).mockResolvedValue([attachment()])
+    const user = userEvent.setup()
+    await openApps(user)
+    const row = await screen.findByTestId('group-row-7')
+    const toggle = within(row).getByTestId('group-row-7-schedule-toggle')
+    expect(toggle).toHaveTextContent('+ schedule')
+    await user.click(toggle)
+    await user.selectOptions(await screen.findByTestId('group-row-7-schedule-picker-select'), '11')
+    await user.click(screen.getByTestId('group-row-7-schedule-mode-allowed_during'))
+    await user.click(screen.getByTestId('group-row-7-schedule-add'))
+    await waitFor(() => expect(api.appGroups.attach).toHaveBeenCalledWith(1, 7, {
+      mode: 'blocked', dailyMinutes: null, weeklyMinutes: null, exemptFromDaily: true,
+      scheduleRules: [{ scheduleId: 11, mode: 'allowed_during' }],
+    }))
+  })
+
+  it('shows existing rules by name, and removing the last one sends an empty list', async () => {
+    fn(api.appGroups.forProfile).mockResolvedValue([
+      attachment({ scheduleRules: [{ scheduleId: 11, mode: 'allowed_during' }] }),
+    ])
+    const user = userEvent.setup()
+    await openApps(user)
+    const toggle = await screen.findByTestId('group-row-7-schedule-toggle')
+    expect(toggle).toHaveTextContent('1')
+    await user.click(toggle)
+    const rule = await screen.findByTestId('group-row-7-schedule-rule-11-allowed_during')
+    expect(within(rule).getByText('Homework')).toBeInTheDocument()
+    await user.click(screen.getByTestId('group-row-7-schedule-rule-11-allowed_during-remove'))
+    await waitFor(() => expect(api.appGroups.attach).toHaveBeenCalledWith(1, 7, {
+      mode: 'blocked', dailyMinutes: null, weeklyMinutes: null, exemptFromDaily: true, scheduleRules: [],
+    }))
+  })
+
+  it('a Blocked group with an allowed-during rule shows the counts-toward-daily toggle in the editor', async () => {
+    fn(api.appGroups.forProfile).mockResolvedValue([
+      attachment({ scheduleRules: [{ scheduleId: 11, mode: 'allowed_during' }] }),
+    ])
+    const user = userEvent.setup()
+    await openApps(user)
+    await user.click(await screen.findByTestId('group-row-7-schedule-toggle'))
+    const box = within(await screen.findByTestId('group-row-7-schedule-exempt')).getByRole('checkbox')
+    expect(box).toBeChecked()
+    await user.click(box)
+    await waitFor(() => expect(api.appGroups.attach).toHaveBeenCalledWith(1, 7, expect.objectContaining({
+      mode: 'blocked', exemptFromDaily: false,
+    })))
+  })
+
+  it('an Allowed group gets the editor too, keeps its limits on a rule write, and has no in-editor toggle', async () => {
+    fn(api.appGroups.forProfile).mockResolvedValue([
+      attachment({ mode: 'time_limited', dailyMinutes: 60, weeklyMinutes: 300,
+        scheduleRules: [{ scheduleId: 11, mode: 'allowed_during' }] }),
+    ])
+    const user = userEvent.setup()
+    await openApps(user)
+    await user.click(await screen.findByTestId('group-row-7-schedule-toggle'))
+    expect(screen.queryByTestId('group-row-7-schedule-exempt')).not.toBeInTheDocument()
+    await user.selectOptions(await screen.findByTestId('group-row-7-schedule-picker-select'), '10')
+    await user.click(screen.getByTestId('group-row-7-schedule-mode-blocked_during'))
+    await user.click(screen.getByTestId('group-row-7-schedule-add'))
+    await waitFor(() => expect(api.appGroups.attach).toHaveBeenCalledWith(1, 7, {
+      mode: 'time_limited', dailyMinutes: 60, weeklyMinutes: 300, exemptFromDaily: true,
+      scheduleRules: [{ scheduleId: 11, mode: 'allowed_during' }, { scheduleId: 10, mode: 'blocked_during' }],
+    }))
+  })
+})
