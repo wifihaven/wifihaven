@@ -1179,9 +1179,8 @@ never fire, is not counted. It is set on the reevaluate tick beside
 - **D24 Group window vs member's own Blocked row.** A group's `allowed_during`
   lifts the group's block only. A member whose own row is Blocked stays
   blocked. This is the mirror of D20, under which a member's own
-  `allowed_during` does not lift a Blocked group. (Author's reading, not
-  separately put to the operator: a member's own active `blocked_during` counts
-  as its own Blocked row here, as test 32 pins for the D20 side. Flagged to the
-  operator with #3007.)
+  `allowed_during` does not lift a Blocked group. A member's own active
+  `blocked_during` counts as its own Blocked row here: while both are active,
+  the app's block wins (operator, 2026-11-13).
 - **D25 Rules in every mode.** Blocked, Allowed and TimeLimited attachments
   all take rules, as apps do. Budgets still bite inside a window (D17).
