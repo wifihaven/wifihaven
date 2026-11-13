@@ -208,6 +208,20 @@ object GroupScheduleRulesSpec
       _   <- ar.setScheduleRules(assignment, List((sid, AppScheduleMode.AllowedDuring)))
     } yield ()
 
+  // A rule of either mode, active or not, on an app's own assignment.
+  private def ownRule(
+      assignment: AppPolicyAssignmentId,
+      name: String,
+      mode: AppScheduleMode,
+      w: ScheduleWindow,
+  ) =
+    for {
+      nsr <- ZIO.service[NamedScheduleRepo]
+      ar  <- ZIO.service[AppRepo]
+      sid <- nsr.create(name, None, List(w))
+      _   <- ar.setScheduleRules(assignment, List((sid, mode)))
+    } yield ()
+
   private def policyAt(now: Instant, cacheEnabled: Boolean = false) =
     for {
       pr  <- ZIO.service[ProfileRepo]
@@ -460,6 +474,124 @@ object GroupScheduleRulesSpec
           blocked(va, "unrelated.com"),
           reachable(vb, "roblox.com"),
           blocked(vb, "unrelated.com"),
+        )
+      },
+    ),
+    suite("a rule's block beats the under-budget allow (#3007 review)")(
+      test(
+        "34: a TimeLimited group's blocked_during blocks its members, counted or exempt",
+      ) {
+        // Under budget, a TimeLimited member is put on the allow list (#1980), and an exempt one
+        // is carved around whole-MAC blocks (#1105). Neither may beat an active blocked_during.
+        for {
+          _   <- rig
+          a   <- kid("A", macA)
+          b   <- kid("B", macB)
+          c   <- kid("C", MacAddress.unsafe("aa:bb:cc:30:04:03"))
+          rb  <- app("Roblox", "roblox.com")
+          g   <- group("Games", rb)
+          ga  <- attach(a, g, AppMode.TimeLimited, exempt = true, daily = Some(60))
+          gb  <- attach(b, g, AppMode.TimeLimited, exempt = false, daily = Some(60))
+          gc  <- attach(c, g, AppMode.TimeLimited, exempt = true, daily = Some(60))
+          _   <- groupRule(ga, a, BD, activeWindow) *> groupRule(gb, b, BD, activeWindow)
+          _   <- groupRule(gc, c, BD, inactiveWindow)
+          svc <- policyAt(nowThu)
+          hosts = List("roblox.com", "unrelated.com")
+          va <- verdicts(svc, a, macA, hosts)
+          vb <- verdicts(svc, b, macB, hosts)
+          vc <- verdicts(svc, c, MacAddress.unsafe("aa:bb:cc:30:04:03"), hosts)
+        } yield assertTrue(
+          blocked(va, "roblox.com"),
+          reachable(va, "unrelated.com"),
+          blocked(vb, "roblox.com"),
+          reachable(vb, "unrelated.com"),
+          reachable(vc, "roblox.com"),
+        )
+      },
+      test("34: an own TimeLimited row in an Allowed group is blocked by the group's window") {
+        for {
+          _   <- rig
+          a   <- kid("A", macA)
+          b   <- kid("B", macB)
+          rb  <- app("Roblox", "roblox.com")
+          _   <- assign(rb, a, daily = Some(60)) *> assign(rb, b, daily = Some(60))
+          g   <- group("Games", rb)
+          ga  <- attach(a, g, AppMode.Allowed, exempt = true)
+          gb  <- attach(b, g, AppMode.Allowed, exempt = true)
+          _   <- groupRule(ga, a, BD, activeWindow) *> groupRule(gb, b, BD, inactiveWindow)
+          svc <- policyAt(nowThu)
+          va  <- verdicts(svc, a, macA, List("roblox.com", "unrelated.com"))
+          vb  <- verdicts(svc, b, macB, List("roblox.com"))
+        } yield assertTrue(
+          blocked(va, "roblox.com"),
+          reachable(va, "unrelated.com"),
+          reachable(vb, "roblox.com"),
+        )
+      },
+      test("an app's own TimeLimited row is blocked by its own blocked_during window") {
+        // The per-app case from before groups: the same under-budget allow beat it.
+        for {
+          _   <- rig
+          a   <- kid("A", macA)
+          b   <- kid("B", macB)
+          rb  <- app("Roblox", "roblox.com")
+          ra  <- assign(rb, a, daily = Some(60), exempt = true)
+          rbb <- assign(rb, b, daily = Some(60), exempt = true)
+          _   <- ownRule(ra, "RB bd A", BD, activeWindow) *> ownRule(
+            rbb,
+            "RB bd B",
+            BD,
+            inactiveWindow,
+          )
+          svc <- policyAt(nowThu)
+          va  <- verdicts(svc, a, macA, List("roblox.com", "unrelated.com"))
+          vb  <- verdicts(svc, b, macB, List("roblox.com"))
+        } yield assertTrue(
+          blocked(va, "roblox.com"),
+          reachable(va, "unrelated.com"),
+          reachable(vb, "roblox.com"),
+        )
+      },
+      test("28: a member's own active blocked_during is not lifted by the group's window (D24)") {
+        for {
+          _   <- rig
+          a   <- kid("A", macA)
+          rb  <- app("Roblox", "roblox.com")
+          mc  <- app("Minecraft", "minecraft.net")
+          mca <- assign(mc, a, mode = AppMode.Allowed)
+          _   <- ownRule(mca, "MC bd", BD, activeWindow)
+          g   <- group("Games", rb, mc)
+          ga  <- attach(a, g, AppMode.Blocked)
+          _   <- groupRule(ga, a, AD, activeWindow)
+          svc <- policyAt(nowThu)
+          v   <- verdicts(svc, a, macA, List("roblox.com", "minecraft.net"))
+        } yield assertTrue(reachable(v, "roblox.com"), blocked(v, "minecraft.net"))
+      },
+      test(
+        "26 (D17): inside a Blocked group's window a member's own daily limit still bites",
+      ) {
+        for {
+          r   <- rig
+          a   <- kid("A", macA)
+          b   <- kid("B", macB)
+          rb  <- app("Roblox", "roblox.com")
+          mc  <- app("Minecraft", "minecraft.net")
+          _   <- assign(mc, a, daily = Some(30)) *> assign(mc, b, daily = Some(30))
+          g   <- group("Games", rb, mc)
+          ga  <- attach(a, g, AppMode.Blocked, exempt = true)
+          gb  <- attach(b, g, AppMode.Blocked, exempt = true)
+          _   <- groupRule(ga, a, AD, activeWindow) *> groupRule(gb, b, AD, inactiveWindow)
+          _   <- traffic(r, macA, "minecraft.net", at(thu, 9), 40)
+          svc <- policyAt(nowThu)
+          va  <- verdicts(svc, a, macA, List("roblox.com", "minecraft.net"))
+          // Outside the window the group still blocks a member that has budget left.
+          vb  <- verdicts(svc, b, macB, List("roblox.com", "minecraft.net", "unrelated.com"))
+        } yield assertTrue(
+          reachable(va, "roblox.com"),
+          blocked(va, "minecraft.net"),
+          blocked(vb, "roblox.com"),
+          blocked(vb, "minecraft.net"),
+          reachable(vb, "unrelated.com"),
         )
       },
     ),
