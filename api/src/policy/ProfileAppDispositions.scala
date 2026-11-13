@@ -217,54 +217,43 @@ final case class ProfileAppDispositions(
       // (extraAllowed already beats every block path at the router; design §"most-permissive"), and
       // a shared host belonging to an allowed app must stay reachable for that app to work.
       val distinctive                = d.distinctiveHosts.map(Hostname.unsafe)
-      // A covered-only member has no assignment (id 0) and so no rules of its own.
-      val own                        =
-        if d.coveredOnly then None
-        else ProfileAppDispositions.activeOverride(schedWindows.getOrElse(d.assignmentId, Nil), now)
-      // #3004 (design §18.3): the group's rules, resolved by the same function.
-      val groupOverride              = d.coverage.flatMap(c =>
-        ProfileAppDispositions.activeOverride(groupWindows.getOrElse(c.groupId, Nil), now),
-      )
-      // D24: a group's `allowed_during` lifts the GROUP's block, not a member's own Blocked row,
-      // the mirror of D20 below.
-      val groupAllowedActive         =
-        groupOverride.contains(AppScheduleMode.AllowedDuring) &&
-          !d.ownMode.contains(AppMode.Blocked)
-      val allowedActive              =
-        own.contains(AppScheduleMode.AllowedDuring) || groupAllowedActive
-      val blockedActive              = own.contains(AppScheduleMode.BlockedDuring)
       // #1679: suppress extraAllowed carve for this app if we're in a Schedule block and the
       // assignment opts out of the "allowed during bedtime" behaviour.
       val suppressedByScheduleToggle = isScheduleBlock && !d.allowedDuringScheduleBlock
-      // #2980 (D20): a Blocked group blocks its members whatever their own rows say, and that
-      // includes a member's own `allowed_during` window: stricter wins. #3004: a group in an active
-      // `blocked_during` window is a Blocked group, and one in an active `allowed_during` window is
-      // not (the member is then carved like an app in its own window, behind the same gate).
-      val groupBlocked               = groupOverride match {
-        case Some(AppScheduleMode.BlockedDuring) => true
-        case Some(AppScheduleMode.AllowedDuring) => false
-        case None                                => d.coverage.exists(_.mode == AppMode.Blocked)
+      ProfileAppDispositions.resolveAt(d, schedWindows, groupWindows, now) match {
+        case AtNow.Block      => blocked ++= distinctive
+        case AtNow.Window     =>
+          if (
+            !(capExhausted && !d.exemptFromDaily) && !suppressedByScheduleToggle &&
+            !overBudget.contains(d.appId)
+          )
+            allowed ++= hosts
+        case AtNow.Allow      => if (!suppressedByScheduleToggle) allowed ++= hosts
+        case AtNow.BudgetOnly => () // surfaces via the per-app cap path
       }
-      if (groupBlocked) {
-        blocked ++= distinctive
-      } else if (allowedActive) {
-        if (
-          !(capExhausted && !d.exemptFromDaily) && !suppressedByScheduleToggle &&
-          !overBudget.contains(d.appId)
-        )
-          allowed ++= hosts
-      } else if (blockedActive) {
-        blocked ++= distinctive
-      } else
-        d.mode match {
-          case AppMode.Allowed     =>
-            if (!suppressedByScheduleToggle) allowed ++= hosts
-          case AppMode.Blocked     => blocked ++= distinctive
-          case AppMode.TimeLimited => () // surfaces via the per-app cap path
-        }
     }
     (allowed.toList.distinct, blocked.toList.distinct)
   }
+
+  /**
+   * #3004 (the #3007 review): the apps [[enforcement]] puts on the BLOCKED side at `now`, whatever
+   * the cause: an own or a group Blocked mode, or an active `blocked_during` rule. Both
+   * under-budget allows (`PolicyService.timeLimitedUnderCapHosts`, `exemptUnderCapHosts`) withhold
+   * their carve for these, since `extraAllowed` beats `extraBlocked` at the router (#421) and would
+   * otherwise reopen a TimeLimited app that a rule is blocking. Same resolver as [[enforcement]],
+   * so the two cannot disagree.
+   */
+  def blockedAppsAt(
+      schedWindows: Map[AppPolicyAssignmentId, List[(AppScheduleMode, ScheduleWindow)]],
+      now: Instant,
+      groupWindows: Map[AppGroupId, List[(AppScheduleMode, ScheduleWindow)]],
+  ): Set[AppId] =
+    perApp.iterator
+      .filter(d =>
+        ProfileAppDispositions.resolveAt(d, schedWindows, groupWindows, now) == AtNow.Block,
+      )
+      .map(_.appId)
+      .toSet
 }
 
 /**
@@ -369,6 +358,50 @@ object ProfileAppDispositions {
    * nothing to any projection, which is correct: there's nothing to allow, block, exempt, or
    * attribute on.
    */
+  /**
+   * The one per-app resolution of rules at `now` that [[ProfileAppDispositions.enforcement]] and
+   * [[ProfileAppDispositions.blockedAppsAt]] both use (design §4.1, §18.3):
+   *
+   *   - D20: a group that is Blocked at `now` (its mode, or an active group `blocked_during`)
+   *     blocks the member, whatever its own row or own window says;
+   *   - an own active `allowed_during`, or the group's (D24: unless the member's own row is Blocked
+   *     or its own `blocked_during` is active), is a window carve candidate;
+   *   - else an own active `blocked_during` blocks;
+   *   - else the folded mode.
+   */
+  private[policy] def resolveAt(
+      d: AppDisposition,
+      schedWindows: Map[AppPolicyAssignmentId, List[(AppScheduleMode, ScheduleWindow)]],
+      groupWindows: Map[AppGroupId, List[(AppScheduleMode, ScheduleWindow)]],
+      now: Instant,
+  ): AtNow = {
+    // A covered-only member has no assignment (id 0) and so no rules of its own.
+    val own           =
+      if d.coveredOnly then None
+      else activeOverride(schedWindows.getOrElse(d.assignmentId, Nil), now)
+    val groupOverride =
+      d.coverage.flatMap(c => activeOverride(groupWindows.getOrElse(c.groupId, Nil), now))
+    val ownBlocksNow  =
+      d.ownMode.contains(AppMode.Blocked) || own.contains(AppScheduleMode.BlockedDuring)
+    val groupBlocked  = groupOverride match {
+      case Some(AppScheduleMode.BlockedDuring) => true
+      case Some(AppScheduleMode.AllowedDuring) => false
+      case None                                => d.coverage.exists(_.mode == AppMode.Blocked)
+    }
+    val windowActive  =
+      own.contains(AppScheduleMode.AllowedDuring) ||
+        (groupOverride.contains(AppScheduleMode.AllowedDuring) && !ownBlocksNow)
+    if groupBlocked then AtNow.Block
+    else if windowActive then AtNow.Window
+    else if own.contains(AppScheduleMode.BlockedDuring) then AtNow.Block
+    else
+      d.mode match {
+        case AppMode.Allowed     => AtNow.Allow
+        case AppMode.Blocked     => AtNow.Block
+        case AppMode.TimeLimited => AtNow.BudgetOnly
+      }
+  }
+
   def from(appLimits: List[wifihaven.shared.AppTimeLimit]): ProfileAppDispositions = {
     // #2932: keyed by (assignment, app). A covered-only row has no assignment (id 0), so the app id
     // tells two such apps apart; an assigned app has exactly one assignment per profile (V28's
@@ -410,13 +443,18 @@ object ProfileAppDispositions {
           //
           // #2980 (design §17.3, D20): the attachment has a mode too, and the stricter of the
           // attachment and the member's own row wins, Blocked > TimeLimited > Allowed. A Blocked
-          // attachment blocks every member. An Allowed one leaves a member Allowed unless its own
+          // attachment blocks every member (through `coverage`, see below). An Allowed one leaves a member Allowed unless its own
           // row is stricter; an own TimeLimited row keeps its own limits. A TimeLimited attachment
           // is the §6.1 case above, where an own Allowed row turns TimeLimited.
           case Some(c) =>
             val own       = if first.coveredOnly then None else Some(first.mode)
+            // #3004 (the #3007 review, D17): an own TimeLimited row under a Blocked attachment keeps
+            // its mode and limits. The group's block is applied by [[resolveAt]] from `coverage`, not
+            // from `mode`, so the member stays blocked outside the group's `allowed_during` windows;
+            // inside one, its own limits still bite, as budgets do inside any window.
             val mode      = c.mode match {
-              case AppMode.Blocked     => AppMode.Blocked
+              case AppMode.Blocked     =>
+                if own.contains(AppMode.TimeLimited) then AppMode.TimeLimited else AppMode.Blocked
               case AppMode.TimeLimited =>
                 if own.contains(AppMode.Blocked) then AppMode.Blocked else AppMode.TimeLimited
               case AppMode.Allowed     => own.getOrElse(AppMode.Allowed)
@@ -447,4 +485,12 @@ object ProfileAppDispositions {
       .sortBy(_.label)
     ProfileAppDispositions(perApp)
   }
+}
+
+/** What [[ProfileAppDispositions.resolveAt]] makes of one app at `now`. */
+private[policy] enum AtNow {
+  case Block      // on the blocked side
+  case Window     // an active allowed_during: carved behind the cap/budget/#1679 gate
+  case Allow      // a plain Allowed mode: carved unless #1679 suppresses it
+  case BudgetOnly // TimeLimited with no active rule: governed by its budgets alone
 }

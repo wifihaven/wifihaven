@@ -1088,11 +1088,23 @@ Per member, the group's override folds in as follows:
 | none | any | Unchanged from §17.3 |
 | `blocked_during` | any | Blocked, as if the attachment were Blocked (stricter wins, D20) |
 | `allowed_during` | none, Allowed or TimeLimited | An active `allowed_during` on the member: the per-app carve with its existing gate (profile daily cap not exhausted unless exempt, not in `appsOverBudget`, the #1679 schedule toggle) |
-| `allowed_during` | Blocked | Blocked: the window lifts the group's block, not the member's own (D24) |
+| `allowed_during` | Blocked, or its own `blocked_during` active | Blocked: the window lifts the group's block, not the member's own (D24) |
 
 - The gate is the per-app one, unchanged, so budgets bite inside a group
   window (D17). A TimeLimited group's window never carves a member past the
   group's or the member's own budget.
+- A member whose own row is TimeLimited keeps its own limits under a Blocked
+  attachment. The fold still blocks it through the attachment, so outside the
+  group's windows nothing changes; inside one, its own daily and weekly limits
+  bite (D17). Before this, the fold turned it Blocked and dropped its limits,
+  which left the window uncapped for it.
+- An app the fold blocks at `now` (`ProfileAppDispositions.blockedAppsAt`, the
+  same per-app resolver the fold uses) gets neither under-budget allow: not the
+  #1980 TimeLimited one and not the #1105 exempt one. Both land in
+  `extraAllowed`, which beats `extraBlocked` at the router (#421), so without
+  this a TimeLimited member, or an app's own TimeLimited row, stayed reachable
+  through an active `blocked_during` (row 34). The snapshot and `decide` read the
+  same set.
 - `blocked_during` and `allowed_during` both active on the same attachment:
   `allowed_during` wins, as for an app (per-app-schedules §4.1).
 - A member's own `allowed_during` still does not lift a Blocked group, or a
@@ -1117,12 +1129,13 @@ No wire change: the carve lands in `extraAllowed`, the block in
 |---|---|---|---|---|---|
 | 26 | none | Blocked | `allowed_during` | none | Reachable (`extraAllowed`) |
 | 27 | none | Blocked | none (outside the window) | none | Blocked |
-| 28 | none | Blocked | `allowed_during` | Blocked | Blocked (D24) |
+| 28 | none | Blocked | `allowed_during` | Blocked, or own `blocked_during` active | Blocked (D24) |
 | 29 | Schedule | Blocked | `allowed_during` | none | Reachable at bedtime, as per-app-schedules §5 row 1 |
 | 30 | TimeLimit | Blocked | `allowed_during` | none, group counts toward daily | Blocked: the carve yields to the daily cap (per-app-schedules row 9b) |
 | 31 | none | Allowed | `blocked_during` | none | Blocked (distinctive hosts) |
 | 32 | none | Allowed | `blocked_during` | own `allowed_during` active | Blocked (D20) |
 | 33 | Schedule | TimeLimited, group over budget | `allowed_during` | none | Blocked (D17) |
+| 34 | none | TimeLimited, under budget (exempt or counted) | `blocked_during` | none, or own TimeLimited | Blocked: the under-budget allow is withheld |
 
 An unrelated host is untouched in every row.
 
@@ -1143,13 +1156,15 @@ An unrelated host is untouched in every row.
 
 A gauge `app_group_rule_attachments{mode}` (`allowed_during`,
 `blocked_during`) counts the attachments that carry at least one rule of that
-mode, across all households. It is set on the reevaluate tick beside
+mode whose schedule has a window, across all households. It is derived from the
+same read the fold uses, so a rule on a schedule with no windows, which can
+never fire, is not counted. It is set on the reevaluate tick beside
 `app_group_attachments`, with a panel next to it on the enforcement dashboard.
 
 ### 18.7 Rollout
 
 1. **Schema only**: §18.2.
-2. **API + enforcement**: repo reads and writes, the §18.3 fold, rows 26–33 as
+2. **API + enforcement**: repo reads and writes, the §18.3 fold, rows 26–34 as
    feature tests, the request and response fields, the gauge and panel, and the TS
    types.
 3. **SPA**: §18.5.
@@ -1157,8 +1172,8 @@ mode, across all households. It is set on the reevaluate tick beside
 ### 18.8 Decisions (operator, 2026-11-12)
 
 - **D24 Group window vs member's own Blocked row.** A group's `allowed_during`
-  lifts the group's block only. A member whose own row is Blocked stays
-  blocked. This is the mirror of D20, under which a member's own
+  lifts the group's block only. A member whose own row is Blocked, or whose own
+  `blocked_during` is active, stays blocked. This is the mirror of D20, under which a member's own
   `allowed_during` does not lift a Blocked group.
 - **D25 Rules in every mode.** Blocked, Allowed and TimeLimited attachments
   all take rules, as apps do. Budgets still bite inside a window (D17).

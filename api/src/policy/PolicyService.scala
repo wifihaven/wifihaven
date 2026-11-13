@@ -882,6 +882,11 @@ class PolicyServiceLive(
           state = state,
           appExtraAllowed = appAllowedHosts,
           appExtraBlocked = appBlockedHosts,
+          blockedNow = dispositions.blockedAppsAt(
+            appSchedMap.getOrElse(p.id, Map.empty),
+            now,
+            groupSchedMap.getOrElse(p.id, Map.empty),
+          ),
         )
       }
 
@@ -1195,9 +1200,12 @@ class PolicyServiceLive(
                 // pause check, so its semantics match the precedence by construction).
                 val isScheduleBlock          =
                   dayState.blockReason.contains(MacBlockReason.Schedule)
+                val dispositions             = ProfileAppDispositions.from(appLimits)
+                // #3004: the snapshot's `blockedNow`, from the same resolver.
+                val blockedNow               =
+                  dispositions.blockedAppsAt(appSchedWindows, now, groupWindows)
                 val (appAllowed, appBlocked) =
-                  ProfileAppDispositions
-                    .from(appLimits)
+                  dispositions
                     .enforcement(
                       appSchedWindows,
                       capExhausted,
@@ -1220,7 +1228,8 @@ class PolicyServiceLive(
                     dayState.blockReason.contains(MacBlockReason.Paused)
                 val profileAllowed =
                   if isHardPause then Nil
-                  else (appAllowed ++ PolicyService.exemptUnderCapHosts(dayState)).distinct
+                  else
+                    (appAllowed ++ PolicyService.exemptUnderCapHosts(dayState, blockedNow)).distinct
 
                 // #1413/#421: extraAllowed beats EVERY whole-MAC block — incl.
                 // Paused/Schedule — so check the allowed-app list first, before
@@ -1267,7 +1276,7 @@ class PolicyServiceLive(
                           case None
                               if matchesAny(
                                 h,
-                                PolicyService.timeLimitedUnderCapHosts(dayState),
+                                PolicyService.timeLimitedUnderCapHosts(dayState, blockedNow),
                               ) =>
                             ZIO.succeed(
                               RouterDecisionResponse(
@@ -1657,6 +1666,8 @@ object PolicyService {
       state: ProfileDayState,
       appExtraAllowed: List[Hostname] = Nil,
       appExtraBlocked: List[Hostname] = Nil,
+      // #3004: [[ProfileAppDispositions.blockedAppsAt]] for the under-budget carves below.
+      blockedNow: Set[AppId] = Set.empty,
   ): BlockRules = {
     // #1505/#1515: per-app cap exhaustion blocks the app's WHOLE host-set together — `state.perApp`
     // carries one entry per app with usage aggregated (gap-bridged) across the whole host-set, so
@@ -1673,7 +1684,7 @@ object PolicyService {
     // aggregate exhausts (appLimitExtraBlocked above takes over and extraAllowed-beats-extraBlocked
     // at the router; see feedback_extraallowed_beats_blocked). Shared with /decision via
     // `exemptUnderCapHosts` (#1532).
-    val appExemptAllowedHosts: List[Hostname] = exemptUnderCapHosts(state)
+    val appExemptAllowedHosts: List[Hostname] = exemptUnderCapHosts(state, blockedNow)
 
     // #1418: hard pause is a true off-switch. When this profile is paused AND
     // its pause_mode is `hard`, drop even the app/exempt/infra carve-outs — only
@@ -1717,7 +1728,7 @@ object PolicyService {
     // `timeLimitedUnderCapHosts` and `appLimitExtraBlocked` takes over (the redundant blocklist drop
     // is fine).
     val timeLimitedUnderCap =
-      if (state.blocked) Nil else timeLimitedUnderCapHosts(state)
+      if (state.blocked) Nil else timeLimitedUnderCapHosts(state, blockedNow)
 
     val profileExtraAllowed =
       if (isHardPause) Nil
@@ -1888,14 +1899,20 @@ object PolicyService {
    * every whole-MAC block (paused / schedule / daily-limit) at the router (#421). Shared by the
    * snapshot and the /decision fallback so the exempt carve cannot diverge (#1532, #1513).
    */
-  private[policy] def exemptUnderCapHosts(state: ProfileDayState): List[Hostname] = {
+  private[policy] def exemptUnderCapHosts(
+      state: ProfileDayState,
+      // #3004 (the #3007 review): [[ProfileAppDispositions.blockedAppsAt]]. An app a rule or a mode
+      // blocks at `now` gets no carve, or `extraAllowed` would beat its `extraBlocked` (#421).
+      blockedNow: Set[AppId],
+  ): List[Hostname] = {
     // #1627: an exempt app with no cap is always under, so it always carves around whole-MAC blocks
     // (Paused / Schedule / TimeLimit). #2933 (D16): "under" means under EVERY budget that contains it
     // ([[appsOverBudget]]), so a group's or a weekly limit takes the carve away; its reach (soft
     // Pause, Schedule, the daily total) is unchanged.
     val over = appsOverBudget(state)
     state.perApp.collect {
-      case sd if sd.exemptFromDaily && !over.contains(sd.appId) => sd.hosts.map(Hostname.unsafe)
+      case sd if sd.exemptFromDaily && !over.contains(sd.appId) && !blockedNow.contains(sd.appId) =>
+        sd.hosts.map(Hostname.unsafe)
     }.flatten
   }
 
@@ -1918,12 +1935,17 @@ object PolicyService {
    * over-allowing a shared host is safe — `extraAllowed` beats every drop. Shared by the snapshot
    * and the /decision fallback so the two cannot diverge (#1532).
    */
-  private[policy] def timeLimitedUnderCapHosts(state: ProfileDayState): List[Hostname] = {
+  private[policy] def timeLimitedUnderCapHosts(
+      state: ProfileDayState,
+      // #3004 (the #3007 review): as for [[exemptUnderCapHosts]].
+      blockedNow: Set[AppId],
+  ): List[Hostname] = {
     // #2933: "under" is [[appsOverBudget]], so an app under its own cap but in an exhausted group, or
     // over its weekly limit, is never put on the allow list.
     val over = appsOverBudget(state)
     state.perApp.collect {
-      case sd if !over.contains(sd.appId) => sd.hosts.map(Hostname.unsafe)
+      case sd if !over.contains(sd.appId) && !blockedNow.contains(sd.appId) =>
+        sd.hosts.map(Hostname.unsafe)
     }.flatten
   }
 
