@@ -7,9 +7,10 @@ import { api } from '@/api/client'
 import { useGroupAttachmentsOf, useInvalidators, useProfiles } from '@/api/queries'
 import { qk } from '@/api/queryKeys'
 import { AppIcon } from '@/components/AppIcon'
+import { ScheduleRuleEditor } from '@/components/ScheduleRuleEditor'
 import { tighterLeft } from '@/lib/budget'
 import { formatMins } from '@/lib/timeFormat'
-import type { AppDetail, AppGroup, AppMode, AppUsage, GroupUsage, ProfileAppGroup, UpsertProfileAppGroupRequest } from '@/types/api'
+import type { AppDetail, AppGroup, AppMode, AppScheduleMode, AppScheduleRule, AppUsage, GroupUsage, ProfileAppGroup, UpsertProfileAppGroupRequest } from '@/types/api'
 
 // #2935 — the query state behind the week-to-date figures, threaded down like #2764's UsageStatus so
 // a row can tell "not loaded yet" from a genuine zero (AGENTS.md#loading-states).
@@ -51,6 +52,7 @@ export function groupList(a: Pick<ProfileAppGroup, 'mode'>): 'allowed' | 'blocke
   return a.mode === 'blocked' ? 'blocked' : 'allowed'
 }
 
+const addAffordance = 'h-6 px-1.5 rounded-lg border border-dashed border-brand-border-strong text-[11px] font-medium text-brand-text-muted opacity-70 hover:opacity-100 hover:text-brand-accent hover:border-brand-accent focus-visible:opacity-100 transition-colors disabled:opacity-40'
 const chipBase = 'inline-flex items-center gap-1 h-6 px-2 rounded-lg border text-[11px] font-medium tabular-nums disabled:opacity-50'
 
 export function errMsg(e: unknown, fallback: string): string {
@@ -92,6 +94,8 @@ export function GroupRow({ profileId, attachment, group, apps, groups, budget, o
   const tid = `group-row-${attachment.groupId}`
   const w = useGroupWrites(profileId, onChanged)
   const [open, setOpen] = useState(false)
+  // #3005 — the schedule drawer, as on an app row, in every mode.
+  const [schedOpen, setSchedOpen] = useState(false)
   // #2974 — members have their own expander beside the limit chip, so neither hides the other.
   const [membersOpen, setMembersOpen] = useState(autoOpenMembers)
   useEffect(() => { if (autoOpenMembers) setMembersOpen(true) }, [autoOpenMembers])
@@ -186,6 +190,34 @@ export function GroupRow({ profileId, attachment, group, apps, groups, budget, o
     }), 'Failed to update')
   }
 
+  // #3005 (design §18.5) — schedule rules autosave like the rest of the row. The write repeats the
+  // row's mode and limits so nothing else moves, and always sends the full rule list: the server
+  // reads an absent list as "keep", so an empty one is how the last rule goes.
+  const rules: AppScheduleRule[] = attachment.scheduleRules ?? []
+  async function writeRules(next: AppScheduleRule[]) {
+    await run(() => w.attach(attachment.groupId, {
+      mode: attachment.mode, dailyMinutes: attachment.dailyMinutes, weeklyMinutes: attachment.weeklyMinutes,
+      exemptFromDaily: attachment.exemptFromDaily, scheduleRules: next,
+    }), 'Failed to update schedules')
+  }
+  async function addRule(scheduleId: number, ruleMode: AppScheduleMode) {
+    if (rules.some(r => r.scheduleId === scheduleId && r.mode === ruleMode)) return
+    await writeRules([...rules.map(r => ({ scheduleId: r.scheduleId, mode: r.mode })), { scheduleId, mode: ruleMode }])
+  }
+  async function removeRule(scheduleId: number, ruleMode: AppScheduleMode) {
+    await writeRules(rules
+      .filter(r => !(r.scheduleId === scheduleId && r.mode === ruleMode))
+      .map(r => ({ scheduleId: r.scheduleId, mode: r.mode })))
+  }
+  // The editor's in-window toggle on a Blocked group (§18.5): an allowed_during rule's carve yields
+  // to the daily limit unless the group is not counted, as for a Blocked app.
+  async function writeExempt(nextExempt: boolean) {
+    await run(() => w.attach(attachment.groupId, {
+      mode: attachment.mode, dailyMinutes: attachment.dailyMinutes, weeklyMinutes: attachment.weeklyMinutes,
+      exemptFromDaily: nextExempt,
+    }), 'Failed to update')
+  }
+
   const memberWrites = useGroupMemberWrites(attachment.groupId, onChanged, attachment.memberAppIds)
 
   const dGtW = attachment.dailyMinutes != null && attachment.weeklyMinutes != null
@@ -270,6 +302,23 @@ export function GroupRow({ profileId, attachment, group, apps, groups, budget, o
             <span className="text-[8px] opacity-60">{open ? '▲' : '▼'}</span>
           </button>
           </>)}
+          {/* #3005 — schedule expander, as on an app row: a count chip once a rule exists. */}
+          <button
+            type="button"
+            data-testid={`${tid}-schedule-toggle`}
+            aria-expanded={schedOpen}
+            disabled={busy}
+            onClick={() => setSchedOpen(v => !v)}
+            className={rules.length > 0
+              ? `${chipBase} bg-brand-alt border-brand-border-strong text-brand-text`
+              : `${addAffordance} ${schedOpen ? 'opacity-100 border-solid border-brand-accent text-brand-accent' : ''}`}
+          >
+            {rules.length > 0 ? (<>
+              <span aria-hidden="true">📅</span>
+              {rules.length}
+              <span className="text-[8px] opacity-60">{schedOpen ? '▲' : '▼'}</span>
+            </>) : '+ schedule'}
+          </button>
           <button
             type="button"
             data-testid={`${tid}-move`}
@@ -384,6 +433,21 @@ export function GroupRow({ profileId, attachment, group, apps, groups, budget, o
             </label>
           )}
 
+        </div>
+      )}
+      {schedOpen && (
+        <div className="border-t border-brand-border px-3 py-2.5 bg-brand-surface rounded-b-xl">
+          <ScheduleRuleEditor
+            idPrefix={tid}
+            subject="group"
+            rules={rules}
+            exemptFromDaily={attachment.exemptFromDaily}
+            showExemptToggle={isBlocked}
+            busy={busy}
+            onAdd={addRule}
+            onRemove={removeRule}
+            onSetExempt={writeExempt}
+          />
         </div>
       )}
       {membersOpen && (
