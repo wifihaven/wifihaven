@@ -861,5 +861,67 @@ object AppGroupApiSpec
         (flipped.mode, flipped.allowedDuringScheduleBlock) == ((AppMode.Allowed, true)),
       )
     },
+    test(
+      "#3004: schedule rules round-trip, absent keeps them, another household's schedule is 404",
+    ) {
+      val w = ScheduleWindow(
+        List("mon"),
+        java.time.LocalTime.of(15, 0),
+        java.time.LocalTime.of(17, 0),
+        java.time.ZoneId.of("UTC"),
+      )
+      for {
+        _              <- cleanDb
+        two            <- TestLayers.seedTwoHouseholds(macA, macB)
+        r              <- rig
+        auth           <- makeAuth
+        tok            <- login(auth, two.adminA, two.password)
+        (roblox, _, _) <- newApps
+        nsr            <- ZIO.service[NamedScheduleRepo]
+        sA             <- nsr.create("Homework", None, List(w), two.hhA)
+        sB             <- nsr.create("Theirs", None, List(w), two.hhB)
+        g              <- createGroup(r.groups, tok, "Games", List(roblox)).flatMap(decodeGroup)
+        before         <- r.invalidations.get.map(_.size)
+        set            <- attach(
+          r.groups,
+          tok,
+          two.profileA,
+          g.id,
+          s"""{"mode":"blocked","scheduleRules":[{"scheduleId":${sA.value},"mode":"allowed_during"}]}""",
+        )
+        after          <- r.invalidations.get.map(_.size)
+        // An older client's write leaves the rules alone.
+        kept           <- attach(r.groups, tok, two.profileA, g.id, """{"mode":"blocked"}""")
+        afterKeep      <- attachments(r.groups, tok, two.profileA)
+        foreign        <- attach(
+          r.groups,
+          tok,
+          two.profileA,
+          g.id,
+          s"""{"mode":"blocked","scheduleRules":[{"scheduleId":${sB.value},"mode":"allowed_during"}]}""",
+        )
+        afterForeign   <- attachments(r.groups, tok, two.profileA)
+        cleared        <- attach(
+          r.groups,
+          tok,
+          two.profileA,
+          g.id,
+          """{"mode":"blocked","scheduleRules":[]}""",
+        )
+        afterClear     <- attachments(r.groups, tok, two.profileA)
+      } yield assertTrue(
+        set.status.isSuccess,
+        after == before + 1,
+        kept.status.isSuccess,
+        afterKeep.flatMap(_.scheduleRules.map(r => (r.scheduleId, r.mode))) ==
+          List((sA, AppScheduleMode.AllowedDuring)),
+        foreign.status == Status.NotFound,
+        // The refused write changed nothing.
+        afterForeign.flatMap(_.scheduleRules.map(_.scheduleId)) == List(sA),
+        cleared.status.isSuccess,
+        afterClear.flatMap(_.scheduleRules).isEmpty,
+        afterClear.map(_.groupId) == List(g.id),
+      )
+    },
   ) @@ TestAspect.sequential
 }

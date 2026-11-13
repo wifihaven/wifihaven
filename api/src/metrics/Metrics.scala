@@ -2,7 +2,7 @@ package wifihaven.api.metrics
 
 import com.zaxxer.hikari.HikariDataSource
 import wifihaven.api.db.RouterRepo
-import wifihaven.shared.AppMode
+import wifihaven.shared.{AppMode, AppScheduleMode}
 import wifihaven.shared.types.BlocklistId
 import zio.*
 import zio.metrics.*
@@ -132,7 +132,9 @@ object MetricGuard {
       "kind",
       // #2980 — a profile group attachment's mode for `app_group_attachments`. A fixed 3-value enum
       // (blocked | allowed | time_limited — `AppMode`), bounded by the code, not by household,
-      // profile or group growth, so it satisfies the §4 cardinality firewall.
+      // profile or group growth, so it satisfies the §4 cardinality firewall. #3004 reuses the key
+      // on `app_group_rule_attachments` for a schedule rule's mode, a fixed 2-value enum
+      // (allowed_during | blocked_during — `AppScheduleMode`).
       "mode",
     )
 
@@ -221,6 +223,9 @@ object MetricGuard {
     // #2980 (design §17.7): count of profile group attachments by mode, set once per reevaluate
     // tick, summed across households. `mode` ∈ {blocked, allowed, time_limited}: `AppMode`.
     "app_group_attachments"                       -> Set("mode"),
+    // #3004 (design §18.6): count of profile group attachments carrying a schedule rule, by rule
+    // mode, set once per reevaluate tick. `mode` ∈ {allowed_during, blocked_during}: `AppScheduleMode`.
+    "app_group_rule_attachments"                  -> Set("mode"),
     // #2932: presence rows ingested for a household-day that was already settled, so not counted
     // toward weekly budgets (design §6.4). Unlabelled: the rate is the measurement.
     "budget_late_presence_rows_total"             -> Set.empty[String],
@@ -1126,6 +1131,21 @@ object AppMetrics {
       MetricGuard.gauge(
         "app_group_attachments",
         Map("mode" -> AppMode.asString(m)),
+        counts.getOrElse(m, 0).toDouble,
+      )
+    }
+
+  /**
+   * #3004 (design §18.6): the `app_group_rule_attachments{mode}` gauge: how many profile group
+   * attachments carry at least one schedule rule of each mode (`allowed_during`, `blocked_during`)
+   * across all households. Set once per reevaluate tick beside [[setGroupAttachments]], every mode
+   * every tick, so a mode nobody uses reads 0.
+   */
+  def setGroupRuleAttachments(counts: Map[AppScheduleMode, Int]): UIO[Unit] =
+    ZIO.foreachDiscard(AppScheduleMode.values.toList) { m =>
+      MetricGuard.gauge(
+        "app_group_rule_attachments",
+        Map("mode" -> AppScheduleMode.asString(m)),
         counts.getOrElse(m, 0).toDouble,
       )
     }

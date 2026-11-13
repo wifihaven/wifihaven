@@ -471,6 +471,11 @@ class PolicyServiceLive(
   private val attachmentCounts: AtomicReference[Map[HouseholdId, Map[AppMode, Int]]] =
     new AtomicReference(Map.empty)
 
+  // #3004 (design §18.6): each household's attachments carrying a rule, by rule mode, from its
+  // LAST build, summed into `app_group_rule_attachments` once per tick like `attachmentCounts`.
+  private val ruleAttachmentCounts: AtomicReference[Map[HouseholdId, Map[AppScheduleMode, Int]]] =
+    new AtomicReference(Map.empty)
+
   // #1069/#1482: per-host /decision fallback must see the same schedule downtime as the snapshot —
   // the windows of every block-mode named schedule attached to the profile (as synthetic
   // DbSchedules so `scheduleActiveAt` applies unchanged). Named schedules are the sole source.
@@ -651,7 +656,12 @@ class PolicyServiceLive(
       val byMode      = households.toList
         .flatMap(h => attached.getOrElse(h, Map.empty).toList)
         .groupMapReduce(_._1)(_._2)(_ + _)
-      AppMetrics.setBudgetsExhausted(summed) *> AppMetrics.setGroupAttachments(byMode)
+      val ruled       = ruleAttachmentCounts.get()
+      val byRuleMode  = households.toList
+        .flatMap(h => ruled.getOrElse(h, Map.empty).toList)
+        .groupMapReduce(_._1)(_._2)(_ + _)
+      AppMetrics.setBudgetsExhausted(summed) *> AppMetrics.setGroupAttachments(byMode) *>
+        AppMetrics.setGroupRuleAttachments(byRuleMode)
     }
 
   // #2843: repair device-assignment drift BEFORE the build, so a repair that changes
@@ -779,6 +789,7 @@ class PolicyServiceLive(
       // No policy is enforced, so no budget is.
       budgetCounts.updateAndGet(_.updated(household, Map.empty))
       attachmentCounts.updateAndGet(_.updated(household, Map.empty))
+      ruleAttachmentCounts.updateAndGet(_.updated(household, Map.empty))
       AppMetrics
         .setGlobalPolicy(snap.global.extraAllowed.size, 0)
         .zipRight(logSnapshotChanged(household, snap))
@@ -827,8 +838,18 @@ class PolicyServiceLive(
       appSched           <- ZIO.foreach(allProfiles)(p =>
         appRepo.appScheduleWindowsForProfile(p.id).map(p.id -> _),
       )
+      // #3004 (design §18.3): each attached group's rules, folded by the same `enforcement`.
+      groupSched         <- ZIO.foreach(allProfiles)(p =>
+        appRepo.groupScheduleWindowsForProfile(p.id).map(p.id -> _),
+      )
       appLimitsMap = appLimitsByProfile.toMap
-      appSchedMap = appSched.toMap
+      appSchedMap   = appSched.toMap
+      groupSchedMap = groupSched.toMap
+      _ <- ZIO.succeed(
+        ruleAttachmentCounts.updateAndGet(
+          _.updated(household, PolicyService.ruleAttachmentsByMode(groupSchedMap.values)),
+        ),
+      )
       _ <- ZIO.succeed(
         attachmentCounts.updateAndGet(
           _.updated(household, PolicyService.attachmentsByMode(appLimitsMap.values.flatten)),
@@ -854,6 +875,7 @@ class PolicyServiceLive(
           now = now,
           isScheduleBlock = isScheduleBlock,
           overBudget = PolicyService.appsOverBudget(state).keySet,
+          groupWindows = groupSchedMap.getOrElse(p.id, Map.empty),
         )
         PolicyService.computeBlockRules(
           profile = p,
@@ -1130,6 +1152,8 @@ class PolicyServiceLive(
             // #1379: per-app schedule windows for this profile's assignments, used to fold each
             // app's effective disposition + carve gate exactly as the snapshot does.
             appSchedWindows <- appRepo.appScheduleWindowsForProfile(pid)
+            // #3004: the group rules, so this path folds exactly as the snapshot does.
+            groupWindows    <- appRepo.groupScheduleWindowsForProfile(pid)
             res             <- pOpt match {
               case None    =>
                 ZIO.succeed(
@@ -1180,6 +1204,7 @@ class PolicyServiceLive(
                       now,
                       isScheduleBlock,
                       PolicyService.appsOverBudget(dayState).keySet,
+                      groupWindows,
                     )
 
                 // #1515: the per-profile carve set the snapshot puts in `extraAllowed`, reproduced
@@ -1804,6 +1829,18 @@ object PolicyService {
       .flatMap(r => r.coverage.map(c => (r.profileId, c.groupId, c.mode)))
       .toSet
       .groupMapReduce(_._3)(_ => 1)(_ + _)
+
+  /**
+   * #3004 (design §18.6): attachments carrying at least one rule of each mode, from the per-profile
+   * [[AppRepo.groupScheduleWindowsForProfile]] maps of one build. Each map is one profile's, so an
+   * attachment is a (map, group) pair; several rules (or windows) of one mode count it once.
+   */
+  def ruleAttachmentsByMode(
+      perProfile: Iterable[Map[AppGroupId, List[(AppScheduleMode, ScheduleWindow)]]],
+  ): Map[AppScheduleMode, Int] =
+    perProfile.toList
+      .flatMap(_.values.flatMap(_.map(_._1).distinct))
+      .groupMapReduce(identity)(_ => 1)(_ + _)
 
   /** #2933: [[exhaustedBudgets]] of several profile-days, counted by (kind, window) wire name. */
   def exhaustedCounts(states: Iterable[ProfileDayState]): Map[(String, String), Int] =

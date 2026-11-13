@@ -6,7 +6,15 @@ import doobie.postgres.implicits.*
 import cats.syntax.all.*
 import wifihaven.api.db.TypeMeta.given
 import wifihaven.api.metrics.DbMetrics
-import wifihaven.shared.{AppGroup, AppGroupRef, AppMode, AppScheduleMode, Clock, ProfileAppGroup}
+import wifihaven.shared.{
+  AppGroup,
+  AppGroupRef,
+  AppMode,
+  AppScheduleMode,
+  AppScheduleRule,
+  Clock,
+  ProfileAppGroup,
+}
 import wifihaven.shared.types.*
 import zio.*
 import zio.interop.catz.*
@@ -33,6 +41,12 @@ object AppGroupError {
 
   /** A member id that is not in the app catalog. */
   final case class UnknownApp(appId: AppId) extends AppGroupError
+
+  /**
+   * #3004: a rule names a schedule that is not in the caller's household (also what another
+   * household's schedule looks like).
+   */
+  final case class ScheduleNotFound(id: NamedScheduleId) extends AppGroupError
 }
 
 /**
@@ -294,7 +308,21 @@ class AppGroupRepoLive(xa: Transactor[Task], clock: Clock) extends AppGroupRepo 
       } yield out
     })
 
-  private type AttRow = (AppGroupId, String, Option[Int], Option[Int], Boolean, String, Boolean)
+  private type AttRow =
+    (Long, AppGroupId, String, Option[Int], Option[Int], Boolean, String, Boolean)
+
+  // #3004: the V96 rules of a set of attachments, keyed by attachment id, in insertion order. One
+  // `= ANY` read off `uq_profile_app_group_schedule_rules` (attachment_id leading).
+  private def rulesOf(ids: List[Long]): ConnectionIO[Map[Long, List[AppScheduleRule]]] =
+    if (ids.isEmpty) doobie.free.connection.pure(Map.empty)
+    else {
+      val arr = ids.toArray
+      sql"""SELECT attachment_id, schedule_id, mode FROM profile_app_group_schedule_rules
+             WHERE attachment_id = ANY($arr) ORDER BY attachment_id, id"""
+        .query[(Long, NamedScheduleId, AppScheduleMode)]
+        .to[List]
+        .map(_.groupMap(_._1)(r => AppScheduleRule(r._2, r._3)))
+    }
 
   private def attachmentsCio(
       household: HouseholdId,
@@ -303,17 +331,19 @@ class AppGroupRepoLive(xa: Transactor[Task], clock: Clock) extends AppGroupRepo 
   ): ConnectionIO[List[ProfileAppGroup]] = {
     val one = only.map(_.value).getOrElse(-1L)
     for {
-      rows <- sql"""SELECT g.id, g.name, p.daily_minutes, p.weekly_minutes, p.exempt_from_daily,
+      rows <-
+        sql"""SELECT p.id, g.id, g.name, p.daily_minutes, p.weekly_minutes, p.exempt_from_daily,
                            p.mode, p.allowed_during_schedule_block
                       FROM profile_app_groups p
                       JOIN app_groups g ON g.id = p.group_id AND g.household_id = p.household_id
                      WHERE p.household_id = $household AND p.profile_id = $profile
                        AND ($one = -1 OR p.group_id = $one)
                      ORDER BY g.name"""
-        .query[AttRow]
-        .to[List]
-      ms   <- membersOf(rows.map(_._1.value))
-    } yield rows.map((gid, n, d, w, e, m, ads) =>
+          .query[AttRow]
+          .to[List]
+      ms   <- membersOf(rows.map(_._2.value))
+      rs   <- rulesOf(rows.map(_._1))
+    } yield rows.map((aid, gid, n, d, w, e, m, ads) =>
       ProfileAppGroup(
         profile,
         gid,
@@ -324,6 +354,7 @@ class AppGroupRepoLive(xa: Transactor[Task], clock: Clock) extends AppGroupRepo 
         e,
         ProfileAppGroup.effectiveMode(m, d, w),
         ads,
+        rs.getOrElse(aid, Nil),
       ),
     )
   }
@@ -346,12 +377,24 @@ class AppGroupRepoLive(xa: Transactor[Task], clock: Clock) extends AppGroupRepo 
   ) =
     DbMetrics.timed("appGroup.upsertAttachment")(txn[ProfileAppGroup] { now =>
       for {
-        grp   <- findCio(household, group)
-        prof  <-
+        grp      <- findCio(household, group)
+        prof     <-
           sql"SELECT EXISTS (SELECT 1 FROM profiles WHERE id = $profile AND household_id = $household)"
             .query[Boolean]
             .unique
-        prior <- sql"""SELECT exempt_from_daily, mode, daily_minutes, weekly_minutes
+        // #3004: every rule's schedule must be in this household. The V96 composite FK enforces
+        // it too; this check is what names the schedule (and a race lands back here via `txn`).
+        badSched <- scheduleRules.map(_.map(_._1).distinct) match {
+          case None | Some(Nil) => doobie.free.connection.pure(Option.empty[NamedScheduleId])
+          case Some(ids)        =>
+            val arr = ids.map(_.value).toArray
+            sql"""SELECT id FROM named_schedules
+                   WHERE household_id = $household AND id = ANY($arr)"""
+              .query[NamedScheduleId]
+              .to[List]
+              .map(found => ids.find(i => !found.contains(i)))
+        }
+        prior    <- sql"""SELECT exempt_from_daily, mode, daily_minutes, weekly_minutes
                          FROM profile_app_groups
                         WHERE profile_id = $profile AND group_id = $group"""
           .query[(Boolean, String, Option[Int], Option[Int])]
@@ -363,6 +406,7 @@ class AppGroupRepoLive(xa: Transactor[Task], clock: Clock) extends AppGroupRepo 
         out <-
           if (grp.isEmpty) fail[ProfileAppGroup](GroupNotFound)
           else if (!prof) fail[ProfileAppGroup](ProfileNotFound)
+          else if (badSched.nonEmpty) fail[ProfileAppGroup](ScheduleNotFound(badSched.get))
           else
             for {
               _   <- sql"""INSERT INTO profile_app_groups
@@ -377,6 +421,11 @@ class AppGroupRepoLive(xa: Transactor[Task], clock: Clock) extends AppGroupRepo 
                              mode = EXCLUDED.mode,
                              allowed_during_schedule_block =
                                EXCLUDED.allowed_during_schedule_block""".update.run
+              // #3004 (design §18.5): replace the rules when given a list; `None` keeps them.
+              // Rules move no budget, so they drop no settled usage.
+              _   <- scheduleRules.fold(doobie.free.connection.unit)(rules =>
+                setRulesCio(household, profile, group, rules),
+              )
               // Design §6.4: a new attachment changes the profile's dispositions (drop all three
               // kinds), and so does an effective-mode change (§17.3: only a TimeLimited attachment is a
               // budget, and a member's mode follows the attachment's); an exempt-flag edit moves
@@ -398,6 +447,25 @@ class AppGroupRepoLive(xa: Transactor[Task], clock: Clock) extends AppGroupRepo 
             } yield row.headOption.toRight(GroupNotFound: AppGroupError)
       } yield out
     })
+
+  private def setRulesCio(
+      household: HouseholdId,
+      profile: ProfileId,
+      group: AppGroupId,
+      rules: List[(NamedScheduleId, AppScheduleMode)],
+  ): ConnectionIO[Unit] =
+    for {
+      aid <- sql"""SELECT id FROM profile_app_groups
+                   WHERE household_id = $household AND profile_id = $profile
+                     AND group_id = $group""".query[Long].unique
+      _   <- sql"DELETE FROM profile_app_group_schedule_rules WHERE attachment_id = $aid".update.run
+      _   <- rules.distinct.traverse_ { (sid, mode) =>
+        val m = AppScheduleMode.asString(mode)
+        sql"""INSERT INTO profile_app_group_schedule_rules
+                 (household_id, attachment_id, schedule_id, mode)
+               VALUES ($household, $aid, $sid, $m)""".update.run
+      }
+    } yield ()
 
   def deleteAttachment(household: HouseholdId, profile: ProfileId, group: AppGroupId) =
     DbMetrics.timed("appGroup.deleteAttachment")(

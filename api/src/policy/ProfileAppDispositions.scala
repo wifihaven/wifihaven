@@ -202,6 +202,9 @@ final case class ProfileAppDispositions(
       // An active `allowed_during` window decides WHEN an app may be used and its budgets decide
       // HOW MUCH, so the window's carve is also withheld for these.
       overBudget: Set[AppId] = Set.empty,
+      // #3004 (design §18.3): each attached group's schedule rules, as (mode, window) pairs. They
+      // resolve through the same [[ProfileAppDispositions.activeOverride]] an app's own rules do.
+      groupWindows: Map[AppGroupId, List[(AppScheduleMode, ScheduleWindow)]] = Map.empty,
   ): (List[Hostname], List[Hostname]) = {
     val allowed = scala.collection.mutable.ListBuffer.empty[Hostname]
     val blocked = scala.collection.mutable.ListBuffer.empty[Hostname]
@@ -214,19 +217,34 @@ final case class ProfileAppDispositions(
       // (extraAllowed already beats every block path at the router; design §"most-permissive"), and
       // a shared host belonging to an allowed app must stay reachable for that app to work.
       val distinctive                = d.distinctiveHosts.map(Hostname.unsafe)
-      val pairs                      = schedWindows.getOrElse(d.assignmentId, Nil)
-      val allowedActive              = pairs.exists { case (m, w) =>
-        m == AppScheduleMode.AllowedDuring && PolicyService.windowActiveAt(w, now)
-      }
-      val blockedActive              = pairs.exists { case (m, w) =>
-        m == AppScheduleMode.BlockedDuring && PolicyService.windowActiveAt(w, now)
-      }
+      // A covered-only member has no assignment (id 0) and so no rules of its own.
+      val own                        =
+        if d.coveredOnly then None
+        else ProfileAppDispositions.activeOverride(schedWindows.getOrElse(d.assignmentId, Nil), now)
+      // #3004 (design §18.3): the group's rules, resolved by the same function.
+      val groupOverride              = d.coverage.flatMap(c =>
+        ProfileAppDispositions.activeOverride(groupWindows.getOrElse(c.groupId, Nil), now),
+      )
+      // D24: a group's `allowed_during` lifts the GROUP's block, not a member's own Blocked row,
+      // the mirror of D20 below.
+      val groupAllowedActive         =
+        groupOverride.contains(AppScheduleMode.AllowedDuring) &&
+          !d.ownMode.contains(AppMode.Blocked)
+      val allowedActive              =
+        own.contains(AppScheduleMode.AllowedDuring) || groupAllowedActive
+      val blockedActive              = own.contains(AppScheduleMode.BlockedDuring)
       // #1679: suppress extraAllowed carve for this app if we're in a Schedule block and the
       // assignment opts out of the "allowed during bedtime" behaviour.
       val suppressedByScheduleToggle = isScheduleBlock && !d.allowedDuringScheduleBlock
       // #2980 (D20): a Blocked group blocks its members whatever their own rows say, and that
-      // includes a member's own `allowed_during` window: stricter wins.
-      val groupBlocked               = d.coverage.exists(_.mode == AppMode.Blocked)
+      // includes a member's own `allowed_during` window: stricter wins. #3004: a group in an active
+      // `blocked_during` window is a Blocked group, and one in an active `allowed_during` window is
+      // not (the member is then carved like an app in its own window, behind the same gate).
+      val groupBlocked               = groupOverride match {
+        case Some(AppScheduleMode.BlockedDuring) => true
+        case Some(AppScheduleMode.AllowedDuring) => false
+        case None                                => d.coverage.exists(_.mode == AppMode.Blocked)
+      }
       if (groupBlocked) {
         blocked ++= distinctive
       } else if (allowedActive) {
@@ -285,6 +303,9 @@ final case class AppDisposition(
     coveredOnly: Boolean = false,
     // #2933: the app's display name, for the block page's budget wording.
     appName: String = "",
+    // #3004 (design §18.3): a covered member's OWN row mode, before the group's mode was folded in
+    // (`None` with no own row). `mode` above is the folded one; D24 needs the own row's.
+    ownMode: Option[AppMode] = None,
 )
 
 /** #2932 (design §6.1): which budget a figure belongs to. */
@@ -319,6 +340,23 @@ object ProfileAppDispositions {
 
   /** Empty (no assignments / no apps). */
   val empty: ProfileAppDispositions = ProfileAppDispositions(Nil)
+
+  /**
+   * #1379 / #3004: the ONE resolution of a rule list at `now`, for an app's own rules and a group's
+   * alike (design per-app-schedules §4.1, weekly-limits-and-app-groups §18.3). `AllowedDuring` if
+   * any `allowed_during` window is active (allow beats block on overlap, #421), else
+   * `BlockedDuring` if any `blocked_during` window is, else `None` (the base mode applies).
+   */
+  def activeOverride(
+      pairs: List[(AppScheduleMode, ScheduleWindow)],
+      now: Instant,
+  ): Option[AppScheduleMode] = {
+    def active(m: AppScheduleMode) =
+      pairs.exists((pm, w) => pm == m && PolicyService.windowActiveAt(w, now))
+    if active(AppScheduleMode.AllowedDuring) then Some(AppScheduleMode.AllowedDuring)
+    else if active(AppScheduleMode.BlockedDuring) then Some(AppScheduleMode.BlockedDuring)
+    else None
+  }
 
   /**
    * The fold. Takes `appLimits` — every (assignment × host) row the unfiltered
@@ -402,6 +440,7 @@ object ProfileAppDispositions {
               allowedDuringScheduleBlock = toggle,
               coverage = Some(c),
               coveredOnly = first.coveredOnly,
+              ownMode = own,
             )
         }
       }
