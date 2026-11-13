@@ -1097,7 +1097,12 @@ Per member, the group's override folds in as follows:
   attachment. The fold still blocks it through the attachment, so outside the
   group's windows nothing changes; inside one, its own daily and weekly limits
   bite (D17). Before this, the fold turned it Blocked and dropped its limits,
-  which left the window uncapped for it.
+  which left the window uncapped for it. A side effect: that member is now an
+  app budget all day, so it appears with its limit in the per-app usage views and, once
+  spent, it counts in `app_budget_exhausted{kind="app"}` even while the group
+  blocks it.
+  That reads correctly (it has a limit, and it is spent), and enforcement is
+  unchanged outside the window, since the group blocks it either way.
 - An app the fold blocks at `now` (`ProfileAppDispositions.blockedAppsAt`, the
   same per-app resolver the fold uses) gets neither under-budget allow: not the
   #1980 TimeLimited one and not the #1105 exempt one. Both land in
@@ -1172,8 +1177,11 @@ never fire, is not counted. It is set on the reevaluate tick beside
 ### 18.8 Decisions (operator, 2026-11-12)
 
 - **D24 Group window vs member's own Blocked row.** A group's `allowed_during`
-  lifts the group's block only. A member whose own row is Blocked, or whose own
-  `blocked_during` is active, stays blocked. This is the mirror of D20, under which a member's own
-  `allowed_during` does not lift a Blocked group.
+  lifts the group's block only. A member whose own row is Blocked stays
+  blocked. This is the mirror of D20, under which a member's own
+  `allowed_during` does not lift a Blocked group. (Author's reading, not
+  separately put to the operator: a member's own active `blocked_during` counts
+  as its own Blocked row here, as test 32 pins for the D20 side. Flagged to the
+  operator with #3007.)
 - **D25 Rules in every mode.** Blocked, Allowed and TimeLimited attachments
   all take rules, as apps do. Budgets still bite inside a window (D17).

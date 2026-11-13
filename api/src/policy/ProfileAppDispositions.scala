@@ -348,17 +348,6 @@ object ProfileAppDispositions {
   }
 
   /**
-   * The fold. Takes `appLimits` — every (assignment × host) row the unfiltered
-   * [[wifihaven.api.db.AppTimeLimitRepo.listForProfile]] returns, across all modes — and emits the
-   * unified per-profile decomposition. Rows are grouped by `assignmentId` (the canonical
-   * per-assignment key, populated from `app_policy_assignments.id` in the repo SELECT); each
-   * assignment maps to exactly one [[AppDisposition]]. Stable order by `label`.
-   *
-   * If an assignment has no hosts the repo emits no rows for it — such an assignment contributes
-   * nothing to any projection, which is correct: there's nothing to allow, block, exempt, or
-   * attribute on.
-   */
-  /**
    * The one per-app resolution of rules at `now` that [[ProfileAppDispositions.enforcement]] and
    * [[ProfileAppDispositions.blockedAppsAt]] both use (design §4.1, §18.3):
    *
@@ -402,6 +391,17 @@ object ProfileAppDispositions {
       }
   }
 
+  /**
+   * The fold. Takes `appLimits` — every (assignment × host) row the unfiltered
+   * [[wifihaven.api.db.AppTimeLimitRepo.listForProfile]] returns, across all modes — and emits the
+   * unified per-profile decomposition. Rows are grouped by `assignmentId` (the canonical
+   * per-assignment key, populated from `app_policy_assignments.id` in the repo SELECT); each
+   * assignment maps to exactly one [[AppDisposition]]. Stable order by `label`.
+   *
+   * If an assignment has no hosts the repo emits no rows for it — such an assignment contributes
+   * nothing to any projection, which is correct: there's nothing to allow, block, exempt, or
+   * attribute on.
+   */
   def from(appLimits: List[wifihaven.shared.AppTimeLimit]): ProfileAppDispositions = {
     // #2932: keyed by (assignment, app). A covered-only row has no assignment (id 0), so the app id
     // tells two such apps apart; an assigned app has exactly one assignment per profile (V28's
@@ -443,9 +443,10 @@ object ProfileAppDispositions {
           //
           // #2980 (design §17.3, D20): the attachment has a mode too, and the stricter of the
           // attachment and the member's own row wins, Blocked > TimeLimited > Allowed. A Blocked
-          // attachment blocks every member (through `coverage`, see below). An Allowed one leaves a member Allowed unless its own
-          // row is stricter; an own TimeLimited row keeps its own limits. A TimeLimited attachment
-          // is the §6.1 case above, where an own Allowed row turns TimeLimited.
+          // attachment blocks every member (through `coverage`, see below). An Allowed one leaves a
+          // member Allowed unless its own row is stricter; an own TimeLimited row keeps its own
+          // limits. A TimeLimited attachment is the §6.1 case above, where an own Allowed row turns
+          // TimeLimited.
           case Some(c) =>
             val own       = if first.coveredOnly then None else Some(first.mode)
             // #3004 (the #3007 review, D17): an own TimeLimited row under a Blocked attachment keeps
