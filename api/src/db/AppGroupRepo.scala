@@ -404,12 +404,13 @@ class AppGroupRepoLive(xa: Transactor[Task], clock: Clock) extends AppGroupRepo 
         // a TimeLimited row keeps 'time_limited' stored but makes it Allowed, and no longer a budget.
         newEffective = ProfileAppGroup.effectiveMode(mode, dailyMinutes, weeklyMinutes)
         out <-
-          if (grp.isEmpty) fail[ProfileAppGroup](GroupNotFound)
-          else if (!prof) fail[ProfileAppGroup](ProfileNotFound)
-          else if (badSched.nonEmpty) fail[ProfileAppGroup](ScheduleNotFound(badSched.get))
-          else
-            for {
-              _   <- sql"""INSERT INTO profile_app_groups
+          (grp, badSched) match {
+            case (None, _)          => fail[ProfileAppGroup](GroupNotFound)
+            case _ if !prof         => fail[ProfileAppGroup](ProfileNotFound)
+            case (_, Some(missing)) => fail[ProfileAppGroup](ScheduleNotFound(missing))
+            case _                  =>
+              for {
+                _   <- sql"""INSERT INTO profile_app_groups
                              (household_id, profile_id, group_id, daily_minutes, weekly_minutes,
                               exempt_from_daily, mode, allowed_during_schedule_block)
                            VALUES ($household, $profile, $group, $dailyMinutes, $weeklyMinutes,
@@ -421,30 +422,32 @@ class AppGroupRepoLive(xa: Transactor[Task], clock: Clock) extends AppGroupRepo 
                              mode = EXCLUDED.mode,
                              allowed_during_schedule_block =
                                EXCLUDED.allowed_during_schedule_block""".update.run
-              // #3004 (design §18.5): replace the rules when given a list; `None` keeps them.
-              // Rules move no budget, so they drop no settled usage.
-              _   <- scheduleRules.fold(doobie.free.connection.unit)(rules =>
-                setRulesCio(household, profile, group, rules),
-              )
-              // Design §6.4: a new attachment changes the profile's dispositions (drop all three
-              // kinds), and so does an effective-mode change (§17.3: only a TimeLimited attachment is a
-              // budget, and a member's mode follows the attachment's); an exempt-flag edit moves
-              // only the profile daily total; limits and the #1679 toggle move nothing.
-              _   <- prior match {
-                case None                                                                         =>
-                  SettledUsage.invalidateCurrentWeek(List(profile), SettledUsage.Kinds.All, now)
-                case Some((_, m, d, w)) if ProfileAppGroup.effectiveMode(m, d, w) != newEffective =>
-                  SettledUsage.invalidateCurrentWeek(List(profile), SettledUsage.Kinds.All, now)
-                case Some((was, _, _, _)) if was != exemptFromDaily                               =>
-                  SettledUsage.invalidateCurrentWeek(
-                    List(profile),
-                    SettledUsage.Kinds.ProfileTotalOnly,
-                    now,
-                  )
-                case Some(_) => doobie.free.connection.pure(0)
-              }
-              row <- attachmentsCio(household, profile, Some(group))
-            } yield row.headOption.toRight(GroupNotFound: AppGroupError)
+                // #3004 (design §18.5): replace the rules when given a list; `None` keeps them.
+                // Rules move no budget, so they drop no settled usage.
+                _   <- scheduleRules.fold(doobie.free.connection.unit)(rules =>
+                  setRulesCio(household, profile, group, rules),
+                )
+                // Design §6.4: a new attachment changes the profile's dispositions (drop all three
+                // kinds), and so does an effective-mode change (§17.3: only a TimeLimited attachment is a
+                // budget, and a member's mode follows the attachment's); an exempt-flag edit moves
+                // only the profile daily total; limits and the #1679 toggle move nothing.
+                _   <- prior match {
+                  case None                                           =>
+                    SettledUsage.invalidateCurrentWeek(List(profile), SettledUsage.Kinds.All, now)
+                  case Some((_, m, d, w))
+                      if ProfileAppGroup.effectiveMode(m, d, w) != newEffective =>
+                    SettledUsage.invalidateCurrentWeek(List(profile), SettledUsage.Kinds.All, now)
+                  case Some((was, _, _, _)) if was != exemptFromDaily =>
+                    SettledUsage.invalidateCurrentWeek(
+                      List(profile),
+                      SettledUsage.Kinds.ProfileTotalOnly,
+                      now,
+                    )
+                  case Some(_) => doobie.free.connection.pure(0)
+                }
+                row <- attachmentsCio(household, profile, Some(group))
+              } yield row.headOption.toRight(GroupNotFound: AppGroupError)
+          }
       } yield out
     })
 

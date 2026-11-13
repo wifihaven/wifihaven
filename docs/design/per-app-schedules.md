@@ -277,6 +277,10 @@ After this gate, the existing bucketing is unchanged:
 `AllowedDuring (carved) / base Allowed → appAllowedHosts (→ extraAllowed)`,
 `Blocked → appBlockedHosts (→ extraBlocked)`,
 `TimeLimited → site-limit path (unchanged, #764)`.
+A `blocked_during` window on a TimeLimited app also withholds that app's
+under-budget allows (#1980's TimeLimited carve and #1105's exempt carve), which
+otherwise put its hosts in `extraAllowed` and beat the window's `extraBlocked`
+at the router (#3004; `weekly-limits-and-app-groups.md` §18.3).
 An `AllowedDuring` candidate that fails the gate is *not* added to either
 bucket — it simply remains subject to the profile's whole-MAC block (it is
 blocked because the cap is exhausted, which is the intent).
