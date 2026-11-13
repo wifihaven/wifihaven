@@ -3815,6 +3815,10 @@ describe('ProfilesPage — group schedule rules (#3005)', () => {
     await waitFor(() => expect(api.appGroups.attach).toHaveBeenCalledWith(1, 7, expect.objectContaining({
       mode: 'blocked', exemptFromDaily: false,
     })))
+    // The toggle write must leave the rules alone: absent keeps them, `[]` would wipe them.
+    const calls = fn(api.appGroups.attach).mock.calls
+    const body = calls[calls.length - 1]?.[2]
+    expect(body).not.toHaveProperty('scheduleRules')
   })
 
   it('an Allowed group gets the editor too, keeps its limits on a rule write, and has no in-editor toggle', async () => {

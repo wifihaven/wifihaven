@@ -2896,7 +2896,7 @@ function AppRow({ app, profileId, onChanged, usedMins, usageStatus, budget, bloc
       {schedOpen && mode != null && (
         <div className="border-t border-brand-border px-3 py-2.5 bg-brand-surface rounded-b-xl">
           <ScheduleRuleEditor
-            testId={`app-row-${app.app.id}-schedules`}
+            idPrefix={`app-row-${app.app.id}`}
             subject="app"
             rules={scheduleRules}
             exemptFromDaily={exempt}

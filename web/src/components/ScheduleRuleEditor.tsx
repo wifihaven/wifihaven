@@ -3,38 +3,36 @@ import { useNamedSchedules } from '@/api/queries'
 import { SchedulePicker } from '@/components/SchedulePicker'
 import type { AppScheduleMode, AppScheduleRule } from '@/types/api'
 
-// #1380 — per-app schedule rules on an app's profile assignment. Each rule
-// attaches a #1069 household named schedule (via the shared SchedulePicker)
-// with a mode:
-//   • Allowed during — the app stays reachable while the schedule's window is
-//     active, even during profile downtime (a carve-out). Still subject to the
-//     daily time limit unless the assignment is exempt (rows 9a–9c).
-//   • Blocked during — the app is dropped while the window is active, even when
-//     the profile is otherwise unrestricted.
+// #1380 — schedule rules on an app's profile assignment, and (#3005) on a group's attachment.
+// Each rule attaches a #1069 household named schedule (via the shared SchedulePicker) with a mode:
+//   • Allowed during — the app (or the group's apps) stays reachable while the schedule's window
+//     is active, even during profile downtime (a carve-out). Still subject to the daily time limit
+//     unless it doesn't count toward it (rows 9a–9c), and to any budget (D17).
+//   • Blocked during — dropped while the window is active, even when the profile is otherwise
+//     unrestricted.
 // No bespoke time editor here — the named schedule owns its day/time windows
 // (the picker's "Custom" flow authors a reusable one). Add/remove autosaves the
 // assignment (no Save button), consistent with the block/allow toggles above.
-export const SCHEDULE_MODE_LABEL: Record<AppScheduleMode, string> = {
+const SCHEDULE_MODE_LABEL: Record<AppScheduleMode, string> = {
   allowed_during: 'Allowed during',
   blocked_during: 'Blocked during',
 }
 
 export function ScheduleRuleEditor({
-  testId, subject, rules, exemptFromDaily, showExemptToggle, busy,
+  idPrefix, subject, rules, exemptFromDaily, showExemptToggle, busy,
   onAdd, onRemove, onSetExempt,
 }: {
-  // #3005 — the editor's root test id; every inner id hangs off it. The app row passes
-  // `app-row-<id>-schedules`, which keeps the ids it had before the editor was shared.
-  testId: string
+  // #3005 — the row's test-id prefix. The editor's root is `<prefix>-schedules` and its inner ids
+  // `<prefix>-schedule-…`, the ids an app row had before the editor was shared.
+  idPrefix: string
   // What the rules apply to, for the empty-state copy.
   subject: 'app' | 'group'
   rules: AppScheduleRule[]
   exemptFromDaily: boolean
-  // #2747 — true only for blocked-mode apps. time_limited and allowed apps
-  // govern the same exemptFromDaily flag from their own "Counts toward daily
-  // limit" row checkbox; exactly one control per mode. A blocked app has no row
-  // checkbox (nothing to exempt) but CAN be carved open by an allowed_during
-  // rule, which is where the in-window copy below is accurate.
+  // #2747 — true only for a Blocked app or (#3005) a Blocked group. TimeLimited and Allowed rows
+  // govern the same exemptFromDaily flag from their own "Counts toward daily limit" row checkbox;
+  // exactly one control per mode. A Blocked row has no row checkbox (nothing to exempt) but CAN be
+  // carved open by an allowed_during rule, which is where the in-window copy below is accurate.
   showExemptToggle: boolean
   busy: boolean
   onAdd: (scheduleId: number, mode: AppScheduleMode) => void | Promise<void>
@@ -52,9 +50,7 @@ export function ScheduleRuleEditor({
   }, [namedSchedules])
 
   const hasAllowedRule = rules.some(r => r.mode === 'allowed_during')
-  // Inner ids hang off the row prefix (`…-schedule-rule-…`, `…-schedule-add`), as they did when
-  // the editor lived in ProfilesPage.
-  const base = testId.replace(/-schedules$/, '')
+  const base = idPrefix
 
   function add() {
     if (pickScheduleId == null) return
@@ -68,7 +64,7 @@ export function ScheduleRuleEditor({
 
   return (
     <div
-      data-testid={testId}
+      data-testid={`${idPrefix}-schedules`}
       className="border-t border-brand-border pt-2 space-y-2"
     >
       <p className="text-xs font-semibold text-brand-text-muted uppercase tracking-wider">
@@ -100,7 +96,9 @@ export function ScheduleRuleEditor({
             </p>
             <p className="text-[11px] text-brand-text-muted">
               {r.mode === 'allowed_during'
-                ? 'Reachable while this window is active — even during profile downtime.'
+                ? (subject === 'group'
+                  ? "The group's apps are reachable while this window is active — even during profile downtime. An app's own block or time limit still applies."
+                  : 'Reachable while this window is active — even during profile downtime.')
                 : 'Blocked while this window is active — even when the profile is otherwise allowed.'}
             </p>
           </div>

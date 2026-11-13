@@ -438,7 +438,7 @@ export function GroupRow({ profileId, attachment, group, apps, groups, budget, o
       {schedOpen && (
         <div className="border-t border-brand-border px-3 py-2.5 bg-brand-surface rounded-b-xl">
           <ScheduleRuleEditor
-            testId={`${tid}-schedules`}
+            idPrefix={tid}
             subject="group"
             rules={rules}
             exemptFromDaily={attachment.exemptFromDaily}
