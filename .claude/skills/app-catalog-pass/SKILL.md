@@ -262,22 +262,40 @@ above is now wrong, fix the step too — don't just log around it.
 
 ## Learnings log (newest first)
 
-- **2026-11-16 (#3010)** — **A device named like a kid device but currently
-  absent from the "named kid devices" shortcut (`profileId` null, or any
-  roster drift since the last pass) still needs a fresh `GET /api/devices`
-  read every run** — don't carry a device/MAC list between passes even
-  within the same week; this run's kid-device set (`Quintus Chromebook`,
-  `Quintus iPad`, `Prima iPad`, `Octavius iPad`, `Kid Laptop`) came entirely
-  from a fresh pull, consistent with the #2998 "Kid Laptop" lesson.
+- **2026-11-16 (#3010)** — **GOT THIS WRONG IN THE FIRST DRAFT, caught by
+  independent review: NS records tell you who runs a zone, not where that
+  zone's hostnames resolve, and "the bare apex has a dedicated-looking IP"
+  says nothing about its SUBDOMAINS.** The first draft of `follett-destiny.yml`
+  claimed all five observed `follettsoftware.com` subdomains were on
+  Follett's own dedicated `141.193.213.x` block because the BARE apex and
+  `www` resolve there and the zone has Follett's own NS records
+  (`dns1`/`dns2.follettsoftware.com`) — neither fact says anything about the
+  subdomains actually in the host-set. `dig`ging each one individually
+  showed `prd-appcdn.`/`search.`/`security.follettsoftware.com` are on Azure
+  Front Door (`*.azurefd.net`) and `portal.follettdestiny.com` is on Azure
+  Static Web Apps (`*.azurestaticapps.net`) — both GENERIC multi-tenant
+  PaaS platforms used by countless unrelated companies, the same collateral
+  class as the CloudFront `/24` pool and `shops.myshopify.com`: the
+  *household's* traffic is what matters for enforcement (nftables drops by
+  raw destination IP, so an unrelated site sharing that edge IP would be
+  swept into the same drop/allow set), not whether the SAME COMPANY's other
+  customers share it. Only `portalapi.`/`titlepeek2.follettsoftware.com`
+  (Azure Public IPs on `*.cloudapp.azure.com`, a dedicated-per-resource
+  Azure primitive, not a shared PaaS edge) survived as true `hosts:`;
+  everything else moved to `shared_hosts:` (same pattern as `onenote.yml`'s
+  Office-Online-pool writeup) — credited for attribution while a distinctive
+  host is active, never entering a drop/allow set. **ALWAYS `dig` every
+  individual subdomain you intend to list, never infer a subdomain's
+  infra from the bare apex's NS records or the apex's own A record** — the
+  previous (now-corrected) version of this log's #3010 entries claimed the
+  opposite and were wrong.
 - **2026-11-16 (#3010)** — **An app's host-set can legitimately span
-  several wholly independent domains with no shared apex at all**, not just
-  two (the `plex.tv`+`plex.direct` precedent) — Vernier ships three separate
-  single-purpose science-class PWAs (`graphicalanalysis.app`,
-  `spectralanalysis.app`, `instrumentalanalysis.app`), one domain per app,
-  no subdomain relationship between them. One template, three independent
-  apexes, each confirmed by its own title/meta fetch. Don't assume a
-  multi-apex template is unusual or needs extra justification once two
-  prior apps already established the pattern.
+  several wholly independent domains with no shared apex at all** — Vernier
+  ships three separate single-purpose science-class PWAs
+  (`graphicalanalysis.app`, `spectralanalysis.app`, `instrumentalanalysis.app`),
+  one domain per app, no subdomain relationship between them, extending the
+  two-apex `plex.tv`+`plex.direct` precedent to three unrelated apexes in
+  one template.
 - **2026-11-16 (#3010)** — **A favicon-service 404 for EVERY sibling domain
   of a multi-apex app (not just one, as the #2833 Scratch case was) is
   reproducible and can mean the icon source just doesn't have that specific
@@ -290,23 +308,19 @@ above is now wrong, fix the step too — don't just log around it.
   retry once, and if it's still 404 for a domain whose PARENT brand has an
   obvious apex, try that apex before concluding the icon service has no
   answer at all.
-- **2026-11-16 (#3010)** — **A vendor's own multi-tenant platform domain
-  (shape: `<tenant>.<vendor-platform>.com`) is not automatically the same
-  disqualifying shared-pool risk as `shops.myshopify.com` — the tenant
-  label itself can be narrow enough to list safely, when it names something
-  as specific as this household's own school.** `flagstafflmc.follettdestiny.com`
-  (Follett Destiny's hosted library-catalog platform; `flagstafflmc` =
-  Flagstaff Academy's library media center) is structurally the same shape
-  as the disqualified Shopify case — a shared backend, many tenants, one
-  subdomain per tenant — but the #2774 Shopify skip is about a BARE apex or
-  a GENERIC-looking tenant label that any unrelated shop could occupy next;
-  here the tenant label is this specific household's own school, so listing
-  the full hostname (never the bare `follettdestiny.com` apex) can't sweep
-  in another district's traffic regardless of backend IP sharing, since
-  attribution/enforcement match on the resolved hostname per entry, not the
-  raw IP. Don't apply the Shopify precedent mechanically by shape alone —
-  check whether the specific tenant label is actually narrow enough to be
-  safe on its own.
+- **2026-11-16 (#3010)** — **One hit per 30d on a school-curriculum domain
+  can still clear the engagement bar that a consumer app's one-off visit
+  does not — state which signal is doing the work.** Vernier's three PWAs
+  shipped at one hit each; `jrustonapps.info`/`adeept.com` stayed watch-items
+  at three hits each. The difference isn't hit count — it's that Vernier's
+  title/meta-description explicitly identify dedicated school-science
+  curriculum software (same institutional-use signal as `savvas-realize`/
+  `iready`, which also don't need high hit counts because they're assigned
+  classroom tools used in short, infrequent sessions), while
+  jrustonapps/adeept are ordinary consumer sites with no institutional
+  signal and nothing to distinguish one visit from idle curiosity. When a
+  low-hit candidate ships anyway, write down the specific signal that
+  overrode the hit count, in the evidence doc, not just in this log.
 - **2026-11-16 (#3010)** — Reconfirmed the "diff the 4-tuples, not just the
   /24" rule (#2915) resolves a candidate that would otherwise look
   disqualified by prefix alone: `virtualnerd.com`'s three hosts all resolve
@@ -316,13 +330,6 @@ above is now wrong, fix the step too — don't just log around it.
   a different dedicated distribution, not a collision. Worth the 10-second
   `dig` check before reflexively excluding a candidate just because its
   resolved subnet matches a name already flagged elsewhere in the catalog.
-- **2026-11-16 (#3010)** — A Cloudflare-bot-challenged apex can still be
-  confirmed as dedicated (not shared) infra WITHOUT a title fetch: `dig`ging
-  its own and its NS records settled `follettsoftware.com` (own
-  `141.193.213.x` block, own `dns1`/`dns2.follettsoftware.com` nameservers)
-  when the page itself refused automated verification. When a title check
-  is blocked, the #2833 NS-delegation check and a plain A-record dig are an
-  independent path to the same answer.
 - **2026-11-09 (#2998)** — **A brand's game-hosting apex can be a THIRD,
   independently-named apex distinct from its editor and its CDN — check the
   page's own title/meta description before assuming an unfamiliar short

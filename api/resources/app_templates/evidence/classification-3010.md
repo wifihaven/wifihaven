@@ -26,9 +26,14 @@ the byte-ranked sweep.
   "Vernier Spectral Analysis™"). `graphicalanalysis.app`/`spectralanalysis.app`
   are on Cloudflare (104.21.x/172.67.x); `instrumentalanalysis.app` is on a
   CloudFront distribution (99.84.105.x) — a different 4-tuple from any
-  already-flagged shared pool. One hit each in the window reads as one
-  classroom session per app, consistent with curriculum software used
-  periodically rather than daily.
+  already-flagged shared pool. One hit each in the window is thinner than the
+  usual bar (cf. `jrustonapps.info`/`adeept.com` below, both skipped at three
+  hits) — the signal that overrides the hit count here is institutional:
+  the title/meta-description identify dedicated school-science curriculum
+  software, the same class of assigned, infrequently-used classroom tool as
+  `savvas-realize`/`iready` (neither of which needed a high hit count
+  either), not an ordinary consumer site a kid might visit once out of
+  curiosity.
 - **Virtual Nerd**: title-confirmed ("Virtual Nerd: Real math help for
   school and home"). `virtualnerd.com`/`cdn.virtualnerd.com`/
   `psn.virtualnerd.com` all resolve to the identical 4 IPs
@@ -38,18 +43,33 @@ the byte-ranked sweep.
   one dedicated CloudFront distribution for this brand, not a collision.
 - **Follett Destiny**: `www.follettsoftware.com` hit a Cloudflare bot
   challenge on direct fetch (inconclusive by title, per the #2774
-  precedent — not evidence the site is dead). Settled by DNS instead: the
-  five observed `follettsoftware.com` subdomains resolve to Follett's own
-  `141.193.213.x` block behind Follett's own `dns1`/`dns2.follettsoftware.com`
-  nameservers — dedicated, not a shared pool. `follettdestiny.com` is
-  Follett's own multi-tenant Azure platform (other districts get their own
-  subdomain there too), but the observed host is
-  `flagstafflmc.follettdestiny.com` — a hostname specific to this household's
-  own school (Flagstaff Academy's library media center), so listing it
-  doesn't sweep in other districts' traffic even though the backing IP may
-  be shared (attribution/enforcement match on the resolved hostname per
-  host, not the raw IP). Bare `follettsoftware.com`/`follettdestiny.com`
-  apexes excluded — not observed, and the latter is the shared platform.
+  precedent — not evidence the site is dead). **Independent review caught
+  that the first draft of this entry over-generalized from that check**: it
+  cited the BARE apex's dedicated-looking `141.193.213.x`/NS records as
+  evidence for all five observed subdomains, but NS records show who runs a
+  zone, not where its individual hostnames resolve, and the bare apex's A
+  record says nothing about its subdomains'. Re-`dig`ging each subdomain
+  individually: `portalapi.`/`titlepeek2.follettsoftware.com` resolve to
+  Azure Public IPs on `*.cloudapp.azure.com` (dedicated-per-resource, not a
+  shared PaaS edge) — genuinely Follett's own backend. But
+  `prd-appcdn.`/`search.`/`security.follettsoftware.com` are on Azure Front
+  Door (`*.azurefd.net`) and `portal.follettdestiny.com` is on Azure Static
+  Web Apps (`*.azurestaticapps.net`) — both generic multi-tenant PaaS
+  platforms used by countless unrelated companies, the same collateral
+  class as the CloudFront `/24` pool / `shops.myshopify.com`: enforcement
+  drops by raw destination IP, so an unrelated site sharing that edge IP
+  would be swept into the drop/allow set, regardless of which company's
+  customers nominally "own" the platform. `flagstafflmc.follettdestiny.com`
+  (this household's own Flagstaff Academy library-media-center tenant) also
+  moved out of the enforcement-capable set out of caution, since its
+  backing Destiny instance (`destinypublic3.eastus2.cloudapp.azure.com`)
+  may be shared across several of Follett's own district customers and that
+  couldn't be independently ruled out as touching the same generic-platform
+  risk. **Fix**: only `portalapi.`/`titlepeek2.follettsoftware.com` stayed in
+  `hosts:`; the other four moved to `shared_hosts` (attribution-only, same
+  pattern as `onenote.yml`'s Office-Online-pool writeup — never enters a
+  drop/allow set). Bare `follettsoftware.com`/`follettdestiny.com` apexes
+  excluded — not observed, and the latter is the shared platform.
 
 ## Watch items / inconclusive (not templated)
 
