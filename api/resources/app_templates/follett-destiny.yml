@@ -1,0 +1,32 @@
+slug: follett-destiny
+name: Follett Destiny
+icon: "https://icons.duckduckgo.com/ip3/follettsoftware.com.ico"
+icon_type: url
+# #3010 (2026-11-16 weekly pass): Follett Destiny — the school library
+# catalog/circulation system (Follett Software Company). 6.1 MB / 15 hits
+# combined over a 30d window on one kid device, across `portalapi`/
+# `prd-appcdn`/`search`/`security`/`titlepeek2.follettsoftware.com` (the
+# catalog UI's backend/search/cover-art hosts) and
+# `flagstafflmc.follettdestiny.com` + `portal.follettdestiny.com` (the
+# district's own hosted Destiny instance — `flagstafflmc` is Flagstaff
+# Academy's library-media-center tenant). dig-verified dedicated infra, not
+# a shared pool: `follettsoftware.com`'s hosts resolve to Follett's own
+# `141.193.213.x` block behind Follett's own `dns1`/`dns2.follettsoftware.com`
+# nameservers, and `follettdestiny.com` is Follett's multi-tenant Azure
+# platform — but `flagstafflmc.follettdestiny.com` names this specific
+# district's tenant, so listing it doesn't sweep in other districts' traffic
+# even if the backing IP is shared (attribution/enforcement match on the
+# resolved hostname, not the raw IP).
+#
+# Bare `follettsoftware.com`/`follettdestiny.com` apexes are deliberately
+# EXCLUDED — not observed in traffic, and the latter is a shared multi-tenant
+# platform (other districts' subdomains) that a bare-apex entry would sweep
+# in wholesale.
+hosts:
+  - portalapi.follettsoftware.com
+  - prd-appcdn.follettsoftware.com
+  - search.follettsoftware.com
+  - security.follettsoftware.com
+  - titlepeek2.follettsoftware.com
+  - flagstafflmc.follettdestiny.com
+  - portal.follettdestiny.com

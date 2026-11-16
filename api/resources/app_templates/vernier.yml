@@ -1,0 +1,24 @@
+slug: vernier
+name: Vernier Science Apps
+icon: "https://icons.duckduckgo.com/ip3/vernier.com.ico"
+icon_type: url
+# #3010 (2026-11-16 weekly pass): Vernier's three school science-class web
+# apps, each its own standalone domain rather than a subdomain of one apex —
+# same multi-apex shape as plex.yml (plex.tv + plex.direct). 30d
+# `recent-apexes` on a kid device showed one hit each (one classroom session
+# per app in the window), but every title/meta-description is
+# vendor-confirmed and this is curriculum software, same class as
+# `savvas-realize`/`iready`/`matlab` — real engagement, not display-cleanup
+# or incidental traffic.
+#
+#   graphicalanalysis.app    Graphical Analysis — sensor data plotting/analysis
+#   spectralanalysis.app     Spectral Analysis — spectrometer data analysis
+#   instrumentalanalysis.app Instrumental Analysis — lab-instrument data analysis
+#
+# Each is a standalone Cloudflare/CloudFront-fronted PWA with no observed
+# shared subdomains between them; no bare-apex exclusion needed since each
+# domain IS the app (nothing else is hosted alongside it).
+hosts:
+  - graphicalanalysis.app
+  - spectralanalysis.app
+  - instrumentalanalysis.app
