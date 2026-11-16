@@ -14,38 +14,48 @@ icon_type: url
 # `dig`ged EACH observed subdomain individually (not inferred from the bare
 # apex, which is NOT in this host-set — caught by independent review, see
 # the skill's #3010 learning): `portalapi.`/`titlepeek2.follettsoftware.com`
-# resolve to Azure Public IPs on `*.cloudapp.azure.com`
-# (`puse2ilbase01-pip.eastus2...`, 52.177.91.164) — a dedicated-per-resource
-# Azure primitive, Follett's own backend, not a shared PaaS edge. The other
-# four resolve to GENERIC multi-tenant platforms used by countless unrelated
-# companies: `prd-appcdn.`/`search.`/`security.follettsoftware.com` are Azure
-# Front Door (`*.azurefd.net`); `portal.follettdestiny.com` is Azure Static
-# Web Apps (`*.azurestaticapps.net`), the same class of risk as the
-# CloudFront `/24` pool and `shops.myshopify.com` — enforcement drops by raw
-# destination IP, so an unrelated site sharing that edge IP would be swept
-# into the same drop/allow set. `flagstafflmc.follettdestiny.com` also
-# stayed out of `hosts:` out of caution: it names this household's own
-# district tenant, but the underlying Destiny instance
-# (`destinypublic3.eastus2.cloudapp.azure.com`) may be shared across several
-# of Follett's OWN district customers, and that couldn't be independently
-# ruled out as also touching the generic-platform risk above.
+# AND `flagstafflmc.follettdestiny.com` all resolve to Azure Public IPs on
+# `*.cloudapp.azure.com` (`puse2ilbase01-pip.eastus2...`/
+# `destinypublic3.eastus2...`) — a dedicated-per-resource Azure primitive
+# Follett itself provisions, not a generic third-party PaaS edge. The
+# `destinypublic3` name suggests it may be one of several load-balanced
+# instances Follett runs across ITS OWN district customers, same risk class
+# as `unagi.amazon.com` (Amazon's own infra, shared across Amazon's own
+# customers, accepted elsewhere in this catalog) — not the disqualifying
+# class below.
 #
-# Same pattern as `onenote.yml`'s Office-Online-pool writeup: the
-# shared-platform hosts go in `shared_hosts` (credited for attribution while
-# a distinctive host above is active, never entering a drop/allow set), so
-# the block/allow half is narrowed to the two confirmed-dedicated hosts while
-# visibility still covers the whole surface.
+# `prd-appcdn.`/`search.`/`security.follettsoftware.com` ARE that
+# disqualifying class: Azure Front Door (`*.azurefd.net`), a GENERIC
+# multi-tenant PaaS edge used by countless unrelated companies. Same for
+# `portal.follettdestiny.com` on Azure Static Web Apps
+# (`*.azurestaticapps.net`) — the same risk class as the CloudFront `/24`
+# pool and `shops.myshopify.com`.
+#
+# Both directions documented rather than avoided (same pattern as
+# `onenote.yml`'s Office-Online-pool writeup, since there's no narrower
+# alternative that keeps the catalog's search/security backends reachable):
+# `shared_hosts` never enters the BLOCK set (`eb_`), so blocking this app
+# alone can't collaterally drop an unrelated Front-Door/Static-Web-Apps
+# tenant. But per `ProfileAppDispositions.enforcement`/`PolicyService`'s
+# `exemptUnderCapHosts`/`timeLimitedUnderCapHosts`, the ALLOW side uses the
+# FULL host-set (`hosts` + `shared_hosts`) — so while this app is Allowed,
+# or TimeLimited and under its cap, the Front-Door/Static-Web-Apps addresses
+# DO get carved into `extraAllowed`, same as every other tenant sharing that
+# edge IP. Accepted here for the same reason `onenote.yml` accepts it: the
+# block half is narrowed to what's actually dedicated, the allow/visibility
+# half can't be made collateral-free without losing the catalog's own
+# search/security/portal surfaces.
 #
 # Bare `follettsoftware.com`/`follettdestiny.com` apexes are deliberately
-# EXCLUDED — not observed in traffic, and the latter is the shared
+# EXCLUDED — not observed in traffic, and the latter is Follett's shared
 # multi-tenant platform (other districts' subdomains) that a bare-apex entry
 # would sweep in wholesale.
 hosts:
   - portalapi.follettsoftware.com
   - titlepeek2.follettsoftware.com
+  - flagstafflmc.follettdestiny.com
 shared_hosts:
   - prd-appcdn.follettsoftware.com
   - search.follettsoftware.com
   - security.follettsoftware.com
-  - flagstafflmc.follettdestiny.com
   - portal.follettdestiny.com

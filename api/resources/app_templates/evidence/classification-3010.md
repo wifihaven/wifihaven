@@ -49,27 +49,36 @@ the byte-ranked sweep.
   evidence for all five observed subdomains, but NS records show who runs a
   zone, not where its individual hostnames resolve, and the bare apex's A
   record says nothing about its subdomains'. Re-`dig`ging each subdomain
-  individually: `portalapi.`/`titlepeek2.follettsoftware.com` resolve to
-  Azure Public IPs on `*.cloudapp.azure.com` (dedicated-per-resource, not a
-  shared PaaS edge) — genuinely Follett's own backend. But
-  `prd-appcdn.`/`search.`/`security.follettsoftware.com` are on Azure Front
-  Door (`*.azurefd.net`) and `portal.follettdestiny.com` is on Azure Static
-  Web Apps (`*.azurestaticapps.net`) — both generic multi-tenant PaaS
-  platforms used by countless unrelated companies, the same collateral
-  class as the CloudFront `/24` pool / `shops.myshopify.com`: enforcement
-  drops by raw destination IP, so an unrelated site sharing that edge IP
-  would be swept into the drop/allow set, regardless of which company's
-  customers nominally "own" the platform. `flagstafflmc.follettdestiny.com`
-  (this household's own Flagstaff Academy library-media-center tenant) also
-  moved out of the enforcement-capable set out of caution, since its
-  backing Destiny instance (`destinypublic3.eastus2.cloudapp.azure.com`)
-  may be shared across several of Follett's own district customers and that
-  couldn't be independently ruled out as touching the same generic-platform
-  risk. **Fix**: only `portalapi.`/`titlepeek2.follettsoftware.com` stayed in
-  `hosts:`; the other four moved to `shared_hosts` (attribution-only, same
-  pattern as `onenote.yml`'s Office-Online-pool writeup — never enters a
-  drop/allow set). Bare `follettsoftware.com`/`follettdestiny.com` apexes
-  excluded — not observed, and the latter is the shared platform.
+  individually: `portalapi.`/`titlepeek2.follettsoftware.com` AND
+  `flagstafflmc.follettdestiny.com` (this household's own Flagstaff Academy
+  library-media-center tenant) all resolve to Azure Public IPs on
+  `*.cloudapp.azure.com` — a dedicated-per-resource Azure primitive Follett
+  itself provisions, not a generic third-party PaaS edge; `destinypublic3`
+  (the name behind `flagstafflmc`) reads as one of several load-balanced
+  instances Follett runs across its OWN district customers, the same
+  accepted risk class as `unagi.amazon.com` elsewhere in this catalog, not
+  the disqualifying class below. But `prd-appcdn.`/`search.`/
+  `security.follettsoftware.com` ARE that disqualifying class: Azure Front
+  Door (`*.azurefd.net`), a generic multi-tenant PaaS edge used by
+  countless unrelated companies — same as `portal.follettdestiny.com` on
+  Azure Static Web Apps (`*.azurestaticapps.net`), the same collateral
+  class as the CloudFront `/24` pool / `shops.myshopify.com`.
+  **Fix (round 2, after a second independent-review pass)**: `portalapi.`/
+  `titlepeek2.follettsoftware.com` and `flagstafflmc.follettdestiny.com`
+  are `hosts:`; the three Front-Door/Static-Web-Apps hosts are
+  `shared_hosts`. Round 1 of this fix wrongly claimed `shared_hosts` "never
+  enters a drop/allow set" — review caught that `shared_hosts` only stays
+  out of the BLOCK side (`eb_`); the ALLOW side
+  (`ProfileAppDispositions.enforcement`'s `hosts` list,
+  `exemptUnderCapHosts`/`timeLimitedUnderCapHosts`) uses the full host-set
+  including `shared_hosts`, exactly as `onenote.yml` documents — so while
+  this app is Allowed or TimeLimited-under-cap, the Front-Door/Static-Web-
+  Apps addresses DO get carved into `extraAllowed`. Accepted (not avoided)
+  for the same reason `onenote.yml` accepts it: there's no narrower
+  alternative that keeps the catalog's search/security/portal surfaces
+  reachable. Bare `follettsoftware.com`/`follettdestiny.com` apexes
+  excluded — not observed, and the latter is Follett's shared multi-tenant
+  platform.
 
 ## Watch items / inconclusive (not templated)
 
