@@ -1108,85 +1108,31 @@ hosts:
   #
   # traffic-driven additions (#3012): observed but unblocked ads infra.
   # impactradius-event.com (Impact.com/Impact Radius's own conversion-event
-  # tracking subdomain, d.impactradius-event.com; GCP customer compute,
-  # netname GOOGLE-CLOUD not Google's own GFE product pool — apex + www./
-  # cdn./video./static. siblings all resolve to the same dedicated address,
-  # no CDN sibling risk). cadent.com (confirmed CTV/addressable-TV ad
-  # platform, formerly AdTheorent; observed host pcs.ssp.cadent.com is on
-  # dedicated GCP compute, netname GOOGL-2). rtb-stellormedia.com
-  # (self-descriptive RTB name; observed host tracker.rtb-stellormedia.com
-  # CNAMEs to tracker-use.ortb.net — ortb.net is the same already-curated
-  # RTB exchange apex seen on ads-pubsfusion.com above — apex resolves to a
-  # dedicated Cogent Communications address). sportradarserving.com
-  # (Sportradar's own ad-serving/SSP-cookie-sync domain, confirmed via its
-  # cookie disclosure; observed host a.sportradarserving.com CNAMEs through
-  # iponweb.net onto dedicated GCP compute, netname GOOGLE-CLOUD).
-  # adotmob.com (Adotmob/Adot, a French mobile ad-tech company now trading
-  # as A.Mob; apex resolves to dedicated EC2 addresses per the AWS
-  # ip-ranges.json service=EC2 check, and the observed host
-  # sync.adotmob.com is on a RIPE-assigned non-CDN address). All five:
-  # absent from ads-extended at the apex (impactradius-event.com and
-  # adotmob.com have feed presence at other subdomains only; cadent.com,
-  # rtb-stellormedia.com, and sportradarserving.com have none).
-  # RESIDUAL RISK: cadent.com's www. sibling CNAMEs onto cdn.webflow.com
-  # (Webflow's shared multi-tenant site-builder platform, not the observed
-  # ad-serving host) — if the household visits cadent.com's marketing site
-  # directly and that becomes the observed host, re-run the CDN check and
-  # pin absent if it stays Webflow-fronted (same remedy as the
-  # ebayadservices.com precedent, #2816).
+  # tracking subdomain; dedicated GCP customer compute, not Google's own
+  # GFE product pool — no CDN sibling risk). cadent.com (CTV/addressable-TV
+  # ad platform; observed host on dedicated GCP customer compute).
+  # rtb-stellormedia.com (self-descriptive RTB name; observed host CNAMEs
+  # to the already-curated ortb.net RTB exchange apex, on dedicated
+  # Cogent Communications infra). sportradarserving.com (Sportradar's own
+  # ad-serving/SSP-cookie-sync domain; observed host on dedicated GCP
+  # customer compute via iponweb.net). adotmob.com (Adotmob, French
+  # mobile ad-tech; apex confirmed EC2, not CloudFront, via
+  # ip-ranges.json; observed host on a non-CDN address). All five: absent
+  # from ads-extended at the apex. Full per-apex evidence (sources, IPs,
+  # whois) in evidence/multi-category-classification-3012.md.
+  # RESIDUAL RISK: cadent.com's www. sibling (not the observed ad-serving
+  # host) CNAMEs onto a shared SaaS site-builder platform — if that
+  # becomes the observed host in a future pass, re-run the CDN check and
+  # pin absent if it stays fronted (same remedy as the ebayadservices.com
+  # precedent, #2816).
   - adotmob.com
   - cadent.com
   - impactradius-event.com
   - rtb-stellormedia.com
   - sportradarserving.com
   #
-  # Held out this pass (CDN-fronted on the observed host, #2823/#2918 rule):
-  # aditude.io (confirmed genuine publisher ad-ops/header-bidding platform,
-  # $15M-funded — but both observed hosts, edge.aditude.io and
-  # raven-static.aditude.io, are Cloudflare-fronted, 104.18.x).
-  # content-loader.com (per an unverified forum post + AdGuard's own
-  # reporting, part of Ad-Shield's anti-adblock-recovery system, the same
-  # function class as the getadmiral.com precedent #2503 — but every
-  # observed host, including the bare apex and stg./0./7.stg., resolves to
-  # Cloudflare, 104.18.6-7.55). adingo.jp (a real Japanese ad
-  # network/DSP-exchange partner per a 2013 press release — but its
-  # observed host, cs.adingo.jp, is CloudFront-fronted, 99.84.x).
-  # pixad.com.tr (a Turkish programmatic/performance-marketing agency per
-  # Netify — but its observed host, prebid.pixad.com.tr, is
-  # Cloudflare-fronted, 104.26.x/172.67.x).
-  #
-  # Held out this pass (no confirmed identity or ambiguous shared infra,
-  # low traffic — carried forward unverified rather than guessed from the
-  # name): adtarget.com.tr (confirmed genuine Turkish RTB/programmatic
-  # company, but its observed host, s.console.adtarget.com.tr, geo-routes
-  # through uno-geo-dns.com across dozens of unrelated hosting netblocks —
-  # too ambiguous to clear the CDN check either way; only 1 hit this pass).
-  # innovative-tradedata.com, gssprt.jp, adview.com, adkomo.com,
-  # spadsync.com, adverge.ai, servicesadmedia.com (all low-traffic, no
-  # identity confirmation found).
-  #
-  # False positives / out of scope, no action: the Colorado government/
-  # school-district apexes (operacolorado.org, longmontcolorado.gov,
-  # colorado.edu, colorado.gov, coloradoshinespdis.com,
-  # bouldercolorado.gov, connectingcolorado.gov, coloradowebcam.net,
-  # flagstaffacademy.org) and ed-tech apexes (khanacademy.org, i-ready.com,
-  # mathacademy.com, codecademy.com, tinkercad.com) matched the ads
-  # keyword sweep on substring alone, none are ad-tech. avada.io (WordPress
-  # theme/plugin vendor), gladly.com / ada.support / ladesk.com (dual-use
-  # customer-support chat platforms), adaptytech.com / adapty.io (B2B
-  # mobile-subscription-analytics SaaS), godaddy.com (domain
-  # registrar/hosting), cbssports.com / hotpads.com / stackexchange.com /
-  # techradar.com / badssl.com (unrelated brands matching an "ad"/"ads"
-  # substring), addevent.com / addtocalendar.com (calendar tools, "add"
-  # substring), emojitracker.com ("track" substring, a fan Twitter-emoji
-  # counter), simplymadefun.com / madebyhighland.com / madgeniusclub.com /
-  # fadb.xyz (no confirmed identity, low traffic), eternallyradicalidea.com
-  # (a blog/podcast, content not ads), browser-intake-datadoghq.com /
-  # datadoghq-browser-agent.com / browser-intake-us5-datadoghq.com /
-  # browser-intake-us3-datadoghq.com (Datadog RUM/APM, same dual-use
-  # monitoring class as Sentry/Bugsnag), devin.ai (Cognition's AI coding
-  # agent — developer tool, out of ai.yml's consumer-product scope per
-  # #2729), justt.ai (B2B chargeback-automation fintech SaaS), sardine.ai
-  # (B2B fraud-prevention/AML SaaS for banks and fintechs), ikea.com
-  # (matched the games sweep's `ea\.com` substring — unrelated furniture
-  # retailer).
+  # Held out this pass (CDN-fronted on the observed host, #2823/#2918 rule)
+  # and other out-of-scope / unconfirmed candidates — full detail,
+  # including the specific apexes and sources, in
+  # evidence/multi-category-classification-3012.md rather than duplicated
+  # here.

@@ -15,10 +15,16 @@ held-outs/skips in comments (`ebayadservices.com`, `hs-analytics.net`,
 `opentrackr.org`, `popcorn-tracker.org`, `synctrack.io`, among others).
 
 Also ran a serial `/api/logs` keyword sweep (`porn`, `xxx`, `cam4`,
-`xvideo`, `xnxx`, `onlyfans`, `chaturbat`, `xhamster`, `hentai`) over the
-30-day window for the `adult` category, per the #2823 two-surface rule —
-`recent-apexes` alone under-counts low-byte adult traffic. Only `cam4`
-returned rows (22), and `cam4.com` is already curated.
+`xvideo`, `xnxx`, `onlyfans`, `chaturbat`, `xhamster`, `hentai`) over a
+30-day window (`hours=720`) for the `adult` category, per the #2823
+two-surface rule — `recent-apexes` alone under-counts low-byte adult
+traffic. Only `cam4` returned rows (22), and `cam4.com` is already
+curated. Note: the observed-host/CDN-check `/api/logs` calls elsewhere in
+this doc (Step 2.3/2.4, and the residual-risk re-check below) use the
+skill's own documented default of `hours=2160` (90 days) instead — a
+wider window is appropriate there since the goal is "has this host or its
+siblings ever resolved," not a fresh traffic-volume measurement, so the
+two windows are intentionally different, not inconsistent.
 
 The household's traffic this run was again developer/infra-heavy (top
 bytes: `googlevideo.com`, `apple.com`, `githubusercontent.com`,
@@ -46,10 +52,10 @@ the `ads.yml` comment itself; summary table:
 | Apex | Identity | Observed host | Resolves to | Verdict |
 |---|---|---|---|---|
 | `impactradius-event.com` | Impact.com (fka Impact Radius) conversion-event tracking | `d.impactradius-event.com` | GCP (`GOOGLE-CLOUD`), apex+siblings all same dedicated address | clean |
-| `cadent.com` | Cadent, CTV/addressable-TV ad platform (fka AdTheorent) | `pcs.ssp.cadent.com` | GCP (`GOOGL-2`), dedicated | **residual risk**: `www.` CNAMEs onto `cdn.webflow.com` |
-| `rtb-stellormedia.com` | self-descriptive RTB name; "Stellor Media" per Netify catalog (no further corroboration) | `tracker.rtb-stellormedia.com` | CNAME → `tracker-use.ortb.net` (already-curated RTB apex) → Cogent Communications, dedicated | clean |
+| `cadent.com` | Cadent, CTV/addressable-TV ad platform (per press coverage, acquired ad-tech firm AdTheorent in 2024) | `pcs.ssp.cadent.com` | GCP (`GOOGL-2`), dedicated | **residual risk**: `www.` CNAMEs onto `cdn.webflow.com` |
+| `rtb-stellormedia.com` | self-descriptive RTB name; "Stellor Media" per one Netify catalog entry (no further corroboration found) | `tracker.rtb-stellormedia.com` | CNAME → `tracker-use.ortb.net` (already-curated RTB apex) → Cogent Communications, dedicated | clean |
 | `sportradarserving.com` | Sportradar's own ad-serving/SSP-cookie-sync domain (confirmed via its cookie disclosure) | `a.sportradarserving.com` | CNAME → iponweb.net → GCP (`GOOGLE-CLOUD`), dedicated | clean |
-| `adotmob.com` | Adotmob/Adot (A.Mob), French mobile ad-tech | `sync.adotmob.com` | RIPE-assigned (Veepee netname, not a CDN) | clean; apex confirmed EC2 (not CloudFront) via `ip-ranges.amazonaws.com` |
+| `adotmob.com` | Adotmob, French mobile ad-tech company (per press coverage, now also referred to as "Adot"/"A.Mob" in some vendor directories — unconfirmed beyond those secondary sources) | `sync.adotmob.com` | RIPE-assigned, netname tied to Vente-Privee.com SAS per RIPE whois (not a known CDN/shared-hosting range) | clean; apex confirmed EC2 (not CloudFront) via `ip-ranges.amazonaws.com` |
 
 All five are absent from `ads-extended` at the apex (`impactradius-event.com`
 and `adotmob.com` have feed presence at other subdomains only; the other
@@ -114,12 +120,11 @@ checked and ruled out.
 
 ## False positives / out of scope, no action
 
-- **Colorado government/school-district apexes**: `operacolorado.org`,
-  `longmontcolorado.gov`, `colorado.edu`, `colorado.gov`,
-  `coloradoshinespdis.com`, `bouldercolorado.gov`,
-  `connectingcolorado.gov`, `coloradowebcam.net`, `flagstaffacademy.org`
-  (the operator's kids' school) — matched the ads keyword sweep on
-  substring alone (`ads`/`track`/`sync`), none are ad-tech.
+- **Local government and school-district apexes**: several `.gov`/`.edu`/
+  `.org` municipal and school domains matched the ads keyword sweep on
+  substring alone (`ads`/`track`/`sync`) — none are ad-tech. Not named
+  individually here since, taken together, they would identify the
+  household's location.
 - **Ed-tech**: `khanacademy.org`, `i-ready.com`, `mathacademy.com`,
   `codecademy.com`, `tinkercad.com` — same substring false-positive class.
 - **Dual-use SaaS**: `avada.io` (WordPress theme/plugin vendor), `gladly.com`
