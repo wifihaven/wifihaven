@@ -316,6 +316,42 @@ that edit in the same PR.** If a step above is now wrong, fix the step too.
 
 ## Learnings log (newest first)
 
+- **2026-11-17** (#3012) — **This pass's zsh gotcha: `for x in $unquoted_var`
+  does NOT word-split in zsh the way it does in bash — it binds the loop
+  variable to the whole string in one iteration.** A membership-check loop
+  written as `for apex in $candidates; do … done` silently flagged every
+  single candidate as a fresh gap (zero true negatives), because the loop
+  body ran exactly once with `$apex` bound to the entire space-separated
+  list. If this skill is ever run from a zsh-default shell (macOS's
+  default since Catalina), use `print -r -- $candidates | tr ' ' '\n' |
+  while read -r apex; do … done` (or an actual array) for any loop over a
+  space-separated string, not an unquoted `for … in $var`.
+- **2026-11-17** (#3012) — **A domain's own `www.`/marketing-site sibling
+  landing on a shared SaaS site-builder (Webflow, Wix, Squarespace, Carrd,
+  Framer, …) is the same RESIDUAL RISK class as a CDN-fronted sibling, even
+  though the specific product (a no-code site builder, not a CDN/cache)
+  is new to this list.** `cadent.com`'s ad-serving host
+  (`pcs.ssp.cadent.com`) is on dedicated GCP compute, clean — but `www.
+  cadent.com` CNAMEs onto `cdn.webflow.com`. Added with a RESIDUAL RISK
+  note per the established `ebayadservices.com`/`bttrack.com` remedy
+  rather than silently added as fully clean. Site-builder platforms
+  (Webflow, Wix, Squarespace) join Cloudflare/CloudFront/Akamai
+  EdgeSuite/Azure Front Door as a shared-platform family worth checking
+  on `www.`/marketing-site siblings specifically, since that's where a
+  company's own corporate site — not its ad-serving infra — is most
+  likely to sit on one.
+- **2026-11-17** (#3012) — **A genuine consumer AI product (`remio.ai`, a
+  real AI note-taking/personal-knowledge app, squarely in `ai.yml`'s
+  scope) can still fail the CDN check on its ONLY resolvable subdomain.**
+  Zero `/api/logs` hits (the #2957 never-observed pattern), and the one
+  subdomain present in the raw `recent-apexes` payload, `www.remio.ai`,
+  CNAMEs through Wix's `wixdns.net` onto Cloudflare — a double
+  shared-platform exposure. Reinforces the `suno.ai`/`gd.games` (#2952)
+  lesson that a confirmed, in-scope identity is an independent axis from
+  the CDN check, not a substitute for it — and that `recent-apexes`'
+  `subdomains` array is worth reading directly (not just `/api/logs`) when
+  a domain is "observed" by byte count but produces zero rows on a
+  domain-filtered log query.
 - **2026-11-10** (#3000) — **Azure Front Door (`*.azurefd.net`) is a shared
   multi-tenant edge CDN product, the same risk class as Akamai EdgeSuite/
   Cloudflare/CloudFront — add it to the Step 2.3 CDN-skip list.** It is
