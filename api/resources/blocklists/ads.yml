@@ -1105,3 +1105,34 @@ hosts:
   # subdomains — ad-tech-shaped, but tag.nrich.ai CNAMEs onto CloudFront,
   # so it would fail the ads.yml CDN check too even though dsp./j. resolve
   # to dedicated OVH addresses).
+  #
+  # traffic-driven additions (#3012): observed but unblocked ads infra.
+  # impactradius-event.com (Impact.com/Impact Radius's own conversion-event
+  # tracking subdomain; dedicated GCP customer compute, not Google's own
+  # GFE product pool — no CDN sibling risk). cadent.com (CTV/addressable-TV
+  # ad platform; observed host on dedicated GCP customer compute).
+  # rtb-stellormedia.com (self-descriptive RTB name; observed host CNAMEs
+  # to the already-curated ortb.net RTB exchange apex, on dedicated
+  # Cogent Communications infra). sportradarserving.com (Sportradar's own
+  # ad-serving/SSP-cookie-sync domain; observed host on dedicated GCP
+  # customer compute via iponweb.net). adotmob.com (Adotmob, French
+  # mobile ad-tech; apex confirmed EC2, not CloudFront, via
+  # ip-ranges.json; observed host on a non-CDN address). All five: absent
+  # from ads-extended at the apex. Full per-apex evidence (sources, IPs,
+  # whois) in evidence/multi-category-classification-3012.md.
+  # RESIDUAL RISK: cadent.com's www. sibling (not the observed ad-serving
+  # host) CNAMEs onto a shared SaaS site-builder platform — if that
+  # becomes the observed host in a future pass, re-run the CDN check and
+  # pin absent if it stays fronted (same remedy as the ebayadservices.com
+  # precedent, #2816).
+  - adotmob.com
+  - cadent.com
+  - impactradius-event.com
+  - rtb-stellormedia.com
+  - sportradarserving.com
+  #
+  # Held out this pass (CDN-fronted on the observed host, #2823/#2918 rule)
+  # and other out-of-scope / unconfirmed candidates — full detail,
+  # including the specific apexes and sources, in
+  # evidence/multi-category-classification-3012.md rather than duplicated
+  # here.
