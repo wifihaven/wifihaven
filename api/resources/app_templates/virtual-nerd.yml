@@ -1,0 +1,20 @@
+slug: virtual-nerd
+name: Virtual Nerd
+icon: "https://icons.duckduckgo.com/ip3/virtualnerd.com.ico"
+icon_type: url
+# #3010 (2026-11-16 weekly pass): Virtual Nerd — "real math help for school
+# and home" (title/meta-description confirmed), a video-tutorial math-help
+# site. 16 MB / 7 hits over a 30d window on one kid device, spread across the
+# apex, its CDN and a streaming host — a real multi-video tutoring session,
+# not a beacon.
+#
+# All three observed hosts resolve to the identical 4 CloudFront IPs
+# (99.84.118.{16,55,68,78}) — a DIFFERENT 4-tuple from the shared
+# 99.84.118.{29,99,100,106} pool `arduino.yml`/`instructables.yml` document
+# as collateral risk (per the #2915 "diff the 4-tuples, not just the /24"
+# rule), so this is one dedicated distribution serving this brand's own
+# hostnames, not a demonstrated collision with an unrelated site.
+hosts:
+  - virtualnerd.com
+  - cdn.virtualnerd.com
+  - psn.virtualnerd.com

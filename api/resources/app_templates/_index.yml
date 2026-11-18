@@ -122,3 +122,10 @@ slugs:
   # host-set gap (gd.games, the vendor's own community game portal).
   - jetbrains
   - vex
+  # #3010: weekly app-catalog pass (see evidence/classification-3010.md) —
+  # Vernier science apps (Graphical/Spectral/Instrumental Analysis),
+  # Virtual Nerd (math tutoring video), and Follett Destiny (school library
+  # catalog, scoped to the household's own district tenant).
+  - vernier
+  - virtual-nerd
+  - follett-destiny

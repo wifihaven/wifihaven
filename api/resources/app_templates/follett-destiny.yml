@@ -1,0 +1,61 @@
+slug: follett-destiny
+name: Follett Destiny
+icon: "https://icons.duckduckgo.com/ip3/follettsoftware.com.ico"
+icon_type: url
+# #3010 (2026-11-16 weekly pass): Follett Destiny — the school library
+# catalog/circulation system (Follett Software Company). 6.1 MB / 15 hits
+# combined over a 30d window on one kid device, across `portalapi`/
+# `prd-appcdn`/`search`/`security`/`titlepeek2.follettsoftware.com` (the
+# catalog UI's backend/search/cover-art hosts) and
+# `flagstafflmc.follettdestiny.com` + `portal.follettdestiny.com` (the
+# district's own hosted Destiny instance — `flagstafflmc` is Flagstaff
+# Academy's library-media-center tenant).
+#
+# `dig`ged EACH observed subdomain individually (not inferred from the bare
+# apex, which is NOT in this host-set — caught by independent review, see
+# the skill's #3010 learning): `portalapi.`/`titlepeek2.follettsoftware.com`
+# AND `flagstafflmc.follettdestiny.com` all resolve to Azure Public IPs on
+# `*.cloudapp.azure.com` (`puse2ilbase01-pip.eastus2...`/
+# `destinypublic3.eastus2...`) — a dedicated-per-resource Azure primitive
+# Follett itself provisions, not a generic third-party PaaS edge. The
+# `destinypublic3` name suggests it may be one of several load-balanced
+# instances Follett runs across ITS OWN district customers, same risk class
+# as `unagi.amazon.com` (Amazon's own infra, shared across Amazon's own
+# customers, accepted elsewhere in this catalog) — not the disqualifying
+# class below.
+#
+# `prd-appcdn.`/`search.`/`security.follettsoftware.com` ARE that
+# disqualifying class: Azure Front Door (`*.azurefd.net`), a GENERIC
+# multi-tenant PaaS edge used by countless unrelated companies. Same for
+# `portal.follettdestiny.com` on Azure Static Web Apps
+# (`*.azurestaticapps.net`) — the same risk class as the CloudFront `/24`
+# pool and `shops.myshopify.com`.
+#
+# Both directions documented rather than avoided (same pattern as
+# `onenote.yml`'s Office-Online-pool writeup, since there's no narrower
+# alternative that keeps the catalog's search/security backends reachable):
+# `shared_hosts` never enters the BLOCK set (`eb_`), so blocking this app
+# alone can't collaterally drop an unrelated Front-Door/Static-Web-Apps
+# tenant. But per `ProfileAppDispositions.enforcement`/`PolicyService`'s
+# `exemptUnderCapHosts`/`timeLimitedUnderCapHosts`, the ALLOW side uses the
+# FULL host-set (`hosts` + `shared_hosts`) — so while this app is Allowed,
+# or TimeLimited and under its cap, the Front-Door/Static-Web-Apps addresses
+# DO get carved into `extraAllowed`, same as every other tenant sharing that
+# edge IP. Accepted here for the same reason `onenote.yml` accepts it: the
+# block half is narrowed to what's actually dedicated, the allow/visibility
+# half can't be made collateral-free without losing the catalog's own
+# search/security/portal surfaces.
+#
+# Bare `follettsoftware.com`/`follettdestiny.com` apexes are deliberately
+# EXCLUDED — not observed in traffic, and the latter is Follett's shared
+# multi-tenant platform (other districts' subdomains) that a bare-apex entry
+# would sweep in wholesale.
+hosts:
+  - portalapi.follettsoftware.com
+  - titlepeek2.follettsoftware.com
+  - flagstafflmc.follettdestiny.com
+shared_hosts:
+  - prd-appcdn.follettsoftware.com
+  - search.follettsoftware.com
+  - security.follettsoftware.com
+  - portal.follettdestiny.com

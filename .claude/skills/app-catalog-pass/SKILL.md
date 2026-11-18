@@ -262,6 +262,90 @@ above is now wrong, fix the step too — don't just log around it.
 
 ## Learnings log (newest first)
 
+- **2026-11-16 (#3010)** — **GOT THIS WRONG TWICE, caught by independent
+  review BOTH times: (1) NS records tell you who runs a zone, not where
+  that zone's hostnames resolve, and "the bare apex has a dedicated-looking
+  IP" says nothing about its SUBDOMAINS; (2) `shared_hosts` only stays out
+  of the BLOCK side — the ALLOW side still carves the full host-set in,
+  `shared_hosts` included.** The first draft of `follett-destiny.yml`
+  claimed all five observed `follettsoftware.com`/`follettdestiny.com`
+  subdomains were dedicated infra because the BARE apex and NS records
+  looked dedicated — neither fact says anything about the subdomains
+  actually in the host-set. `dig`ging each one individually: `portalapi.`/
+  `titlepeek2.follettsoftware.com` AND `flagstafflmc.follettdestiny.com`
+  are on Azure Public IPs (`*.cloudapp.azure.com`, a dedicated-per-resource
+  Azure primitive Follett itself provisions — the same accepted class as
+  `unagi.amazon.com`, shared across a vendor's OWN customers but not a
+  generic third-party platform); `prd-appcdn.`/`search.`/
+  `security.follettsoftware.com` are on Azure Front Door (`*.azurefd.net`)
+  and `portal.follettdestiny.com` is on Azure Static Web Apps
+  (`*.azurestaticapps.net`) — GENERIC multi-tenant PaaS platforms used by
+  countless unrelated companies, the disqualifying class (same as the
+  CloudFront `/24` pool / `shops.myshopify.com`).
+  The **second** mistake: the fix moved the disqualifying three into
+  `shared_hosts` and wrote "never enters a drop/allow set" — false.
+  `ProfileAppDispositions.enforcement` keeps `shared_hosts` OFF the block
+  list (`distinctive` only) but puts the FULL host-set (`hosts` +
+  `shared_hosts`) on the allow list; `PolicyService.exemptUnderCapHosts`/
+  `timeLimitedUnderCapHosts` do the same for the under-budget/exempt
+  carves. So a `shared_hosts` entry on a generic PaaS platform still gets
+  carved into `extraAllowed` whenever the app is Allowed or
+  TimeLimited-under-cap — exactly what `onenote.yml`'s own writeup says
+  ("`shared_hosts` never enter a drop set, but in Allowed mode they ARE
+  carved into `extraAllowed` too"). The exposure doesn't go away by moving
+  a host from `hosts` to `shared_hosts`; only the BLOCK-side exposure does.
+  Accept the allow-side exposure and document it explicitly (both
+  directions, `onenote.yml`-style) when there's no narrower alternative —
+  don't write a one-directional "safe" claim for `shared_hosts`.
+  **Checklist for next time**: (a) `dig` every individual subdomain, never
+  infer from the bare apex; (b) when deciding `hosts` vs `shared_hosts` for
+  a borderline "shared across this one vendor's own customers" host (vs.
+  a universal third-party PaaS), the question is whether OTHER PEOPLE'S
+  UNRELATED businesses might also sit on that address, not whether the
+  SAME vendor's other customers might; (c) `shared_hosts` narrows only the
+  block side — write the allow-side carve down every time, don't claim it
+  doesn't happen.
+- **2026-11-16 (#3010)** — **An app's host-set can legitimately span
+  several wholly independent domains with no shared apex at all** — Vernier
+  ships three separate single-purpose science-class PWAs
+  (`graphicalanalysis.app`, `spectralanalysis.app`, `instrumentalanalysis.app`),
+  one domain per app, no subdomain relationship between them, extending the
+  two-apex `plex.tv`+`plex.direct` precedent to three unrelated apexes in
+  one template.
+- **2026-11-16 (#3010)** — **A favicon-service 404 for EVERY sibling domain
+  of a multi-apex app (not just one, as the #2833 Scratch case was) is
+  reproducible and can mean the icon source just doesn't have that specific
+  app domain indexed — fall back to the parent brand's own domain for the
+  icon rather than re-polling the same 404 or using `icon_type: emoji`.**
+  All three Vernier app domains 404'd on retry; `vernier.com` (the company's
+  main site) returned a real icon. Unlike the #2833 case (a transient
+  cold-cache miss that resolved on retry), this one didn't change on a
+  second request — the two failure modes look identical in the moment, so
+  retry once, and if it's still 404 for a domain whose PARENT brand has an
+  obvious apex, try that apex before concluding the icon service has no
+  answer at all.
+- **2026-11-16 (#3010)** — **One hit per 30d on a school-curriculum domain
+  can still clear the engagement bar that a consumer app's one-off visit
+  does not — state which signal is doing the work.** Vernier's three PWAs
+  shipped at one hit each; `jrustonapps.info`/`adeept.com` stayed watch-items
+  at three hits each. The difference isn't hit count — it's that Vernier's
+  title/meta-description explicitly identify dedicated school-science
+  curriculum software (same institutional-use signal as `savvas-realize`/
+  `iready`, which also don't need high hit counts because they're assigned
+  classroom tools used in short, infrequent sessions), while
+  jrustonapps/adeept are ordinary consumer sites with no institutional
+  signal and nothing to distinguish one visit from idle curiosity. When a
+  low-hit candidate ships anyway, write down the specific signal that
+  overrode the hit count, in the evidence doc, not just in this log.
+- **2026-11-16 (#3010)** — Reconfirmed the "diff the 4-tuples, not just the
+  /24" rule (#2915) resolves a candidate that would otherwise look
+  disqualified by prefix alone: `virtualnerd.com`'s three hosts all resolve
+  to `99.84.118.{16,55,68,78}`, inside the same AWS CloudFront `/24` that
+  `arduino.yml`/`instructables.yml` document as shared-collateral risk at
+  `99.84.118.{29,99,100,106}` — but the actual 4-tuple is disjoint, so it's
+  a different dedicated distribution, not a collision. Worth the 10-second
+  `dig` check before reflexively excluding a candidate just because its
+  resolved subnet matches a name already flagged elsewhere in the catalog.
 - **2026-11-09 (#2998)** — **A brand's game-hosting apex can be a THIRD,
   independently-named apex distinct from its editor and its CDN — check the
   page's own title/meta description before assuming an unfamiliar short
