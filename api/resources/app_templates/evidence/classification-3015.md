@@ -50,14 +50,20 @@ Every apex in the top 150 resolved to one of:
   `live.com`, `cloudfront.net`, `cloudflare.com`, `shopify.com`,
   `discourse-cdn.com`, `akamaized.net`, `jsdelivr.net`, `adobe.io`,
   `azure.com`, `ggpht.com`) — skip.
-- Previously-logged watch items, hit counts unchanged from the prior pass's
-  evidence doc (so no growth signal to re-evaluate this week):
-  `adeept.com` (3 hits, #2998/#3010), `jrustonapps.info` (3 hits, same),
-  `scalibur.io` (7 hits, same), `bronze.systems` (#2998),
-  `svvsd.org`/`ic.svvsd.org` (district SSO, already excluded by name in
-  `classlink.yml`'s own comment; 19.9 MB/195 hits by byte count but **zero**
-  time-weighted presence in the 6-day orphan sweep below — high-byte/
-  low-engagement bulk-sync shape, not recurring use).
+- Previously-logged watch items, consistent with the prior pass's evidence
+  doc (no growth signal to re-evaluate this week):
+  `adeept.com` (3 hits, unchanged from #2998/#3010), `jrustonapps.info`
+  (3 hits, unchanged), `scalibur.io` (7 hits, unchanged), `bronze.systems`
+  (thin, unclear purpose per #2998 — that doc gives only a grouped "low hit
+  counts" for this host, not a specific count to compare against).
+  `svvsd.org` (19.9 MB/195 hits by byte count, all of it from the Quintus
+  Chromebook) breaks down into two separately-decided subdomains: the shared
+  district identity host `classlink.svvsd.org` is excluded by name in
+  `classlink.yml`'s comment (#2962, excluded because it's a district-run
+  host, not for volume reasons), while `ic.svvsd.org` (Infinite Campus) is a
+  still-open watch item from #2943, held back there on a single 15-minute
+  session. See the time-weighted sweep below for this week's data point on
+  `ic.svvsd.org`.
 - Shopping/parent-side (`amazon.com`, `aliexpress.com`/`.us`/`-media.com`,
   `mouldkingcorp.com` — Shopify-origin collateral, `twc.health`) — skip.
 
@@ -89,17 +95,27 @@ telemetry, `demdex.net`, `tapad.com`, `shop.app`, `yotpo.com`,
 proportional-seconds threshold.
 
 Notably: `svvsd.org` and its subdomains (`ic.`, `classlink.`, `password.`,
-`www.`) do not appear anywhere in this 6-day time-weighted sweep at all —
-confirming the byte-table volume is infrequent bulk sync, not sustained use,
-and the existing skip/exclude decision (`classlink.yml`'s comment) stands.
+`www.`) do not appear anywhere in this 6-day time-weighted sweep at all, on
+the profile (5, Quintus Chromebook) that carried all of this week's byte
+volume for that apex — so for that device and window, the byte-table total
+reads as infrequent bulk sync rather than sustained use. That is a narrower
+claim than "confirmed bulk sync": this sweep is 6 days against the 30-day
+byte window, and covers only profiles 5/6/7 (not the unassigned Kid Laptop,
+though Kid Laptop carried none of this apex's bytes either, per the
+per-device breakdown). It's a data point for `ic.svvsd.org` specifically —
+consistent with, but not enough on its own to close, the existing #2943
+watch item — not grounds to revisit the separate, volume-independent
+`classlink.svvsd.org` exclusion in `classlink.yml` (#2962).
 
 ## Host-set coverage spot-check on high-byte already-templated apps
 
 Diffed this week's observed `subdomains[]` (from `recent-apexes`) against the
-`hosts:` list for the largest-byte already-templated apps (`lego.yml`,
-`jetbrains.yml`, `arduino.yml`, `gdevelop.yml`, `legogroup.io`-family,
-`minecraft-services.net`). All observed subdomains suffix-match an existing
-host entry, **except one**:
+`hosts:` list of the largest-byte already-templated apps whose apexes are
+`lego.com`/`legogroup.io` (`lego.yml`), `jetbrains.com` (`jetbrains.yml`),
+`arduino.cc`/`arduinocontent.cc` (`arduino.yml`), `gdevelop.io`/
+`gdevelop-app.com` (`gdevelop.yml`), and `minecraft-services.net`
+(`minecraft.yml`). All observed subdomains suffix-match an existing host
+entry, **except one**:
 
 - `assets.lego.com` (seen on 3 of 4 kid devices this week) is not covered by
   any of `lego.yml`'s ten host entries. Cert check: dedicated CloudFront

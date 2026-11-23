@@ -273,14 +273,21 @@ above is now wrong, fix the step too — don't just log around it.
   here), that's still not proof of zero — it just means you don't have
   enough to add it with confidence, so leave it a watch item rather than
   guessing either way. (2) A byte-heavy apex with real hit counts
-  (`svvsd.org`, 19.9 MB / 195 hits over 30d) can still have **zero**
-  presence in a 6-day time-weighted orphan sweep — bulk/background sync
-  inflates bytes without the sustained-use shape that time-weighting
-  measures. When a byte-ranked candidate and a time-weighted sweep disagree
-  this sharply, trust the time-weighted one for the engagement-bar question;
-  the already-logged exclusion (`classlink.yml`'s comment on
-  `classlink.svvsd.org`, #2943) stood on this basis. Also reconfirmed two
-  thin single-subdomain ad-tech-shaped candidates (`t13.io` via the `s2s.`
+  (`svvsd.org`, 19.9 MB / 195 hits over 30d, all from one device) can still
+  have **zero** presence in a time-weighted orphan sweep covering that same
+  device over a shorter window — bulk/background sync can inflate bytes
+  without the sustained-use shape that time-weighting measures. When a
+  byte-ranked candidate and a time-weighted sweep disagree this sharply on
+  the SAME device, that's a real (if narrower-than-30d) data point toward
+  "not sustained use" — but check it names the same device(s) the bytes came
+  from before trusting it, and don't conflate it with a separate,
+  volume-independent exclusion decided on other grounds: the already-logged
+  `classlink.svvsd.org` exclusion in `classlink.yml`'s comment (#2962) is
+  district-run-host reasoning, unrelated to this byte-vs-time check, and
+  `ic.svvsd.org` (#2943, a different subdomain) is its own still-open
+  watch item that this kind of data point can inform but not single-handedly
+  close. Also reconfirmed two thin single-subdomain ad-tech-shaped
+  candidates (`t13.io` via the `s2s.`
   server-to-server tracking-callback label, `skyboxct.com` with no
   resolvable subdomains and no independent web confirmation of what it is)
   as watch items rather than templating on weak signal.
