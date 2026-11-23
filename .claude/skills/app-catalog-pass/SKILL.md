@@ -262,6 +262,35 @@ above is now wrong, fix the step too — don't just log around it.
 
 ## Learnings log (newest first)
 
+- **2026-11-23 (#3015)** — **Clean no-op pass; two process notes worth
+  keeping.** (1) `recent-apexes` gives apex-level bytes/hits only, never a
+  per-subdomain breakdown — when an already-templated app's apex shows a new
+  subdomain in `subdomains[]` that isn't in the template's `hosts:` (here
+  `assets.lego.com`, seen on 3/4 kid devices, not in `lego.yml`), you cannot
+  tell from that endpoint alone whether it carries real volume or is
+  incidental. Cross-check the time-weighted `usage-by-app` orphanHosts sweep
+  for the same host before deciding; if it doesn't show up there either (as
+  here), that's still not proof of zero — it just means you don't have
+  enough to add it with confidence, so leave it a watch item rather than
+  guessing either way. (2) A byte-heavy apex with real hit counts
+  (`svvsd.org`, 19.9 MB / 195 hits over 30d, all from one device) can still
+  have **zero** presence in a time-weighted orphan sweep covering that same
+  device over a shorter window — bulk/background sync can inflate bytes
+  without the sustained-use shape that time-weighting measures. When a
+  byte-ranked candidate and a time-weighted sweep disagree this sharply on
+  the SAME device, that's a real (if narrower-than-30d) data point toward
+  "not sustained use" — but check it names the same device(s) the bytes came
+  from before trusting it, and don't conflate it with a separate,
+  volume-independent exclusion decided on other grounds: the already-logged
+  `classlink.svvsd.org` exclusion in `classlink.yml`'s comment (#2962) is
+  district-run-host reasoning, unrelated to this byte-vs-time check, and
+  `ic.svvsd.org` (#2943, a different subdomain) is its own still-open
+  watch item that this kind of data point can inform but not single-handedly
+  close. Also reconfirmed two thin single-subdomain ad-tech-shaped
+  candidates (`t13.io` via the `s2s.`
+  server-to-server tracking-callback label, `skyboxct.com` with no
+  resolvable subdomains and no independent web confirmation of what it is)
+  as watch items rather than templating on weak signal.
 - **2026-11-16 (#3010)** — **GOT THIS WRONG TWICE, caught by independent
   review BOTH times: (1) NS records tell you who runs a zone, not where
   that zone's hostnames resolve, and "the bare apex has a dedicated-looking
