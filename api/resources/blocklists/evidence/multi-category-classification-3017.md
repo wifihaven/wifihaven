@@ -28,12 +28,14 @@ gambling, games, social-media).
 ## Re-confirmed standing held-outs (already pinned, no new action)
 
 All of these resurfaced in this pass's sweep and were independently
-re-investigated before checking history; all match prior findings exactly:
+re-investigated before checking history; the conclusion matches each prior
+finding, though the specific subdomains dug this pass were not identical:
 
-- `xboxlive.com` — one observed host (`accounts.`/`profile.`/`userstats.`/
-  `privacy.` = Azure GTM via `akadns.net`, dedicated Microsoft IPs) is clean,
-  but `sisu.`/`peoplehub.` CNAME through `edgekey.net` onto shared Akamai
-  EdgeSuite edges — one bad observed host disqualifies the apex (#2957).
+- `xboxlive.com` — four observed hosts (`accounts.`/`profile.`/`userstats.`/
+  `privacy.`) are clean (Azure GTM via `akadns.net`, dedicated Microsoft
+  IPs), but `sisu.`/`peoplehub.` CNAME through `edgekey.net` onto shared
+  Akamai EdgeSuite edges — one bad observed host disqualifies the apex
+  (#2957).
 - `xboxservices.com` — observed `cms-assets.` CNAMEs onto Azure Front Door
   (`*.azurefd.net`), a shared multi-tenant CDN product (#3000).
 - `panxo.ai` — confirmed ad-tech (AI-referral-traffic monetization), observed

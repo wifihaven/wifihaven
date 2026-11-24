@@ -733,6 +733,11 @@ object BundledBlocklistsSpec
       // it. See ads.yml's #2957 comment and
       // evidence/multi-category-classification-2957.md for per-host
       // resolution detail.
+      // #3017 added grok-sandbox.com to this list rather than a new test:
+      // it was investigated and disqualified (Cloudflare-fronted) across
+      // two prior passes (#2918, #3000 — see evidence/ads-classification-2918.md
+      // and evidence/multi-category-classification-3000.md) but never
+      // pinned here until now.
       val heldOut = List(
         "gamepix.com",
         "xboxlive.com",
@@ -742,6 +747,7 @@ object BundledBlocklistsSpec
         "ygametime.com",
         "brand-display.com",
         "playablefactory.com",
+        "grok-sandbox.com",
       ).map(Hostname.unsafe)
       for {
         inlineLists <- loadInlineOnly
@@ -757,34 +763,6 @@ object BundledBlocklistsSpec
                 val hv = h.value.toLowerCase
                 xv == hv || xv.endsWith("." + hv)
               }
-            }
-            .map(x => s"${bl.id.value}:${x.value}")
-        }
-      } yield
-      // liveness anchor: the ads list loaded, so the absence check is not vacuous
-      assertTrue(inlineHostsOf(inlineLists, "ads").contains(Hostname.unsafe("mgid.com"))) &&
-        assertTrue(offenders.isEmpty)
-    },
-    test("#3017: Cloudflare-fronted grok-sandbox.com stays out of every inline list") {
-      // xAI's own sandboxed "computer use" agent infra for the Grok product
-      // (hds-*.grok-computer-wild.hades-www.grok-sandbox.com), investigated
-      // and disqualified across two prior passes (#2918, #3000 — see
-      // evidence/ads-classification-2918.md and
-      // evidence/multi-category-classification-3000.md) but never pinned
-      // here until now. Every observed host resolves onto Cloudflare
-      // (104.18.26.226/104.18.27.226); grok.com/grokusercontent.com already
-      // cover the Grok product itself.
-      for {
-        inlineLists <- loadInlineOnly
-        offenders = inlineLists.flatMap { bl =>
-          val hosts = bl.content match {
-            case BundledBlocklistContent.Inline(hs) => hs
-            case _                                  => Nil
-          }
-          hosts
-            .filter { x =>
-              val xv = x.value.toLowerCase
-              xv == "grok-sandbox.com" || xv.endsWith(".grok-sandbox.com")
             }
             .map(x => s"${bl.id.value}:${x.value}")
         }

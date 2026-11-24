@@ -316,34 +316,18 @@ that edit in the same PR.** If a step above is now wrong, fix the step too.
 
 ## Learnings log (newest first)
 
-- **2026-11-24** (#3017) — **Two more platform-LB hostnames join the CDN
-  decision tree, on opposite sides: `*.azurefd.net` (Azure Front Door) is a
-  shared multi-tenant CDN — same class as CloudFront/Cloudflare/Fastly,
-  unconditional skip — while `*.awsglobalaccelerator.com` (AWS Global
+- **2026-11-24** (#3017) — **New this pass (the Azure Front Door classification
+  itself is #3000's, not new here): `*.awsglobalaccelerator.com` (AWS Global
   Accelerator) is a network-layer router to the customer's OWN dedicated
-  backend, same class as the GCP-customer-LB precedent (#2836) and AWS ALBs
-  — does not itself disqualify.** `xboxservices.com`'s observed
-  `cms-assets.` CNAMEs onto `*.azurefd.net`, which settled its hold-out this
-  pass. `wisprflow.ai`'s observed `api.` resolves via a dedicated ALB
-  (clean), but `learnings.ai`'s observed `api.` went through
-  `awsglobalaccelerator.com` to dedicated backend IPs — that's not evidence
-  either way on CDN risk, it's just not disqualifying on its own the way
-  Akamai EdgeSuite/CloudFront/Cloudflare/Azure Front Door are. Don't treat
-  "fronted by a major cloud's load-balancer product" as one bucket — check
-  which specific product it is.
-- **2026-11-24** (#3017) — **A confirmed own-vendor apex with MOSTLY clean
-  observed hosts can still be disqualified by ONE bad observed host — this
-  recurred on `xboxlive.com` itself, not just on obscure ad-tech.** Four of
-  five dug subdomains (`accounts.`/`profile.`/`userstats.`/`privacy.`)
-  resolve via Azure GTM (`akadns.net`) straight to dedicated Microsoft IPs —
-  clean, same as the Appier GTM precedent (#2952). But `sisu.`/`peoplehub.`
-  (both independently in the original observed-subdomain list, not a
-  sibling you'd have to go looking for) CNAME through `edgekey.net` onto
-  shared Akamai EdgeSuite edges. The #2918 "one CDN-fronted observed host
-  disqualifies the whole apex" rule doesn't get softer just because the
-  other four hosts are clean and the vendor is unambiguous — dig EVERY
-  observed subdomain for a bulk/well-known apex, not just one or two
-  representative ones, before concluding it clears.
+  backend — same class as the GCP-customer-LB precedent (#2836) and AWS
+  ALBs, does not itself disqualify.** `learnings.ai`'s observed `api.` went
+  through `awsglobalaccelerator.com` to dedicated backend IPs — not
+  evidence either way on identity, but not disqualifying on its own the way
+  Akamai EdgeSuite/CloudFront/Cloudflare/Azure Front Door are. Re-ran the
+  already-established Front Door check too: `xboxservices.com`'s observed
+  `cms-assets.` still CNAMEs onto `*.azurefd.net` (per #3000), and
+  `wisprflow.ai`'s observed `api.` resolves via a dedicated ALB (clean) —
+  consistent with, not a correction of, prior passes.
 - **2026-11-24** (#3017) — **A SaaS platform that hosts ad-network pixels
   (Google/Facebook Ads attribution tags) ON BEHALF OF its many customers is
   the same shared-multi-tenant-ad-product class as
