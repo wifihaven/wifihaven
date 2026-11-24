@@ -316,6 +316,27 @@ that edit in the same PR.** If a step above is now wrong, fix the step too.
 
 ## Learnings log (newest first)
 
+- **2026-11-24** (#3017) — **New this pass (the Azure Front Door classification
+  itself is #3000's, not new here): `*.awsglobalaccelerator.com` (AWS Global
+  Accelerator) is a network-layer router to the customer's OWN dedicated
+  backend — same class as the GCP-customer-LB precedent (#2836) and AWS
+  ALBs, does not itself disqualify.** `learnings.ai`'s observed `api.` went
+  through `awsglobalaccelerator.com` to dedicated backend IPs — not
+  evidence either way on identity, but not disqualifying on its own the way
+  Akamai EdgeSuite/CloudFront/Cloudflare/Azure Front Door are. Re-ran the
+  already-established Front Door check too: `xboxservices.com`'s observed
+  `cms-assets.` still CNAMEs onto `*.azurefd.net` (per #3000), and
+  `wisprflow.ai`'s observed `api.` resolves via a dedicated ALB (clean) —
+  consistent with, not a correction of, prior passes.
+- **2026-11-24** (#3017) — **A SaaS platform that hosts ad-network pixels
+  (Google/Facebook Ads attribution tags) ON BEHALF OF its many customers is
+  the same shared-multi-tenant-ad-product class as
+  `app-ads-services.com`/`app-measurement.com`, even when the operator
+  itself (HubSpot, for `hsadspixel.net`) is a legitimate CRM/marketing
+  company and not an ad network itself.** The test isn't "is the operator
+  an ad company" — HubSpot isn't — it's "does blocking this apex take down
+  ad-tracking pixels embedded by many unrelated third-party sites that use
+  this platform." Skipped, same bucket as the Google-operated pair.
 - **2026-11-17** (#3012) — **This pass's zsh gotcha: `for x in $unquoted_var`
   does NOT word-split in zsh the way it does in bash — it binds the loop
   variable to the whole string in one iteration.** A membership-check loop

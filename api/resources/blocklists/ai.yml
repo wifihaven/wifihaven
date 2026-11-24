@@ -364,6 +364,19 @@ hosts:
   - lovable.dev
   - qodo.ai
   #
+  # traffic-driven addition (#3017): 30-day prod recent-apexes sweep across
+  # all 32 devices, 2026-11-24. wisprflow.ai is Wispr Flow, a confirmed
+  # consumer AI voice-dictation keyboard (speech-to-text with AI-polished
+  # output, available on Mac/Windows/iOS) — an audio-to-text generator, same
+  # category shape as the other generators above. Only observed host,
+  # api.wisprflow.ai, resolves to a dedicated AWS ALB
+  # (fastapi-prod-alb-*.us-west-1.elb.amazonaws.com) — not a shared pool, so
+  # the #2823 CDN check clears. RESIDUAL RISK: the unobserved `www.`/bare
+  # apex sit on Webflow's shared marketing-site hosting (cdn.webflow.com) —
+  # if that host is ever observed in traffic instead of api., re-run the CDN
+  # check before trusting this entry.
+  - wisprflow.ai
+  #
   # HELD OUT as dual-use, deliberately NOT added (record so a later pass does
   # not re-litigate):
   #   grammarly.com   schools mandate it; writing-assist is a minority of use.

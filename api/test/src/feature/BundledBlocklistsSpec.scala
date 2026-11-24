@@ -733,6 +733,11 @@ object BundledBlocklistsSpec
       // it. See ads.yml's #2957 comment and
       // evidence/multi-category-classification-2957.md for per-host
       // resolution detail.
+      // #3017 added grok-sandbox.com to this list rather than a new test:
+      // it was investigated and disqualified (Cloudflare-fronted) across
+      // two prior passes (#2918, #3000 — see evidence/ads-classification-2918.md
+      // and evidence/multi-category-classification-3000.md) but never
+      // pinned here until now.
       val heldOut = List(
         "gamepix.com",
         "xboxlive.com",
@@ -742,6 +747,7 @@ object BundledBlocklistsSpec
         "ygametime.com",
         "brand-display.com",
         "playablefactory.com",
+        "grok-sandbox.com",
       ).map(Hostname.unsafe)
       for {
         inlineLists <- loadInlineOnly
@@ -870,6 +876,8 @@ object BundledBlocklistsSpec
         assertTrue(hosts.contains(Hostname.unsafe("gemini.google"))) &&
         // traffic-driven addition pinned for presence (#2836)
         assertTrue(hosts.contains(Hostname.unsafe("hellohaven.ai"))) &&
+        // traffic-driven addition pinned for presence (#3017)
+        assertTrue(hosts.contains(Hostname.unsafe("wisprflow.ai"))) &&
         // #2768 preemptive hardening, one pin per group so a bad merge that drops
         // the block is caught. These are NOT traffic-driven — see the ai.yml
         // rationale block and evidence/ai-classification-2768.md.
