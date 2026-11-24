@@ -765,6 +765,34 @@ object BundledBlocklistsSpec
       assertTrue(inlineHostsOf(inlineLists, "ads").contains(Hostname.unsafe("mgid.com"))) &&
         assertTrue(offenders.isEmpty)
     },
+    test("#3017: Cloudflare-fronted grok-sandbox.com stays out of every inline list") {
+      // xAI's own sandboxed "computer use" agent infra for the Grok product
+      // (hds-*.grok-computer-wild.hades-www.grok-sandbox.com), investigated
+      // and disqualified across two prior passes (#2918, #3000 — see
+      // evidence/ads-classification-2918.md and
+      // evidence/multi-category-classification-3000.md) but never pinned
+      // here until now. Every observed host resolves onto Cloudflare
+      // (104.18.26.226/104.18.27.226); grok.com/grokusercontent.com already
+      // cover the Grok product itself.
+      for {
+        inlineLists <- loadInlineOnly
+        offenders = inlineLists.flatMap { bl =>
+          val hosts = bl.content match {
+            case BundledBlocklistContent.Inline(hs) => hs
+            case _                                  => Nil
+          }
+          hosts
+            .filter { x =>
+              val xv = x.value.toLowerCase
+              xv == "grok-sandbox.com" || xv.endsWith(".grok-sandbox.com")
+            }
+            .map(x => s"${bl.id.value}:${x.value}")
+        }
+      } yield
+      // liveness anchor: the ads list loaded, so the absence check is not vacuous
+      assertTrue(inlineHostsOf(inlineLists, "ads").contains(Hostname.unsafe("mgid.com"))) &&
+        assertTrue(offenders.isEmpty)
+    },
     test("#2823: held-out CAM4-chain hosts stay out of every inline list") {
       // Each of these was observed in the measured chain and investigated, and each
       // is held out. Fourteen are held out because they resolve onto a shared
@@ -870,6 +898,8 @@ object BundledBlocklistsSpec
         assertTrue(hosts.contains(Hostname.unsafe("gemini.google"))) &&
         // traffic-driven addition pinned for presence (#2836)
         assertTrue(hosts.contains(Hostname.unsafe("hellohaven.ai"))) &&
+        // traffic-driven addition pinned for presence (#3017)
+        assertTrue(hosts.contains(Hostname.unsafe("wisprflow.ai"))) &&
         // #2768 preemptive hardening, one pin per group so a bad merge that drops
         // the block is caught. These are NOT traffic-driven — see the ai.yml
         // rationale block and evidence/ai-classification-2768.md.
